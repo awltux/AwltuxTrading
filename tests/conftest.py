@@ -95,6 +95,11 @@ def settings(temp_dir: Path, config_file: Path, monkeypatch: pytest.MonkeyPatch)
         alphavantage_api_key=None,
         reddit_client_id=None,
         reddit_client_secret=None,
+        # Fal's credential, and it must be cleared here for the same reason as the
+        # rest: `FAL_KEY` is an ordinary environment variable that a developer may
+        # well have exported, and a suite that quietly spent their embeddings quota
+        # would be reaching a live provider without saying so.
+        falai_key=None,
         t212_env="demo",
         allow_live_orders=False,
     )

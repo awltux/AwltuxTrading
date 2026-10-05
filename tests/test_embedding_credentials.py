@@ -134,6 +134,41 @@ class TestCredentialPrecedence:
         assert EmbeddingsConfig().api_key is None
         assert EmbeddingsConfig().base_url == ""
 
+    def test_the_vendors_own_variable_name_works(self, monkeypatch):
+        """Fal's documentation says to set `FAL_KEY`. Every other credential here
+        takes the AWLTUX_ prefix, so a key set under the name the vendor documents
+        silently did nothing at all: the app reported no credential and the request
+        went out unauthenticated."""
+        from awltux.config import EnvSettings
+
+        monkeypatch.setenv("FAL_KEY", "vendor-name-key")
+        monkeypatch.delenv("AWLTUX_FALAI_KEY", raising=False)
+        assert EnvSettings(_env_file=None).falai_key.get_secret_value() == "vendor-name-key"
+
+    def test_the_project_variable_name_still_works(self, monkeypatch):
+        from awltux.config import EnvSettings
+
+        monkeypatch.setenv("AWLTUX_FALAI_KEY", "project-name-key")
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        assert EnvSettings(_env_file=None).falai_key.get_secret_value() == "project-name-key"
+
+    def test_the_project_name_wins_when_both_are_set(self, monkeypatch):
+        """AliasChoices takes the first match, and the project's own name is the
+        more specific of the two."""
+        from awltux.config import EnvSettings
+
+        monkeypatch.setenv("AWLTUX_FALAI_KEY", "project-name-key")
+        monkeypatch.setenv("FAL_KEY", "vendor-name-key")
+        assert EnvSettings(_env_file=None).falai_key.get_secret_value() == "project-name-key"
+
+    def test_the_suite_never_inherits_a_real_key(self, settings):
+        """`FAL_KEY` is an ordinary environment variable a developer may have
+        exported, so the fixture clears it for the same reason it clears the rest:
+        a suite that spent their embeddings quota would be reaching a live provider
+        without saying so."""
+        assert settings.env.falai_key is None
+        assert settings.news.embeddings.credential(settings.env) is None
+
 
 class TestARejectedCredentialSaysSo:
     def test_a_401_names_the_scheme_and_the_model(self, settings, monkeypatch):

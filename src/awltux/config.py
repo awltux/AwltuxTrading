@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import AliasChoices, BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +73,15 @@ class EnvSettings(BaseSettings):
     # Fal.ai -- embeddings, used to group stories covering one event. The credential
     # goes in a header rather than as a bearer token, so it is not interchangeable
     # with the others; see EmbeddingsConfig.auth_scheme.
-    falai_key: SecretStr | None = None
+    #
+    # Two names, because the vendor's is different from ours. Every other credential
+    # here takes the AWLTUX_ prefix, but Fal's own documentation says to set
+    # FAL_KEY, and a key set under the name the vendor documents then silently did
+    # nothing. Both work; neither is a typo to be corrected.
+    falai_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AWLTUX_FALAI_KEY", "FAL_KEY"),
+    )
 
     # news providers
     finnhub_api_key: SecretStr | None = None
