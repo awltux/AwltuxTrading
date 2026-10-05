@@ -319,6 +319,8 @@ def _news_relevance(detail: dict[str, Any]) -> str:
 def _news_embeddings(detail: dict[str, Any]) -> str:
     embedded = _get(detail, "embedded")
     errors = detail.get("errors") or []
+    if detail.get("stopped_early"):
+        return f"stopped after the first batch: {errors[0] if errors else 'refused'}"
     if not embedded:
         return _nothing(
             _get(detail, "pending", 0),

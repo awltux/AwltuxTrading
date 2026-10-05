@@ -444,6 +444,7 @@ def embed_news() -> JobResult:
 
     embedded = 0
     errors: list[str] = []
+    fatal = False
     with session_scope() as session:
         already = select(NewsEmbedding.news_item_id).where(
             NewsEmbedding.model == config.model
@@ -476,14 +477,34 @@ def embed_news() -> JobResult:
                     result.vectors,
                     model=config.model,
                 )
+            if result.fatal:
+                # A rejected credential or a model the account cannot use. The
+                # remaining batches cannot succeed either, so asking is sixteen more
+                # requests against a rate-limited endpoint to learn nothing.
+                fatal = True
+                break
             release_write_lock(session)
 
     client.close()
 
-    if embedded == 0:
-        note = "no vectors were produced: " + ("; ".join(errors[:2]) or "the provider returned nothing")
-    elif errors:
-        note = f"{embedded} stories embedded; {len(errors)} batch(es) failed and will retry"
+    # Deduplicate: a rejection repeats identically for every batch, and sixteen
+    # copies of one sentence is not more information than one.
+    unique: list[str] = []
+    for message in errors:
+        if message not in unique:
+            unique.append(message)
+
+    if fatal:
+        note = (
+            "stopped after the first batch: "
+            f"{unique[0] if unique else 'the endpoint refused the request'}"
+        )
+    elif embedded == 0:
+        note = "no vectors were produced: " + (
+            "; ".join(unique[:2]) or "the provider returned nothing"
+        )
+    elif unique:
+        note = f"{embedded} stories embedded; {len(unique)} batch(es) failed and will retry"
     else:
         note = None
 
@@ -491,7 +512,12 @@ def embed_news() -> JobResult:
         items_seen=len(pending),
         items_written=embedded,
         note=note,
-        detail={"embedded": embedded, "model": config.model, "errors": errors[:5]},
+        detail={
+            "embedded": embedded,
+            "model": config.model,
+            "stopped_early": fatal,
+            "errors": unique[:5],
+        },
     )
 
 

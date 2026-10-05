@@ -156,3 +156,34 @@ class TestARejectedCredentialSaysSo:
         assert "Authorization: Key" in message
         assert "openai/text-embedding-3-small" in message
         assert "fal-test-key" not in message and " k " not in message
+
+    def test_a_rejection_is_flagged_as_not_worth_retrying(self, settings, monkeypatch):
+        """Otherwise a run asks sixteen more times for something that will never
+        work, against a rate-limited endpoint."""
+        from awltux.providers.http import ProviderError
+
+        monkeypatch.setattr(settings.env, "falai_key", SecretStr("k"), raising=False)
+        client = _client(settings)
+
+        class Refusing(_Captured):
+            def request(self, method, path, **kwargs):
+                raise ProviderError("embeddings", "HTTP 403: forbidden")
+
+        monkeypatch.setattr(client, "_http", Refusing(), raising=False)
+        assert client.embed(["a headline"]).fatal is True
+
+    def test_a_transient_failure_is_not_flagged(self, settings, monkeypatch):
+        """A timeout should be retried next run, not treated as settled."""
+        from awltux.providers.http import ProviderError
+
+        monkeypatch.setattr(settings.env, "falai_key", SecretStr("k"), raising=False)
+        client = _client(settings)
+
+        class Timing(_Captured):
+            def request(self, method, path, **kwargs):
+                raise ProviderError("embeddings", "connection reset by peer")
+
+        monkeypatch.setattr(client, "_http", Timing(), raising=False)
+        result = client.embed(["a headline"])
+        assert result.fatal is False
+        assert result.errors

@@ -63,6 +63,10 @@ class EmbeddingResult:
     vectors: list[list[float]] = field(default_factory=list)
     model: str = ""
     errors: list[str] = field(default_factory=list)
+    #: Set when the failure cannot succeed on a retry -- a rejected credential, a
+    #: model the account cannot use. Without it a run asks sixteen more times for
+    #: something that will never work, against a rate-limited endpoint.
+    fatal: bool = False
 
 
 class EmbeddingClient:
@@ -124,6 +128,7 @@ class EmbeddingClient:
             text = str(exc)
             if "401" in text or "403" in text:
                 scheme = self.config.auth_scheme.strip() or "(none)"
+                result.fatal = True
                 result.errors.append(
                     f"the endpoint rejected our credential (sent as `Authorization: "
                     f"{scheme} ...`). Check the key, and that this account can use "
