@@ -109,6 +109,18 @@ Two cautions the note raises that belong with the implementation:
   that reads as a verdict; the note's recommendation is that a flag means "read
   this" and never "this is fraud".
 
+### Every decision so far has failed its own gate
+
+`decision_run` holds 17 rows and `sum(gate_allowed)` is **0**: not one decision has
+been actionable. The decisions themselves look ordinary — 12 came from DeepSeek,
+5 from the deterministic engine — so this is either the gate working exactly as
+intended on a universe with no accounts stored (`fundamentals` is 0 of 500
+covered) or a threshold that nothing can clear. **Not investigated.**
+
+**Next:** read one decision's `gate` JSON against its `answers`, and see which
+check refused it. The gate reason strings are supposed to be specific enough to
+answer that from the receipt alone, so if they are not, that is the bug.
+
 ### The news-to-fundamentals weighting is an assumption, not a finding
 
 News currently enters sentiment with a 0.55 component weight. The research note

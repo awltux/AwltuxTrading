@@ -36,6 +36,7 @@ from awltux.llm.deepseek import (
     BudgetExceeded,
     DeepSeekClient,
     DeepSeekError,
+    TruncatedResponse,
     build_messages,
     model_for_purpose,
 )
@@ -66,6 +67,21 @@ def build_schema(questions: dict[str, Any]) -> str:
 
     Generated rather than hand-written so a new question cannot be quietly
     omitted from the fallback path.
+
+    Two things this deliberately does *not* ask for.
+
+    **No per-question reasoning.** The schema used to request a one-sentence
+    justification for each of the fifteen questions, and nothing ever read it:
+    :func:`parse_answers` does not look for it and :class:`Answer` has no field to
+    put it in. It was roughly 400-600 output tokens of pure waste on a response
+    whose median length is about 3,500 -- which is how a decision ends up cut off
+    at the ceiling. The single top-level ``reasoning`` *is* used, and stays.
+
+    **No comments inside the JSON.** The criteria legend was emitted as ``//``
+    lines between the object's members, which is not valid JSON but sits inside a
+    template the model is told to reproduce. A model that copies it literally
+    produces a document that cannot be parsed. The legend is now below the closing
+    brace, where it is read as instruction rather than as content.
     """
     lines: list[str] = [
         "Return a JSON object of this exact shape:",
@@ -73,6 +89,7 @@ def build_schema(questions: dict[str, Any]) -> str:
         '  "reasoning": "2-4 sentences explaining your overall judgement",',
         '  "answers": {',
     ]
+    legend: list[str] = []
     for name, definition in questions.items():
         kind = definition.get("type")
         criteria = definition.get("criteria")
@@ -80,27 +97,28 @@ def build_schema(questions: dict[str, Any]) -> str:
             options = ", ".join(f'"{option}"' for option in criteria)
             lines.append(
                 f'    "{name}": {{"choice": one of [{options}], '
-                f'"confidence": 0.0-1.0, "probabilities": {{each option: probability}}, '
-                f'"reasoning": "one sentence"}},'
+                f'"confidence": 0.0-1.0, "probabilities": {{each option: probability}}}},'
             )
         elif kind == "score" and isinstance(criteria, list):
             lines.append(
                 f'    "{name}": {{"score": integer 0-{len(criteria) - 1}, '
-                f'"confidence": 0.0-1.0, "probabilities": {{each level: probability}}, '
-                f'"reasoning": "one sentence"}},'
+                f'"confidence": 0.0-1.0, "probabilities": {{each level: probability}}}},'
             )
         else:
-            lines.append(
-                f'    "{name}": {{"noul": 0.0-1.0, "reasoning": "one sentence"}},'
-            )
+            lines.append(f'    "{name}": {{"noul": 0.0-1.0}},')
         if isinstance(criteria, dict):
-            lines.append(f"    // {name}: " + "; ".join(f"{k} = {v}" for k, v in criteria.items()))
+            legend.append(f"  {name}: " + "; ".join(f"{k} = {v}" for k, v in criteria.items()))
         elif isinstance(criteria, list):
-            lines.append(
-                f"    // {name}: " + "; ".join(f"{i} = {text}" for i, text in enumerate(criteria))
+            legend.append(
+                f"  {name}: " + "; ".join(f"{i} = {text}" for i, text in enumerate(criteria))
             )
     lines.append("  }")
     lines.append("}")
+    if legend:
+        # Outside the braces, and labelled, so it cannot be mistaken for content.
+        lines.append("")
+        lines.append("What the options mean (do not include this in the JSON):")
+        lines.extend(legend)
     return "\n".join(lines)
 
 
@@ -162,20 +180,53 @@ class DeepSeekDecisionEngine(DecisionEngine):
             instruction=instruction,
         )
 
-        try:
-            completion = self.client().complete(
-                purpose=PURPOSE,
-                messages=messages,
-                model=model_for_purpose(self.settings, PURPOSE),
-                json_mode=True,
-                max_tokens=4000,
-                prompt_hash=prompt_fingerprint(SYSTEM, PROMPT_VERSION),
+        # Two budgets, and the second one exists because the first is sometimes
+        # simply too small. A truncated response used to be a hard failure: the
+        # instrument fell through to the deterministic engine and the model's
+        # judgement was thrown away for a reason that was only about output
+        # length. Retrying is far cheaper than that, and the classifier already
+        # works this way.
+        budgets = list(
+            dict.fromkeys(
+                (
+                    self.settings.decision.deepseek_max_tokens,
+                    self.settings.llm.max_output_tokens,
+                )
             )
-            payload = completion.json_object()
-        except BudgetExceeded as exc:
-            raise DecisionEngineError(ENGINE_DEEPSEEK, str(exc), retryable=False) from exc
-        except DeepSeekError as exc:
-            raise DecisionEngineError(ENGINE_DEEPSEEK, str(exc)) from exc
+        )
+        ticker = (state.get("instrument") or {}).get("ticker", "?")
+
+        for attempt, budget in enumerate(budgets):
+            try:
+                completion = self.client().complete(
+                    purpose=PURPOSE,
+                    messages=messages,
+                    model=model_for_purpose(self.settings, PURPOSE),
+                    json_mode=True,
+                    max_tokens=budget,
+                    prompt_hash=prompt_fingerprint(SYSTEM, PROMPT_VERSION),
+                )
+                payload = completion.json_object()
+            except BudgetExceeded as exc:
+                raise DecisionEngineError(ENGINE_DEEPSEEK, str(exc), retryable=False) from exc
+            except TruncatedResponse as exc:
+                logger.warning(
+                    "decision response truncated for %s (attempt %d of %d at %d tokens)",
+                    ticker,
+                    attempt + 1,
+                    len(budgets),
+                    budget,
+                )
+                if attempt == len(budgets) - 1:
+                    raise DecisionEngineError(
+                        ENGINE_DEEPSEEK,
+                        f"the answer did not fit in {budget} tokens after "
+                        f"{len(budgets)} attempts: {exc}",
+                    ) from exc
+                continue
+            except DeepSeekError as exc:
+                raise DecisionEngineError(ENGINE_DEEPSEEK, str(exc)) from exc
+            break
 
         answers = parse_answers(payload.get("answers"), questions)
         if not answers:

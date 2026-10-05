@@ -218,6 +218,16 @@ class DecisionConfig(BaseModel):
     jev_max_state_tokens: int = 28_000
     warn_if_fallback: bool = True
 
+    #: Output budget for one fallback decision, in tokens.
+    #:
+    #: Measured, not guessed. Over the first 18 fallback decisions the *minimum*
+    #: output was 2,727 tokens and the median about 3,500, so the 4,000 that used
+    #: to be hardcoded here left almost no headroom: four of the eighteen hit the
+    #: ceiling exactly and those instruments fell back to the deterministic engine,
+    #: losing the model's judgement for a reason that was entirely about length.
+    #: One decision in four. The retry uses ``llm.max_output_tokens`` instead.
+    deepseek_max_tokens: int = 6_000
+
 
 class HorizonDefinition(BaseModel):
     """How a horizon is presented, and what it means.
