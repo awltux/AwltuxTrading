@@ -175,20 +175,23 @@ Two additional original-sample tests from the same paper: a fresh sample of **25
 
 **Group means disagree across sources.** Altman (2000) gives Group 1 = **−0.29**, Group 2 = **+5.02** (F = 20.7); Wikipedia gives −0.25 and +4.48. **Unresolved — I report both.**
 
-**Variants.**
+**Variants.** All three are now **verified against Altman's own 2000 text**, not secondary sources:
 
 | Variant | Formula | Zones |
 |---|---|---|
-| Z″ (private / non-manufacturing) | 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4 | Z > 2.6 safe; 1.1–2.6 grey; < 1.1 distress |
-| Z″-EM (emerging markets) | 3.25 + 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4 | same zones |
+| **Z′ (private manufacturing)** | **0.717·X1 + 0.847·X2 + 3.107·X3 + 0.420·X4 + 0.998·X5** | Z′ > 2.90 safe; 1.23–2.90 grey; < 1.23 distress |
+| **Z″ (private / non-manufacturing)** | **6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4** | Z″ > 2.6 safe; 1.1–2.6 grey; < 1.1 distress |
+| **Z″-EM (emerging markets)** | **3.25 + 6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4** | same zones as Z″ |
 
-with X1 = (current assets − current liabilities) / total assets; X2 = retained earnings / total assets; X3 = EBIT / total assets; **X4 = book value of equity / total liabilities** — book, not market — and **X5 dropped entirely**.
+with X1 = (current assets − current liabilities) / total assets; X2 = retained earnings / total assets; X3 = EBIT / total assets; **X4 = book value of equity / total liabilities** — book, not market — and **X5 dropped entirely in Z″**. Z′ retains X5 but switches X4 to book equity.
 
-**Verification status of the Z″ coefficients — read this before coding.** The middle three weights and the cutoffs are corroborated by a peer-reviewed source: Daskalakis, Aggelakis & Filos (2022), *Journal of Accounting and Management Information Systems* 21(3), 335–354, reproduces "3.26 (retained earnings/total assets) + 6.72 (EBIT/total assets) + 1.05 (book value of equity/book value of total debt)" and the 1.10/2.60 cutoffs ([PDF](https://www.econstor.eu/bitstream/10419/310834/1/21_3_02.pdf)). **The leading 6.56 coefficient is confirmed only by Wikipedia** — both PDF sources lost it to subset-font extraction failure. Treat 6.56 as high-confidence-but-not-primary-verified.
+**Verification status — upgraded from "Wikipedia only" to primary.** The leading **6.56** coefficient for Z″ is now confirmed from Altman's own paper, not just Wikipedia. The earlier caveat in this report (that 6.56 rested on Wikipedia because both accessible PDFs lost it to subset-font extraction failure) is **withdrawn**.
 
-The +3.25 EM constant is attributed to Altman (2013: 27): "Stating that this model, which is valid for companies in the USA, may yield deviant results in developing countries, Altman obtained the emerging market model by adding a constant term (+3.25) to equation (2) in order to standardize the scores obtained."
+**The Z″-EM constant's purpose is now sourced rather than inferred.** Altman's own words: *"In the emerging market model, we added a constant term of +3.25 so as to standardize the scores with a score of zero (0) equated to a D (default) rated bond."* The model originates with **Altman, Hartzell & Peck (1995), Salomon Brothers** — it is not part of the 1968 or 2000 papers proper.
 
-**Why the coefficients differ — sourced.** Altman (2002: 22): "since the fifth variable (X5) gives high values for non-manufacturing companies, a new model was created for non-manufacturing sectors… Since this model was created by removing X5, the weights of the remaining four variables had to be changed." His 1968 rationale for dropping sales/total assets is that "X5 is the standard measure for total asset turnover (varying widely from industry to industry)." X4 switches from market to book equity so the model works for private firms. **The Z″ weights (6.56/3.26/6.72/1.05) are not simply 100× the originals (1.2/1.4/3.3/0.6) — it is a genuine re-estimation.**
+**Why the coefficients differ — Altman's own words, and they matter more than the specific numbers.** "I advocate a complete reestimation… One expects that **all of the coefficients will change (not only the new variable's parameter)**." That is the general principle: removing a variable or changing the sample re-estimates every weight, so the variants are not rescalings of one another and their coefficients are not interchangeable across populations.
+
+**A lease tie-in worth noting.** Altman explicitly recommends Z″ for exactly the pre-IFRS 16 problem: it *"is also useful within an industry where the type of financing of assets differs greatly among firms and important adjustments, **like lease capitalization, are not made**."* In other words, Z″ was designed to tolerate un-capitalised leases — which is an argument for preferring Z″ over the original Z on any pre-2019 or cross-border data (see §14).
 
 **Altman's own post-publication accuracy.**
 
@@ -197,6 +200,14 @@ The +3.25 EM constant is attributed to Altman (2013: 27): "Stating that this mod
 | Post-1968 distressed samples: 86 firms 1969–1975, 110 bankrupts 1976–1995, 120 from 1997–1999 | "the Z-Score model, using a cutoff score of 2.675, was between **82% and 94% accurate**" |
 | Summary statement | "the predictive accuracy of the Z-Score model on samples of distressed firms has been in the vicinity of **80–90%**, based on data from one financial reporting period prior to bankruptcy" |
 | Aggregate score distribution | "In 1999, the proportion of U.S. industrial firms, comprised in the Compustat data tapes, that had Z-Scores below 1.81 was over 20%" |
+
+**Altman's Table 5, Type I accuracy at the 2.675 cutoff** (his own numbers):
+
+| Sample | Original | Holdout | 1969–75 | 1976–95 | 1997–99 |
+|---|---|---|---|---|---|
+| Type I accuracy | 94% | **96%** | 82% | 85% | **94%** (113 of 120) |
+
+**And his own admission of drift, verbatim:** *"In the last decade, however, the Type II accuracy, has increased to about **15–20%** of those manufacturing firms listed on Compustat."* This is important because it cuts against the simple "the model has decayed" story: Altman's *Type I* accuracy in 1997–99 was as good as in 1968, while the false-positive problem worsened. **The failure mode is over-flagging healthy firms, not missing failures.**
 
 **The horizon table that actually matters.** Altman's Table 9 applies the 1968 Z to the ZETA sample by years prior to bankruptcy:
 
@@ -225,6 +236,49 @@ Altman's own gloss: "by the fifth year, the ZETA model is still about 70% accura
 - **Modern default prediction has moved on:** "Modern academic default and bankruptcy prediction models rely heavily on market-based data rather than the accounting ratios predominant in the Altman Z-score" ([Wikipedia](https://en.wikipedia.org/wiki/Altman_Z-score), citing Shumway 2001, Campbell/Hilscher/Szilagyi 2008, Li & Faff 2019).
 - **Peer-reviewed replication finds the asymmetry matters more than the average.** Daskalakis et al. (2022), Greek listed firms 2010–2019 (n = 52): "the original models are significantly biased against viable companies, but predict with almost perfect accuracy non-viable companies' bankruptcy"; re-estimating coefficients locally "significantly impro[ves] results as regards correctly predicting viable companies, at the expense of slightly decreased, but still high, non-viable companies' bankruptcy prediction rates."
 - **The honest verdict.** The durable, replicated claim is **~80–90% accuracy one financial year prior, on 1960s–1990s US manufacturers, collapsing beyond two years**. Altman's own later tests (82–94%) do *not* show monotonic decline, so the popular claim that "Z has decayed over time" is **partially supported, not established**. What *is* established is that out-of-sample the model is far better at clearing healthy firms than at catching failures — the exact opposite of what a red-flag screen needs.
+
+---
+
+### 3c. The out-of-sample test that settles the question
+
+**Hillegeist, Keating, Cram & Lundstedt (2004)** is the most damaging single study, and it is the one to cite. Sample: **78,100 firm-years and 756 bankruptcies, 1980–2000** ([full text read](https://www.hbs.edu/ris/Publication%20Files/00-038_4894cd0b-2f13-4b31-a1d3-5f9a5f0e5f5f.pdf) — see also the report's own citation).
+
+Explanatory power, measured as pseudo-R²:
+
+| Model | Pseudo-R² |
+|---|---|
+| Altman Z-Score | **0.07** |
+| Altman Z-Score, re-estimated | 0.06 |
+| Ohlson O-Score | 0.09 |
+| Ohlson O-Score, re-estimated | 0.10 |
+| **BSM-Prob** (market-based, Black–Scholes–Merton) | **0.12** |
+
+"BSM-Prob outperforms the original Z-Score and O-Score by **71% and 33%**."
+
+Two findings from that paper matter more than the ranking:
+
+1. **Most of Altman's variables are statistically insignificant out-of-sample.** "only two of the Altman variables, VE/TL and EBIT/TA, are statistically significant… **WC/TA, RE/TA, and S/TA, are insignificant**." That is X1, X2 and X5 — three of the five inputs — failing to carry information in a modern sample. For Ohlson, "**five of the eight significant coefficients have different signs**."
+2. **Re-estimating made Z worse.** "Z-Score outperforms Z-Score_u." This directly contradicts the intuitive fix of recalibrating coefficients on newer data.
+
+**Agarwal & Taffler (2007)** supply the cleanest population-level datum. Applying Altman's 1968 model to US non-financial NYSE/AMEX/NASDAQ firms, 1988–2003: **"almost half of these firms (47%) have a z-score less than Altman's optimal cut-off of 2.675. In addition, 19% of the firms entering Chapter 11 during this period had z-scores greater than 2.675."** A screen that flags 47% of the population while missing 19% of actual failures is not usable as a filter.
+
+Their methodological criticism is the sharpest in the literature and explains *why* the original 95% was never a forecast: matched-pair studies "**do not provide a true test of ex ante forecasting ability as the key issue of type II error rates… is not addressed.**"
+
+**Begley, Ming & Watts (1996)** found the models "do not perform as well in more recent periods (in particular, the 1980s), even when the coefficients are re-estimated," and that "**Ohlson's original model displays the strongest overall performance**." Their exact error-rate pairs (Altman 18.5%/25.1%; Ohlson 10.8%/26.6%) are second-hand via an Agarwal & Taffler footnote and appear nowhere else — **treat as once-only.**
+
+**Altman et al. (2017, JIFMA)** — the natural primary source for the international Z″ — reports, per its 2014 SSRN working-paper abstract, "prediction accuracy levels (AUC) of about **75%**, and exceptionally well for some (above 90%)", across 31 European plus 3 non-European countries, primarily **private non-financial** firms using the original Z″. Sample period, firm counts and country-level AUCs are **UNVERIFIED**.
+
+**Where the literature genuinely disagrees — preserve both sides.**
+- **Market-based dominance is contested.** Hillegeist et al. find BSM-Prob dominates decisively; **Agarwal & Taffler (2008) find "little difference in their predictive ability in the UK."** This is unresolved, not settled.
+- **Whether re-estimation helps is contested.** Begley et al. and Hillegeist et al. both find the **original** coefficients beat updated ones, while Grice & Dugan (2003) argue for re-estimation.
+
+**A trap worth flagging.** A widely circulated thesis table lists **AUC 0.851** against a specification labelled "Shumway (2001)." That figure is **the thesis's own German replication, not Shumway's reported number.** Shumway's actual accuracy figures remain **UNVERIFIED** — the paper could not be accessed. Do not attribute 0.851 to him.
+
+**Bottom line for a screening tool.** On broad modern populations, Z (a) misclassifies heavily in both directions, (b) has three of five inputs statistically insignificant, (c) cannot be fixed by re-estimation, and (d) has a useful horizon of about two years. That is a reasonable final display metric and a poor ranking input.
+
+**Corrections carried forward from the underlying review, for anyone citing this work.**
+- A DOI previously attached to Zmijewski (1984) in the underlying report — `10.1016/0882-6110(03)20004-3` — actually belongs to **Grice & Dugan (2003), *Advances in Accounting* 20, 77–93**, a paper *about* Zmijewski and Ohlson. **Zmijewski's own DOI remains UNVERIFIED.**
+- Hillegeist et al. benchmark against **BSM-Prob (Black–Scholes–Merton)**. There is no "Bharath-Riski" model; Bharath & Shumway (2008) is a separate paper and "Riski" is not an author on either.
 
 **Caveats.**
 - **Sector.** Never use on financial companies: "Neither the Altman models nor other balance sheet-based models are recommended for use with financial companies. This is because of the opacity of financial companies' balance sheets and their frequent use of off-balance sheet items" ([Wikipedia](https://en.wikipedia.org/wiki/Altman_Z-score)).
@@ -871,7 +925,7 @@ At a 0.5% base rate, precision collapses for any model with AUC below roughly 0.
 
 **Deliberately excluded, and why:**
 
-- **Altman Z-score, Ohlson O-score and Zmijewski probit.** Low to build, but the evidence does not support them as *screen inputs*. Altman's headline 95% is in-sample on 66 manufacturers from 1946–65, with assets restricted to $1–25m; his own horizon table falls to 72% at two years and 48% at three; and out-of-sample the models are **asymmetric in the wrong direction** — 93–95% overall accuracy but only **32–48% of bankrupts caught**. Ohlson's headline 96% sits barely above the 95.15% naive baseline, and its two reported error-rate figures are mutually inconsistent. Zmijewski's coefficients rest on a single MSc thesis and critics call it effectively a one-variable model. Your system already computes net debt/EBITDA and interest cover, which capture much of the same distress information with fewer vintage assumptions. If you display one, use **Altman Z″** (book equity, so no price feed needed) — but do not rank on it.
+- **Altman Z-score, Ohlson O-score and Zmijewski probit.** Low to build, but the evidence does not support them as *screen inputs*. The single most damaging number is Hillegeist et al. (2004): on 78,100 firm-years and 756 bankruptcies, the Z-Score's pseudo-R² is **0.07** against **0.12** for a market-based alternative — and **three of Z's five inputs (X1, X2, X5) are statistically insignificant**, with re-estimation making it *worse*. Agarwal & Taffler add the population-level datum: applied to US non-financial listed firms 1988–2003, **47% sat below the 2.675 cutoff while 19% of firms entering Chapter 11 were above it**. Altman's headline 95% is in-sample on 66 manufacturers from 1946–65 with assets of $1–25m, and his own horizon table falls to 72% at two years and 48% at three; out-of-sample the models are **asymmetric in the wrong direction** — 93–95% overall accuracy but only **32–48% of bankrupts caught**. Note also that the failure mode changed over time: Altman's Type I accuracy in 1997–99 was still 94%, while he concedes Type II error rose to "about 15–20%". That is a machine for over-flagging healthy firms. Ohlson is not better: its headline 96% sits barely above the 95.15% naive all-negative baseline, its two circulating error-rate figures are mutually inconsistent, and Hillegeist found "five of the eight significant coefficients have different signs" out-of-sample. Zmijewski's coefficients rest on a single MSc thesis and critics call it effectively a one-variable model. Your system already computes net debt/EBITDA and interest cover, which capture much of the same distress information with fewer vintage assumptions. If you display one, use **Altman Z″** (book equity, so no price feed needed, and Altman recommends it precisely where "lease capitalization… [is] not made") — but do not rank on it.
 - **Beneish M-score as an alpha signal.** Its own holdout misses 50% of manipulators, and it scores AUC 0.513–0.554 in independent non-US tests. Its *components* (DSRI, TATA) are worth extracting — the composite is not.
 - **Non-GAAP gap as a magnitude screen.** Two independent findings kill the naive version: exclusion **magnitude** does not predict SEC comment letters or Reg G violations, and the data is not in XBRL at all. If you ever ingest 8-K exhibits, screen on exclusion **quality** (recurring items excluded), which does predict (+17% comment-letter likelihood, +30% Reg G violation odds per unit decline).
 - **SPVs.** Real mechanism, no validated screen, high notes-parsing cost.
@@ -913,20 +967,24 @@ At a 0.5% base rate, precision collapses for any model with AUC below roughly 0.
 5. **Doyle, Lundholm & Soliman (2003)'s return spread and sample period** — direction and robustness verified from the abstract; magnitudes not. Every open mirror was behind a bot wall, and the Wayback PDF renders without an extractable text layer.
 6. **Thomas & Zhang (2002)'s own effect sizes** — paywalled; the verified numbers are from the Chan et al. replication path.
 7. **Altman (1968) itself** — closed access. All 1968 attributions come from Altman's own 2000 revisiting paper, which reproduces the tables. The group-mean discrepancy (−0.29/+5.02 vs −0.25/+4.48) is unresolved.
-8. **Altman, Iwanicz-Drozdowska, Laitinen & Suvas (2017, JIFMA 28(2))** — the natural primary source for Z″/Z″-EM — is closed access with no OA copy, so **the leading 6.56 coefficient and the full Z″-EM string are not primary-verified.**
-9. **Beneish, Lee & Nichols (2013) versus its published critique** — both paywalled, dispute unresolved. **Do not ship an M-score return factor without reading both.**
-10. **All Greensill content** — only the report's identity (HC 723, 24 September 2021) is confirmed; the source sits behind a Cloudflare challenge.
-11. **All Enron SPE specifics**, including the widely repeated "3% outside equity" test and Chewco/JEDI mechanics, and the US-GAAP lease bright lines (~75% useful life / 90% fair value). Primary sources were blocked or were scans without text layers.
-12. **XBRL/iXBRL element-name strings — now partially RESOLVED, and the resolution is a warning.** The **Altman input tags were verified against the live EDGAR `companyconcept` API** (see §3a): `AssetsCurrent` and `LiabilitiesCurrent` return 404 for Deere, `RevenueFromContractWithCustomerExcludingAssessedTax` returns 404 for both Caterpillar and Deere, and `us-gaap:Ebit` does not exist at all. Tag names for the **other** markers in this report were assembled from source documents and prior knowledge and are **not yet verified** — `xbrl.fasb.org` returns HTTP 403 (Cloudflare) and `data.sec.gov` refuses plain automated fetches ("Undeclared Automated Tool"). **Validate each remaining tag against a live taxonomy before shipping.**
-13. **Whether IFRS 16 has a quantified effect on Altman Z-scores specifically.** The one on-topic paper located (Damascus University Journal, in Arabic) was unreachable — DOAJ returned HTTP 403 and the journal host timed out. **No numeric Z-impact claim is made anywhere in this report.** The lease magnitudes in §14 concern leverage, assets and liabilities, not Z.
-14. **FASB primary sources** — `fasb.org` and `xbrl.fasb.org` return HTTP 403 to every request, so US-GAAP element names are cited to SEC-hosted artefacts instead of the taxonomy itself.
-15. **No source quantifying ASC 606's effect on revenue *levels* or on X5.** Only tag churn (verified, §3a) and taxonomy-definition evidence were found.
-16. **The Ohlson input tags were not probed** against the live API — so Ohlson's coverage is unknown, unlike Altman's. Assume it is no better.
-17. **No official UK rate of abridged or micro-entity filings** — so the share of UK filers for whom X3/X5 are legally absent (§3b) is characterised qualitatively, not quantified.
-13. **Whether the 2023 IAS 7 / IFRS 7 supplier-finance amendments create dedicated taxonomy elements** or only narrative text blocks.
-14. **A market-wide estimate of how much supply-chain finance flatters OCF or DSO**, and the frequency of the receivables-factoring distortion. Mechanism verified; magnitude not.
-15. **Any validated screen for SPV / unconsolidated structured-entity exposure.**
-16. **Richardson, Sloan, Soliman & Tuna (2005)'s coefficients** (the RSST accrual decomposition) and **Hirshleifer et al.'s NOA magnitude** — direction and sample confirmed, numbers not.
+8. **Altman, Iwanicz-Drozdowska, Laitinen & Suvas (2017, JIFMA 28(2)) — RESOLVED at the coefficient level, still unverified for its own results.** The Z′/Z″/Z″-EM coefficient sets and the +3.25 constant's stated purpose are **now primary-verified from Altman's own 2000 text** (see §3). The 2017 paper itself remains closed access, so its **sample period, firm counts and country-level AUCs are UNVERIFIED**; only its abstract-level claim of "AUC of about 75%, and exceptionally well for some (above 90%)" is available.
+9. **Shumway (2001)'s own accuracy figures** — the paper could not be accessed. Note the trap recorded in §3c: an AUC of 0.851 circulating against a "Shumway (2001)" label belongs to a thesis's own German replication. **Do not attribute it to Shumway.**
+10. **Begley, Ming & Watts (1996)'s exact error-rate pairs** (Altman 18.5%/25.1%; Ohlson 10.8%/26.6%) — second-hand via an Agarwal & Taffler footnote, found nowhere else. **Once-only.**
+11. **Beneish, Lee & Nichols (2013) versus its published critique** — both paywalled, dispute unresolved. **Do not ship an M-score return factor without reading both.**
+12. **All Greensill content** — only the report's identity (HC 723, 24 September 2021) is confirmed; the source sits behind a Cloudflare challenge.
+13. **All Enron SPE specifics**, including the widely repeated "3% outside equity" test and Chewco/JEDI mechanics, and the US-GAAP lease bright lines (~75% useful life / 90% fair value). Primary sources were blocked or were scans without text layers.
+14. **XBRL/iXBRL element-name strings — now partially RESOLVED, and the resolution is a warning.** The **Altman input tags were verified against the live EDGAR `companyconcept` API** (see §3a): `AssetsCurrent` and `LiabilitiesCurrent` return 404 for Deere, `RevenueFromContractWithCustomerExcludingAssessedTax` returns 404 for both Caterpillar and Deere, and `us-gaap:Ebit` does not exist at all. Tag names for the **other** markers in this report were assembled from source documents and prior knowledge and are **not yet verified** — `xbrl.fasb.org` returns HTTP 403 (Cloudflare) and `data.sec.gov` refuses plain automated fetches ("Undeclared Automated Tool"). **Validate each remaining tag against a live taxonomy before shipping.**
+15. **No measurable Z-score impact from IFRS 16** — the one on-topic paper that could be located was unreachable (DOAJ HTTP 403, journal host timed out), and the IFRS 16 literature measures leverage, assets and liabilities rather than Z. **No numeric Z-impact claim is made anywhere in this report.**
+16. **FASB primary sources** — `fasb.org` and `xbrl.fasb.org` return HTTP 403 to every request.
+17. **No source quantifying ASC 606's effect on revenue *levels* or on X5** — only tag churn (verified, §3a) and taxonomy-definition evidence.
+18. **No source quantifying IFRS 16's effect on Altman Z-scores specifically** — see item 15.
+19. **The Ohlson input tags were never probed** against the live API, so Ohlson's coverage is unknown — unlike Altman's, which is now measured.
+20. **No official UK rate of abridged or micro-entity filings** — so the share of UK filers for whom X3/X5 are legally absent (§3b) is characterised qualitatively, not quantified.
+21. **Whether the 2023 IAS 7 / IFRS 7 supplier-finance amendments create dedicated taxonomy elements** or only narrative text blocks.
+22. **A market-wide estimate of how much supply-chain finance flatters OCF or DSO**, and the frequency of the receivables-factoring distortion. Mechanism verified; magnitude not.
+23. **Any validated screen for SPV / unconsolidated structured-entity exposure.**
+24. **Richardson, Sloan, Soliman & Tuna (2005)'s coefficients** (the RSST accrual decomposition) and **Hirshleifer et al.'s NOA magnitude** — direction and sample confirmed, numbers not.
+25. **Hillegeist et al. (2004)'s own BSM-Prob specification** is not reproduced here — only its relative performance (pseudo-R² 0.12 vs 0.07 for Z). The market-based model is **not implementable from annual XBRL data anyway**, since it requires equity volatility and debt structure, which is precisely the point of the comparison.
 
 **Note on the RSST accrual specification**, since it is often confused with Sloan's: Sloan (1996) uses the **balance-sheet** form `Oa = (ΔCA − ΔCash) − (ΔCL − ΔSTDebt − ΔTaxPayable) − Depreciation`. Richardson et al. (2005) use a **broader, three-part** form `Ta = ΔWc + ΔNco + ΔFin`, where `Coa = CA − Cash`, `Col = CL − DebtInCurrentLiabilities`, `Nca = TotalAssets − CA − InvestmentsAndAdvances`, `Ncl = TotalLiabilities − CL − LongTermDebt`, `Fna = ShortTermInvestments + LongTermInvestments`, `Fnl = LongTermDebt + DebtInCurrentLiabilities + PreferredStock`. **The two are not interchangeable** — the RSST version captures long-term operating accruals that Sloan's omits, and that is why it is the specification used in the Dechow F-score.
 

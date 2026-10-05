@@ -191,6 +191,27 @@ modern, service-heavy, lease-heavy listed company the original Z is a poor fit �
 it needs market capitalisation, it was fitted to manufacturers, and it predates
 IFRS 16 by fifty years.
 
+*And the out-of-sample evidence is worse than the caveat above suggests.* On 78,100
+firm-years with 756 bankruptcies (1980–2000, Hillegeist and co-authors), the
+Z-score's pseudo-R² was **0.07** against 0.12 for a market-based alternative — and,
+more damagingly, **three of its five inputs were statistically insignificant**
+(working capital/assets, retained earnings/assets and sales/assets). Re-estimating
+the coefficients made it *worse*, not better. At the population level (Agarwal &
+Taffler, US non-financial listed, 1988–2003) **47% of firms sat below the cutoff
+while 19% of firms entering Chapter 11 sat above it** — it flags half the market
+and still misses a fifth of the failures.
+
+*One refinement against the tidier story.* "The model has decayed" is too simple.
+Altman's own Type I accuracy in 1997–99 was still ~94%, as good as 1968, while
+Type II error rose to 15–20%. So the failure mode is **over-flagging healthy
+firms**, not missing collapses. That is the safer error for a research tool to
+make, and it is still an error.
+
+**What this means here:** display the inputs, and do not rank on the score. The
+Z'' variant is the one to use if any is, and Altman's own argument for it is that
+it tolerates *un*-capitalised leases — which is an independent reason to prefer it
+on pre-2019 or cross-border data.
+
 **Beneish M-score** (1999, eight variables, predicting earnings manipulation):
 ```
 M = −4.84 + 0.920·DSRI + 0.528·GMI + 0.404·AQI + 0.892·SGI
@@ -750,9 +771,12 @@ tool with annual/interim accounts and no paid data.
 2. **Piotroski's nine checks, displayed as nine checks.** Not a score out of nine —
    the individual answers are the value, and they are all verifiable against the
    accounts by the reader.
-3. **Altman Z'' and Beneish M (5-variable), as within-sector rankings with their
-   inputs shown.** Never colour-coded, never a verdict, always with the caveat that
-   a flag means "read this" and not "this is fraud".
+3. **Beneish M (5-variable), as a within-sector ranking with its inputs shown.**
+   Never colour-coded, never a verdict, always with the caveat that a flag means
+   "read this" and not "this is fraud". **Altman is demoted from this slot**: three
+   of its five inputs are statistically insignificant on a modern population and it
+   flags 47% of listed firms while missing 19% of failures, so its *inputs* belong
+   on the page and its score does not belong in a ranking.
 4. **Receivables and inventory drift relative to revenue.** Cheap, diagnosis-first,
    and the earliest visible symptom of the failure mode that matters.
 5. **Filing events: auditor change, restatement, going-concern, policy change.**
