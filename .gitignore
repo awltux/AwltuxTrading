@@ -46,6 +46,7 @@ _tmp/
 .pdftools/
 _news_pdfs/
 papers/
+research/
 pylibs/
 wtmp/
 _*.py
