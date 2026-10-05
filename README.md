@@ -62,6 +62,24 @@ open http://localhost:8080
 The dashboard is bound to `127.0.0.1` only. It shows your holdings and has no
 authentication, so it must not be exposed on a network.
 
+### Updating a running deployment
+
+```bash
+docker compose up -d --build     # rebuild AND recreate
+```
+
+**`docker build` on its own does not update a running container, and neither does
+`docker compose up -d` without `--build`** — the latter reuses whatever image is
+already tagged locally. Rebuilding four times and restarting nothing leaves the
+dashboard on old code while every check against the *image* passes. That is not
+hypothetical: it produced two separate bug investigations here, one of which was
+recorded as a template error that had in fact been fixed a version earlier.
+
+To tell what you are actually running, open **Info** in the navigation: it reports
+the commit the *running process* was built from, and whether the tree was clean
+when it was captured. If the page is not there, the deployment is older than the
+page — which is itself the answer.
+
 ### It works with no API keys at all
 
 With an empty `.env` the app still runs: it ingests whatever is available without

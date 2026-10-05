@@ -45,35 +45,46 @@ fell back — but `classify_headline` asks for `max_tokens=500` while a verbose
 Worth either raising the cap, or asking for less prose, or retrying once with the
 `reasoning` field dropped.
 
-### P1 — Recommendations page returns `'engine_label' is undefined`
+### P1 — A stale container is indistinguishable from a code bug
 
-Reported from a running instance:
+**Diagnosed 2026-10-05, and it was never a code bug.** The recommendation page's
+`'engine_label' is undefined` and the missing Info menu item had the same cause and
+it was not in the source: the running container predated both fixes.
 
-```json
-{"ok":false,"error":"UndefinedError","detail":"'engine_label' is undefined"}
+```
+container awltux-trading  image 496a71dc5da1  created 12:30:12  up 2 hours
+image     awltux-trading:0.1.0                built   13:59:55  (different ID)
+
+GET /dashboard on the running container -> {"ok":false,"error":"UndefinedError",
+                                            "detail":"'engine_label' is undefined"}
+GET /info      on the running container -> 404
+
+same image as a throwaway container, with demo rows seeded:
+GET /dashboard -> 200, renders, Info link present
+GET /info      -> 200
 ```
 
-`src/awltux/web/templating.py` registers `engine_label` in **both**
-`env.filters` and `env.globals` (the global is the one that matters — it is called
-as a two-argument function at `dashboard.html:220`, and filter syntax cannot reach
-it). `tests/test_api.py::TestTemplatesRenderWithData` asserts exactly that and
-passes. So the source is correct, and something about the *running process* is not.
+`docker build` retags an image. It does not touch a running container, and
+`docker compose up -d` without `--build` reuses whatever image was already local —
+so the sequence "build four times, report 'image rebuilt', never recreate the
+container" leaves the user on old code while every check I ran passed, because
+those checks ran against the *image*, not the *deployment*.
 
-**Why it was not caught:** the helper is only reached inside the row loop. With an
-empty database the `{% else %}` branch renders and the call never happens — which
-is how the original bug survived a green suite, and why the container check in
-this session did not catch it either (that container had no decisions to show).
+**Why it matters more than the two symptoms:** the failure mode is silent and it
+cost two separate investigations, one of which I recorded as a suspected template
+bug. Any future "that's fixed" claim is worthless if the process being looked at is
+older than the fix.
 
-**Most likely cause:** the process under test predates the fix. Confirm before
-changing anything.
+**Done when:** the deploy step is explicit rather than implied. At minimum,
+`docker compose up -d --build` becomes the documented way to deploy, and the
+README says outright that building does not restart anything. Preferably the
+running container's image ID is compared against the current one somewhere the
+reader will see it — the **Info** page already reports its own commit, which is the
+detection mechanism; it simply has to be *deployed* before it can report that it
+was not deployed.
 
-**Discipline:** this is the second time a template error has been invisible to the
-suite, so fix the *detection* as well as the symptom.
-
-**Done when:** the failing instance's revision is identified from `/info`, the
-error is reproduced against a seeded database through uvicorn (not `TestClient`),
-and either the stale process is replaced or the real second code path is fixed.
-Add a regression test that renders every page with rows **and** without.
+**And note the irony worth remembering:** the first thing the Info page would have
+told us is that the deployment did not have the Info page.
 
 ### P1 — `universe_refresh` races `t212_instruments` at startup and selects nothing
 
