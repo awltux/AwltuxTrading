@@ -33,35 +33,15 @@ from awltux.llm.prompts import (
     FILING_SUMMARY_SYSTEM,
     prompt_fingerprint,
 )
+from awltux.metrics import EXTRACTABLE_METRICS
 
 logger = logging.getLogger(__name__)
 
 #: Canonical metric names the valuation model reads. An extraction that invents a
 #: key outside this set is discarded, because the model would read it as missing.
-CANONICAL_METRICS = frozenset(
-    {
-        "revenue",
-        "gross_profit",
-        "operating_income",
-        "net_income",
-        "ebitda",
-        "eps_diluted",
-        "total_assets",
-        "total_liabilities",
-        "total_equity",
-        "total_debt",
-        "cash_and_equivalents",
-        "operating_cash_flow",
-        "capex",
-        "free_cash_flow",
-        "dividends_paid",
-        "shares_outstanding",
-        "dividend_per_share",
-        "interest_expense",
-        "current_liabilities",
-        "current_assets",
-    }
-)
+#: Defined in :mod:`awltux.metrics` so the prompt, the provider mapping and this
+#: gate are one list rather than three that have to agree.
+CANONICAL_METRICS = EXTRACTABLE_METRICS
 
 EXTRACTION_PURPOSE = "filing_extraction"
 SUMMARY_PURPOSE = "filing_summary"
@@ -92,6 +72,8 @@ class ExtractionResult:
     quality_notes: list[str] = field(default_factory=list)
     risk_factors: list[str] = field(default_factory=list)
     accounting_policy_changes: list[str] = field(default_factory=list)
+    auditor: dict[str, Any] | None = None
+    restatement: dict[str, Any] | None = None
     going_concern_language: dict[str, Any] | None = None
     guidance: dict[str, Any] | None = None
     reporting_currency: str | None = None
@@ -112,14 +94,42 @@ class ExtractionResult:
     def metric_values(self) -> dict[str, float]:
         return {name: metric.value for name, metric in self.metrics.items()}
 
+    @property
+    def filing_events(self) -> list[str]:
+        """The discrete, checkable events this filing disclosed.
+
+        These are the strongest evidence a filing carries, because each one is a
+        statement a professional was obliged to make rather than a ratio we
+        inferred. They are returned as plain sentences so they can go straight
+        into a red-flag list without any further interpretation.
+        """
+        events: list[str] = []
+        if self.auditor:
+            if self.auditor.get("resigned"):
+                events.append("auditor resigned")
+            if self.auditor.get("changed"):
+                events.append("auditor changed from the prior year")
+            if self.auditor.get("qualified"):
+                events.append("audit opinion was qualified")
+        if self.restatement and self.restatement.get("present"):
+            events.append("prior-period figures were restated")
+        if self.going_concern_language and self.going_concern_language.get("present"):
+            events.append("going-concern language present")
+        for change in self.accounting_policy_changes:
+            events.append(f"accounting policy or estimate changed: {change}")
+        return events
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "metrics": self.metrics_for_storage,
             "quality_notes": self.quality_notes,
             "risk_factors": self.risk_factors,
             "accounting_policy_changes": self.accounting_policy_changes,
+            "auditor": self.auditor,
+            "restatement": self.restatement,
             "going_concern_language": self.going_concern_language,
             "guidance": self.guidance,
+            "filing_events": self.filing_events,
             "reporting_currency": self.reporting_currency,
             "units": self.units,
             "period_end": self.period_end,
@@ -138,6 +148,37 @@ def _as_float(value: Any) -> float | None:
     if not math.isfinite(number):
         return None
     return number
+
+
+def _event_flags(
+    payload: Any,
+    flags: tuple[str, ...],
+    label: str,
+    discarded: list[str],
+) -> dict[str, Any] | None:
+    """Validate a discrete filing event, and require a citation for it.
+
+    An event is kept only when the document's own words come with it. A model that
+    reports ``qualified: true`` and no span has made an assertion, and the whole
+    point of this module is that an assertion is not evidence. The event is
+    dropped and the drop is recorded, so a missing citation is visible rather than
+    looking like the filing was silent.
+
+    These are the highest-value items in an extraction -- an auditor resignation
+    or a restatement is a statement by a professional obliged to make it, which is
+    far stronger than any ratio we could compute -- so they are held to the
+    strictest citation rule rather than a looser one.
+    """
+    if not isinstance(payload, dict):
+        return None
+    stated = {name: bool(payload.get(name)) for name in flags}
+    if not any(stated.values()):
+        return None
+    span = (_text(payload.get("span")) or "").strip()
+    if len(span) < MIN_SPAN_CHARS:
+        discarded.append(f"{label}: claimed with no quoted span to support it")
+        return None
+    return {**stated, "span": span[:500]}
 
 
 def validate_extraction(payload: dict[str, Any]) -> ExtractionResult:
@@ -189,18 +230,28 @@ def validate_extraction(payload: dict[str, Any]) -> ExtractionResult:
     result.risk_factors = _string_list(payload.get("risk_factors"))
     result.accounting_policy_changes = _string_list(payload.get("accounting_policy_changes"))
 
-    going_concern = payload.get("going_concern_language")
-    if isinstance(going_concern, dict):
-        result.going_concern_language = {
-            "present": bool(going_concern.get("present")),
-            "span": _text(going_concern.get("span")),
-        }
+    result.auditor = _event_flags(
+        payload.get("auditor"), ("changed", "qualified", "resigned"), "auditor", result.discarded
+    )
+    result.restatement = _event_flags(
+        payload.get("restatement"), ("present",), "restatement", result.discarded
+    )
+    result.going_concern_language = _event_flags(
+        payload.get("going_concern_language"),
+        ("present",),
+        "going_concern_language",
+        result.discarded,
+    )
 
     guidance = payload.get("guidance")
     if isinstance(guidance, dict):
         result.guidance = {
             "stated": bool(guidance.get("stated")),
-            "summary": _text(guidance.get("summary")),
+            # Named for what it is. Published midpoints sit below management's own
+            # expectation more often than not, so calling this "expectation" would
+            # assert something the document does not say.
+            "midpoint_as_published": _text(guidance.get("midpoint_as_published")),
+            "span": _text(guidance.get("span")),
         }
 
     if result.injection_suspected:

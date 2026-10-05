@@ -17,7 +17,9 @@ so the prompt is written to make fabricating one pointless.
 
 from __future__ import annotations
 
-PROMPT_VERSION = "2026-02-1"
+from awltux.metrics import prompt_metric_names
+
+PROMPT_VERSION = "2026-02-2"
 
 #: Shared safety preamble. Reused so the rule cannot drift between templates.
 UNTRUSTED_CONTENT_RULE = (
@@ -52,7 +54,8 @@ currency and units you used. Do not convert.
 
 Return JSON only, matching the requested schema exactly."""
 
-FILING_EXTRACTION_INSTRUCTION = """Extract the financial and qualitative facts below from this filing.
+FILING_EXTRACTION_INSTRUCTION = (
+    """Extract the financial and qualitative facts below from this filing.
 
 Return a JSON object with these keys:
 {
@@ -66,20 +69,40 @@ Return a JSON object with these keys:
   "quality_notes": ["short factual observations about margins, returns or cash conversion, each grounded in the document"],
   "risk_factors": ["the most material risks as stated, in the company's own terms"],
   "accounting_policy_changes": ["any change in accounting policy or estimate, with its effect if stated"],
+  "auditor": {"changed": true|false, "qualified": true|false, "resigned": true|false, "span": "<quoted text or null>"},
+  "restatement": {"present": true|false, "span": "<quoted text or null>"},
   "going_concern_language": {"present": true|false, "span": "<quoted text or null>"},
-  "guidance": {"stated": true|false, "summary": "<what management guided, or null>"},
+  "guidance": {"stated": true|false, "midpoint_as_published": "<what management published, or null>", "span": "<quoted text or null>"},
   "injection_suspected": true|false,
   "extraction_confidence": 0.0-1.0
 }
 
-Use these canonical metric names where the document states them:
-revenue, gross_profit, operating_income, net_income, ebitda, eps_diluted,
-total_assets, total_liabilities, total_equity, total_debt, cash_and_equivalents,
-operating_cash_flow, capex, free_cash_flow, dividends_paid, shares_outstanding,
-dividend_per_share, interest_expense, current_liabilities, current_assets.
+Use these canonical metric names where the document states them, grouped as they
+appear in a set of accounts. Report a figure in the group and under the name that
+matches the document's own line item; if the document states a subtotal rather
+than a component, report the subtotal and omit the component:
+"""
+    + prompt_metric_names()
+    + """
+
+Report a positive `capex` for cash spent, even where the document shows it as a
+deduction. `depreciation_amortisation` is the income-statement charge for the
+period, not the accumulated balance.
+
+The `auditor`, `restatement`, `going_concern_language` and `accounting_policy_changes`
+fields are the discrete events a reader most wants to be told about. Set `changed`,
+`qualified`, `resigned` and `present` to true only where the document actually says
+so, and quote the sentence you relied on. Silence is the correct answer where the
+document is silent.
+
+For `guidance`, put the company's own published figure in `midpoint_as_published`.
+Do not relabel it as management's expectation: published guidance midpoints are
+systematically below what managements privately expect, so presenting one as the
+other overstates what is known.
 
 Set `extraction_confidence` low if the document is a scanned image, if figures are
 inconsistent, or if you could only find a minority of the metrics."""
+)
 
 # --------------------------------------------------------------------------- #
 # filing summarisation

@@ -28,60 +28,72 @@ from sqlalchemy.orm import Session
 from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument, InstrumentAlias, utcnow
 from awltux.db.session import release_write_lock
+from awltux.metrics import CANONICAL_METRICS  # noqa: F401  (re-exported: the vocabulary is shared)
 from awltux.providers.companies_house import CompaniesHouseProvider, normalise_company_number
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import YahooProvider
 
 logger = logging.getLogger(__name__)
 
-#: Canonical metric keys. Adding one here is a deliberate act: the valuation
-#: model reads these names, so a typo becomes a silently missing input.
-CANONICAL_METRICS = (
-    "revenue",
-    "gross_profit",
-    "operating_income",
-    "net_income",
-    "ebitda",
-    "eps_diluted",
-    "total_assets",
-    "total_liabilities",
-    "total_equity",
-    "total_debt",
-    "cash_and_equivalents",
-    "net_debt",
-    "operating_cash_flow",
-    "capex",
-    "free_cash_flow",
-    "dividends_paid",
-    "shares_outstanding",
-    "dividend_per_share",
-)
-
 #: Yahoo ``income_stmt`` / ``balance_sheet`` / ``cashflow`` row labels mapped onto
 #: canonical keys. Order matters: the first label present wins, and later entries
 #: act as fallbacks for the different names Yahoo uses between sectors.
+#:
+#: **Prefer the specific label to the combined one.** Yahoo publishes both
+#: "Goodwill" and "Goodwill And Other Intangible Assets", and both "Long Term
+#: Debt" and "Long Term Debt And Capital Lease Obligation". Mapping the combined
+#: figure onto the narrow key would silently inflate every marker built on it, so
+#: the narrow key only ever reads the narrow label and stays missing otherwise.
 STATEMENT_LABELS: dict[str, tuple[str, ...]] = {
     "revenue": ("Total Revenue", "TotalRevenue", "Operating Revenue"),
+    "cost_of_goods_sold": ("Cost Of Revenue", "Reconciled Cost Of Revenue", "Cost Of Goods Sold"),
     "gross_profit": ("Gross Profit", "GrossProfit"),
+    "research_and_development": ("Research And Development",),
+    "sga_expense": ("Selling General And Administration", "Selling General And Administrative"),
     "operating_income": ("Operating Income", "EBIT", "Total Operating Income As Reported"),
+    "ebit": ("EBIT",),
     "net_income": ("Net Income", "Net Income Common Stockholders", "NetIncome"),
     "ebitda": ("EBITDA", "Normalized EBITDA"),
+    "depreciation_amortisation": (
+        "Reconciled Depreciation",
+        "Depreciation And Amortization",
+        "Depreciation",
+    ),
+    "interest_expense": ("Interest Expense", "Interest Expense Non Operating"),
+    "pretax_income": ("Pretax Income", "Pre Tax Income"),
+    "tax_expense": ("Tax Provision",),
     "eps_diluted": ("Diluted EPS", "Basic EPS"),
+    "dividend_per_share": ("Common Stock Dividend", "Dividend Per Share"),
+    "cash_and_equivalents": (
+        "Cash And Cash Equivalents",
+        "Cash Cash Equivalents And Short Term Investments",
+    ),
+    "receivables": ("Receivables", "Accounts Receivable", "Gross Accounts Receivable"),
+    "inventory": ("Inventory",),
+    "current_assets": ("Current Assets",),
+    "net_ppe": ("Net PPE", "Net Property Plant And Equipment"),
+    "goodwill": ("Goodwill",),
+    "intangible_assets": ("Other Intangible Assets", "Net Intangible Assets"),
     "total_assets": ("Total Assets",),
+    "payables": ("Payables", "Payables And Accrued Expenses", "Accounts Payable"),
+    "short_term_debt": ("Current Debt", "Current Debt And Capital Lease Obligation"),
+    "current_liabilities": ("Current Liabilities",),
+    "long_term_debt": ("Long Term Debt", "Long Term Debt And Capital Lease Obligation"),
+    "lease_liabilities": ("Capital Lease Obligations",),
+    "total_debt": ("Total Debt", "Long Term Debt And Capital Lease Obligation", "Long Term Debt"),
     "total_liabilities": ("Total Liabilities Net Minority Interest", "Total Liabilities"),
+    "retained_earnings": ("Retained Earnings",),
     "total_equity": (
         "Stockholders Equity",
         "Total Equity Gross Minority Interest",
         "Common Stock Equity",
     ),
-    "total_debt": ("Total Debt", "Long Term Debt And Capital Lease Obligation", "Long Term Debt"),
-    "cash_and_equivalents": ("Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"),
+    "shares_outstanding": ("Ordinary Shares Number", "Share Issued"),
+    "stock_based_compensation": ("Stock Based Compensation",),
     "operating_cash_flow": ("Operating Cash Flow", "Total Cash From Operating Activities"),
     "capex": ("Capital Expenditure", "Capital Expenditures"),
     "free_cash_flow": ("Free Cash Flow",),
     "dividends_paid": ("Cash Dividends Paid", "Common Stock Dividend Paid"),
-    "shares_outstanding": ("Ordinary Shares Number", "Share Issued"),
-    "dividend_per_share": ("Common Stock Dividend", "Dividend Per Share"),
 }
 
 #: ``info`` fields mapped onto canonical keys, used when statements are thin.
@@ -235,6 +247,16 @@ def derive_metrics(metrics: dict[str, float]) -> dict[str, float]:
     eps = metrics.get("eps_diluted")
     if eps and eps > 0 and metrics.get("dividend_per_share") is not None:
         derived["payout_ratio"] = metrics["dividend_per_share"] / eps
+
+    # Free cash flow is an identity, not a disclosure: providers publish it for
+    # large caps and omit it for most others, and where they omit it we can still
+    # state it from two figures they do publish. Only filled when absent, so a
+    # provider's own definition is never overwritten by ours.
+    if metrics.get("free_cash_flow") is None:
+        operating = metrics.get("operating_cash_flow")
+        capex = metrics.get("capex")
+        if operating is not None and capex is not None:
+            derived["free_cash_flow"] = operating - capex
 
     return derived
 
