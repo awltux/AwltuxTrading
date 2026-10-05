@@ -28,6 +28,7 @@ from awltux.db import (
     SentimentSeries,
     ValuationRun,
 )
+from awltux.timezones import utc_today
 
 SortKey = Literal[
     "composite_score", "short_term_score", "margin_of_safety", "confidence",
@@ -493,7 +494,7 @@ def recent_news(
 
 def sector_sentiment(session: Session, *, days: int = 30) -> dict[str, list[dict[str, Any]]]:
     """Sector sentiment time series, keyed by sector, newest last."""
-    cutoff = dt.date.today() - dt.timedelta(days=days)
+    cutoff = utc_today() - dt.timedelta(days=days)
     rows = session.execute(
         select(SentimentSeries)
         .where(SentimentSeries.scope_type == "sector")

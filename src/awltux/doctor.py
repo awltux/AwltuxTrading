@@ -637,6 +637,38 @@ def run_diagnosis(settings: Settings | None = None, *, live: bool = True) -> Dia
         "priority: " + ", ".join(settings.decision.engine_priority),
     )
 
+    # --- time zones ---------------------------------------------------------
+    # zoneinfo reads the IANA database from the system or the `tzdata` package.
+    # Without it every lookup fails, the display zone silently collapses to UTC,
+    # and the only symptom is that readers in other zones see the wrong clock on
+    # every timestamp. A silent degradation is worth a check of its own.
+    from awltux.timezones import known_zones, parse_zone
+
+    zones = known_zones()
+    configured_zone = parse_zone(settings.app.timezone)
+    if len(zones) <= 1:
+        diagnosis.add(
+            "time_zones",
+            "warn",
+            "no IANA time zone database found; every time is shown in UTC",
+            "Install the `tzdata` package or the system tzdata, or accept UTC display.",
+        )
+    elif configured_zone is None:
+        diagnosis.add(
+            "time_zones",
+            "warn",
+            f"{len(zones)} zones available, but app.timezone "
+            f"{settings.app.timezone!r} is not one of them",
+            "Fix app.timezone in config/config.yaml; UTC is being used instead.",
+        )
+    else:
+        diagnosis.add(
+            "time_zones",
+            "ok",
+            f"{len(zones)} zones available; default display zone "
+            f"{settings.app.timezone}",
+        )
+
     if not live:
         return diagnosis
 

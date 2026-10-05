@@ -29,6 +29,7 @@ from awltux.analysis.technical import volatility
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, PriceBar, SentimentSeries, utcnow
 from awltux.db.session import release_write_lock
+from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,7 @@ def aggregate_all(
 ) -> dict[str, Any]:
     """Recompute today's sentiment series for every instrument and sector."""
     settings = settings or get_settings()
-    today = dt.date.today()
+    today = utc_today()
     now = utcnow()
 
     instruments = session.execute(

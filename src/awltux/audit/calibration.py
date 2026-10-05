@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from awltux.db import DecisionOutcome, DecisionRun, Instrument, PriceBar, utcnow
+from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ def score_pending_decisions(session: Session, *, limit: int = 2000) -> dict[str,
     A decision is only scored once the horizon has actually elapsed and a bar
     exists at or after it, so no outcome is ever computed from a partial window.
     """
-    today = dt.date.today()
+    today = utc_today()
     scored = 0
     skipped_no_price = 0
 

@@ -47,6 +47,12 @@
       Free-tier coverage is unofficial and may be delayed, incomplete or wrong.
       Every figure is labelled with its source and the time it was observed.
     </p>
+    {# Which clock the times above are on. Stored values are always UTC; this is
+       the zone they are being shown in, and it is stated rather than assumed. #}
+    <p class="muted small">
+      Times are shown in <strong>{{ display_zone_note() }}</strong>, set from your
+      browser. Everything is stored in UTC.
+    </p>
   </footer>
 </body>
 </html>

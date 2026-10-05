@@ -30,6 +30,7 @@ from urllib.parse import quote_plus, urlparse, urlunparse
 
 from awltux.config import Settings, get_settings
 from awltux.providers.http import HttpClient, ProviderError
+from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ class FinnhubNewsProvider:
         if not self.configured:
             return []
         token = self.settings.env.require("Finnhub", "finnhub_api_key")
-        today = dt.date.today()
+        today = utc_today()
         try:
             payload = self._client.get_json(
                 "/company-news",

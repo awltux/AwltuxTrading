@@ -1,11 +1,48 @@
 /* AwltuxTrading dashboard behaviour.
  *
- * Only the three things the server cannot do: consume the live news stream,
- * draw the price sparkline, and trigger a job. Everything else -- sorting,
- * filtering, paging -- is a plain URL so it works without this file.
+ * Only the things the server cannot do: consume the live news stream, draw the
+ * price sparkline, trigger a job, and tell the server which clock the reader is
+ * on. Everything else -- sorting, filtering, paging -- is a plain URL so it works
+ * without this file.
  */
 (function () {
   "use strict";
+
+  // ----------------------------------------------------------- display zone
+  // The server has no idea what clock the reader is on, and guessing from an IP
+  // address or a language header is wrong often enough to matter. So the browser
+  // states it once, in a cookie, and every rendered time is then correct --
+  // including after the reader travels or the clocks change.
+  var ZONE_COOKIE = "awltux_tz";
+
+  function cookieValue(name) {
+    var match = document.cookie.match(new RegExp("(?:^|;\\s*)" + name + "=([^;]*)"));
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function syncDisplayZone() {
+    try {
+      if (!window.Intl || !Intl.DateTimeFormat) return;
+      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (!zone || cookieValue(ZONE_COOKIE) === zone) return;
+
+      // Only reload once per detected zone. If cookies are blocked the cookie
+      // will never stick, and without this guard the page would reload forever.
+      var asked = null;
+      try { asked = window.sessionStorage.getItem("awltux_tz_asked"); } catch (e) { /* private mode */ }
+      if (asked === zone) return;
+      try { window.sessionStorage.setItem("awltux_tz_asked", zone); } catch (e) { /* private mode */ }
+
+      document.cookie = ZONE_COOKIE + "=" + encodeURIComponent(zone) +
+        ";path=/;max-age=31536000;SameSite=Lax";
+      window.location.reload();
+    } catch (e) {
+      // No Intl, no storage, or a hostile environment: the server-rendered zone
+      // stays, and it is labelled on the page, so nothing is ambiguous.
+    }
+  }
+
+  syncDisplayZone();
 
   // ------------------------------------------------------------- news ticker
   var MAX_TICKER_ITEMS = 40;

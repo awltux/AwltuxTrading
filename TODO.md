@@ -18,6 +18,33 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
+### P2 — `awltux serve` does not migrate, so a local run breaks on an older database
+
+The container runs `python -m awltux.cli migrate && python -m awltux.cli serve`, but
+`serve` on its own only calls `init_db`, which creates missing tables and never
+alters existing ones. Running it against a database from a previous version
+therefore fails at the first query with a raw
+``no such column: news_item.event_type`` — an error that names the symptom and not
+the cause, and one that the deployment path never sees.
+
+**Done when:** `serve` either migrates on startup like the container does, or
+refuses to start with a message saying the schema is behind and naming the
+command that fixes it.
+
+### P2 — A DeepSeek classification response was truncated and failed to parse
+
+Observed on 2026-10-05 in the demo database's decision narrative:
+
+```
+deepseek: model did not return valid JSON: Unterminated string starting at: line 1 column 4146
+```
+
+The degradation is correct — the item was stored unclassified and the decision
+fell back — but `classify_headline` asks for `max_tokens=500` while a verbose
+`reasoning` field can overrun it, and a truncated response is thrown away whole.
+Worth either raising the cap, or asking for less prose, or retrying once with the
+`reasoning` field dropped.
+
 ### P1 — Recommendations page returns `'engine_label' is undefined`
 
 Reported from a running instance:

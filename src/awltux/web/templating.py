@@ -13,6 +13,8 @@ from typing import Any
 
 from fastapi.templating import Jinja2Templates
 
+from awltux.timezones import as_utc, current_zone_name, current_zone_note, format_moment, zone_label
+
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
@@ -54,6 +56,11 @@ def fmt_ratio(value: Any, decimals: int = 2) -> str:
 
 
 def fmt_datetime(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Render a stored (UTC) timestamp in the viewer's zone, labelled with it.
+
+    The label is not decoration. "14:32" is a different instant in London and in
+    New York, and a dashboard screenshot outlives the session that produced it.
+    """
     if value is None:
         return "\u2014"
     if isinstance(value, str):
@@ -62,16 +69,18 @@ def fmt_datetime(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
         except ValueError:
             return value
     if isinstance(value, dt.datetime):
-        if value.tzinfo is not None:
-            value = value.astimezone(dt.UTC)
-        return value.strftime(fmt)
+        return format_moment(value, fmt)
     if isinstance(value, dt.date):
         return value.strftime("%Y-%m-%d")
     return str(value)
 
 
 def fmt_ago(value: Any) -> str:
-    """Human-readable age, e.g. "3h ago". Used for the freshness column."""
+    """Human-readable age, e.g. "3h ago". Used for the freshness column.
+
+    Deliberately zone-free: an elapsed duration is the same number of seconds
+    wherever it is read from, so putting a clock on it would be noise.
+    """
     if value is None:
         return "never"
     if isinstance(value, str):
@@ -81,7 +90,8 @@ def fmt_ago(value: Any) -> str:
             return value
     if not isinstance(value, dt.datetime):
         return "\u2014"
-    when = value if value.tzinfo else value.replace(tzinfo=dt.UTC)
+    when = as_utc(value)
+    assert when is not None
     seconds = (dt.datetime.now(dt.UTC) - when).total_seconds()
     if seconds < 0:
         return "just now"
@@ -93,7 +103,7 @@ def fmt_ago(value: Any) -> str:
         return f"{int(seconds // 3600)}h ago"
     if seconds < 2592000:
         return f"{int(seconds // 86400)}d ago"
-    return when.strftime("%Y-%m-%d")
+    return format_moment(when, "%Y-%m-%d")
 
 
 def action_class(action: str | None) -> str:
@@ -175,6 +185,12 @@ def create_templates() -> Jinja2Templates:
             # `engine_label(engine, uncalibrated)` because it takes two arguments,
             # and a filter-style call would raise `'engine_label' is undefined`.
             "engine_label": engine_label,
+            # Which clock the times on this page are rendered in. A function, not a
+            # value, so it is resolved at render time from the request's context
+            # rather than fixed when the environment was built.
+            "display_zone": current_zone_name,
+            "display_zone_note": current_zone_note,
+            "zone_label": zone_label,
             "disclaimer": (
                 "Advisory tooling for personal research only. Not financial advice. "
                 "Free-tier market data is unofficial and may be delayed or wrong."

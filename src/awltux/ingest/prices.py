@@ -13,7 +13,6 @@ Two rules the rest of the app relies on:
 
 from __future__ import annotations
 
-import datetime as dt
 import logging
 from dataclasses import dataclass, field
 from statistics import median
@@ -28,6 +27,7 @@ from awltux.db import Instrument, PriceBar, Quote, utcnow
 from awltux.db.session import release_write_lock
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import BarSeries, YahooProvider
+from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -429,4 +429,4 @@ def freshness_seconds(session: Session, ticker: str) -> float | None:
     bar = latest_bar(session, ticker)
     if bar is None:
         return None
-    return (dt.date.today() - bar.date).total_seconds()
+    return (utc_today() - bar.date).total_seconds()

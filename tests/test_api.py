@@ -489,6 +489,69 @@ class TestNewsQueries:
         ]
 
 
+class TestDisplayZone:
+    """Store UTC, show the reader's clock.
+
+    The zone is resolved by ASGI middleware into a ``ContextVar`` that the
+    template filters read. That is the part worth testing through a real request:
+    a ``ContextVar`` set around an ASGI call has to survive into the threadpool a
+    synchronous endpoint runs in, and if it does not, every page silently falls
+    back to the configured zone while looking like it works.
+    """
+
+    def test_without_a_cookie_the_configured_zone_is_used(self, client):
+        body = client.get("/dashboard").text
+        # config/config.yaml sets app.timezone to Europe/London.
+        assert "Europe/London" in body
+        assert "Times are shown in" in body
+
+    def test_the_reader_cookie_selects_the_rendered_zone(self, client):
+        client.cookies.set("awltux_tz", "America/New_York")
+        try:
+            body = client.get("/dashboard").text
+            assert "America/New_York" in body
+            assert "Europe/London" not in body
+        finally:
+            client.cookies.clear()
+
+    def test_an_invalid_cookie_falls_back_rather_than_failing(self, client):
+        client.cookies.set("awltux_tz", "Mars/Olympus_Mons")
+        try:
+            response = client.get("/dashboard")
+            assert response.status_code == 200
+            assert "Europe/London" in response.text
+        finally:
+            client.cookies.clear()
+
+    def test_a_hostile_cookie_cannot_reach_the_filesystem(self, client):
+        client.cookies.set("awltux_tz", "../../etc/passwd")
+        try:
+            response = client.get("/dashboard")
+            assert response.status_code == 200
+            assert "passwd" not in response.text
+        finally:
+            client.cookies.clear()
+
+    def test_the_zone_does_not_leak_between_requests(self, client):
+        client.cookies.set("awltux_tz", "Asia/Kolkata")
+        try:
+            assert "Asia/Kolkata" in client.get("/dashboard").text
+        finally:
+            client.cookies.clear()
+        # The next request, without the cookie, must be back on the configured zone.
+        assert "Europe/London" in client.get("/dashboard").text
+
+    def test_every_page_states_its_zone(self, client):
+        for path in ("/dashboard", "/sectors", "/jobs", "/calibration", "/info"):
+            body = client.get(path).text
+            assert "Times are shown in" in body, path
+
+    def test_api_timestamps_are_iso_utc(self, client):
+        """The API is machine-facing: an unambiguous instant, never a local string."""
+        body = client.get("/api/health").json()
+        assert body["ok"] is True
+
+
 class TestNewsScepticismSurface:
     """The appraisal has to reach the reader, not just the database.
 

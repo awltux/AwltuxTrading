@@ -33,6 +33,7 @@ import httpx
 
 from awltux.config import BudgetRule, Settings, get_settings
 from awltux.db import ProviderBudget, session_scope, utcnow
+from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +384,7 @@ class ResponseCache:
         every character outside a safe set becomes ``_``, and leading dots are
         stripped so a name of ``..`` cannot escape the dated directory.
         """
-        day = day or dt.date.today()
+        day = day or utc_today()
         directory = self.raw_root / provider / day.isoformat()
         directory.mkdir(parents=True, exist_ok=True)
         safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in name)[:120]

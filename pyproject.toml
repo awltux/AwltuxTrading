@@ -34,6 +34,11 @@ dependencies = [
     "numpy>=1.26",
     # scheduling
     "apscheduler>=3.10",
+    # The IANA time zone database. Declared rather than assumed: `zoneinfo` looks
+    # for it on the system, and a slim container image frequently has none -- at
+    # which point every zone lookup fails and the whole dashboard silently
+    # displays UTC while appearing to work.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

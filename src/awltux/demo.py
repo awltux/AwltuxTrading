@@ -39,6 +39,7 @@ from awltux.db import (
     SentimentSeries,
     utcnow,
 )
+from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ class SeedReport:
 
 def _trading_days(days: int) -> list[dt.date]:
     """Weekdays only, oldest first, ending yesterday."""
-    today = dt.date.today()
+    today = utc_today()
     out: list[dt.date] = []
     cursor = today - dt.timedelta(days=days)
     while cursor < today:
@@ -341,7 +342,8 @@ def _seed_instrument(
         report.bars += 1
 
     # --- accounts ------------------------------------------------------------
-    for offset, year in enumerate(range(dt.date.today().year - 3, dt.date.today().year)):
+    this_year = utc_today().year
+    for offset, year in enumerate(range(this_year - 3, this_year)):
         growth = 1.0 + 0.06 * offset
         revenue = spec.revenue * growth
         net_income = revenue * spec.net_margin
@@ -407,7 +409,7 @@ def _seed_instrument(
         SentimentSeries(
             scope_type="instrument",
             scope_id=spec.ticker,
-            date=dt.date.today(),
+            date=utc_today(),
             score=-0.15 if spec.annual_return < 0 else 0.25,
             article_count=2,
             components={"source": "demo"},

@@ -13,7 +13,7 @@ report health while the first ingest is still running.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -27,6 +27,7 @@ from awltux.logging_setup import configure_logging
 from awltux.providers.http import BudgetGuard
 from awltux.scheduler import SchedulerService
 from awltux.scheduler.registry import build_job_specs
+from awltux.timezones import ZONE_COOKIE, display_zone, resolve_zone
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +90,64 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
 
     _mount_static(app)
+    app.add_middleware(DisplayZoneMiddleware)
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
         return RedirectResponse(url="/dashboard")
 
     return app
+
+
+class DisplayZoneMiddleware:
+    """Resolve the viewer's time zone once per request.
+
+    Pure ASGI rather than ``BaseHTTPMiddleware`` on purpose: the latter runs the
+    downstream app in a separate task, and a ``ContextVar`` set around it is not
+    reliably visible to a *synchronous* endpoint running in the threadpool. Since
+    the whole point is that the templates can pick the zone up without being told,
+    the context has to survive into the worker thread -- which it does when the
+    middleware calls the app in its own context.
+
+    Nothing here touches the response. It only decides which clock the rendered
+    times will use, from the cookie the browser sets, the configured zone, or UTC
+    in that order.
+    """
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        configured = None
+        settings = getattr(scope.get("app"), "state", None)
+        settings = getattr(settings, "settings", None)
+        if settings is not None:
+            configured = settings.app.timezone
+
+        with display_zone(resolve_zone(_cookie(scope), configured)):
+            await self.app(scope, receive, send)
+
+
+def _cookie(scope) -> str | None:
+    """The zone cookie, read straight off the raw headers.
+
+    Read here rather than through ``Request`` because this runs before the router
+    and the value is needed for every response, including static files.
+    """
+    prefix = ZONE_COOKIE.encode() + b"="
+    for key, value in scope.get("headers") or ():
+        if key == b"cookie":
+            for part in value.split(b";"):
+                part = part.strip()
+                if part.startswith(prefix):
+                    from urllib.parse import unquote
+
+                    return unquote(part[len(prefix):].decode("latin-1"))
+    return None
 
 
 def _mount_static(app: FastAPI) -> None:

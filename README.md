@@ -282,6 +282,29 @@ with every check, and the evidence with source citations.
 A confidence score is only meaningful if it is measured. That page is what
 measures it.
 
+### Times: stored UTC, shown in your zone
+
+Every timestamp is **stored in UTC** — that is what `utcnow()` writes, and anything
+used as a storage key or a cutoff is derived from UTC too, because `date.today()`
+is today *here* and is wrong by a day for part of every day.
+
+Everything is **displayed in the reader's zone**. A timestamp rendered in UTC is
+correct and, for anyone not on UTC, misleading: "observed at 08:30" is a different
+fact in London and in New York. The browser reports its own zone once, in the
+`awltux_tz` cookie, and the server renders in it — including after the reader
+travels or the clocks change. With JavaScript off, the configured `app.timezone`
+is used.
+
+Every rendered time carries its zone label (`14:32 BST`, `09:32 EDT`, `14:32 UTC`),
+the footer states which zone the page is using, and no zone is ever guessed from an
+IP address or a language header. The JSON API returns ISO-8601 with an explicit
+offset, so a consumer can localise for itself.
+
+The IANA database is a declared dependency (`tzdata`) rather than an assumption
+about the host: a slim image without it would resolve no zones at all and quietly
+show UTC to everyone. `awltux doctor` reports the zone database and the configured
+zone so that failure is visible rather than silent.
+
 ---
 
 ## Dashboard
