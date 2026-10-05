@@ -41,16 +41,22 @@ pytest-cache-files-*/
 # committed. The canonical home for it is .tests-tmp/; these patterns exist
 # because a stray directory at the repo root should not be able to land in a
 # commit just because someone ran `git add -A`.
-.tmp/
-_tmp/
-.pdftools/
-_news_pdfs/
-papers/
-research/
-pylibs/
-wtmp/
-_*.py
-_wtest.txt
+#
+# ANCHORED with a leading slash, and that is not cosmetic. An unanchored
+# `research/` also matches `docs/research/`, which silently excluded nine of the
+# thirteen research reports from version control while `git status` reported a
+# clean tree -- clean because ignored, not because committed. Every pattern here
+# that names a generic word is anchored for that reason.
+/.tmp/
+/_tmp/
+/.pdftools/
+/_news_pdfs/
+/papers/
+/research/
+/pylibs/
+/wtmp/
+/_*.py
+/_wtest.txt
 *.pdf
 
 # editors / os
