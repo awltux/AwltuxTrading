@@ -277,6 +277,26 @@ class TestBlocking:
         statuses = {status.id: status for status in job_statuses(session, specs)}
         assert statuses["news_analysis"].never_ran == ["news_rss"]
 
+    def test_a_partially_covered_dependency_still_counts_as_produced(self, session, specs):
+        """"Not finished" and "empty" are different, and the live page conflated
+        them: it claimed a dependency had "nothing stored yet" while seventeen
+        decisions sat in the table. A dependency covering some of the universe has
+        plenty for its readers."""
+        for index in range(4):
+            session.add(make_instrument(f"T{index}_US_EQ", in_universe=True))
+        session.flush()
+        # One instrument of four has a decision; the job is nowhere near finished.
+        session.add(_decision("T0_US_EQ"))
+        session.flush()
+
+        statuses = {status.id: status for status in job_statuses(session, specs)}
+        decision = statuses["decision"]
+        assert decision.outstanding == 3, "not finished"
+        assert decision.produced is True, "but not empty"
+        # calibration depends on decision *and* price_eod; the decision half must
+        # not be reported as blocking.
+        assert "decision" not in statuses["calibration"].never_ran
+
     def test_a_dependency_that_ran_successfully_does_not_block(self, session, specs):
         session.add(make_instrument("A_US_EQ", in_universe=True))
         session.add(IngestRun(job="t212_instruments", ok=True))
@@ -318,7 +338,15 @@ class TestBlocking:
         status = job_statuses(session, specs)[0]
         payload = status.as_dict()
         assert payload["job"] == status.id
-        assert set(payload) == {"job", "needs", "never_ran", "outstanding", "reason", "runnable"}
+        assert set(payload) == {
+            "job",
+            "needs",
+            "never_ran",
+            "outstanding",
+            "reason",
+            "runnable",
+            "produced",
+        }
 
 
 class TestTheEndToEndShape:

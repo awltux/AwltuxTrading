@@ -55,6 +55,48 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 APPRAISAL_WINDOW_DAYS = 14
 
 
+@dataclass(frozen=True, slots=True)
+class Coverage:
+    """How much of what a job produces is present, and how much is still missing.
+
+    ``missing`` and ``total`` are separate because **"not finished" and "nothing
+    there" are different**, and conflating them has now produced a wrong answer
+    twice. A job covering 408 of 500 instruments has plenty for its readers to
+    work with; a job covering none has nothing. The first version of this module
+    only knew "outstanding", which cannot tell those apart, and the live page
+    ended up claiming a dependency had "nothing stored yet" while seventeen
+    decisions sat in the table.
+
+    ``total=None`` means the job has no backfill notion at all -- a quote poll, a
+    housekeeping sweep -- and therefore never blocks anything.
+    """
+
+    missing: int | None = None
+    total: int | None = None
+    reason: str = ""
+
+    @property
+    def produced(self) -> bool:
+        """Whether a dependent job has anything of this one's to read."""
+        if self.missing is None or self.total is None:
+            return True
+        return (self.total - self.missing) > 0
+
+    @classmethod
+    def counted(cls, missing: int, total: int, reason: str) -> Coverage:
+        return cls(missing=missing, total=total, reason=reason)
+
+    @classmethod
+    def all_or_nothing(cls, missing: int, reason: str) -> Coverage:
+        """For a job whose output is a single pool, not per-instrument coverage."""
+        return cls(missing=missing, total=1, reason=reason)
+
+    @classmethod
+    def none(cls, reason: str) -> Coverage:
+        """No backfill notion: nothing to be outstanding, nothing to block."""
+        return cls(missing=None, total=None, reason=reason)
+
+
 @dataclass(slots=True)
 class JobStatus:
     """One job's place in the pipeline, and what is left for it to do."""
@@ -63,11 +105,14 @@ class JobStatus:
     description: str
     #: Jobs that must have run for this one to do anything useful.
     depends_on: tuple[str, ...] = ()
-    #: Dependencies that have never completed successfully.
+    #: Dependencies with no successful run *and* nothing produced to read.
     never_ran: list[str] = field(default_factory=list)
     #: Universe instruments (or stories, or decisions) still lacking this job's
     #: output. ``None`` where the job has no backfill notion at all.
     outstanding: int | None = None
+    #: Whether a job depending on this one would find anything to read. Distinct
+    #: from "finished": a job covering 408 of 500 instruments has produced plenty.
+    produced: bool = True
     #: One plain sentence: what is missing, or why nothing is.
     reason: str = ""
 
@@ -92,6 +137,7 @@ class JobStatus:
             "outstanding": self.outstanding,
             "reason": self.reason,
             "runnable": self.runnable,
+            "produced": self.produced,
         }
 
 
@@ -139,87 +185,102 @@ def _count(session: Session, model) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _probe_t212_instruments(session: Session) -> tuple[int | None, str]:
+def _probe_t212_instruments(session: Session) -> Coverage:
     total = _count(session, Instrument)
     if total == 0:
-        return 1, "no instruments stored, so nothing downstream can run"
-    return 0, f"{total:,} instruments stored"
+        return Coverage.all_or_nothing(1, "no instruments stored, so nothing downstream can run")
+    return Coverage.all_or_nothing(0, f"{total:,} instruments stored")
 
 
-def _probe_universe_refresh(session: Session) -> tuple[int | None, str]:
+def _probe_universe_refresh(session: Session) -> Coverage:
     universe = len(_universe_rows(session))
     if universe:
-        return 0, f"{universe:,} selected for analysis"
+        return Coverage.all_or_nothing(0, f"{universe:,} selected for analysis")
     stored = _count(session, Instrument)
     if stored == 0:
-        return 1, "no instruments to select from"
-    return 1, f"{stored:,} instruments stored but none is selected"
+        return Coverage.all_or_nothing(1, "no instruments to select from")
+    return Coverage.all_or_nothing(1, f"{stored:,} instruments stored but none is selected")
 
 
-def _probe_price_eod(session: Session) -> tuple[int | None, str]:
+def _probe_price_eod(session: Session) -> Coverage:
     rows = _universe_rows(session)
     missing = len({row.t212_ticker for row in rows} - _covered(session, PriceBar.instrument_t212_ticker))
-    return missing, _note(missing, len(rows), "end-of-day price history")
+    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "end-of-day price history"))
 
 
-def _probe_price_intraday(session: Session) -> tuple[int | None, str]:
+def _probe_price_intraday(session: Session) -> Coverage:
     # Quotes are point-in-time: there is no backfill, so this is never "outstanding".
-    return None, "polls live quotes during market hours; there is nothing to backfill"
+    return Coverage.none("polls live quotes during market hours; there is nothing to backfill")
 
 
-def _probe_fundamentals(session: Session) -> tuple[int | None, str]:
+def _probe_fundamentals(session: Session) -> Coverage:
     rows = _universe_rows(session)
     missing = len(
         {row.t212_ticker for row in rows} - _covered(session, FundamentalPeriod.instrument_t212_ticker)
     )
-    return missing, _note(missing, len(rows), "accounts stored")
+    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "accounts stored"))
 
 
-def _probe_filings_edgar(session: Session) -> tuple[int | None, str]:
+def _probe_filings_edgar(session: Session) -> Coverage:
     rows = _universe_rows(session)
     us = [row for row in rows if not is_uk_listing(row.exchange_name, row.yahoo_symbol)]
     missing = len({row.t212_ticker for row in us} - _covered(session, Filing.instrument_t212_ticker))
     note = _note(missing, len(us), "a filing record")
-    return missing, f"{note} (US listings only; UK accounts come from Companies House)"
+    return Coverage.counted(
+        missing, len(us), f"{note} (US listings only; UK accounts come from Companies House)"
+    )
 
 
-def _probe_edgar_events(session: Session) -> tuple[int | None, str]:
-    return None, "polls the EDGAR current-events feed; there is nothing to backfill"
+def _probe_edgar_events(session: Session) -> Coverage:
+    return Coverage.none("polls the EDGAR current-events feed; there is nothing to backfill")
 
 
-def _probe_uk_companies(session: Session) -> tuple[int | None, str]:
+def _probe_uk_companies(session: Session) -> Coverage:
     rows = _universe_rows(session)
     uk = [row for row in rows if is_uk_listing(row.exchange_name, row.yahoo_symbol)]
     missing = [row for row in uk if not row.ch_company_number]
     if not uk:
-        return 0, "no UK listings in the universe"
+        return Coverage.counted(0, 0, "no UK listings in the universe")
     if not missing:
-        return 0, f"all {len(uk):,} UK listings resolved"
-    return len(missing), f"{len(missing):,} of {len(uk):,} UK listings have no company number"
+        return Coverage.counted(0, len(uk), f"all {len(uk):,} UK listings resolved")
+    return Coverage.counted(
+        len(missing), len(uk), f"{len(missing):,} of {len(uk):,} UK listings have no company number"
+    )
 
 
-def _probe_news_rss(session: Session) -> tuple[int | None, str]:
+def _probe_news_rss(session: Session) -> Coverage:
     total = _count(session, NewsItem)
     if total == 0:
-        return 1, "no news stored"
-    return 0, f"{total:,} stories stored"
+        return Coverage.all_or_nothing(1, "no news stored")
+    return Coverage.all_or_nothing(0, f"{total:,} stories stored")
 
 
-def _probe_news_analysis(session: Session) -> tuple[int | None, str]:
+def _probe_news_analysis(session: Session) -> Coverage:
     analysed = select(NewsAnalysis.news_item_id)
+    window = [
+        NewsItem.published_at >= utcnow() - dt.timedelta(days=APPRAISAL_WINDOW_DAYS),
+        NewsItem.materiality.in_(("material", "critical")),
+    ]
     pending = session.execute(
-        select(func.count())
-        .select_from(NewsItem)
-        .where(NewsItem.published_at >= utcnow() - dt.timedelta(days=APPRAISAL_WINDOW_DAYS))
-        .where(NewsItem.materiality.in_(("material", "critical")))
-        .where(NewsItem.id.not_in(analysed))
+        select(func.count()).select_from(NewsItem).where(*window).where(NewsItem.id.not_in(analysed))
+    ).scalar_one()
+    material = session.execute(
+        select(func.count()).select_from(NewsItem).where(*window)
     ).scalar_one()
     if pending == 0:
-        return 0, f"no material story from the last {APPRAISAL_WINDOW_DAYS} days is unappraised"
-    return pending, f"{pending:,} material stories from the last {APPRAISAL_WINDOW_DAYS} days unappraised"
+        return Coverage.counted(
+            0,
+            material,
+            f"no material story from the last {APPRAISAL_WINDOW_DAYS} days is unappraised",
+        )
+    return Coverage.counted(
+        pending,
+        material,
+        f"{pending:,} material stories from the last {APPRAISAL_WINDOW_DAYS} days unappraised",
+    )
 
 
-def _probe_sentiment(session: Session) -> tuple[int | None, str]:
+def _probe_sentiment(session: Session) -> Coverage:
     rows = _universe_rows(session)
     covered = {
         value
@@ -229,45 +290,45 @@ def _probe_sentiment(session: Session) -> tuple[int | None, str]:
         if value
     }
     missing = len({row.t212_ticker for row in rows} - covered)
-    return missing, _note(missing, len(rows), "a sentiment score")
+    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "a sentiment score"))
 
 
-def _probe_valuation(session: Session) -> tuple[int | None, str]:
+def _probe_valuation(session: Session) -> Coverage:
     rows = _universe_rows(session)
     missing = len(
         {row.t212_ticker for row in rows} - _covered(session, ValuationRun.instrument_t212_ticker)
     )
-    return missing, _note(missing, len(rows), "a valuation on record")
+    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "a valuation on record"))
 
 
-def _probe_decision(session: Session) -> tuple[int | None, str]:
+def _probe_decision(session: Session) -> Coverage:
     rows = _universe_rows(session)
     missing = len(
         {row.t212_ticker for row in rows} - _covered(session, DecisionRun.instrument_t212_ticker)
     )
-    return missing, _note(missing, len(rows), "a decision on record")
+    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "a decision on record"))
 
 
-def _probe_calibration(session: Session) -> tuple[int | None, str]:
+def _probe_calibration(session: Session) -> Coverage:
     total = _count(session, DecisionRun)
     if total == 0:
         # Saying "every decision has been scored" when there are no decisions is
         # true and reads as "up to date", which is the opposite of useful.
-        return None, "no decisions recorded yet, so there is nothing to score"
+        return Coverage.none("no decisions recorded yet, so there is nothing to score")
     waiting = session.execute(
         select(func.count())
         .select_from(DecisionRun)
         .where(DecisionRun.id.not_in(select(DecisionOutcome.decision_run_id)))
     ).scalar_one()
     if waiting == 0:
-        return 0, f"all {total:,} decisions have been scored"
+        return Coverage.none(f"all {total:,} decisions have been scored")
     # Not outstanding work: the horizons have to elapse before there is anything
     # to score. Reporting a waiting count as a queue would invite pointless runs.
-    return None, f"{waiting:,} of {total:,} decisions waiting for their horizon to elapse"
+    return Coverage.none(f"{waiting:,} of {total:,} decisions waiting for their horizon to elapse")
 
 
-def _probe_retention(session: Session) -> tuple[int | None, str]:
-    return None, "housekeeping; it depends on nothing and nothing depends on it"
+def _probe_retention(session: Session) -> Coverage:
+    return Coverage.none("housekeeping; it depends on nothing and nothing depends on it")
 
 
 #: One probe per job id. Kept separate from the registry so the scheduler package
@@ -341,29 +402,29 @@ def job_statuses(session: Session, specs: list[JobSpec]) -> list[JobStatus]:
 
     for spec in dependency_order(specs):
         probe = PROBES.get(spec.id)
-        outstanding, reason = probe(session) if probe else (None, "no coverage check defined")
+        coverage = probe(session) if probe else Coverage.none("no coverage check defined")
 
         # Only a *declared* dependency can block -- a job that merely reads a table
         # another job writes, without saying so, is a missing declaration rather
         # than a silent pass. And a dependency blocks only if it has *both* no
-        # successful run and nothing to show for itself.
+        # successful run and nothing produced to read.
         #
-        # The first draft blocked on the run history alone, and the live page
-        # showed why that is wrong: `news_rss` had stored 5,739 stories but had
-        # never once completed a run -- it takes forty minutes, and every deploy
-        # restarted it -- so `news_analysis` was reported blocked with 62 stories
-        # sitting there waiting to be appraised. The history was true and the
-        # conclusion was useless.
+        # Both halves of that were arrived at by being wrong first, on live data.
         #
-        # The question that decides whether a job can do anything is whether its
-        # dependency has *produced* something, and the probe already answers that.
-        # History only distinguishes "owed but already delivered" from "owed and
-        # nothing there".
+        # Blocking on the run history alone reported `news_analysis` blocked while
+        # 62 stories sat there unappraised: `news_rss` had stored 5,739 of them but
+        # had never once completed a run, because it takes forty minutes and every
+        # deploy restarted it. The history was true and the conclusion was useless.
+        #
+        # Then, having fixed that with "has work outstanding", the page claimed a
+        # dependency had "nothing stored yet" while seventeen decisions sat in the
+        # table -- because "not finished" and "empty" are different, and
+        # outstanding cannot tell them apart. Hence Coverage.produced.
         never_ran = [
             dependency
             for dependency in spec.depends_on
             if dependency not in succeeded
-            and (built.get(dependency) is None or built[dependency].has_work)
+            and (built.get(dependency) is None or not built[dependency].produced)
         ]
 
         status = JobStatus(
@@ -371,8 +432,9 @@ def job_statuses(session: Session, specs: list[JobSpec]) -> list[JobStatus]:
             description=spec.description,
             depends_on=tuple(spec.depends_on),
             never_ran=never_ran,
-            outstanding=outstanding,
-            reason=reason,
+            outstanding=coverage.missing,
+            reason=coverage.reason,
+            produced=coverage.produced,
         )
         built[spec.id] = status
         statuses.append(status)
