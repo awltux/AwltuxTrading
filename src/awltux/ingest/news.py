@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, utcnow
+from awltux.db.session import release_write_lock
 from awltux.providers.news_rss import (
     FinnhubNewsProvider,
     GdeltProvider,
@@ -283,6 +284,12 @@ def ingest_rss_news(
                 report=report,
                 instrument=instrument,
             )
+
+            # Release SQLite's write lock between instruments. This loop makes
+            # roughly a thousand HTTP requests for a 500-instrument universe, and
+            # holding one transaction across all of them locked every other writer
+            # out for minutes.
+            release_write_lock(session)
     finally:
         rss.close()
         finnhub.close()

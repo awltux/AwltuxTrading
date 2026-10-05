@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument, InstrumentAlias, utcnow
+from awltux.db.session import release_write_lock
 from awltux.providers.companies_house import CompaniesHouseProvider, normalise_company_number
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import YahooProvider
@@ -302,6 +303,9 @@ def sync_fundamentals(
             )
             report.periods_written += 1
         session.flush()
+        # Two provider calls per instrument, so the write lock is released
+        # between them rather than held across the whole run.
+        release_write_lock(session)
 
     logger.info("fundamentals sync: %s", report.as_dict())
     return report
@@ -559,6 +563,9 @@ def resolve_uk_companies(
             alias.confidence = match.confidence
             alias.method = match.method
             alias.note = f"{match.company_name} ({match.status or 'status unknown'})"
+
+        # One Companies House search per instrument; release between them.
+        release_write_lock(session)
 
     session.flush()
     logger.info("UK company resolution: %s", summary)

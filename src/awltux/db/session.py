@@ -137,6 +137,26 @@ def in_transaction() -> bool:
     return bool(getattr(_state, "stack", None))
 
 
+def release_write_lock(session: Session) -> None:
+    """Commit the current transaction, keeping the scope open.
+
+    For loops that do many provider calls: each one ends the transaction (so
+    SQLite's write lock is released) while the surrounding ``session_scope`` stays
+    in charge of the eventual rollback on failure.
+
+    Long ingest loops need this. ``ingest_rss_news`` polls roughly a thousand feeds
+    for a 500-instrument universe, and doing that inside a single transaction held
+    the write lock for minutes -- every other writer, including a job run from the
+    CLI, failed with "database is locked" after ``busy_timeout``.
+
+    Using this gives up atomicity for the enclosing batch, which is the right
+    trade for idempotent ingest: a partially ingested feed poll is fine to repeat,
+    whereas a lock held for minutes is not.
+    """
+    if session.in_transaction():
+        session.commit()
+
+
 def init_db(settings: Settings | None = None) -> Engine:
     """Create any missing tables.
 

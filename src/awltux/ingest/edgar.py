@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
 from awltux.db import Filing, Instrument, NewsItem, utcnow
+from awltux.db.session import release_write_lock
 from awltux.ingest.symbols import is_uk_listing
 from awltux.providers.edgar import EdgarProvider, normalise_cik, parse_atom_entries
 from awltux.providers.http import ProviderError
@@ -177,6 +178,11 @@ def sync_filings(
                 if not instrument.sector:
                     instrument.sector = sic_description or f"SIC {sic}"
                     instrument.sector_source = "edgar_sic"
+
+        # Release the write lock between companies: this loop makes several
+        # provider calls per instrument, and holding one transaction across all of
+        # them blocks every other writer for the duration.
+        release_write_lock(session)
 
     session.flush()
     logger.info("filing sync: %s", report.as_dict())
