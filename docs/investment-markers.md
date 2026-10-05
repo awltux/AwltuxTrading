@@ -286,15 +286,26 @@ Invested capital = Total debt + Total equity − Cash  (or operating approach:
 ```
 
 *The persistence question.* How long an above-cost return lasts is the empirical
-question, and the honest answer is: it varies widely by industry, mean-reverts over
-years rather than decades, and is far more persistent for some business models than
-others. Beware any specific half-life quoted without its sample.
+question. The most concrete published numbers found for this note are practitioner
+rather than academic, and are labelled as such: TD Epoch, analysing **every company
+in the MSCI World Index every year since 1990** in ROIC quintiles, reports that a
+company in the top quintile had a **75% chance of staying there the next year** and
+only a 2% chance of falling to the bottom quintile; bottom-quintile companies had a
+62% chance of staying in the bottom and a 1% chance of reaching the top. — [TD
+Epoch, *A Conversation With Steven Bleiberg*](https://www.td.com/us/en/asset-management/investment-management/perspectives)
+(the interview text was extracted and read directly; it is an asset manager's own
+analysis, **not peer-reviewed**, and the exact methodology is not published).
+
+Read that as a direction rather than a constant: returns on capital are
+substantially persistent year to year, and the extremes are stickier than the
+middle. Treat any specific half-life quoted without its sample as marketing.
 
 *Why it matters here.* ROIC is already partly present as ROCE. What is missing is
 (i) a cost-of-capital comparison, so the number has a reference point, and
 (ii) the **level and stability over time** rather than one year. A company earning
 25% on capital for eight years is a different proposition from one that earned 25%
-once.
+once — and the persistence evidence above is what makes that statement more than a
+platitude.
 
 *Caveat that bites hardest.* ROIC is sensitive to how invested capital is defined
 (goodwill included or not, leases capitalised or not, cash netted or not). Any
@@ -302,6 +313,38 @@ implementation must state its definition, because a 10-point ROIC difference
 between two analysts is usually a definitional difference, not a disagreement about
 the business. For low-return or loss-making companies ROIC is close to meaningless
 and should be suppressed rather than shown.
+
+### 3.1a Gross profitability — the quality measure with the least friction
+
+**Tier B, and unusually strong for how easy it is to compute.**
+
+Novy-Marx showed that **gross profits to total assets** predicts the cross-section
+of returns about as well as book-to-market, that profitable firms earn higher
+average returns despite being larger and having lower book-to-market, and that
+controlling for profitability substantially improves value strategies — "especially
+among the largest, most liquid stocks". He reports an annualised Sharpe ratio of
+0.90 for the profitability strategy against 0.32 for the value strategy it is
+compared with. — [Novy-Marx, *The Other Side of Value: Good Growth and the Gross
+Profitability Premium*, NBER WP 15940](https://www.nber.org/papers/w15940)
+(extracted text read directly).
+
+```
+Gross profitability = (Revenue − Cost of goods sold) / Total assets
+```
+
+**Why this deserves a place in the shortlist despite being a return-prediction
+claim.** It uses *gross* profit deliberately: it sits above the line where
+management discretion over SG&A, R&D capitalisation, restructuring and one-offs is
+greatest. That makes it harder to manipulate than net income, and it makes it
+computable from two figures this system already extracts plus total assets. Where
+ROIC needs a capital definition and a WACC estimate — several ways to be wrong —
+gross profitability needs neither.
+
+*Honest caveats.* It is a **return** claim, and therefore subject to the decay
+discussed in Part 1; it is defined on US data; and gross profitability is
+structurally different between, say, a software firm and a distributor, so it is
+only meaningful **within** an industry. Use it as a cross-sectional ranking inside
+a sector, not as a threshold.
 
 ### 3.2 Margin stability and durability
 
@@ -382,6 +425,20 @@ The practical implication is that governance failure tends to show up **first in
 the numbers** (cash conversion, contract accounting, receivables) — which is an
 argument for weighting the accounting markers above the governance metadata.
 
+**And the single best illustration of this note's central distinction.** Bebchuk,
+Cohen and Wang found that the relation between governance indices and *returns*
+held from 1991 to 1999 but was **absent from 2000 to 2008** — while the relation
+between governance and *operating performance and firm value* persisted
+throughout. — Bebchuk, Cohen & Wang, "Learning and the Disappearing Association
+between Governance and Returns", *Journal of Financial Economics*, 2013 (reported
+to this note by a research subagent, verified against Crossref author metadata;
+not independently fetched here).
+
+Governance still told you something true about the companies. It stopped telling
+you what the market would pay. That is the whole argument for grading markers by
+*which question they answer*, and it is why this system should carry governance as
+a description of a business rather than as a reason to expect a return.
+
 ---
 
 ## Part 5 — Language and text markers
@@ -405,6 +462,16 @@ both are closer to what an investor wants to detect than tone is. This is a dire
 concrete improvement available to this codebase: the current news pipeline scores
 direction, but nothing measures uncertainty or litigious language in filings.
 
+**Domain-specific models beat general ones, consistently.** FinBERT (Araci, 2019)
+found that "general-purpose models are not effective enough because of the
+specialized language used in a financial context", and that pre-training on
+financial text improved every measured metric on two financial sentiment datasets.
+— [arXiv:1908.10063](https://arxiv.org/abs/1908.10063), abstract read directly.
+That is the same lesson as the LM dictionary reached a different way, and it applies
+to the model this system already uses: a general model asked to read a 10-K is
+working outside its training distribution. That is a reason to keep extraction
+strict and cited, not a reason to trust its judgement more.
+
 ### 5.2 Readability and obfuscation
 
 **Tier C.** The finding that less readable annual reports are associated with worse
@@ -424,6 +491,39 @@ hard to reproduce, and the data-mining risk is high. The defensible use is
 qualitative: surface the extracted passages and let a human judge, rather than
 converting them into a number that then feeds a decision.
 
+**One finding in this area is strong enough to act on, and it is not a sentiment
+score.** Guidance is systematically biased: in a survey of managers, **more than
+60% said their private expectation was *above* the guidance midpoint they
+published, and fewer than 7% said it was below** — so the midpoint is not the
+expectation. This was reported to this note by a research pass over Call, Hribar,
+Skinner & Volant (*Journal of Accounting and Economics*, 2024); it is a survey
+result rather than a return prediction, which is why it is usable, and the paper
+should be read before the figure is shown to a reader. (Source: research subagent
+interim report; not independently fetched here.)
+
+*The practical consequence:* when a filing extraction captures guidance, store the
+**midpoint as the company's published figure** and say so — never relabel it as
+"management's expectation".
+
+### 5.3a Vocal and behavioural markers are out of scope, and some are discredited
+
+**Tier D — do not build.** A popular literature claims that voice pitch, vocal
+dissonance and similar paralinguistic markers in earnings calls reveal deception.
+Three reasons this system should not go near it:
+
+1. Every such marker needs **call audio**, which this pipeline does not have and
+   cannot get from the free feeds it uses.
+2. The two headline results rest on **proprietary Nemesysco LVA** software, whose
+   scientific basis was the subject of a published critique (Lacerda, 2012)
+   describing it as void.
+3. Even the softer text-based version is weak: roughly **11% of analyst questions
+   receive non-answers** (Gow, Larcker & Zakolyukina, *Journal of Accounting
+   Research*, 2021), and the reading that non-answers signal bad-news suppression
+   has been directly contested. Not a basis for a bearish signal on its own.
+
+(Reported by the research subagent with the critiques attached; not independently
+fetched here.)
+
 ### 5.4 The "decorate the document" question
 
 What is genuinely worth attaching to a filing, in priority order:
@@ -441,6 +541,23 @@ What is genuinely worth attaching to a filing, in priority order:
 Note the ordering principle: **discrete, checkable events first; continuous
 text scores last.** A policy change either happened or did not. A readability
 score is an opinion with a number attached.
+
+**A practical warning about the input itself.** The "decorate the document" step
+fails at the extraction layer before it fails at the analysis layer, and this is
+measurable rather than hypothetical: the FinSBD shared task on sentence-boundary
+detection in financial PDFs found an off-the-shelf parser (spaCy) scoring a macro-F1
+of **0.208** on English prospectuses, with the best system reaching 0.937 — and the
+hard cases were lists, tables and page furniture rather than prose. — [FinSBD-2020,
+*The 2nd Shared Task on Sentence Boundary Detection in Unstructured Text in the
+Financial Domain*](https://aclanthology.org/2020.finnlp-1.8/) (extracted text read
+directly; the anthology record was checked).
+
+The design consequence is that **a structured feed beats a PDF** every time. This
+system is right to prefer XBRL and iXBRL over parsing annual-report PDFs, and any
+future work that adds PDF reading is adding a measured 20–90% error surface on the
+text segmentation before any analysis begins. That is an argument for keeping the
+figures on the structured path and using PDF text only for the qualitative items
+(3–5 above), where a mis-split sentence degrades a human read rather than a number.
 
 ---
 
@@ -557,6 +674,10 @@ tool with annual/interim accounts and no paid data.
 6. **ROIC against an explicit WACC, with the definition stated.** The economic
    question the system currently cannot answer: is this business creating value at
    all?
+6a. **Gross profitability (gross profits / total assets), ranked within sector.**
+   The cheapest quality measure with real evidence behind it — two figures already
+   extracted plus total assets, and no capital definition or WACC estimate to get
+   wrong. Ranked, never thresholded.
 7. **Goodwill/intangibles intensity and a serial-acquirer flag.** Cheap, and it
    changes how much the equity figure should be trusted.
 8. **LM litigious and uncertainty counts.** Low cost once a finance-specific
@@ -564,9 +685,11 @@ tool with annual/interim accounts and no paid data.
    not.
 
 **Explicitly not recommended.** Dividend yield as a quality signal; insider selling
-as a signal; readability scores feeding a decision; any composite that hides its
-inputs; and using any of these as a trade trigger rather than as evidence attached
-to a decision.
+as a signal; readability scores feeding a decision; **vocal and paralinguistic
+"deception" markers** (no audio, and the headline results rest on discredited
+software); Q&A evasion as a standalone bearish signal (weak and contested); and any
+composite that hides its inputs or is used as a trade trigger rather than as
+evidence attached to a decision.
 
 ---
 
@@ -585,6 +708,20 @@ to a decision.
 - Investegate, *Early Warning Signals of Fundraisings* (practitioner, not
   peer-reviewed) —
   https://www.investegate.co.uk/index.php/content/early-warning-signals-of-fundraisings
+- Novy-Marx, *The Other Side of Value: Good Growth and the Gross Profitability
+  Premium*, NBER WP 15940 — https://www.nber.org/papers/w15940
+- TD Epoch, *A Conversation With Steven Bleiberg* on ROIC persistence
+  (practitioner, not peer-reviewed, methodology unpublished)
+- Au, Chong, Ait Azzi & Valsamou-Stanislawski, *FinSBD-2020* —
+  https://aclanthology.org/2020.finnlp-1.8/
+- Araci, *FinBERT: Financial Sentiment Analysis with Pre-trained Language Models*,
+  2019 — https://arxiv.org/abs/1908.10063
+
+**Reported by research subagents and not independently fetched here.** Bebchuk,
+Cohen & Wang (JFE 2013) on governance and returns; Call, Hribar, Skinner & Volant
+(JAE 2024) on guidance midpoints; Gow, Larcker & Zakolyukina (JAR 2021) on Q&A
+non-answers and the Bamber & Nappert (CAR 2025) reply; Lacerda (2012) on Nemesysco
+LVA; the Loughran & McDonald dictionary provenance.
 
 **Sources that could not be verified here.** Several foundational papers sit behind
 publisher paywalls and were not independently confirmed for this note — notably
