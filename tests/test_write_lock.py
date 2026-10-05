@@ -17,10 +17,10 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from awltux.analysis import news_analysis
-from awltux.db import NewsItem, release_before_network, session_scope, utcnow
+from awltux.db import NewsItem, ProviderBudget, release_before_network, session_scope, utcnow
 from awltux.ingest.news import persist_items
 from awltux.llm.deepseek import DeepSeekClient, DeepSeekError
 from awltux.providers.http import ProviderError
@@ -158,6 +158,90 @@ class TestTheIngestLoopReleasesBeforeClassifying:
             )
             assert report.written == 1
             assert report.classified == 0
+
+
+class TestLongBulkWritesAreBatched:
+    def test_the_instrument_sync_does_not_hold_one_transaction_for_the_list(self, settings, monkeypatch):
+        """~18,000 instruments in a single flush measured 31 seconds holding the
+        write lock -- long enough to fail every concurrent writer."""
+        from awltux.ingest import universe as universe_module
+
+        released: list[bool] = []
+        monkeypatch.setattr(
+            universe_module,
+            "release_write_lock",
+            lambda session: released.append(session.in_transaction()),
+        )
+
+        instruments = [
+            {"ticker": f"T{index}_US_EQ", "name": f"Company {index}"} for index in range(1_200)
+        ]
+        with session_scope() as session:
+            universe_module.synchronize_instruments(
+                session, settings=settings, exchanges=[], instruments=instruments
+            )
+
+        assert len(released) == 2, "1200 instruments at 500 per batch is two releases"
+        assert all(released), "a release with nothing pending would not bound anything"
+
+
+class TestTheBudgetCheckpointCannotFailTheJob:
+    def test_a_blocked_checkpoint_leaves_the_caller_usable(self, settings):
+        """The failure as reported: the UPDATE to ``provider_budget`` could not get
+        the lock, and because the checkpoint joined the caller's transaction the
+        error surfaced at the *caller's* commit, outside the guard's ``try``, and
+        took the whole job down with a PendingRollbackError.
+
+        A rate-limit counter must not be able to fail the work it is counting.
+        """
+        import datetime as dt
+
+        from awltux.providers.http import BudgetGuard, _BudgetState
+
+        state = _BudgetState(requests_used=1, window_started_at=dt.datetime.now(dt.UTC))
+        state.dirty = True
+        state.last_flushed = 0.0
+        guard = BudgetGuard("probe", rule=None)  # type: ignore[arg-type]
+
+        holder = sqlite3.connect(str(settings.db_path), timeout=0.05)
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute(
+            "INSERT INTO app_setting (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("holder", "1", "2026-01-01 00:00:00", "2026-01-01 00:00:00"),
+        )
+        try:
+            with session_scope() as session:
+                # Fail fast instead of waiting out the real 15-second timeout.
+                session.execute(text("PRAGMA busy_timeout=200"))
+                guard._flush(state, force=True)
+                assert state.dirty, "a checkpoint that did not land must stay dirty"
+            # Exiting the scope must not raise: that is what killed the job.
+        finally:
+            holder.rollback()
+            holder.close()
+
+        # And the checkpoint is still writable once the lock is free.
+        with session_scope() as session:
+            guard._flush(state, force=True)
+        assert not state.dirty
+
+    def test_a_checkpoint_with_no_contention_still_writes(self, settings):
+        import datetime as dt
+
+        from awltux.providers.http import BudgetGuard, _BudgetState
+
+        state = _BudgetState(requests_used=7, window_started_at=dt.datetime.now(dt.UTC))
+        state.dirty = True
+        state.last_flushed = 0.0
+        guard = BudgetGuard("probe", rule=None)  # type: ignore[arg-type]
+
+        with session_scope():
+            guard._flush(state, force=True)
+
+        assert not state.dirty
+        with session_scope() as session:
+            row = session.get(ProviderBudget, "probe")
+            assert row is not None and row.requests_used == 7
 
 
 class TestTheAppraisalLoopReleasesBeforeAppraising:

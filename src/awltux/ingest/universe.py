@@ -21,10 +21,15 @@ from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
 from awltux.db import AppSetting, Exchange, Instrument, InstrumentAlias, utcnow
+from awltux.db.session import release_write_lock
 from awltux.ingest.symbols import derive_yahoo_symbol, is_uk_listing, parse_t212_ticker
 from awltux.providers.t212 import T212Provider, classify_exchange_name
 
 logger = logging.getLogger(__name__)
+
+#: Instruments upserted before the write lock is released. Small enough that the
+#: hold is a fraction of a second, large enough that the flush overhead is noise.
+INSTRUMENT_FLUSH_EVERY = 500
 
 
 @dataclass(slots=True)
@@ -139,7 +144,7 @@ def synchronize_instruments(
         for row in session.execute(select(Instrument)).scalars().all()
     }
 
-    for item in instruments:
+    for index, item in enumerate(instruments, start=1):
         ticker = item.get("ticker")
         if not ticker:
             continue
@@ -174,6 +179,18 @@ def synchronize_instruments(
             row.exchange_name = exchange_name
 
         _resolve_mapping(session, row, report, created=created)
+
+        # Flush and release in batches. Everything used to accumulate until one
+        # flush at the end, which for the full Trading 212 instrument list is
+        # ~18,000 rows and measured 31 seconds holding SQLite's single write lock.
+        # That is long enough to break every other writer in the process: a
+        # concurrent job's own accounting insert waited out the 15-second
+        # busy_timeout and failed with "database is locked", taking the job with
+        # it. Batching costs a little throughput and bounds the hold to a fraction
+        # of a second.
+        if index % INSTRUMENT_FLUSH_EVERY == 0:
+            session.flush()
+            release_write_lock(session)
 
     session.flush()
     logger.info(

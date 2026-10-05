@@ -157,7 +157,14 @@ class BudgetGuard:
         if not state.dirty or (not force and now - state.last_flushed < BUDGET_FLUSH_INTERVAL):
             return
         try:
-            with session_scope() as session:
+            # Savepoint, for the same reason ``_write_call`` uses one: this scope is
+            # re-entrant, so it joins whatever transaction the caller is in, and the
+            # write would otherwise only be emitted when *that* transaction commits.
+            # A checkpoint that could not get the write lock then failed at the
+            # caller's commit -- outside this ``try`` -- and took the whole job down
+            # with a PendingRollbackError. What is at stake is a rate-limit counter;
+            # it must never be able to fail the work it is counting.
+            with session_scope() as session, session.begin_nested():
                 row = session.get(ProviderBudget, self.provider)
                 if row is None:
                     row = ProviderBudget(provider=self.provider)
@@ -167,11 +174,15 @@ class BudgetGuard:
                 row.blocked_until = state.blocked_until
                 row.consecutive_failures = state.consecutive_failures
                 row.last_error = state.last_error
+                # Emit the UPDATE now, inside the savepoint, rather than
+                # leaving it pending for the caller to trip over.
+                session.flush()
             state.dirty = False
             state.last_flushed = now
         except Exception as exc:
             # Checkpointing must never fail a request: the in-memory state is
-            # authoritative for this process, the row is only a checkpoint.
+            # authoritative for this process, the row is only a checkpoint. The
+            # state stays dirty so the next interval tries again.
             logger.debug("%s: could not checkpoint the rate-limit state: %s", self.provider, exc)
 
     # ---------------------------------------------------------------- budget
@@ -265,7 +276,7 @@ class BudgetGuard:
                 if not state.dirty:
                     continue
                 try:
-                    with session_scope() as session:
+                    with session_scope() as session, session.begin_nested():
                         row = session.get(ProviderBudget, provider)
                         if row is None:
                             row = ProviderBudget(provider=provider)
@@ -275,6 +286,7 @@ class BudgetGuard:
                         row.blocked_until = state.blocked_until
                         row.consecutive_failures = state.consecutive_failures
                         row.last_error = state.last_error
+                        session.flush()
                     state.dirty = False
                 except Exception:
                     logger.debug("could not checkpoint %s on shutdown", provider)
