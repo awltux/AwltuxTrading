@@ -28,6 +28,10 @@ ratios across periods, for that reason.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+from typing import Any
+
 #: Income-statement figures.
 INCOME_METRICS: tuple[str, ...] = (
     "revenue",
@@ -179,3 +183,26 @@ def prompt_metric_names() -> str:
 
 def is_canonical(name: str) -> bool:
     return name in CANONICAL_METRICS
+
+
+def value_of(metrics: Mapping[str, Any] | None, key: str) -> float | None:
+    """Read one metric as a usable number.
+
+    Every marker in the analysis layer reads its inputs through this, because the
+    failure it prevents is specific: a ``NaN`` or an ``inf`` from a provider is a
+    perfectly good float as far as Python is concerned, and it propagates through
+    a ratio into a ranking without ever raising. A value that cannot be used is
+    returned as missing, which the markers treat as a reason to say nothing.
+    """
+    if not metrics:
+        return None
+    raw = metrics.get(key)
+    if raw is None:
+        return None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number

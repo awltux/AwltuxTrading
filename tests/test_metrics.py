@@ -42,7 +42,7 @@ class TestVocabularyShape:
         assert not (set(DERIVED_METRICS) & EXTRACTABLE_METRICS)
 
     def test_canonical_is_stated_plus_derived(self):
-        assert CANONICAL_METRICS == set(STATED_METRICS) | set(DERIVED_METRICS)
+        assert set(STATED_METRICS) | set(DERIVED_METRICS) == CANONICAL_METRICS
 
     def test_every_metric_is_documented(self):
         """Adding a name without saying what consumes it should fail here."""

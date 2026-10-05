@@ -15,11 +15,18 @@ Two habits this module keeps:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from awltux.analysis.accounting import (
+    MIN_PERIODS_FOR_TREND,
+    Marker,
+)
+from awltux.analysis.accounting import (
+    analyse as analyse_accounting,
+)
 from awltux.db import FundamentalPeriod
+from awltux.metrics import value_of
 
 #: Ordering used to build a chronological series; higher is later.
 PERIOD_TYPE_ORDER = {"annual": 3, "ttm": 2, "interim": 1, "quarterly": 0}
@@ -85,6 +92,17 @@ class FundamentalSnapshot:
     red_flags: list[str] = field(default_factory=list)
     positives: list[str] = field(default_factory=list)
 
+    #: Accounting-quality markers, each with the figures it was computed from.
+    #: Not every marker applies to every company, and a marker whose inputs are
+    #: missing is simply absent rather than zero.
+    markers: list[Marker] = field(default_factory=list)
+
+    def marker(self, name: str) -> Marker | None:
+        for candidate in self.markers:
+            if candidate.name == name:
+                return candidate
+        return None
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "periods_used": self.periods_used,
@@ -120,21 +138,13 @@ class FundamentalSnapshot:
             "fundamentals_confidence": self.fundamentals_confidence,
             "red_flags": self.red_flags,
             "positives": self.positives,
+            "quality_markers": [marker.as_dict() for marker in self.markers],
         }
 
 
 def _value(period: FundamentalPeriod, key: str) -> float | None:
-    metrics = period.metrics or {}
-    raw = metrics.get(key)
-    if raw is None:
-        return None
-    try:
-        number = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(number) or math.isinf(number):
-        return None
-    return number
+    """One metric of one period, or ``None`` if it cannot be used."""
+    return value_of(period.metrics, key)
 
 
 def _dedupe_by_period(periods: list[FundamentalPeriod]) -> list[FundamentalPeriod]:
@@ -203,6 +213,8 @@ def build_snapshot(periods: list[FundamentalPeriod]) -> FundamentalSnapshot:
     _fill_growth(snapshot, series)
     _fill_trends(snapshot, series)
     _fill_quality(snapshot, series)
+    snapshot.markers = analyse_accounting(series)
+    _flag_markers(snapshot)
     _flag_risks(snapshot, series)
 
     return snapshot
@@ -286,6 +298,48 @@ def _fill_trends(snapshot: FundamentalSnapshot, series: list[FundamentalPeriod])
         last_shares = _value(series[-1], "shares_outstanding")
         if first_shares and last_shares and first_shares > 0:
             snapshot.share_count_growth = last_shares / first_shares - 1.0
+
+
+def _flag_markers(snapshot: FundamentalSnapshot) -> None:
+    """Turn the accounting markers into named flags, and only where the evidence does.
+
+    The thresholds that matter here are **not magnitudes**. The research note's
+    claim for accruals is that a *persistently positive* accrual ratio is a reason
+    to distrust the earnings number, and for cash conversion that it is
+    *consistently below* 1.0 over several years. So these flags key off direction
+    and persistence, and they stay silent for a single period -- one year's
+    working-capital swing is noise, and flagging it would be the conventional
+    one-period error this work exists to remove.
+    """
+    accruals = snapshot.marker("accrual_ratio")
+    if accruals is not None:
+        by_period = accruals.inputs.get("by_period") or {}
+        positive = [value for value in by_period.values() if value > 0]
+        if len(by_period) >= 2 and len(positive) == len(by_period):
+            snapshot.red_flags.append(
+                f"profit exceeded operating cash flow in every one of the last "
+                f"{len(by_period)} periods, by {accruals.value:.1%} of assets on average"
+            )
+        elif len(by_period) >= MIN_PERIODS_FOR_TREND and len(positive) > len(by_period) / 2:
+            snapshot.red_flags.append(
+                f"profit has run ahead of operating cash flow in {len(positive)} of the "
+                f"last {len(by_period)} periods"
+            )
+
+    conversion = snapshot.marker("cash_conversion")
+    if conversion is not None:
+        periods = int(conversion.inputs.get("periods") or 0)
+        if periods >= MIN_PERIODS_FOR_TREND and conversion.value is not None:
+            if conversion.value < 1.0:
+                snapshot.red_flags.append(
+                    f"only {conversion.value:.0%} of reported profit converted to cash "
+                    f"on average over {periods} periods"
+                )
+            elif conversion.value >= 1.0:
+                snapshot.positives.append(
+                    f"profit converting to cash at {conversion.value:.0%} on average "
+                    f"over {periods} periods"
+                )
 
 
 def _fill_quality(snapshot: FundamentalSnapshot, series: list[FundamentalPeriod]) -> None:
