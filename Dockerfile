@@ -41,7 +41,13 @@ COPY alembic.ini ./
 # --paths must list everything the image copies. Without it, `git status` would
 # report every uncopied tracked file (tests/, docker-compose.yml, ...) as deleted
 # and brand every single image a dirty build.
+#
+# .gitignore comes along with .git for the same reason: without it, anything the
+# repository ignores but the build context still carries is reported as an
+# untracked file. The .dockerignore now keeps those out as well, but the check
+# should not depend on the two files staying in agreement.
 COPY .git ./.git
+COPY .gitignore ./.gitignore
 RUN PYTHONPATH=/build/src python -m awltux.buildinfo \
         --write /build/src/awltux/build_info.json \
         --paths src pyproject.toml README.md config alembic.ini

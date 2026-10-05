@@ -15,11 +15,20 @@ venv/
 .ruff_cache/
 .pytest_cache/
 pytest-cache-files-*/
-__pycache__/
-*.py[cod]
-*.egg-info/
 data/
 tests/
 .env
 *.log
 logs/
+
+# Compiled leftovers and build metadata. Docker matches these patterns against
+# the whole relative path, so a bare `__pycache__/` excludes only a top-level one
+# -- the nested copies under src/ were being copied into the builder, where git
+# (which has no .gitignore there unless the Dockerfile copies it) reported them as
+# untracked files and marked every image a dirty build.
+__pycache__/
+**/__pycache__/
+*.py[cod]
+**/*.py[cod]
+*.egg-info/
+**/*.egg-info/
