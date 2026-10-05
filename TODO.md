@@ -179,6 +179,51 @@ review rather than silently retried.
 weakness. And the 5 cross-listings need a deliberate rule about which listing to
 price when an instrument is traded in more than one place.
 
+### The Fal embeddings route is refused by OpenRouter, not by us
+
+**Not a code problem, and it has been investigated to the end.** Recorded so nobody
+repeats the work, because the obvious diagnostics all point the wrong way.
+
+The request is correct. Fal's own `llms.txt` documents exactly what we send —
+`POST https://fal.run/openrouter/router/openai/v1/embeddings` with
+`Authorization: Key $FAL_KEY` — and its OpenAPI schema declares
+`apiKeyAuth: {type: apiKey, in: header, name: Authorization}`.
+
+What the endpoint answers:
+
+    401  "You do not have access to the organization tied to the API key."
+
+Five findings that together rule out everything on this side:
+
+1. **Fal accepts the key.** A deliberately bogus key gets a *different* error —
+   "Cannot access application \"openrouter/router\". Authentication is required" —
+   so Fal refuses the fake one and forwards ours. The refusal happens behind Fal.
+2. **Two different keys fail identically**, one in each of Fal's formats
+   (`fal_...`, and the older `<uuid>:<32 hex>` at 69 characters).
+3. **Four model names fail identically**, including `text-embedding-3-large`
+   *without* the `openai/` prefix, which does not exist on OpenRouter. A nonexistent
+   model would give a model error if the request reached model selection, so it is
+   refused earlier than that.
+4. **There is no native Fal embeddings endpoint to switch to.** `fal.ai/llms.txt`
+   lists no embeddings category; `fal-ai/any-llm` is the only language entry.
+5. **The queue host looks like it works and does not.** `queue.fal.run` — which the
+   OpenAPI `servers` field names — accepts the POST and reports `IN_QUEUE`, then
+   `COMPLETED`, and only then returns the same 401 in the result body. A diagnostic
+   that stops at "the submission was accepted" would conclude the opposite of the
+   truth. `fal.run` is right for a synchronous OpenAI-compatible client and fails
+   honestly; the queue hides the failure until execution.
+
+**So it needs an account change**, which cannot be made from here: either enable the
+OpenRouter route (or its credit) on the Fal account, or check the key was created
+with the intended account selected — Fal's authentication docs warn that keys are
+tied to the *account*, and that a team must be chosen in the dashboard *before* a key
+is created.
+
+**If it is never enabled**, the fallback is already in place and needs no code: the
+`news.embeddings.base_url` setting accepts any OpenAI-compatible endpoint, so
+OpenAI, Jina, Voyage or a local Ollama all work as-is. The banner reports
+"not grouped by event" rather than implying stories were grouped.
+
 ### The news-to-fundamentals weighting is an assumption, not a finding
 
 News currently enters sentiment with a 0.55 component weight. The research note
