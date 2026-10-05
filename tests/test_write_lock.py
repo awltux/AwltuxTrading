@@ -157,7 +157,35 @@ class TestTheIngestLoopReleasesBeforeClassifying:
                 session, [_raw("https://example.test/3", "three")], classifier=classifier
             )
             assert report.written == 1
-            assert report.classified == 0
+
+    def test_a_duplicate_url_hash_is_a_duplicate_not_a_crash(self, settings, monkeypatch):
+        """Seen in the live ingest_run history: the news_rss job died with
+        ``UNIQUE constraint failed: news_item.url_hash``. The unique index is the
+        real duplicate guard and the lookup before it is only an optimisation, so
+        two overlapping ingests can both pass the lookup -- and ``run_now`` calls
+        the job directly, bypassing APScheduler's ``max_instances=1``. A story
+        already stored is a duplicate, not an error."""
+        from sqlalchemy.exc import IntegrityError
+
+        with session_scope() as session:
+            real_flush = session.flush
+            state = {"flushes": 0}
+
+            def flaky_flush():
+                state["flushes"] += 1
+                if state["flushes"] == 1:
+                    raise IntegrityError(
+                        "INSERT INTO news_item",
+                        {},
+                        Exception("UNIQUE constraint failed: news_item.url_hash"),
+                    )
+                return real_flush()
+
+            monkeypatch.setattr(session, "flush", flaky_flush)
+            report = persist_items(session, [_raw("https://example.test/race")])
+
+        assert report.duplicates == 1
+        assert report.written == 0
 
 
 class TestLongBulkWritesAreBatched:

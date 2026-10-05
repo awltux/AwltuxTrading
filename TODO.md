@@ -18,18 +18,27 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
-None open. The last six — `serve` not migrating, silent DeepSeek truncation, the
+None open. The last eight — `serve` not migrating, silent DeepSeek truncation, the
 `universe_refresh` startup race, CLI/server write-lock contention, the unhelpful
-blank dashboard, and a stale container being indistinguishable from a code bug —
-were fixed and are in the commit log.
+blank dashboard, a stale container being indistinguishable from a code bug,
+SQLite's write lock being held across model calls, and a rate-limit counter
+failing the job it was counting — were fixed and are in the commit log.
 
-One of them was not a bug at all, and is worth remembering: the missing Info menu
-item and the `engine_label` template error were both the running container being
-older than the image. `docker build` retags an image and does not touch a running
-container. The README now says so, and the **Info** page reports the revision a
-deployment was actually built from.
+Two of them were not a bug at all, and are worth remembering. The missing Info
+menu item and the `engine_label` template error were both the running container
+being older than the image: `docker build` retags an image and does not touch a
+running container. The README now says so, and the **Info** page reports the
+revision a deployment was actually built from.
 
-A seventh was self-inflicted rather than a code bug: an unanchored `.gitignore`
+The write-lock family is worth remembering for a different reason. It was found
+from a container log rather than a test, and it had three separate causes that all
+looked correct on inspection: a release at the end of a loop body rather than
+before the slow call inside it; the same mistake in a second loop added later; and
+a 31-second bulk write in a job that makes no network call at all. The rule is in
+`db/session.py`, and it is now enforced at the network boundary as well as by
+hand, because remembering it had failed three times.
+
+A ninth was self-inflicted rather than a code bug: an unanchored `.gitignore`
 pattern (`research/`) also matched `docs/research/`, so nine research reports were
 invisible to git while `git status` reported a clean tree.
 `tests/test_repo_hygiene.py` now asserts the invariant that broke.
@@ -38,31 +47,57 @@ invisible to git while `git status` reported a clean tree.
 
 ## Correctness questions still open
 
+### A manual Run now can execute alongside the scheduled run of the same job
+
+`SchedulerService.run_now` calls `execute_job(spec)` **directly** rather than
+going through APScheduler, so it bypasses `max_instances=1` entirely. A manual run
+of a job that is already running therefore executes concurrently with it.
+
+The evidence is in the live `ingest_run` history: two `news_rss` runs overlapped
+and the second died with `UNIQUE constraint failed: news_item.url_hash`. That
+specific failure is now benign — the insert is wrapped in a savepoint and a stored
+story counts as a duplicate (`tests/test_write_lock.py`) — but the general
+condition is not fixed, and it is not only about news. Any two runs of one job can
+interleave, and jobs that are not idempotent would corrupt rather than duplicate.
+
+**Decide:** should `run_now` refuse with a clear "already running" rather than
+returning zeros, or should it queue behind the scheduled run? Whatever is chosen,
+the refusal has to be visible to the CLI and the Run now button, both of which
+currently treat a `None` result as "nothing to do".
+
+### The classifier's first attempt is truncated on about 5% of headlines
+
+Measured from the container's `llm_call` records: 56 of 1037 `news_classification`
+calls ended at exactly the 500-token limit. The retry at 1500 succeeds, so nothing
+is lost — but 5% of headlines cost two calls instead of one.
+
+What those responses actually contain is worth knowing: the message the model
+returns is `Expecting value at char 0`, meaning the body was **empty**. The output
+budget was spent before the answer began, so raising the first-attempt budget may
+fix it entirely rather than merely widening the retry. `Completion.json_object`
+now says this instead of claiming the JSON was incomplete.
+
 ### Build the accounting-quality markers from `docs/investment-markers.md`
 
-The research note ranks the markers worth having. The first dependency is data,
-not code: `CANONICAL_METRICS` in `llm/extractors.py` is a closed set, so any figure
-the extractor is not asked for does not exist downstream. Most of the accounting
-markers need: receivables, inventory, payables, depreciation and amortisation,
-stock-based compensation, goodwill, intangibles, short-term debt, EBIT, pretax
-income, tax expense, R&D and lease liabilities.
+**Partly done.** The data prerequisite is closed and the first two markers are in:
+`awltux/metrics.py` is now the single vocabulary (the extractor gate, the provider
+mapping and the extraction prompt were three lists that had drifted — the prompt
+omitted three names the gate accepted), and `analysis/accounting.py` computes the
+accrual ratio and multi-year cash conversion with their inputs attached.
 
-Then, in the order the note argues for:
+Still to build, in the order the note argues for:
 
-1. multi-year cash conversion and accrual ratio (the strongest diagnostic, two
-   figures, and the current version is a single-period check where the evidence
-   calls for a trend);
-2. Piotroski's nine tests, displayed as nine named checks rather than a score;
-3. Altman Z'' and a 5-variable Beneish M, as within-sector **rankings with their
-   inputs shown** — never as a verdict, and never colour-coded;
-4. receivables and inventory drift relative to revenue;
-5. filing events: auditor change, restatement, going-concern, accounting-policy
-   change (rare, discrete, unambiguous, and cheap once the text is read);
-6. ROIC against an explicitly stated WACC — the economic question the system
+1. Piotroski's nine tests, displayed as nine named checks rather than a score;
+2. Altman Z'' inputs and a 5-variable Beneish M, as within-sector **rankings with
+   their inputs shown** — never as a verdict, and never colour-coded;
+3. receivables and inventory drift relative to revenue;
+4. filing events: auditor change, restatement, going-concern, accounting-policy
+   change — the extraction fields and prompt are in place, but `extract_filing`
+   is **not called from anywhere**, so none of it runs;
+5. ROIC against an explicitly stated WACC — the economic question the system
    currently cannot answer;
-7. goodwill/intangibles intensity and a serial-acquirer flag;
-8. Loughran-McDonald `litigious` and `uncertainty` counts on filing text — the
-   finance-specific lexicon, not a general-purpose one.
+6. goodwill/intangibles intensity and a serial-acquirer flag;
+7. Loughran-McDonald `litigious` and `uncertainty` counts on filing text.
 
 Two cautions the note raises that belong with the implementation:
 

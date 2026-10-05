@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
@@ -223,12 +224,24 @@ def persist_items(
                 if updates.get("sectors"):
                     row.sectors = list({*row.sectors, *updates["sectors"]})
 
-        session.add(row)
-        report.written += 1
-
         # Flush inside the loop so the dedupe lookup sees rows added in this same
         # batch; without it, two copies of one story in a single feed both insert.
-        session.flush()
+        #
+        # The savepoint is not decoration. The unique index on ``url_hash`` is the
+        # real duplicate guard and the lookup above is only an optimisation, so two
+        # overlapping ingests can both pass the lookup and only one can win the
+        # insert. That race killed the whole job with an IntegrityError -- and it is
+        # reachable, because ``SchedulerService.run_now`` calls the job directly and
+        # so bypasses APScheduler's ``max_instances=1``. A story already stored is a
+        # duplicate, not an error.
+        try:
+            with session.begin_nested():
+                session.add(row)
+                session.flush()
+        except IntegrityError:
+            report.duplicates += 1
+            continue
+        report.written += 1
 
     return report
 
