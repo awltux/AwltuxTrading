@@ -18,6 +18,36 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
+### P1 — Recommendations page returns `'engine_label' is undefined`
+
+Reported from a running instance:
+
+```json
+{"ok":false,"error":"UndefinedError","detail":"'engine_label' is undefined"}
+```
+
+`src/awltux/web/templating.py` registers `engine_label` in **both**
+`env.filters` and `env.globals` (the global is the one that matters — it is called
+as a two-argument function at `dashboard.html:220`, and filter syntax cannot reach
+it). `tests/test_api.py::TestTemplatesRenderWithData` asserts exactly that and
+passes. So the source is correct, and something about the *running process* is not.
+
+**Why it was not caught:** the helper is only reached inside the row loop. With an
+empty database the `{% else %}` branch renders and the call never happens — which
+is how the original bug survived a green suite, and why the container check in
+this session did not catch it either (that container had no decisions to show).
+
+**Most likely cause:** the process under test predates the fix. Confirm before
+changing anything.
+
+**Discipline:** this is the second time a template error has been invisible to the
+suite, so fix the *detection* as well as the symptom.
+
+**Done when:** the failing instance's revision is identified from `/info`, the
+error is reproduced against a seeded database through uvicorn (not `TestClient`),
+and either the stale process is replaced or the real second code path is fixed.
+Add a regression test that renders every page with rows **and** without.
+
 ### P1 — `universe_refresh` races `t212_instruments` at startup and selects nothing
 
 Both jobs are `run_on_start=True` (`src/awltux/scheduler/registry.py`) and there
