@@ -62,7 +62,7 @@
          implying a precision that is not there. #}
       <td>{% if item.direction %}<span class="dir dir-{{ item.direction }}">{{ item.direction }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
       <td class="small">{{ item.materiality or '—' }}</td>
-      <td class="small muted">{{ item.relevance | pct(0) if item.relevance is not none else '—' }}</td>
+      <td class="small muted">{{ item.relevance | pct0 if item.relevance is not none else '—' }}</td>
     </tr>
   {% endfor %}
   {% for sector in item.sectors or [] %}

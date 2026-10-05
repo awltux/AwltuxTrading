@@ -28,7 +28,7 @@
   {% for horizon, report in reports.items() %}
     <div class="stat">
       <span class="stat-value">
-        {% if report.overall.n %}{{ report.overall.hit_rate | pct(0) }}{% else %}—{% endif %}
+        {% if report.overall.n %}{{ report.overall.hit_rate | pct0 }}{% else %}—{% endif %}
       </span>
       <span class="stat-label">
         {{ horizon | replace('_', ' ') }} hit rate
@@ -111,13 +111,13 @@
       <td>
         {% if decision.long_term_action %}
           <span class="badge {{ decision.long_term_action | action_class }}">{{ decision.long_term_action }}</span>
-          {% if decision.confidence is not none %}<span class="muted small">{{ decision.confidence | pct(0) }}</span>{% endif %}
+          {% if decision.confidence is not none %}<span class="muted small">{{ decision.confidence | pct0 }}</span>{% endif %}
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
       <td>
         {% if decision.short_term_action %}
           <span class="badge {{ decision.short_term_action | action_class }}">{{ decision.short_term_action }}</span>
-          {% if decision.short_term_confidence is not none %}<span class="muted small">{{ decision.short_term_confidence | pct(0) }}</span>{% endif %}
+          {% if decision.short_term_confidence is not none %}<span class="muted small">{{ decision.short_term_confidence | pct0 }}</span>{% endif %}
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
       <td class="small">

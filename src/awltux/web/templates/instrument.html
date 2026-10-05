@@ -13,7 +13,7 @@
   <div><dt>ISIN</dt><dd>{{ instrument.isin or '—' }}</dd></div>
   <div><dt>Currency</dt><dd>{{ instrument.currency_code or '—' }}</dd></div>
   <div><dt>Yahoo symbol</dt><dd>{{ instrument.yahoo_symbol or 'unresolved' }}</dd></div>
-  <div><dt>Mapping confidence</dt><dd>{{ instrument.mapping_confidence | pct(0) }}</dd></div>
+  <div><dt>Mapping confidence</dt><dd>{{ instrument.mapping_confidence | pct0 }}</dd></div>
   <div><dt>Sector</dt><dd>{{ instrument.sector or '—' }}
     {% if instrument.sector_source %}<span class="muted small">via {{ instrument.sector_source }}</span>{% endif %}
   </dd></div>
@@ -75,7 +75,7 @@
 
           <dl class="kv small">
             <div><dt>Composite</dt><dd>{{ score | number(1) }}</dd></div>
-            <div><dt>Confidence</dt><dd>{{ confidence | pct(0) }}</dd></div>
+            <div><dt>Confidence</dt><dd>{{ confidence | pct0 }}</dd></div>
             {% if key == 'short_term' %}
               {% set setup = (decision.answers or {}).get('short_term_setup', {}).get('score') %}
               {% set risk = (decision.answers or {}).get('short_term_drawdown_risk', {}).get('score') %}
@@ -136,11 +136,11 @@
              legitimately carries no confidence, so attribute access raises rather
              than rendering blank. #}
           <td><strong>{{ answer.get('choice') or answer.get('noul') or answer.get('score') }}</strong></td>
-          <td class="num">{{ answer.get('confidence') | pct(0) }}</td>
+          <td class="num">{{ answer.get('confidence') | pct0 }}</td>
           <td class="small muted">
             {% if answer.get('probabilities') %}
               {% for option, probability in answer.get('probabilities').items() %}
-                {{ option }}:{{ probability | pct(0) }}{% if not loop.last %} · {% endif %}
+                {{ option }}:{{ probability | pct0 }}{% if not loop.last %} · {% endif %}
               {% endfor %}
             {% else %}—{% endif %}
           </td>
@@ -218,13 +218,13 @@
         <td>
           {% if past.long_term_action %}
             <span class="badge {{ past.long_term_action | action_class }}">{{ past.long_term_action }}</span>
-            {% if past.confidence is not none %}<span class="muted small">{{ past.confidence | pct(0) }}</span>{% endif %}
+            {% if past.confidence is not none %}<span class="muted small">{{ past.confidence | pct0 }}</span>{% endif %}
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td>
           {% if past.short_term_action %}
             <span class="badge {{ past.short_term_action | action_class }}">{{ past.short_term_action }}</span>
-            {% if past.short_term_confidence is not none %}<span class="muted small">{{ past.short_term_confidence | pct(0) }}</span>{% endif %}
+            {% if past.short_term_confidence is not none %}<span class="muted small">{{ past.short_term_confidence | pct0 }}</span>{% endif %}
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td class="small">{{ engine_label(past.engine, past.uncalibrated) }}</td>
@@ -258,7 +258,7 @@
     <div><dt>Fair value (base)</dt><dd>{{ valuation.fair_value_base | money(valuation.currency) }}</dd></div>
     <div><dt>Range</dt><dd>{{ valuation.fair_value_low | number(2) }} – {{ valuation.fair_value_high | number(2) }}</dd></div>
     <div><dt>Margin of safety</dt><dd>{{ valuation.margin_of_safety | pct(1, false) }}</dd></div>
-    <div><dt>Valuation confidence</dt><dd>{{ valuation.valuation_confidence | pct(0) }}</dd></div>
+    <div><dt>Valuation confidence</dt><dd>{{ valuation.valuation_confidence | pct0 }}</dd></div>
     <div><dt>Methods applied</dt><dd>{{ valuation.methods_applied | join(', ') or '—' }}</dd></div>
     <div><dt>Status</dt><dd>{{ valuation.status }}{% if valuation.notes %} — {{ valuation.notes }}{% endif %}</dd></div>
     <div><dt>As of</dt><dd>{{ valuation.as_of | datetime }}</dd></div>
@@ -319,7 +319,7 @@
         <td class="num">{{ period.metrics.get('net_income') | number(0) }}</td>
         <td class="num">{{ period.metrics.get('roe') | pct(1, false) }}</td>
         <td class="num">{{ period.metrics.get('net_margin') | pct(1, false) }}</td>
-        <td class="num">{{ period.confidence | pct(0) }}</td>
+        <td class="num">{{ period.confidence | pct0 }}</td>
       </tr>
     {% endfor %}
     </tbody>

@@ -243,3 +243,73 @@ class TestThePages:
     def test_the_nav_reaches_the_ledger(self, client, universe_instrument):
         body = client.get("/dashboard").text
         assert 'href="/decisions"' in body
+
+
+class TestConfidenceIsAProportion:
+    """A 100x display bug that had been on three pages and was invisible.
+
+    `pct` adds a sign and assumes a change, so `pct(0)` rendered a confidence of
+    0.7 as **"+1%"**. `pct0` is the filter for a 0..1 proportion, and its own
+    docstring says so: "a credibility or a confidence is a proportion, and
+    rendering it as '+25%' would suggest a movement that did not happen".
+
+    The calibration page's headline hit rate is `hits / directional_count`, so it
+    was showing +1% for 50%.
+    """
+
+    def test_a_confidence_is_not_rendered_as_a_signed_percentage(self):
+        from awltux.web.templating import fmt_pct, pct0
+
+        assert pct0(0.7) == "70%"
+        # What the old rendering produced, pinned so it cannot come back.
+        assert fmt_pct(0.7, 0) == "+1%"
+        assert "+" not in pct0(0.7)
+
+    def test_no_template_renders_a_proportion_with_the_signed_filter(self):
+        """A source check, because the bug is invisible in a rendered page: "+1%"
+        looks like a number.
+
+        `pct` is still right for a genuine percentage -- a return, a spread -- so
+        this asserts on the proportion fields by name rather than banning the
+        filter.
+        """
+        from pathlib import Path
+
+        templates = Path("src/awltux/web/templates")
+        proportion_fields = (
+            "confidence",
+            "hit_rate",
+            "credibility",
+            "reliability",
+            "relevance",
+            "probability",
+            "mapping_confidence",
+            "valuation_confidence",
+        )
+        offenders = []
+        for path in templates.rglob("*.html"):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if "pct(0)" not in line:
+                    continue
+                if any(field in line for field in proportion_fields):
+                    offenders.append(f"{path.name}:{number}: {line.strip()}")
+        assert offenders == []
+
+    def test_the_dashboard_shows_a_confidence_as_a_percentage(
+        self, client, universe_instrument, session
+    ):
+        """End to end, on the page that has been wrong the longest."""
+        decision = _decision(session, confidence=0.7)
+        _outcome(
+            session,
+            decision,
+            horizon="long_term",
+            days=30,
+            return_pct=4.0,
+            verdict="direction_correct",
+        )
+        session.commit()
+
+        body = client.get("/decisions").text
+        assert "70%" in body
+        assert "+1%" not in body

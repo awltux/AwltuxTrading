@@ -184,7 +184,7 @@
       {% endset %}
       <td class="{% if primary == 'long_term' %}primary{% endif %}">{{ long_cell }}</td>
       <td class="num">{{ row.composite_score | number(1) }}</td>
-      <td class="num">{{ row.confidence | pct(0) }}</td>
+      <td class="num">{{ row.confidence | pct0 }}</td>
 
       {# ---- short term ---- #}
       {% set short_cell %}
@@ -197,7 +197,7 @@
       {% endset %}
       <td class="{% if primary == 'short_term' %}primary{% endif %}">{{ short_cell }}</td>
       <td class="num">{{ row.short_term_score | number(1) }}</td>
-      <td class="num">{{ row.short_term_confidence | pct(0) }}</td>
+      <td class="num">{{ row.short_term_confidence | pct0 }}</td>
 
       <td class="small">
         {% if row.setup_score is not none %}
