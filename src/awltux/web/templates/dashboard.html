@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Recommendations — {{ app_name }}{% endblock %}
+
+{# Builds a querystring from the current view state, with per-link overrides.
+
+   Jinja macros have no `**kwargs`, but a macro that *references* `kwargs` does
+   capture any extra keyword arguments it is called with -- which is what makes
+   `params(action=None)` able to clear a filter. #}
+{% macro params() %}
+  {%- set merged = {
+    'sort': sort, 'direction': direction, 'view': view, 'q': q,
+    'horizon': horizon, 'action': action, 'engine': engine,
+    'horizon_fit': horizon_fit, 'page': page
+  } -%}
+  {%- set _ = merged.update(kwargs) -%}
+  {%- set parts = [] -%}
+  {%- for key, value in merged.items() if value is not none and value != '' -%}
+    {%- set _ = parts.append(key ~ '=' ~ value) -%}
+  {%- endfor -%}
+  {{- ('?' ~ (parts | join('&'))) if parts else '' -}}
+{% endmacro %}
+
+{% macro sort_link(key, label, title=None) %}
+  {% set next_dir = 'asc' if (sort == key and direction == 'desc') else 'desc' %}
+  <a class="sort {% if sort == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
+     href="/dashboard{{ params(sort=key, direction=next_dir, page=None) }}">
+    {{ label }}{% if sort == key %}<span class="arrow">{{ '▲' if direction == 'asc' else '▼' }}</span>{% endif %}
+  </a>
+{% endmacro %}
+
+{% block content %}
+<section class="summary">
+  <div class="stat"><span class="stat-value">{{ stats.universe_size }}</span><span class="stat-label">in universe</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.mapped }}</span><span class="stat-label">price-mapped</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.decided }}</span><span class="stat-label">decided</span></div>
+  {% for fit, count in stats.horizon_fit_counts.items() %}
+    {% if fit != 'unknown' %}
+      <div class="stat"><span class="stat-value">{{ count }}</span><span class="stat-label">suits {{ fit | replace('_', ' ') }}</span></div>
+    {% endif %}
+  {% endfor %}
+  {% if stats.engine_counts %}
+    <div class="stat">
+      <span class="stat-value">
+        {% for engine_name, count in stats.engine_counts.items() %}
+          {{ engine_name }}:{{ count }}{% if not loop.last %} · {% endif %}
+        {% endfor %}
+      </span>
+      <span class="stat-label">decision engines</span>
+    </div>
+  {% endif %}
+</section>
+
+{% if stats.last_job %}
+  <p class="muted small">
+    Last job: <strong>{{ stats.last_job.job }}</strong>
+    ({{ stats.last_job.started_at | ago }},
+    {% if stats.last_job.ok %}ok{% else %}<span class="bad">failed: {{ stats.last_job.error }}</span>{% endif %})
+  </p>
+{% endif %}
+
+{# ------------------------------------------------------------------ horizons #}
+<section class="horizon-bar">
+  <div class="horizon-picker">
+    <span class="muted small">Actionable filter and action column follow:</span>
+    {% for key, definition in horizons.items() %}
+      <a class="{% if horizon == key %}active{% endif %}"
+         href="/dashboard{{ params(horizon=key, action=None) }}"
+         title="{{ definition.description }}">
+        {{ definition.label }} <span class="muted small">{{ definition.guidance }}</span>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+
+<p class="notice">
+  <strong>Two independent verdicts.</strong> Long term (12–36 months) is driven by
+  valuation and business quality; short term (5–20 trading days) by trend, momentum
+  and news. They are allowed to disagree — that is the point. Both are shown, and
+  the selected horizon governs which call the filters and badges emphasise.
+  <br>
+  <strong>Short term means a swing on daily bars, not day trading.</strong> There is
+  no supported intraday path: Trading 212 exposes no quote endpoint, and free price
+  feeds are delayed, so anything needing live ticks would be unsafe on this data.
+</p>
+
+{# A limitation the reader must see, because it changes what the gate can claim. #}
+{% if capabilities and capabilities.portfolio is defined and not capabilities.portfolio %}
+  <div class="notice warn">
+    <strong>Portfolio access unavailable — concentration limits are not enforced.</strong>
+    Your Trading 212 API key cannot read positions
+    ({{ capabilities.errors.portfolio if capabilities.errors else 'scope missing' }}).
+    Consequences you should know about:
+    <ul>
+      <li>"My holdings" will be empty, and the tactical view cannot tell whether you
+          already own a name — so it will answer "avoid" rather than "reduce".</li>
+      <li>The risk gate <strong>cannot count your positions or measure your
+          exposure</strong>, so it reports those checks as unverified instead of
+          passing them. Every <code>portfolio_limits</code> check below reads
+          "NOT VERIFIED".</li>
+    </ul>
+    Everything else — valuation, sentiment, both verdicts — works normally.
+    Add the <code>portfolio</code> scope to your key to restore these checks.
+  </div>
+{% endif %}
+
+<section class="controls">
+  <div class="views">
+    <a class="{% if view == 'all' %}active{% endif %}"
+       href="/dashboard{{ params(view='all', page=None) }}">All</a>
+    <a class="{% if view == 'suggestions' %}active{% endif %}"
+       href="/dashboard{{ params(view='suggestions', page=None) }}"
+       title="Only calls the risk gate allowed on the selected horizon">Actionable only</a>
+    <a class="{% if view == 'held' %}active{% endif %}"
+       href="/dashboard{{ params(view='held', page=None) }}">My holdings</a>
+    <a class="{% if horizon_fit %}active{% endif %}"
+       href="/dashboard{{ params(horizon_fit='long_term' if horizon_fit != 'long_term' else None) }}">Suits long term</a>
+    <a class="{% if horizon_fit == 'short_term' %}active{% endif %}"
+       href="/dashboard{{ params(horizon_fit='short_term' if horizon_fit != 'short_term' else None) }}">Suits short term</a>
+  </div>
+  <form method="get" action="/dashboard" class="search">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="direction" value="{{ direction }}">
+    <input type="hidden" name="view" value="{{ view }}">
+    <input type="hidden" name="horizon" value="{{ horizon }}">
+    <input type="search" name="q" value="{{ q }}" placeholder="Filter by ticker or name…" aria-label="Filter">
+    <button type="submit">Filter</button>
+  </form>
+</section>
+
+<div class="table-wrap">
+<table class="grid">
+  <thead>
+    <tr>
+      <th>{{ sort_link('name', 'Instrument') }}</th>
+      <th>{{ sort_link('horizon_fit', 'Suits', 'Which horizon the evidence actually supports') }}</th>
+      <th class="num">{{ sort_link('margin_of_safety', 'Margin of safety') }}</th>
+      <th class="num">Price</th>
+      <th>{{ sort_link('action', 'Long term', '12-36 months') }}</th>
+      <th class="num">{{ sort_link('composite_score', 'L score') }}</th>
+      <th class="num">{{ sort_link('confidence', 'L conf.') }}</th>
+      <th>{{ sort_link('short_term_action', 'Short term', '5-20 trading days') }}</th>
+      <th class="num">{{ sort_link('short_term_score', 'S score') }}</th>
+      <th class="num">{{ sort_link('short_term_confidence', 'S conf.') }}</th>
+      <th>Setup / risk</th>
+      <th>{{ sort_link('sentiment', 'Sentiment') }}</th>
+      <th>Engine</th>
+      <th>{{ sort_link('freshness', 'Updated') }}</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    {% set primary = 'short_term' if horizon == 'short_term' else 'long_term' %}
+    <tr class="{% if row.conflict %}conflict{% endif %} {% if row.is_held %}held{% endif %}">
+      <td>
+        <a href="/instrument/{{ row.ticker }}"><strong>{{ row.ticker }}</strong></a>
+        <span class="muted small">{{ row.name[:34] }}</span>
+        {% if row.is_held %}<span class="chip small held">held</span>{% endif %}
+      </td>
+
+      <td>
+        {% if row.horizon_fit %}
+          <span class="badge fit-{{ row.horizon_fit }}">{{ row.horizon_fit | replace('_', ' ') }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+
+      <td class="num {% if row.margin_of_safety and row.margin_of_safety > 0 %}good{% elif row.margin_of_safety %}bad{% endif %}">
+        {{ row.margin_of_safety | pct(1, false) }}
+      </td>
+      <td class="num">
+        {{ row.price | number(2) }}
+        <span class="muted small {% if row.change_pct and row.change_pct > 0 %}good{% elif row.change_pct %}bad{% endif %}">
+          {{ row.change_pct | pct(1) }}
+        </span>
+      </td>
+
+      {# ---- long term ---- #}
+      {% set long_cell %}
+        <span class="badge {{ row.action | action_class }}">{{ (row.action or 'no call') | replace('_', ' ') }}</span>
+        {% if row.action and not row.gate_allowed %}
+          <span class="muted small" title="{{ row.gate_reason }}">{{ row.gate_reason or 'refused' }}</span>
+        {% elif row.gate_allowed %}
+          <span class="chip small ok">allowed</span>
+        {% endif %}
+      {% endset %}
+      <td class="{% if primary == 'long_term' %}primary{% endif %}">{{ long_cell }}</td>
+      <td class="num">{{ row.composite_score | number(1) }}</td>
+      <td class="num">{{ row.confidence | pct(0) }}</td>
+
+      {# ---- short term ---- #}
+      {% set short_cell %}
+        <span class="badge {{ row.short_term_action | action_class }}">{{ (row.short_term_action or 'no call') | replace('_', ' ') }}</span>
+        {% if row.short_term_action and not row.short_term_gate_allowed %}
+          <span class="muted small" title="{{ row.short_term_gate_reason }}">{{ row.short_term_gate_reason or 'refused' }}</span>
+        {% elif row.short_term_gate_allowed %}
+          <span class="chip small ok">allowed</span>
+        {% endif %}
+      {% endset %}
+      <td class="{% if primary == 'short_term' %}primary{% endif %}">{{ short_cell }}</td>
+      <td class="num">{{ row.short_term_score | number(1) }}</td>
+      <td class="num">{{ row.short_term_confidence | pct(0) }}</td>
+
+      <td class="small">
+        {% if row.setup_score is not none %}
+          <span title="Quality of the tactical setup (0 poor – 4 excellent)">setup {{ row.setup_score | number(0) }}/4</span>
+          <br>
+          <span class="muted" title="Risk of an adverse move over the next few weeks (0 minimal – 4 severe)">
+            risk {{ row.drawdown_risk | number(0) }}/4
+          </span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+
+      <td>
+        {% if row.sentiment is not none %}
+          <span class="meter"><span style="width: {{ ((row.sentiment + 1) / 2 * 100) | round(0) }}%"></span></span>
+          <span class="muted small">{{ row.sentiment | number(2) }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+
+      <td class="small">
+        {{ engine_label(row.engine, row.uncalibrated) }}
+        {% if row.conflict %}<span class="chip small warn" title="An action disagrees with the composite of the model's own scores">conflict</span>{% endif %}
+      </td>
+      <td class="small muted" title="Decision {{ row.decision_at | datetime }}">
+        {{ row.decision_at | ago }}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="14" class="empty">
+      Nothing to show yet. Run the <code>t212_instruments</code> and <code>price_eod</code>
+      jobs from <a href="/jobs">Operations</a>, then <code>valuation</code> and <code>decision</code>.
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if pages > 1 %}
+<nav class="pager">
+  {% if page > 1 %}
+    <a href="/dashboard{{ params(page=page - 1) }}">← Prev</a>
+  {% endif %}
+  <span>Page {{ page }} of {{ pages }} ({{ total }} instruments)</span>
+  {% if page < pages %}
+    <a href="/dashboard{{ params(page=page + 1) }}">Next →</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

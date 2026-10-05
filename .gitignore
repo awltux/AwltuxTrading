@@ -1,0 +1,40 @@
+# secrets -- never commit
+.env
+*.key
+*.pem
+
+# data volume (sqlite db + raw provider cache)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# local scratch: pip's temp dir and the test suite's working directory. Both
+# live inside the repo so they work under a file-access sandbox.
+.pip-tmp/
+.tests-tmp/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+logs/

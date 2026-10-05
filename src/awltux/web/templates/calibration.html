@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Calibration — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Calibration</h1>
+<p class="muted small">
+  This is what makes a decision auditable rather than merely recorded. Only
+  actionable calls (BUY / STRONG BUY / SELL / REDUCE / AVOID) are scored — HOLD
+  asserts no direction, so counting it either way would flatter or penalise the
+  model for a claim it never made.
+</p>
+
+{# The two horizons are judged on different timescales, so they are reported
+   separately. Blending them would produce a hit rate that describes neither. #}
+<section class="horizon-bar">
+  <div class="horizon-picker">
+    {% for key, definition in horizons.items() %}
+      {% set summary = report if horizon == key else other %}
+      <a class="{% if horizon == key %}active{% endif %}"
+         href="/calibration?horizon={{ key }}"
+         title="{{ definition.description }}">
+        {{ definition.label }} <span class="muted small">{{ definition.guidance }}</span>
+        <span class="chip small">{{ summary.overall.count }} scored</span>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+
+<p class="notice">
+  <strong>{{ horizons[horizon].label }} view — measured over
+  {{ report.horizon_days }} days</strong> (windows available:
+  {{ report.horizons_available | join('d, ') }}d).
+  {% if horizon == 'short_term' %}
+    A tactical call is a claim about the next few weeks. Scoring it over months
+    would measure noise rather than skill, which is why the windows here are days,
+    not months.
+  {% else %}
+    An investment call is a claim about years, so its shortest window is a month.
+  {% endif %}
+</p>
+
+{% if report.scored_outcomes %}
+  <section class="summary">
+    <div class="stat"><span class="stat-value">{{ report.scored_outcomes }}</span><span class="stat-label">scored outcomes</span></div>
+    <div class="stat"><span class="stat-value">{{ report.overall.count }}</span><span class="stat-label">actionable calls</span></div>
+    <div class="stat">
+      <span class="stat-value">{{ report.overall.hit_rate | pct(0) if report.overall.hit_rate is not none else '—' }}</span>
+      <span class="stat-label">directional hit rate</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value">{{ report.overall.avg_return_pct | pct(1) }}</span>
+      <span class="stat-label">avg forward return</span>
+    </div>
+  </section>
+
+  {% if report.calibration_inversions %}
+    <div class="notice warn">
+      <strong>Calibration inversion.</strong> Higher-confidence buckets are not
+      outperforming lower ones, which means the confidence signal is not yet
+      earning its keep:
+      <ul>{% for line in report.calibration_inversions %}<li>{{ line }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+
+  <h2>By confidence ({{ report.horizon_days }}d horizon)</h2>
+  <table class="grid compact">
+    <thead><tr><th>Confidence bucket</th><th class="num">Calls</th><th class="num">Hits</th><th class="num">Misses</th><th class="num">Hit rate</th><th class="num">Avg return</th></tr></thead>
+    <tbody>
+    {% for bucket, stats in report.by_confidence.items() %}
+      <tr>
+        <td>{{ bucket }}</td>
+        <td class="num">{{ stats.count }}</td>
+        <td class="num good">{{ stats.hits }}</td>
+        <td class="num bad">{{ stats.misses }}</td>
+        <td class="num">{{ stats.hit_rate | pct(0) if stats.hit_rate is not none else '—' }}</td>
+        <td class="num">{{ stats.avg_return_pct | pct(1) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>By decision engine</h2>
+  <p class="muted small">
+    Reported separately on purpose: a fallback engine should be judged on its own
+    record, not blended into the calibrated model's.
+  </p>
+  <table class="grid compact">
+    <thead><tr><th>Engine</th><th class="num">Calls</th><th class="num">Hit rate</th><th class="num">Avg return</th></tr></thead>
+    <tbody>
+    {% for engine_name, stats in report.by_engine.items() %}
+      <tr>
+        <td>{{ engine_name }}</td>
+        <td class="num">{{ stats.count }}</td>
+        <td class="num">{{ stats.hit_rate | pct(0) if stats.hit_rate is not None else '—' }}</td>
+        <td class="num">{{ stats.avg_return_pct | pct(1) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>By action</h2>
+  <table class="grid compact">
+    <thead><tr><th>Action</th><th class="num">Calls</th><th class="num">Hit rate</th><th class="num">Avg return</th></tr></thead>
+    <tbody>
+    {% for action_name, stats in report.by_action.items() %}
+      <tr>
+        <td><span class="badge {{ action_name | action_class }}">{{ action_name | replace('_', ' ') }}</span></td>
+        <td class="num">{{ stats.count }}</td>
+        <td class="num">{{ stats.hit_rate | pct(0) if stats.hit_rate is not None else '—' }}</td>
+        <td class="num">{{ stats.avg_return_pct | pct(1) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% if report.unexpected %}
+    <h2>High-confidence misses</h2>
+    <p class="muted small">
+      The most informative rows in the report: the model was confident and wrong.
+    </p>
+    <table class="grid compact">
+      <thead><tr><th>Instrument</th><th>Action</th><th class="num">Confidence</th><th>Engine</th><th class="num">Return</th><th>Decided</th></tr></thead>
+      <tbody>
+      {% for row in report.unexpected %}
+        <tr>
+          <td><a href="/instrument/{{ row.ticker }}">{{ row.ticker }}</a>
+            <span class="muted small">{{ row.name[:28] }}</span></td>
+          <td><span class="badge {{ row.action | action_class }}">{{ row.action }}</span></td>
+          <td class="num">{{ row.confidence | pct(0) }}</td>
+          <td>{{ row.engine }}</td>
+          <td class="num bad">{{ row.return_pct | pct(1) }}</td>
+          <td class="small muted">{{ row.decided_at | datetime }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <p class="muted small">Computed {{ report.computed_at | datetime }}.</p>
+{% else %}
+  <p class="muted">
+    No outcomes scored yet on the {{ horizons[horizon].label | lower }} horizon.
+    Forward returns need both an elapsed window
+    ({{ report.horizons_available | join('d, ') }}d) and stored prices covering it
+    — so this page fills in over the weeks after the first decisions.
+    {% if other.scored_outcomes %}
+      The other horizon has {{ other.scored_outcomes }} scored outcome(s);
+      <a href="/calibration?horizon={{ 'short_term' if horizon == 'long_term' else 'long_term' }}">switch to it</a>.
+    {% endif %}
+  </p>
+{% endif %}
+{% endblock %}

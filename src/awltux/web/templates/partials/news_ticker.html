@@ -1,0 +1,14 @@
+{# Server-rendered ticker fragment. This is the no-JavaScript fallback and the
+   initial paint; app.js replaces it with live Server-Sent Events once loaded. #}
+{% for item in items %}
+  <a class="ticker-item mat-{{ item.materiality | materiality_class }}"
+     href="{{ item.url or '#' }}" target="_blank" rel="noopener noreferrer"
+     title="{{ item.title }}{% if item.tickers %} — {{ item.tickers | join(', ') }}{% endif %}">
+    {% if item.tickers %}<span class="chip">{{ item.tickers | join(', ') }}</span>{% endif %}
+    <span class="ticker-title">{{ item.title }}</span>
+    {% if item.direction %}<span class="dir dir-{{ item.direction }}">{{ item.direction }}</span>{% endif %}
+    <span class="muted small">{{ item.published_at | ago }}</span>
+  </a>
+{% else %}
+  <span class="muted">No headlines yet. Once news ingest runs, material items appear here.</span>
+{% endfor %}

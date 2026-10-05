@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awltux-trading"
+version = "0.1.0"
+description = "Background share valuation and market-sentiment advisor for Trading 212 (UK + US)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "AwltuxTrading" }]
+
+dependencies = [
+    # web / api
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    # data / orm
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    # http / parsing
+    "httpx>=0.27",
+    "feedparser>=6.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    # market data / maths
+    "yfinance>=0.2.50",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    # scheduling
+    "apscheduler>=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.21",
+    "ruff>=0.7",
+]
+# Real JEV / TypeSafe client. Optional: the raw HTTP client in
+# awltux.decision.jev works without it.
+lev = ["typesafe-sdk>=0.1"]
+
+[project.scripts]
+awltux = "awltux.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+awltux = ["web/templates/**/*.html", "web/static/**/*", "llm/prompts/**/*.txt"]
+# Migration revisions are .py modules and ship as code, but the Alembic template
+# is not, and a missing script.py.mako would break `alembic revision`.
+"awltux.db.migrations" = ["*.mako", "versions/*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "network: test requires live network access (deselected by default)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# Local scratch: pip's temp directory and the suite's working directory. These
+# live inside the repo so they work under a file-access sandbox, but they are not
+# source and must not be linted.
+extend-exclude = [".pip-tmp", ".tests-tmp", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

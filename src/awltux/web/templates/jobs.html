@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Operations — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Operations</h1>
+
+<section class="summary">
+  <div class="stat"><span class="stat-value">{{ stats.universe_size }}</span><span class="stat-label">in universe</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.mapped }}</span><span class="stat-label">price-mapped</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.decided }}</span><span class="stat-label">decided</span></div>
+</section>
+
+<h2>Scheduled jobs</h2>
+<p class="muted small">
+  Jobs are triggered from here with the same code path the scheduler uses, so a
+  manual run is recorded in the history below exactly like an automatic one.
+</p>
+<table class="grid compact">
+  <thead><tr><th>Job</th><th>Description</th><th class="num">Every</th><th>Next run</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {% for job in jobs %}
+    <tr>
+      <td><code>{{ job.id }}</code></td>
+      <td class="small">{{ job.description }}</td>
+      <td class="num">{{ (job.interval_seconds / 60) | round(0) }}m</td>
+      <td class="small muted">{{ job.next_run | datetime if job.next_run else '—' }}</td>
+      <td>
+        {% if not job.enabled %}<span class="muted">disabled (missing credential)</span>
+        {% elif job.paused %}<span class="muted">paused</span>
+        {% else %}<span class="good">enabled</span>{% endif %}
+      </td>
+      <td>
+        <button class="run-job" data-job="{{ job.id }}"
+                {% if not job.enabled %}disabled title="Requires a credential in .env"{% endif %}>
+          Run now
+        </button>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="empty">Scheduler is not running.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Recent runs</h2>
+<table class="grid compact">
+  <thead><tr><th>Job</th><th>Started</th><th class="num">Seen</th><th class="num">Written</th><th>Result</th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td><code>{{ run.job }}</code></td>
+      <td class="small">{{ run.started_at | datetime }}</td>
+      <td class="num">{{ run.items_seen }}</td>
+      <td class="num">{{ run.items_written }}</td>
+      <td class="small">
+        {% if run.ok %}<span class="good">ok</span>
+        {% elif run.ok is none %}<span class="muted">running</span>
+        {% else %}<span class="bad">{{ run.error }}</span>{% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">No runs recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

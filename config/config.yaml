@@ -1,0 +1,234 @@
+# =============================================================================
+# AwltuxTrading tunables. Secrets live in .env, not here.
+# Every value below is a *default* that can be overridden in the Settings UI;
+# overrides are persisted in the app_setting table.
+# =============================================================================
+
+app:
+  name: AwltuxTrading
+  timezone: Europe/London
+  # Decisions are only produced for instruments whose symbol mapping resolved.
+  require_resolved_mapping: true
+
+# --- universe -----------------------------------------------------------------
+universe:
+  # Target size of the analysed universe (held names + watchlist are always in).
+  size: 500
+  exchanges:
+    - LSE      # London Stock Exchange (UK)
+    - NASDAQ
+    - NYSE
+  # Minimum median daily sterling turnover to be considered investable.
+  min_daily_turnover_gbp: 250000
+  # Instrument types pulled from /equity/metadata/instruments.
+  instrument_types: [STOCK]
+
+# --- ingest cadences (seconds unless noted) -----------------------------------
+schedule:
+  t212_instruments: 86400        # daily; T212 rate limit is 1 req / 50s
+  t212_account: 300
+  prices_intraday: 900           # 15 min while the exchange is open
+  prices_eod: 86400              # once after the close
+  quotes_held: 300               # 5 min for held/watchlist names
+  fundamentals_rotation_per_day: 70
+  edgar_submissions: 3600
+  edgar_atom_events: 45
+  companies_house: 900
+  news_rss: 300
+  news_finnhub: 1200
+  news_marketaux: 1800
+  news_gdelt: 900
+  sentiment_aggregate: 3600
+  valuation: 86400               # full sweep nightly; event-driven otherwise
+  decision: 86400
+  calibration: 86400
+  retention: 604800
+
+# --- provider rate-limit budgets (requests per window) ------------------------
+# Scopes mirror each provider's own per-endpoint limits, because a single shared
+# budget would let a fast endpoint starve a slow one.
+budgets:
+  # Trading 212 -- limits are per endpoint, per account.
+  t212_instruments: { requests: 1,  window_seconds: 50 }
+  t212_exchanges:   { requests: 1,  window_seconds: 30 }
+  t212_account:     { requests: 1,  window_seconds: 5 }
+  t212_positions:   { requests: 1,  window_seconds: 1 }
+  t212_orders:      { requests: 1,  window_seconds: 2 }
+  t212_history:     { requests: 18, window_seconds: 60 }
+  yahoo:        { requests: 1800, window_seconds: 3600 }
+  stooq:        { requests: 60,   window_seconds: 3600 }
+  edgar:        { requests: 5,    window_seconds: 1 }     # SEC allows 10/s; use half
+  companies_house: { requests: 500, window_seconds: 300 } # CH allows 600/5min
+  finnhub:      { requests: 55,   window_seconds: 60 }
+  marketaux:    { requests: 100,  window_seconds: 86400 }
+  gdelt:        { requests: 1,    window_seconds: 5 }
+  deepseek:     { requests: 200,  window_seconds: 60 }
+  typesafe:     { requests: 60,   window_seconds: 1 }
+
+# --- horizons -----------------------------------------------------------------
+# Two independent verdicts, because they answer different questions from
+# different inputs. A stock can be unattractive for years and tactically well set
+# up this month, or vice versa, and a single collapsed action cannot say which.
+#
+# NOTE: "short term" here means five to twenty *trading days*, judged on daily
+# bars. It is not day trading. There is no supported intraday path: Trading 212
+# exposes no quote endpoint at all, and the free price feed is delayed. Anything
+# needing live ticks would be unsafe on this data, so the app says so rather than
+# implying otherwise.
+horizons:
+  long_term:
+    label: Long term
+    guidance: 12-36 months
+    description: >-
+      Driven by valuation, business quality and balance-sheet strength. Ignores
+      short-term price movement by design: a temporary drawdown in a sound, cheap
+      business is not a reason to sell.
+  short_term:
+    label: Short term
+    guidance: 5-20 trading days
+    description: >-
+      Driven by trend, momentum, volume and the direction of news and sentiment.
+      Answers a different question from the long-term view and may disagree with
+      it. Swing horizon on daily bars only -- not day trading.
+
+# --- deterministic valuation model --------------------------------------------
+valuation:
+  # Discount rate build-up, used when a DCF is applicable.
+  risk_free_rate: 0.042
+  equity_risk_premium: 0.055
+  default_beta: 1.0
+  # Terminal growth is capped -- nothing grows faster than the economy forever.
+  terminal_growth_cap: 0.025
+  forecast_years: 7
+  # Fade: growth decays linearly from the historical rate to terminal over the
+  # forecast horizon.
+  growth_fade_to_terminal: true
+  # Weight of each method in the blended fair value. Weights for methods that
+  # are not applicable are renormalised across the applicable ones.
+  method_weights:
+    dcf: 0.35
+    epv: 0.20
+    residual_income: 0.15
+    multiples: 0.20
+    dividend_discount: 0.10
+    graham: 0.00          # bound only, not a blend contributor
+  # Bull/bear band width as a fraction of the base value.
+  scenario_spread: 0.25
+  # Below this many usable methods, refuse to value rather than guess.
+  min_applicable_methods: 2
+  # A valuation whose method dispersion exceeds this is flagged low-confidence.
+  max_method_dispersion: 0.60
+  peer_group_min_size: 4
+
+# --- DeepSeek -----------------------------------------------------------------
+llm:
+  # Cheap + fast for high-volume classification and summarisation.
+  model_bulk: deepseek-flash
+  # Deeper reasoning for full filing extraction.
+  model_deep: deepseek-v4-pro
+  max_output_tokens: 8000
+  temperature: 0.0
+  # Prompt-cache friendly: put large documents in a stable prefix.
+  enable_prefix_cache_layout: true
+  # Hard monthly spend ceiling in USD; the decision layer degrades rather than
+  # exceed it. Tracked in the llm_call table.
+  monthly_budget_usd: 25.0
+  request_timeout_seconds: 180
+  max_retries: 3
+
+# --- decision engines ---------------------------------------------------------
+# Tried in order. Each answer records which engine produced it.
+decision:
+  engine_priority: [jev, deepseek, offline]
+  # Refuse to emit a *trade suggestion* from a weaker engine than this.
+  # "offline" keeps the app useful with no keys at all, but the UI marks it.
+  min_engine_for_suggestion: offline
+  # Pin the JEV version so confidence thresholds do not drift under an alias.
+  # "jev-latest" tracks TypeSafe's stable release; prefer a versioned id.
+  jev_model: jev-latest
+  jev_max_state_tokens: 28000     # hard cap is 32k for state + longest question
+  warn_if_fallback: true
+
+# --- composite scoring --------------------------------------------------------
+# Weights are per horizon, because the two verdicts are built from different
+# evidence and averaging them into one number would defeat the point of having
+# two. The long-term weights keep the deterministic margin of safety dominant:
+# the model shapes the verdict, the arithmetic anchors the rank.
+composite:
+  long_term_weights:
+    margin_of_safety: 0.34
+    valuation_verdict: 0.20
+    business_quality: 0.16
+    balance_sheet_risk: 0.12
+    earnings_trend: 0.08
+    news_materiality: 0.06
+    sentiment_regime: 0.04
+  # The tactical score is dominated by the quality of the setup and its downside
+  # risk. Valuation still contributes -- a cheap stock has less far to fall -- but
+  # it is deliberately not the driver, or this would just be the long-term view
+  # with a different name.
+  short_term_weights:
+    short_term_setup: 0.35
+    short_term_drawdown_risk: 0.20
+    news_materiality: 0.20
+    valuation_verdict: 0.15
+    sentiment_regime: 0.10
+
+# --- risk gate ----------------------------------------------------------------
+gate:
+  # Confidence floors are per engine, not per horizon: they are about how much
+  # the number can be trusted, not what it is about.
+  min_confidence: 0.70
+  min_top_probability: 0.60
+  # The fallback engine's probabilities are model-estimated, not calibrated,
+  # so it is held to a stricter bar.
+  min_confidence_fallback_engine: 0.80
+  # The rule engine reports no probabilities at all -- its number describes how
+  # good the *evidence* is, not the chance of being right. Judging it against a
+  # calibration-style floor is a category error, and setting one above its
+  # ceiling would make the no-keys mode silently incapable of ever suggesting
+  # anything. It gets its own floor, on its own scale.
+  min_confidence_rule_engine: 0.55
+  # Portfolio construction limits, shared by both horizons (advisory sizing).
+  max_positions: 25
+  max_weight_per_name: 0.08
+  max_weight_per_sector: 0.30
+  min_daily_turnover_gbp: 250000
+  # Per-horizon requirements. A tactical call does not need a fresh discounted
+  # cash flow; it does need fresh prices and actual momentum evidence.
+  long_term:
+    max_price_age_seconds: 129600        # 1.5 trading days
+    max_valuation_age_seconds: 604800    # 7 days
+    max_filing_age_seconds: 34560000     # 400 days
+    require_valuation: true
+    require_filing: false
+  short_term:
+    max_price_age_seconds: 432000        # 5 days: the bars must be current
+    max_valuation_age_seconds: 604800
+    max_filing_age_seconds: 34560000
+    require_valuation: false
+    require_filing: false
+    # A tactical call with no measured momentum is not a tactical call, so the
+    # setup score is a hard requirement rather than a weight.
+    min_setup_score: 2
+
+# --- news flash ticker --------------------------------------------------------
+news:
+  # Minimum materiality classification for an item to reach the live ticker.
+  ticker_min_materiality: mild
+  dedupe_window_hours: 72
+  max_items_per_feed_poll: 50
+  # Headline-level prefilter before spending an LLM call.
+  prefilter:
+    min_title_chars: 25
+    drop_patterns:
+      - '(?i)\b(horoscope|recipe|sports?|weather|lottery|crypto giveaway)\b'
+    # A headline must mention one of these markers to be scored.
+    require_any_ticker_mention: false
+
+# --- retention ----------------------------------------------------------------
+retention:
+  quote_days: 30
+  news_days: 730
+  raw_payload_days: 180
+  llm_call_days: 365

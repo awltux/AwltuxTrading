@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}{{ ticker }} — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>
+  {{ ticker }}
+  <span class="muted">{{ instrument.name }}</span>
+  {% if instrument.is_held %}<span class="chip held">held</span>{% endif %}
+</h1>
+
+<section class="kv">
+  <div><dt>Exchange</dt><dd>{{ instrument.exchange_name or '—' }}</dd></div>
+  <div><dt>ISIN</dt><dd>{{ instrument.isin or '—' }}</dd></div>
+  <div><dt>Currency</dt><dd>{{ instrument.currency_code or '—' }}</dd></div>
+  <div><dt>Yahoo symbol</dt><dd>{{ instrument.yahoo_symbol or 'unresolved' }}</dd></div>
+  <div><dt>Mapping confidence</dt><dd>{{ instrument.mapping_confidence | pct(0) }}</dd></div>
+  <div><dt>Sector</dt><dd>{{ instrument.sector or '—' }}
+    {% if instrument.sector_source %}<span class="muted small">via {{ instrument.sector_source }}</span>{% endif %}
+  </dd></div>
+  <div><dt>SIC</dt><dd>{{ instrument.sic_code or '—' }}</dd></div>
+  <div><dt>Companies House</dt><dd>{{ instrument.ch_company_number or '—' }}</dd></div>
+  <div><dt>SEC CIK</dt><dd>{{ instrument.sec_cik or '—' }}</dd></div>
+</section>
+
+{# ------------------------------------------------------------------ decision #}
+<h2>Decision</h2>
+{% if decision %}
+  <div class="receipt">
+    <div class="receipt-head">
+      <span class="engine-pill">{{ engine_label(decision.engine, decision.uncalibrated) }}</span>
+      {% if decision.horizon_fit %}
+        <span class="badge fit-{{ decision.horizon_fit }}">
+          evidence suits: {{ decision.horizon_fit | replace('_', ' ') }}
+        </span>
+      {% endif %}
+      {% if decision.conflict_flag %}<span class="chip warn">an action conflicts with its own composite</span>{% endif %}
+      <span class="muted small">decided {{ decision.created_at | datetime }}</span>
+    </div>
+
+    {% if decision.uncalibrated %}
+      <p class="notice">
+        These probabilities were estimated by a language model, not produced by a
+        calibrated decision model. Treat them as an ordering, not a probability.
+      </p>
+    {% endif %}
+    {% if decision.fallback_reason %}
+      <p class="notice">Fallback reason: {{ decision.fallback_reason }}</p>
+    {% endif %}
+
+    {# ------------------------------------------------------ two verdicts #}
+    <div class="horizon-grid">
+      {% for key, label, guidance, action, score, confidence, gate, gate_allowed, description in [
+        ('long_term', 'Long term', horizons.long_term.guidance, decision.long_term_action,
+         decision.composite_score, decision.confidence, decision.gate, decision.gate_allowed,
+         horizons.long_term.description),
+        ('short_term', 'Short term', horizons.short_term.guidance, decision.short_term_action,
+         decision.short_term_composite_score, decision.short_term_confidence,
+         decision.short_term_gate, decision.short_term_gate_allowed,
+         horizons.short_term.description)
+      ] %}
+        <div class="horizon-card horizon-{{ key }}">
+          <h3>{{ label }} <span class="muted small">{{ guidance }}</span></h3>
+          <p class="muted small">{{ description }}</p>
+
+          <div class="horizon-verdict">
+            <span class="badge big {{ action | action_class }}">{{ (action or 'no call') | replace('_', ' ') }}</span>
+            {% if gate_allowed %}
+              <span class="good">gate allowed</span>
+            {% else %}
+              <span class="bad" title="{{ (gate or {}).get('reason') }}">
+                {{ (gate or {}).get('binding_rule') or 'no suggestion' }}
+              </span>
+            {% endif %}
+          </div>
+
+          <dl class="kv small">
+            <div><dt>Composite</dt><dd>{{ score | number(1) }}</dd></div>
+            <div><dt>Confidence</dt><dd>{{ confidence | pct(0) }}</dd></div>
+            {% if key == 'short_term' %}
+              {% set setup = (decision.answers or {}).get('short_term_setup', {}).get('score') %}
+              {% set risk = (decision.answers or {}).get('short_term_drawdown_risk', {}).get('score') %}
+              <div><dt>Setup</dt><dd>{{ setup | number(0) }}/4</dd></div>
+              <div><dt>Drawdown risk</dt><dd>{{ risk | number(0) }}/4</dd></div>
+            {% else %}
+              <div><dt>Margin of safety</dt>
+                <dd>{{ (valuation.margin_of_safety if valuation else None) | pct(1, false) }}</dd></div>
+            {% endif %}
+          </dl>
+
+          {% if gate and gate.checks %}
+            <details>
+              <summary>Risk gate checks ({{ gate.checks | length }})</summary>
+              <table class="grid compact">
+                <thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead>
+                <tbody>
+                {% for check in gate.checks %}
+                  <tr>
+                    <td>{{ check.check | replace('_', ' ') }}</td>
+                    <td>{% if check.passed %}<span class="good">pass</span>{% else %}<span class="bad">refuse</span>{% endif %}</td>
+                    <td class="small muted">{{ check.detail }}</td>
+                  </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            </details>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <p class="muted small">
+      Short term is a swing read on daily bars — five to twenty trading days. It is
+      not intraday and cannot support day trading: Trading 212 exposes no quote
+      endpoint, and free price feeds are delayed.
+    </p>
+
+    <dl class="kv">
+      <div><dt>Engine model</dt><dd>{{ decision.model_id or decision.engine }}</dd></div>
+      <div><dt>State tokens (est.)</dt><dd>{{ decision.state_tokens_est or '—' }}</dd></div>
+      <div><dt>App version</dt><dd>{{ decision.app_version }}</dd></div>
+    </dl>
+
+    {% if decision.narrative %}
+      <h3>Why</h3>
+      <div class="narrative">{{ decision.narrative }}</div>
+    {% endif %}
+
+    <h3>Model answers</h3>
+    <table class="grid compact">
+      <thead><tr><th>Question</th><th>Answer</th><th class="num">Confidence</th><th>Distribution</th></tr></thead>
+      <tbody>
+      {% for name, answer in (decision.answers or {}).items() %}
+        <tr>
+          <td>{{ name | replace('_', ' ') }}</td>
+          <td><strong>{{ answer.choice or answer.noul or answer.score }}</strong></td>
+          <td class="num">{{ answer.confidence | pct(0) }}</td>
+          <td class="small muted">
+            {% if answer.probabilities %}
+              {% for option, probability in answer.probabilities.items() %}
+                {{ option }}:{{ probability | pct(0) }}{% if not loop.last %} · {% endif %}
+              {% endfor %}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Provable inputs</h3>
+    <p class="muted small">
+      State hash <code>{{ decision.state_sha256[:16] }}…</code>.
+      <a href="/api/decisions/{{ decision.id }}/receipt">Full receipt (JSON)</a>
+    </p>
+    <details>
+      <summary>Canonical state submitted to the decision model</summary>
+      <pre class="json">{{ decision.state | tojson(indent=2) }}</pre>
+    </details>
+    <details>
+      <summary>Risk gate</summary>
+      <pre class="json">{{ (decision.gate or {}) | tojson(indent=2) }}</pre>
+    </details>
+    {% if decision.evidence %}
+      <details>
+        <summary>Evidence (model-extracted, with sources)</summary>
+        <pre class="json">{{ decision.evidence | tojson(indent=2) }}</pre>
+      </details>
+    {% endif %}
+
+    {% if outcomes %}
+      <h3>Realised outcomes</h3>
+      <table class="grid compact">
+        <thead><tr><th>Horizon</th><th class="num">Return</th><th class="num">vs benchmark</th><th>Verdict</th></tr></thead>
+        <tbody>
+        {% for outcome in outcomes %}
+          <tr>
+            <td>{{ outcome.horizon_days }}d</td>
+            <td class="num {% if outcome.return_pct and outcome.return_pct > 0 %}good{% elif outcome.return_pct %}bad{% endif %}">
+              {{ outcome.return_pct | pct(2) }}
+            </td>
+            <td class="num">{{ outcome.benchmark_return_pct | pct(2) }}</td>
+            <td>{{ outcome.verdict or '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+{% else %}
+  <p class="muted">No decision recorded yet for this instrument.</p>
+{% endif %}
+
+{# ----------------------------------------------------------------- valuation #}
+<h2>Valuation</h2>
+{% if valuation %}
+  <dl class="kv">
+    <div><dt>Price used</dt><dd>{{ valuation.price | money(valuation.currency) }}</dd></div>
+    <div><dt>Fair value (base)</dt><dd>{{ valuation.fair_value_base | money(valuation.currency) }}</dd></div>
+    <div><dt>Range</dt><dd>{{ valuation.fair_value_low | number(2) }} – {{ valuation.fair_value_high | number(2) }}</dd></div>
+    <div><dt>Margin of safety</dt><dd>{{ valuation.margin_of_safety | pct(1, false) }}</dd></div>
+    <div><dt>Valuation confidence</dt><dd>{{ valuation.valuation_confidence | pct(0) }}</dd></div>
+    <div><dt>Methods applied</dt><dd>{{ valuation.methods_applied | join(', ') or '—' }}</dd></div>
+    <div><dt>Status</dt><dd>{{ valuation.status }}{% if valuation.notes %} — {{ valuation.notes }}{% endif %}</dd></div>
+    <div><dt>As of</dt><dd>{{ valuation.as_of | datetime }}</dd></div>
+  </dl>
+  <details>
+    <summary>Per-method outputs and the inputs each used</summary>
+    <pre class="json">{{ (valuation.model_outputs or {}) | tojson(indent=2) }}</pre>
+  </details>
+{% else %}
+  <p class="muted">Not valued yet.</p>
+{% endif %}
+
+{# -------------------------------------------------------------- price chart #}
+<h2>Price history</h2>
+{% if history %}
+  <div class="sparkline" data-points="{{ history | length }}">
+    <canvas id="price-chart" height="180"
+            data-series="{{ history | map(attribute='close') | list | tojson }}"
+            data-dates="{{ history | map(attribute='date') | list | tojson }}"></canvas>
+  </div>
+{% else %}
+  <p class="muted">No price history stored.</p>
+{% endif %}
+
+{# ------------------------------------------------------------------ filings #}
+<h2>Published reports</h2>
+{% if filings %}
+  <table class="grid compact">
+    <thead><tr><th>Filed</th><th>Type</th><th>Source</th><th>Status</th><th>Link</th></tr></thead>
+    <tbody>
+    {% for filing in filings %}
+      <tr>
+        <td>{{ filing.filed_at | datetime('%Y-%m-%d') }}</td>
+        <td>{{ filing.filing_type or '—' }}</td>
+        <td>{{ filing.source }}</td>
+        <td>{{ filing.status }}</td>
+        <td>{% if filing.url %}<a href="{{ filing.url }}" target="_blank" rel="noopener noreferrer">open</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="muted">No filings linked yet. UK accounts come from Companies House, US filings from SEC EDGAR.</p>
+{% endif %}
+
+{# ------------------------------------------------------------- fundamentals #}
+<h2>Accounts</h2>
+{% if fundamentals %}
+  <table class="grid compact">
+    <thead><tr><th>Period end</th><th>Type</th><th>Source</th><th class="num">Revenue</th><th class="num">Net income</th><th class="num">ROE</th><th class="num">Net margin</th><th class="num">Confidence</th></tr></thead>
+    <tbody>
+    {% for period in fundamentals %}
+      <tr>
+        <td>{{ period.period_end }}</td>
+        <td>{{ period.period_type }}</td>
+        <td>{{ period.source }}</td>
+        <td class="num">{{ period.metrics.get('revenue') | number(0) }}</td>
+        <td class="num">{{ period.metrics.get('net_income') | number(0) }}</td>
+        <td class="num">{{ period.metrics.get('roe') | pct(1, false) }}</td>
+        <td class="num">{{ period.metrics.get('net_margin') | pct(1, false) }}</td>
+        <td class="num">{{ period.confidence | pct(0) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="muted">No accounts stored yet.</p>
+{% endif %}
+
+{# ---------------------------------------------------------------------- news #}
+<h2>News</h2>
+{% if news %}
+  <ul class="news-list">
+    {% for item in news %}
+      <li class="mat-{{ item.materiality | materiality_class }}">
+        <a href="{{ item.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>
+        <span class="muted small">
+          {{ item.source }} · {{ item.published_at | ago }}
+          {% if item.direction %} · {{ item.direction }}{% endif %}
+          {% if item.materiality %} · {{ item.materiality }}{% endif %}
+        </span>
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p class="muted">No headlines matched this instrument.</p>
+{% endif %}
+{% endblock %}

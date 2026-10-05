@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <a href="/dashboard">{{ app_name }}</a>
+      <span class="tagline">Trading 212 valuation &amp; sentiment advisor</span>
+    </div>
+    <nav>
+      <a href="/dashboard" {% if request.url.path == '/dashboard' %}class="active"{% endif %}>Recommendations</a>
+      <a href="/sectors" {% if request.url.path == '/sectors' %}class="active"{% endif %}>Sectors</a>
+      <a href="/calibration" {% if request.url.path == '/calibration' %}class="active"{% endif %}>Calibration</a>
+      <a href="/jobs" {% if request.url.path == '/jobs' %}class="active"{% endif %}>Operations</a>
+      <a href="/docs">API</a>
+    </nav>
+  </header>
+
+  {# The flash ticker is the only element that needs JavaScript. The server
+     fallback below it is a plain HTML fragment refreshed with HTMX. #}
+  <section class="ticker" id="news-flash"
+           data-stream-url="/api/news/stream"
+           data-fallback-url="/partials/news-ticker">
+    <span class="ticker-label" title="Materiality-filtered headlines likely to move a price">FLASH</span>
+    <div class="ticker-track" id="ticker-items">
+      <span class="muted">Connecting to news stream&hellip;</span>
+    </div>
+  </section>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    <p class="disclaimer">{{ disclaimer }}</p>
+    <p class="muted small">
+      Data sources are free tiers licensed for personal, non-commercial use.
+      Free-tier coverage is unofficial and may be delayed, incomplete or wrong.
+      Every figure is labelled with its source and the time it was observed.
+    </p>
+  </footer>
+</body>
+</html>

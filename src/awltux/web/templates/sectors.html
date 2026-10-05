@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Sectors — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Sector sentiment</h1>
+<p class="muted small">
+  Aggregated from classified headlines, with GDELT tone where available.
+  Sector classification is derived (SEC SIC for US filers, provider industry
+  fields for UK listings) rather than licensed ICB/GICS, so treat it as
+  approximate.
+</p>
+
+{% if sectors %}
+<table class="grid">
+  <thead>
+    <tr><th>Sector</th><th class="num">Latest</th><th class="num">Articles</th><th>Trend</th><th>Series</th></tr>
+  </thead>
+  <tbody>
+  {% for name, series in sectors %}
+    {% set last = latest[name] %}
+    <tr>
+      <td><strong>{{ name }}</strong></td>
+      <td class="num {% if last and last.score > 0 %}good{% elif last %}bad{% endif %}">
+        {{ last.score | number(2) if last else '—' }}
+      </td>
+      <td class="num">{{ last.articles if last else '—' }}</td>
+      <td>
+        {% if last %}
+          <span class="meter"><span style="width: {{ ((last.score + 1) / 2 * 100) | round(0) }}%"></span></span>
+        {% endif %}
+      </td>
+      <td class="small muted">
+        {% for point in series[-14:] %}{{ point.score | number(2) }}{% if not loop.last %} · {% endif %}{% endfor %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <p class="muted">
+    No sector sentiment yet. It is computed from classified news, so run the
+    <code>news_rss</code> and <code>sentiment</code> jobs from
+    <a href="/jobs">Operations</a> first.
+  </p>
+{% endif %}
+{% endblock %}
