@@ -13,6 +13,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from awltux.db import utcnow
+
 
 @pytest.fixture
 def client(settings, monkeypatch):
@@ -203,6 +205,43 @@ class TestTemplatesRenderWithData:
         ids = ["price_eod", "news_rss", "sentiment", "decision", "retention"]
         for job_id in ids:
             assert f'data-job="{job_id}"' in body, job_id
+
+    def test_an_open_run_is_shown_as_running(self, client, populated, session):
+        """The display half of the fix in test_job_reporting: a run that has not
+        finished must not read as its previous failure."""
+        from awltux.db import IngestRun
+
+        session.add(IngestRun(job="news_rss", started_at=utcnow(), finished_at=None, ok=None))
+        session.commit()
+
+        body = client.get("/jobs").text
+        assert "running" in body
+
+    def test_a_long_error_is_summarised_and_kept_behind_a_disclosure(
+        self, client, populated, session
+    ):
+        """The stored error can be a whole SQL statement with its parameters, which
+        buries the one line that identifies the failure."""
+        from awltux.db import IngestRun
+
+        long_error = "IntegrityError: UNIQUE constraint failed\n" + ("x" * 900)
+        session.add(
+            IngestRun(
+                job="news_rss",
+                started_at=utcnow(),
+                finished_at=utcnow(),
+                ok=False,
+                error=long_error,
+            )
+        )
+        session.commit()
+
+        body = client.get("/jobs").text
+        assert "IntegrityError: UNIQUE constraint failed" in body
+        # Truncated where it is read, disclosed rather than discarded.
+        assert "…" in body
+        assert "<details>" in body
+        assert body.index("…") < body.index("<details>")
 
     def test_the_calibration_page_renders_for_both_horizons(self, client, populated):
         for horizon in ("long_term", "short_term"):

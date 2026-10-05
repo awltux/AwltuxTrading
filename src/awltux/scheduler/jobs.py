@@ -62,8 +62,65 @@ class JobSpec:
     requires: tuple[str, ...] = ()
 
 
+def start_run(job_id: str, started: dt.datetime) -> int | None:
+    """Record that a run has begun, and return its row id.
+
+    A row used to be written only when the job *finished*, so a job that takes
+    forty minutes was invisible for forty minutes -- and the newest thing on the
+    Operations page was the previous run's error. That is precisely how a stale
+    failure gets read as a current one, which is what happened here: a news run
+    that was working normally was reported as failing, because the last completed
+    run of that job had failed an hour earlier.
+
+    ``ok`` is left NULL, which the template already renders as "running". Nothing
+    wrote a NULL before, so that branch was dead.
+    """
+    try:
+        with session_scope() as session:
+            row = IngestRun(job=job_id, started_at=started, finished_at=None, ok=None)
+            session.add(row)
+            session.flush()
+            return row.id
+    except Exception:  # pragma: no cover - observability must not break the job
+        logger.exception("failed to record the start of %s", job_id)
+        return None
+
+
+def finish_run(
+    run_id: int | None,
+    job_id: str,
+    started: dt.datetime,
+    result: JobResult | None,
+    error: str | None,
+) -> None:
+    """Close out a run. Falls back to inserting one if the start was not recorded.
+
+    Never raises into the job: an unrecordable run is a missing report, not a
+    failed one.
+    """
+    if run_id is None:
+        record_run(job_id, started, result, error)
+        return
+
+    try:
+        with session_scope() as session:
+            row = session.get(IngestRun, run_id)
+            if row is None:
+                # The row was pruned or the database was rebuilt under us.
+                record_run(job_id, started, result, error)
+                return
+            row.finished_at = dt.datetime.now(dt.UTC)
+            row.ok = error is None
+            row.items_seen = result.items_seen if result else 0
+            row.items_written = result.items_written if result else 0
+            row.error = error
+            row.detail = result.detail if result else None
+    except Exception:  # pragma: no cover - observability must not break the job
+        logger.exception("failed to record ingest run for %s", job_id)
+
+
 def record_run(job_id: str, started: dt.datetime, result: JobResult | None, error: str | None) -> None:
-    """Persist a job run for observability. Never raises into the job itself."""
+    """Persist a completed job run in one insert. Never raises into the job itself."""
     try:
         with session_scope() as session:
             session.add(
@@ -89,6 +146,7 @@ def execute_job(spec: JobSpec) -> JobResult | None:
     take down the scheduler or stop the other jobs.
     """
     started = dt.datetime.now(dt.UTC)
+    run_id = start_run(spec.id, started)
     logger.info("job %s: start", spec.id)
     result: JobResult | None = None
     error: str | None = None
@@ -109,7 +167,7 @@ def execute_job(spec: JobSpec) -> JobResult | None:
         result.detail.setdefault("elapsed_seconds", round(elapsed, 3))
         if result.note:
             result.detail.setdefault("note", result.note)
-    record_run(spec.id, started, result, error)
+    finish_run(run_id, spec.id, started, result, error)
     logger.info(
         "job %s: done in %.2fs seen=%s written=%s%s%s",
         spec.id,

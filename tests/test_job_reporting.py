@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from awltux.db import Instrument
+from awltux.db import Instrument, session_scope
 from awltux.ingest.jobs import empty_universe_note, universe_is_empty
 from awltux.scheduler.jobs import JobResult
 from tests.helpers import make_instrument
@@ -119,3 +119,98 @@ class TestJobResultsCarryTheNote:
 
         result = getattr(ingest_jobs, job_name)()
         assert result.note is not None, f"{job_name} reported a bare zero"
+
+
+class TestARunningJobIsVisibleWhileItRuns:
+    """A run row used to be written only when the job *finished*.
+
+    So a job taking forty minutes was invisible for forty minutes, and the newest
+    thing on the Operations page was the *previous* run's error. That is exactly
+    how a stale failure gets read as a current one -- it happened here, with a
+    news run that was working normally reported as failing because the last
+    completed run of that job had failed an hour earlier.
+    """
+
+    def _spec(self, func):
+        from awltux.scheduler.jobs import JobSpec
+
+        return JobSpec(id="probe", func=func, interval_seconds=60)
+
+    def _newest(self):
+        from sqlalchemy import desc, select
+
+        from awltux.db import IngestRun
+
+        with session_scope() as session:
+            return session.execute(
+                select(IngestRun).order_by(desc(IngestRun.id)).limit(1)
+            ).scalar_one()
+
+    def test_the_run_row_exists_with_a_null_result_mid_run(self, settings):
+        from awltux.scheduler.jobs import JobResult, execute_job
+
+        seen: dict[str, object] = {}
+
+        def func():
+            row = self._newest()
+            seen["ok"] = row.ok
+            seen["finished_at"] = row.finished_at
+            return JobResult(items_seen=3, items_written=2)
+
+        execute_job(self._spec(func))
+
+        assert seen["ok"] is None, "the template renders a NULL ok as 'running'"
+        assert seen["finished_at"] is None
+
+    def test_the_same_row_is_closed_out_at_the_end(self, settings):
+        from awltux.scheduler.jobs import JobResult, execute_job
+
+        def func():
+            return JobResult(items_seen=3, items_written=2)
+
+        execute_job(self._spec(func))
+
+        row = self._newest()
+        assert row.ok is True
+        assert row.finished_at is not None
+        assert row.items_seen == 3
+        assert row.items_written == 2
+
+    def test_only_one_row_is_written_per_run(self, settings):
+        """Opening and closing must not turn one run into two history entries."""
+        from sqlalchemy import func as sql_func
+        from sqlalchemy import select
+
+        from awltux.db import IngestRun
+        from awltux.scheduler.jobs import JobResult, execute_job
+
+        execute_job(self._spec(lambda: JobResult()))
+
+        with session_scope() as session:
+            count = session.execute(select(sql_func.count()).select_from(IngestRun)).scalar_one()
+        assert count == 1
+
+    def test_a_failing_job_records_the_error_on_the_open_row(self, settings):
+        from awltux.scheduler.jobs import execute_job
+
+        def func():
+            raise RuntimeError("provider exploded")
+
+        execute_job(self._spec(func))
+
+        row = self._newest()
+        assert row.ok is False
+        assert "provider exploded" in row.error
+        assert row.finished_at is not None
+
+    def test_a_run_that_could_not_be_opened_is_still_recorded(self, settings, monkeypatch):
+        """The fallback: losing the open must not lose the history entry."""
+        from awltux.scheduler import jobs as jobs_module
+        from awltux.scheduler.jobs import JobResult, execute_job
+
+        monkeypatch.setattr(jobs_module, "start_run", lambda job_id, started: None)
+        execute_job(self._spec(lambda: JobResult(items_written=1)))
+
+        row = self._newest()
+        assert row.ok is True
+        assert row.items_written == 1

@@ -69,7 +69,17 @@
             <br><span class="muted">ran but had nothing to do</span>
           {% endif %}
         {% elif run.ok is none %}<span class="muted">running</span>
-        {% else %}<span class="bad">{{ run.error }}</span>{% endif %}
+        {% else %}
+          {# The stored error can be a whole SQL statement with its bound
+             parameters, which is unreadable in a table cell and buries the one
+             line that identifies the failure. The first line is shown, and the
+             rest is kept behind a disclosure rather than discarded. #}
+          {% set err = run.error or 'failed' %}
+          <span class="bad">{{ err[:200] }}{% if err | length > 200 %}…{% endif %}</span>
+          {% if err | length > 200 %}
+            <details><summary class="muted small">full error</summary><pre class="small">{{ err }}</pre></details>
+          {% endif %}
+        {% endif %}
       </td>
     </tr>
   {% else %}
