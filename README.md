@@ -380,6 +380,26 @@ docker compose exec awltux awltux jobs       # the job registry
 docker compose exec awltux awltux job price_eod   # run one job now
 ```
 
+### Running the app outside Docker
+
+```bash
+awltux migrate          # bring an existing database up to the current schema
+awltux serve            # dashboard + scheduler (migrates on start, like the image)
+awltux seed-demo        # five synthetic instruments, so the UI works with no keys
+awltux doctor           # diagnose configuration and provider connectivity
+awltux job <id>         # run one job now, on the server if one is running
+```
+
+`seed-demo` writes into the real database rather than mocking the UI: it seeds
+instruments and then runs the actual valuation, sentiment and decision pipelines,
+so what you see is real dashboard behaviour. Remove it with
+`awltux seed-demo --reset --no-analysis` or a fresh database.
+
+`job` asks a **running server** to execute the job and falls back to running it in
+this process only when nothing is listening — two processes writing one SQLite file
+contend for the write lock, and a job that sleeps inside a rate-limit guard holds
+it longer than any sane timeout. Pass `--direct` to force a local run.
+
 ### Diagnosing a rejected key
 
 ```bash

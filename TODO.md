@@ -18,146 +18,21 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
-### P2 — `awltux serve` does not migrate, so a local run breaks on an older database
+None open. The last six — `serve` not migrating, silent DeepSeek truncation, the
+`universe_refresh` startup race, CLI/server write-lock contention, the unhelpful
+blank dashboard, and a stale container being indistinguishable from a code bug —
+were fixed and are in the commit log.
 
-The container runs `python -m awltux.cli migrate && python -m awltux.cli serve`, but
-`serve` on its own only calls `init_db`, which creates missing tables and never
-alters existing ones. Running it against a database from a previous version
-therefore fails at the first query with a raw
-``no such column: news_item.event_type`` — an error that names the symptom and not
-the cause, and one that the deployment path never sees.
+One of them was not a bug at all, and is worth remembering: the missing Info menu
+item and the `engine_label` template error were both the running container being
+older than the image. `docker build` retags an image and does not touch a running
+container. The README now says so, and the **Info** page reports the revision a
+deployment was actually built from.
 
-**Done when:** `serve` either migrates on startup like the container does, or
-refuses to start with a message saying the schema is behind and naming the
-command that fixes it.
-
-### P2 — A DeepSeek classification response was truncated and failed to parse
-
-Observed on 2026-10-05 in the demo database's decision narrative:
-
-```
-deepseek: model did not return valid JSON: Unterminated string starting at: line 1 column 4146
-```
-
-The degradation is correct — the item was stored unclassified and the decision
-fell back — but `classify_headline` asks for `max_tokens=500` while a verbose
-`reasoning` field can overrun it, and a truncated response is thrown away whole.
-Worth either raising the cap, or asking for less prose, or retrying once with the
-`reasoning` field dropped.
-
-### P1 — A stale container is indistinguishable from a code bug
-
-**Diagnosed 2026-10-05, and it was never a code bug.** The recommendation page's
-`'engine_label' is undefined` and the missing Info menu item had the same cause and
-it was not in the source: the running container predated both fixes.
-```
-container awltux-trading  image 496a71dc5da1  created 12:30:12  up 2 hours
-image     awltux-trading:0.1.0                built   13:59:55  (different ID)
-
-GET /dashboard on the running container -> {"ok":false,"error":"UndefinedError",
-                                            "detail":"'engine_label' is undefined"}
-GET /info      on the running container -> 404
-
-same image as a throwaway container, with demo rows seeded:
-GET /dashboard -> 200, renders, Info link present
-GET /info      -> 200
-```
-
-`docker build` retags an image. It does not touch a running container, and
-`docker compose up -d` without `--build` reuses whatever image was already local —
-so the sequence "build four times, report 'image rebuilt', never recreate the
-container" leaves the user on old code while every check I ran passed, because
-those checks ran against the *image*, not the *deployment*.
-
-**A second thing I got wrong, corrected here.** I had assumed the `engine_label`
-call was only reachable when the database held *decision* rows, because the helper
-sits inside the table's row loop. It is not: the recommendations table iterates
-**universe instruments**, left-joining their decision, so any non-empty universe
-reaches the helper whether or not a decision exists. That matters because the live
-volume has `decision_run = 0` and 500 instruments in universe — so the error was
-reachable on the real deployment at all times, and the "no rows, so no crash"
-reasoning I used to explain away the container check earlier was wrong.
-
-**Why it matters more than the two symptoms:** the failure mode is silent and it
-cost two separate investigations, one of which I recorded as a suspected template
-bug. Any future "that's fixed" claim is worthless if the process being looked at is
-older than the fix.
-
-**Done when:** the deploy step is explicit rather than implied. At minimum,
-`docker compose up -d --build` becomes the documented way to deploy, and the
-README says outright that building does not restart anything. Preferably the
-running container's image ID is compared against the current one somewhere the
-reader will see it — the **Info** page already reports its own commit, which is the
-detection mechanism; it simply has to be *deployed* before it can report that it
-was not deployed.
-
-**And note the irony worth remembering:** the first thing the Info page would have
-told us is that the deployment did not have the Info page.
-
-### P1 — `universe_refresh` races `t212_instruments` at startup and selects nothing
-
-Both jobs are `run_on_start=True` (`src/awltux/scheduler/registry.py`) and there
-is no ordering between them, so on a fresh database they run concurrently:
-`t212_instruments` fetches from the network and only commits at the end, while
-`universe_refresh` reads the instrument table before that commit lands. It sees
-zero rows, selects zero instruments, and writes `in_universe = 0` for nothing —
-leaving every instrument outside the analysed universe.
-
-**Evidence, corrected.** The first version of this item cited `data/awltux.db` on
-the host, which the container does not use — it mounts the named volume
-`awltux-data` at `/data`. That was my error, and it made the bug look worse than it
-is. The race is real, and the container's own run history shows it:
-
-```
-11:30:21.458  t212_instruments   seen 18483  written 18483
-11:30:21.460  universe_refresh   seen 0      written 0      <- 2ms later, the race
-11:32:24.155  universe_refresh   seen 6723   written 500    <- recovered on the next run
-```
-
-So the accurate statement is: the race produces **one empty selection**, and the
-next `universe_refresh` repairs it. The deployment was never broken by this — the
-volume held 500 instruments in universe and 17,553 price bars throughout. The
-earlier claim that "the dashboard has nothing to show" was wrong and came from the
-wrong file.
-
-**Why it still matters, at the right severity:** a stale or spurious universe for
-one interval is a real defect — any valuation or decision job that runs in that
-window sees zero instruments and records a clean-looking no-op — but it is a
-transient wrong answer, not a broken install. Severity: P2, not P1.
-
-**Done when:** the startup chain is ordered (`t212_instruments` → `universe_refresh`,
-or the refresh waits for a non-empty instrument table), and a zero-eligible run
-records a `note` saying which filter emptied it, the way the other empty jobs now
-do.
-
-**Done when:** the startup chain is ordered (`t212_instruments` → `universe_refresh`,
-or the refresh waits for a non-empty instrument table), and a zero-eligible run
-records a `note` saying which filter emptied it, the way the other empty jobs now
-do.
-
-**Recovery in the meantime:** with the server stopped, `python -m awltux.cli job
-universe_refresh` re-selects from the instruments already stored. Prices,
-valuations and decisions still need their own jobs after that.
-
-### P2 — CLI job runs contend with the running server for SQLite's write lock
-
-`awltux job <id>` opens its own connection while the server's scheduler is
-writing, and the loser gets `database is locked` (observed with `price_eod`).
-`busy_timeout` covers short waits; a job that holds the lock across rate-limit
-sleeps is longer than any sane timeout.
-
-**Done when:** the CLI asks the running server to execute the job instead of
-opening its own connection — `POST /api/jobs/{job_id}/run` already exists
-(`src/awltux/web/routes/api.py`) and uses the identical code path — falling back
-to a direct run only when nothing is listening.
-
-### P2 — the dashboard's empty state does not name `universe_refresh`
-
-`src/awltux/web/templates/dashboard.html` tells the reader to run
-`t212_instruments` then `price_eod`, then `valuation` and `decision`. The step it
-omits is exactly the one that silently emptied the universe above. Add it, and
-say that an empty universe is why the table is blank rather than leaving the
-reader to guess.
+A seventh was self-inflicted rather than a code bug: an unanchored `.gitignore`
+pattern (`research/`) also matched `docs/research/`, so nine research reports were
+invisible to git while `git status` reported a clean tree.
+`tests/test_repo_hygiene.py` now asserts the invariant that broke.
 
 ---
 
@@ -276,30 +151,20 @@ column.
 
 ## Operations
 
-### Rebuild the live data
+### Finish building the live data
 
-The stored universe currently has no prices, valuations, decisions or news
-(`price_bar` 0, `decision_run` 0, `news_item` 0). After the P1 fix above, the
-whole chain needs running: `universe_refresh` → `price_eod` → `fundamentals` /
-`news_rss` → `sentiment` → `valuation` → `decision`. Expect `price_eod` to take a
-while and to be rate-limited.
+The deployment has the reference data and the prices — 500 instruments in
+universe over 17,553 bars, and 3,555 stored news items — but no decisions yet
+(`decision_run` 0), so the Recommendations table has nothing to rank.
 
-### `awltux doctor` and `awltux seed-demo` are missing from the README command list
+An earlier version of this item claimed the universe, prices and news were all
+empty. That was read from `data/awltux.db` on the host, which the container does
+not use; it mounts the named volume `awltux-data` at `/data`. The lesson is the
+one this file keeps recording: check which artifact the claim is about.
 
-`doctor` is documented under Configuration, but neither command appears in the
-command list in **Development**, which is where someone looks for "what can I run".
-
----
-
-## Test gaps
-
-### The container's Info page is never tested end to end
-
-`tests/test_buildinfo.py` and `TestInfoPage` cover the reader and the page against
-a fixture. The Dockerfile asserts `build_info.json` is installed, but nothing
-checks that a *built image* actually names its commit — the path that has no
-`.git` and cannot be tested on the host. A build-time smoke check (`docker run …
-curl /info | grep <sha>`) would close it.
+**Next:** let `price_eod` and `fundamentals` rotate through the universe, then
+`news_analysis` (new, and so far unrun on real data), `sentiment`, `valuation`
+and `decision`. Expect `price_eod` to take a while and to be rate-limited.
 
 ### Every page is only tested against seeded data
 

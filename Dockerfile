@@ -62,10 +62,12 @@ RUN python -m venv /opt/venv \
 RUN test -f /opt/venv/lib/python3.12/site-packages/awltux/db/migrations/env.py \
  && test -d /opt/venv/lib/python3.12/site-packages/awltux/db/migrations/versions \
  && ls /opt/venv/lib/python3.12/site-packages/awltux/db/migrations/versions/*.py
-# Same reasoning for the build provenance: if package-data failed to ship it, the
-# Info page would silently fall back to "unavailable" in exactly the deployment
-# that has no other way to answer.
-RUN test -s /opt/venv/lib/python3.12/site-packages/awltux/build_info.json
+# Same reasoning for the build provenance: if package-data failed to ship it -- or
+# shipped one with no commits in it -- the Info page would silently fall back to
+# "unavailable" in exactly the deployment that has no other way to answer. A file
+# that exists but names nothing is not provenance, so the assertion is on content.
+RUN test -s /opt/venv/lib/python3.12/site-packages/awltux/build_info.json \
+ && python -c "import json; d = json.load(open('/opt/venv/lib/python3.12/site-packages/awltux/build_info.json')); assert d.get('commits'), 'build_info.json carries no commits'; assert d.get('head'), 'build_info.json names no revision'; print('provenance:', d['head'][:7], '-', len(d['commits']), 'commits')"
 
 
 FROM python:3.12-slim AS runtime
