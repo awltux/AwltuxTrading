@@ -16,6 +16,7 @@
     <nav>
       <a href="/dashboard" {% if request.url.path == '/dashboard' %}class="active"{% endif %}>Recommendations</a>
       <a href="/sectors" {% if request.url.path == '/sectors' %}class="active"{% endif %}>Sectors</a>
+      <a href="/decisions" {% if request.url.path == '/decisions' %}class="active"{% endif %}>Predictions</a>
       <a href="/calibration" {% if request.url.path == '/calibration' %}class="active"{% endif %}>Calibration</a>
       <a href="/jobs" {% if request.url.path == '/jobs' %}class="active"{% endif %}>Operations</a>
       {# Interactive OpenAPI docs: a separate reading surface, so it opens in its

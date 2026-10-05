@@ -142,6 +142,48 @@ def session(settings: Settings) -> Iterator:
         yield scope
 
 
+@pytest.fixture
+def client(settings, monkeypatch):
+    """A TestClient whose lifespan resolves to the test configuration.
+
+    Lives here rather than in one module because more than one module now drives a
+    real request: the page tests span the dashboard, the news pages and the
+    prediction ledger, and a fixture that only one file can reach invites either
+    duplication or a test that quietly runs against the wrong settings.
+
+    ``reload_settings`` is imported into ``awltux.main`` at module load, so the
+    reference there has to be patched as well as the one in ``awltux.config`` --
+    otherwise startup would rebuild the real settings and ignore the fixture.
+    """
+    from fastapi.testclient import TestClient
+
+    import awltux.config as config_module
+    import awltux.db.session as session_module
+    import awltux.main as main_module
+
+    monkeypatch.setattr(config_module, "reload_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "reload_settings", lambda: settings)
+    monkeypatch.setattr(session_module, "get_settings", lambda: settings)
+
+    with TestClient(main_module.create_app()) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def universe_instrument(session):
+    """One instrument in the analysed universe.
+
+    Most page tests need somewhere for a row to point; they do not need the
+    decision and valuation rows the dashboard's own fixture builds, and reusing
+    that fixture would tie unrelated pages to the decision pipeline.
+    """
+    from tests.helpers import make_instrument
+
+    session.add(make_instrument("TEST_US_EQ", name="Test Industries", sector="Industrials"))
+    session.flush()
+    return "TEST_US_EQ"
+
+
 # Re-exported so tests can `from tests.conftest import ...` or use the helpers
 # module directly; both resolve to the same builders.
 from tests.helpers import (  # noqa: E402

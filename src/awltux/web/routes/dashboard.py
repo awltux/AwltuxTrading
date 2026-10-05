@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from awltux import __version__
-from awltux.audit.calibration import calibration_report
+from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
 from awltux.db import session_scope
@@ -106,6 +106,11 @@ def instrument_page(request: Request, ticker: str) -> HTMLResponse:
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown instrument {ticker}")
         history = queries.price_history(session, ticker, limit=400)
+        # The page used to show only the latest decision, so "what did it say last
+        # week, and was it right" had no answer anywhere.
+        predictions, prediction_count = queries.decision_history(
+            session, ticker=ticker, limit=25
+        )
 
     return templates.TemplateResponse(
         request,
@@ -121,10 +126,83 @@ def instrument_page(request: Request, ticker: str) -> HTMLResponse:
             "news": detail["news"],
             "news_analysis": detail["news_analysis"],
             "outcomes": detail["outcomes"],
+            "predictions": predictions,
+            "prediction_count": prediction_count,
+            "horizon_windows": HORIZON_WINDOWS,
             "horizons": {
                 "long_term": get_settings().horizons.long_term,
                 "short_term": get_settings().horizons.short_term,
             },
+        },
+    )
+
+
+@router.get("/decisions", response_class=HTMLResponse, include_in_schema=False)
+def decisions_page(
+    request: Request,
+    ticker: str | None = None,
+    engine: str | None = None,
+    only: str | None = None,
+    page: int = 1,
+    per_page: int = 50,
+) -> HTMLResponse:
+    """Every prediction ever made, with how it turned out.
+
+    The predictions were always stored immutably -- state, state hash, engine,
+    prompt hashes, both horizons' calls -- but the only way to read one back was to
+    know its id and request the receipt. A record you cannot find again is not much
+    of a record.
+
+    Unscored rows are shown, not hidden. A horizon that has not elapsed yet is
+    "not knowable", which is a different thing from "scored flat", and hiding them
+    would make an empty accuracy table look like a working one.
+    """
+    from sqlalchemy import select
+
+    from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
+    from awltux.db import DecisionRun
+
+    page = max(1, page)
+    per_page = min(max(per_page, 10), 200)
+
+    with session_scope() as session:
+        rows, total = queries.decision_history(
+            session,
+            ticker=ticker or None,
+            engine=engine or None,
+            only=only or None,
+            limit=per_page,
+            offset=(page - 1) * per_page,
+        )
+        pages = max(1, -(-total // per_page))
+        # The aggregate view is only meaningful once outcomes exist, and it already
+        # has its own page; this repeats it in miniature so the ledger says whether
+        # the numbers above mean anything yet.
+        reports = {
+            horizon: calibration_report(session, horizon=horizon)
+            for horizon in HORIZON_WINDOWS
+        }
+        engines = [
+            name
+            for (name,) in session.execute(
+                select(DecisionRun.engine).distinct().order_by(DecisionRun.engine)
+            ).all()
+            if name
+        ]
+
+    return templates.TemplateResponse(
+        request,
+        "decisions.html",
+        {
+            "predictions": rows,
+            "total": total,
+            "page": min(page, pages),
+            "pages": pages,
+            "per_page": per_page,
+            "horizon_windows": HORIZON_WINDOWS,
+            "reports": reports,
+            "engines": engines,
+            "filters": {"ticker": ticker or "", "engine": engine or "", "only": only or ""},
         },
     )
 

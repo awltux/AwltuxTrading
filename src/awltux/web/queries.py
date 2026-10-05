@@ -9,13 +9,14 @@ because a number without its origin is not usable for a decision.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy import Select, desc, func, select
 from sqlalchemy.orm import Session
 
 from awltux.db import (
+    DecisionOutcome,
     DecisionRun,
     Filing,
     FundamentalPeriod,
@@ -390,8 +391,126 @@ def _sort_value(row: RecommendationRow, key: SortKey) -> Any:
     return 0
 
 
+@dataclass(slots=True)
+class PredictionRow:
+    """One past judgement, with whatever is known about how it turned out."""
+
+    decision: Any
+    ticker: str
+    name: str | None = None
+    #: Outcomes keyed by ``(horizon, horizon_days)``. Empty until the window has
+    #: elapsed -- and "not yet knowable" is a different state from "scored flat".
+    outcomes: dict[tuple[str, int], Any] = field(default_factory=dict)
+
+    @property
+    def scored(self) -> bool:
+        return bool(self.outcomes)
+
+    def outcome(self, horizon: str, days: int):
+        return self.outcomes.get((horizon, days))
+
+    @property
+    def actionable(self) -> bool:
+        """Whether this call asserted a direction at all.
+
+        HOLD asserts nothing, so it is excluded from hit rates -- counting it either
+        way would flatter or penalise the model for a claim it did not make.
+        """
+        from awltux.audit.calibration import ACTIONABLE
+
+        return (self.decision.long_term_action or "") in ACTIONABLE or (
+            self.decision.short_term_action or ""
+        ) in ACTIONABLE
+
+
+def decision_history(
+    session: Session,
+    *,
+    ticker: str | None = None,
+    engine: str | None = None,
+    only: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[PredictionRow], int]:
+    """Past predictions, newest first, with their forward returns where known.
+
+    The ledger the dashboard never had. Every decision is already stored
+    immutably -- state, state hash, engine, prompt hashes, both horizons' calls --
+    but the only way to read one back was to know its id and ask for the receipt.
+    A prediction you cannot find again is not really a record.
+    """
+    from awltux.audit.calibration import ACTIONABLE
+
+    conditions = []
+    if ticker:
+        conditions.append(DecisionRun.instrument_t212_ticker == ticker)
+    if engine:
+        conditions.append(DecisionRun.engine == engine)
+    if only == "actionable":
+        conditions.append(
+            DecisionRun.long_term_action.in_(ACTIONABLE)
+            | DecisionRun.short_term_action.in_(ACTIONABLE)
+        )
+    elif only == "hold":
+        conditions.append(
+            DecisionRun.long_term_action.not_in(ACTIONABLE)
+            & DecisionRun.short_term_action.not_in(ACTIONABLE)
+        )
+
+    total = session.execute(
+        select(func.count()).select_from(DecisionRun).where(*conditions)
+    ).scalar_one()
+
+    decisions = list(
+        session.execute(
+            select(DecisionRun)
+            .where(*conditions)
+            .order_by(desc(DecisionRun.created_at), desc(DecisionRun.id))
+            .offset(max(offset, 0))
+            .limit(limit)
+        ).scalars().all()
+    )
+    if not decisions:
+        return [], total
+
+    ids = [row.id for row in decisions]
+    outcomes: dict[int, dict[tuple[str, int], Any]] = {}
+    for outcome in session.execute(
+        select(DecisionOutcome).where(DecisionOutcome.decision_run_id.in_(ids))
+    ).scalars().all():
+        outcomes.setdefault(outcome.decision_run_id, {})[
+            (outcome.horizon, outcome.horizon_days)
+        ] = outcome
+
+    names = {
+        row.t212_ticker: row.name
+        for row in session.execute(
+            select(Instrument).where(
+                Instrument.t212_ticker.in_([row.instrument_t212_ticker for row in decisions])
+            )
+        ).scalars().all()
+    }
+
+    rows = [
+        PredictionRow(
+            decision=decision,
+            ticker=decision.instrument_t212_ticker,
+            name=names.get(decision.instrument_t212_ticker),
+            outcomes=outcomes.get(decision.id, {}),
+        )
+        for decision in decisions
+    ]
+
+    if only == "scored":
+        # Filtering after the outcome fetch: whether a decision has been scored is
+        # a property of a table this query would otherwise have to join, and the
+        # page size is small enough that a post-filter costs nothing and keeps the
+        # count honest for the other filters.
+        rows = [row for row in rows if row.scored]
+    return rows, total
+
+
 def instrument_detail(session: Session, ticker: str) -> dict[str, Any] | None:
-    """Everything the decision-receipt page needs for one instrument."""
     instrument = session.get(Instrument, ticker)
     if instrument is None:
         return None

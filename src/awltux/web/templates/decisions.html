@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Predictions — {{ app_name }}{% endblock %}
+
+{% block content %}
+{#
+  The prediction ledger.
+
+  Every decision this system has ever made, newest first, with the forward return
+  once the window has elapsed. The whole point is that a prediction you cannot find
+  again is not a record, and one whose outcome is never checked is not a prediction
+  -- it is an opinion with a timestamp.
+
+  Unscored rows are shown rather than hidden. "The horizon has not elapsed" and
+  "scored flat" are different states, and a table that showed only scored rows
+  would look finished while being empty.
+#}
+<h1>Predictions</h1>
+
+<p class="muted small">
+  Every judgement the system has recorded, with what it saw and how it turned out.
+  Each row links to its full receipt: the exact state, the engine, the state hash,
+  and the model calls behind it.
+</p>
+
+{# ------------------------------------------------------------------ accuracy #}
+<h2>How accurate, so far</h2>
+<div class="summary">
+  {% for horizon, report in reports.items() %}
+    <div class="stat">
+      <span class="stat-value">
+        {% if report.overall.n %}{{ report.overall.hit_rate | pct(0) }}{% else %}—{% endif %}
+      </span>
+      <span class="stat-label">
+        {{ horizon | replace('_', ' ') }} hit rate
+        <br><span class="muted">{{ report.overall.n }} scored, {{ report.horizon_days }}d window</span>
+      </span>
+    </div>
+  {% endfor %}
+  <div class="stat">
+    <span class="stat-value">{{ total }}</span>
+    <span class="stat-label">predictions recorded</span>
+  </div>
+</div>
+
+{% set scored = namespace(n=0) %}
+{% for prediction in predictions %}{% if prediction.scored %}{% set scored.n = scored.n + 1 %}{% endif %}{% endfor %}
+{% if not scored.n %}
+  <p class="muted small">
+    None of these has a forward return yet. An outcome is only computed once the
+    window has <em>elapsed</em> <strong>and</strong> a price exists at or after it,
+    so the earliest short-term window is five days and the earliest long-term one is
+    thirty. Scored rows appear here on their own.
+  </p>
+{% endif %}
+
+{# ------------------------------------------------------------------- filters #}
+<form class="filters" method="get" action="/decisions">
+  <label>Instrument
+    <input type="text" name="ticker" value="{{ filters.ticker }}" placeholder="any">
+  </label>
+  <label>Engine
+    <select name="engine">
+      <option value="">any</option>
+      {% for name in engines %}
+        <option value="{{ name }}" {% if filters.engine == name %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Showing
+    <select name="only">
+      <option value="">everything</option>
+      <option value="actionable" {% if filters.only == 'actionable' %}selected{% endif %}>actionable calls only</option>
+      <option value="hold" {% if filters.only == 'hold' %}selected{% endif %}>holds only</option>
+      <option value="scored" {% if filters.only == 'scored' %}selected{% endif %}>scored only</option>
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+  {% if filters.ticker or filters.engine or filters.only %}
+    <a class="muted small" href="/decisions">clear</a>
+  {% endif %}
+</form>
+
+<p class="muted small">{{ total }} prediction{{ '' if total == 1 else 's' }} matched; page {{ page }} of {{ pages }}.</p>
+
+{# ------------------------------------------------------------------- ledger #}
+<table class="grid compact">
+  <thead>
+    <tr>
+      <th>When</th>
+      <th>Instrument</th>
+      <th>Long term</th>
+      <th>Short term</th>
+      <th>Engine</th>
+      {% for horizon, windows in horizon_windows.items() %}
+        {% for days in windows %}
+          <th class="num" title="{{ horizon }} window">{{ days }}d</th>
+        {% endfor %}
+      {% endfor %}
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for prediction in predictions %}
+    {% set decision = prediction.decision %}
+    <tr>
+      <td class="small">{{ decision.created_at | datetime }}</td>
+      <td>
+        <a href="/instrument/{{ prediction.ticker }}"><code>{{ prediction.ticker }}</code></a>
+        {% if prediction.name %}<br><span class="muted small">{{ prediction.name | truncate(28) }}</span>{% endif %}
+      </td>
+      <td>
+        {% if decision.long_term_action %}
+          <span class="badge {{ decision.long_term_action | action_class }}">{{ decision.long_term_action }}</span>
+          {% if decision.confidence is not none %}<span class="muted small">{{ decision.confidence | pct(0) }}</span>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if decision.short_term_action %}
+          <span class="badge {{ decision.short_term_action | action_class }}">{{ decision.short_term_action }}</span>
+          {% if decision.short_term_confidence is not none %}<span class="muted small">{{ decision.short_term_confidence | pct(0) }}</span>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="small">
+        {{ engine_label(decision.engine, decision.uncalibrated) }}
+      </td>
+      {% for horizon, windows in horizon_windows.items() %}
+        {% for days in windows %}
+          {% set outcome = prediction.outcome(horizon, days) %}
+          <td class="num small">
+            {% if outcome and outcome.return_pct is not none %}
+              {# The return is shown with its verdict, because a number without one
+                 invites the reader to decide for themselves what counts as right. #}
+              <span class="{% if outcome.verdict == 'direction_correct' %}good{% elif outcome.verdict == 'direction_wrong' %}bad{% else %}muted{% endif %}"
+                    title="{{ outcome.verdict | replace('_', ' ') }}: {{ outcome.price_at_decision }} to {{ outcome.price_at_horizon }}">
+                {{ outcome.return_pct | round(1) }}%
+              </span>
+            {% else %}
+              <span class="muted" title="Not knowable yet: the window has not elapsed">·</span>
+            {% endif %}
+          </td>
+        {% endfor %}
+      {% endfor %}
+      <td class="small">
+        <a href="/api/decisions/{{ decision.id }}/receipt">receipt</a>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="12" class="empty">
+      {% if filters.ticker or filters.engine or filters.only %}
+        No predictions match this filter.
+      {% else %}
+        No predictions recorded yet. The <code>decision</code> job produces them.
+      {% endif %}
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if pages > 1 %}
+  {% set query = 'ticker=' ~ (filters.ticker | urlencode) ~ '&engine=' ~ (filters.engine | urlencode) ~ '&only=' ~ filters.only ~ '&per_page=' ~ per_page %}
+  <nav class="pager">
+    {% if page > 1 %}
+      <a href="/decisions?{{ query }}&page={{ page - 1 }}">&larr; newer</a>
+    {% else %}<span class="muted">← newer</span>{% endif %}
+    <span class="muted small">page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}
+      <a href="/decisions?{{ query }}&page={{ page + 1 }}">older &rarr;</a>
+    {% else %}<span class="muted">older →</span>{% endif %}
+  </nav>
+{% endif %}
+
+<p class="muted small">
+  Hit rates are on <a href="/calibration">the calibration page</a>, sliced by
+  confidence band, engine and action. Only actionable calls are scored there: a
+  HOLD asserts no direction, so counting it either way would credit or blame the
+  model for a claim it never made.
+</p>
+{% endblock %}

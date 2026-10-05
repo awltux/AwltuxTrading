@@ -11,29 +11,8 @@ as disabled and nothing reaches the network.
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from awltux.db import utcnow
-
-
-@pytest.fixture
-def client(settings, monkeypatch):
-    """A TestClient whose lifespan resolves to the test configuration.
-
-    ``reload_settings`` is imported into ``awltux.main`` at module load, so the
-    reference there has to be patched as well as the one in ``awltux.config`` --
-    otherwise startup would rebuild the real settings and ignore the fixture.
-    """
-    import awltux.config as config_module
-    import awltux.db.session as session_module
-    import awltux.main as main_module
-
-    monkeypatch.setattr(config_module, "reload_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "reload_settings", lambda: settings)
-    monkeypatch.setattr(session_module, "get_settings", lambda: settings)
-
-    with TestClient(main_module.create_app()) as test_client:
-        yield test_client
 
 
 class TestHealth:
@@ -489,21 +468,6 @@ class TestTheRunHistoryPagesAndFilters:
         assert "…" in body
         assert "<details>" in body
         assert body.index("…") < body.index("<details>")
-
-
-@pytest.fixture
-def universe_instrument(session):
-    """One instrument in the analysed universe.
-
-    The news tests need somewhere for a story to point; they do not need the
-    decision and valuation rows ``populated`` builds, and reusing that fixture
-    would tie the news page's tests to the decision pipeline's.
-    """
-    from tests.helpers import make_instrument
-
-    session.add(make_instrument("TEST_US_EQ", name="Test Industries", sector="Industrials"))
-    session.flush()
-    return "TEST_US_EQ"
 
 
 class TestTheNewsItemPage:

@@ -192,6 +192,64 @@
   <p class="muted">No decision recorded yet for this instrument.</p>
 {% endif %}
 
+{# ------------------------------------------------------- prediction history #}
+<h2>Past predictions</h2>
+{% if predictions %}
+  <p class="muted small">
+    Every judgement recorded for this instrument, newest first, with the forward
+    return once its window has elapsed. {{ prediction_count }} in total{% if prediction_count > predictions | length %},
+    showing the most recent {{ predictions | length }}{% endif %}.
+    <a href="/decisions?ticker={{ ticker | urlencode }}">Open in the ledger</a>.
+  </p>
+  <table class="grid compact">
+    <thead>
+      <tr>
+        <th>When</th><th>Long term</th><th>Short term</th><th>Engine</th>
+        {% for horizon, windows in horizon_windows.items() %}
+          {% for days in windows %}<th class="num">{{ days }}d</th>{% endfor %}
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+    {% for prediction in predictions %}
+      {% set past = prediction.decision %}
+      <tr>
+        <td class="small">{{ past.created_at | datetime }}</td>
+        <td>
+          {% if past.long_term_action %}
+            <span class="badge {{ past.long_term_action | action_class }}">{{ past.long_term_action }}</span>
+            {% if past.confidence is not none %}<span class="muted small">{{ past.confidence | pct(0) }}</span>{% endif %}
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td>
+          {% if past.short_term_action %}
+            <span class="badge {{ past.short_term_action | action_class }}">{{ past.short_term_action }}</span>
+            {% if past.short_term_confidence is not none %}<span class="muted small">{{ past.short_term_confidence | pct(0) }}</span>{% endif %}
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="small">{{ engine_label(past.engine, past.uncalibrated) }}</td>
+        {% for horizon, windows in horizon_windows.items() %}
+          {% for days in windows %}
+            {% set outcome = prediction.outcome(horizon, days) %}
+            <td class="num small">
+              {% if outcome and outcome.return_pct is not none %}
+                <span class="{% if outcome.verdict == 'direction_correct' %}good{% elif outcome.verdict == 'direction_wrong' %}bad{% else %}muted{% endif %}"
+                      title="{{ outcome.verdict | replace('_', ' ') }}">{{ outcome.return_pct | round(1) }}%</span>
+              {% else %}
+                {# A dot, not a blank: "not knowable yet" is information. #}
+                <span class="muted" title="Not knowable yet: the window has not elapsed">·</span>
+              {% endif %}
+            </td>
+          {% endfor %}
+        {% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="muted">No predictions recorded for this instrument yet.</p>
+{% endif %}
+
 {# ----------------------------------------------------------------- valuation #}
 <h2>Valuation</h2>
 {% if valuation %}
