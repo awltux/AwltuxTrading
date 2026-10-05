@@ -45,6 +45,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             interval_seconds=schedule.t212_instruments,
             description="Re-select the analysed universe by size and liquidity",
             run_on_start=True,
+            depends_on=("t212_instruments",),
             # Deliberately after t212_instruments, which fetches from the network and
             # commits at the end. Both used to be scheduled for "now", so on a fresh
             # database the refresh read the instrument table before that commit and
@@ -63,6 +64,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.refresh_prices_eod,
             interval_seconds=schedule.prices_eod,
             description="End-of-day OHLCV for the universe, plus FX rates",
+            depends_on=("universe_refresh",),
             jitter_seconds=1200,
             enabled=True,
         ),
@@ -71,6 +73,9 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.refresh_prices_intraday,
             interval_seconds=schedule.prices_intraday,
             description="Quotes for held and pinned names during market hours",
+            # Needs instruments to know what is held, but nothing about the
+            # analysis pipeline: it is a display feed, not an input to a decision.
+            depends_on=("t212_instruments",),
             jitter_seconds=60,
             enabled=True,
         ),
@@ -83,6 +88,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.sync_fundamentals_job,
             interval_seconds=3600,
             description="Rotating fundamentals refresh, rationed to the free tier",
+            depends_on=("universe_refresh",),
             jitter_seconds=300,
             enabled=True,
         ),
@@ -91,6 +97,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.sync_filings,
             interval_seconds=schedule.edgar_submissions,
             description="Refresh SEC EDGAR filing history for US filers",
+            depends_on=("universe_refresh",),
             jitter_seconds=120,
             enabled=True,
         ),
@@ -99,6 +106,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.ingest_edgar_events,
             interval_seconds=schedule.edgar_atom_events,
             description="Poll the SEC EDGAR current-events feed for new US filings",
+            depends_on=("universe_refresh",),
             jitter_seconds=5,
             enabled=True,
         ),
@@ -107,6 +115,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.resolve_uk_companies_job,
             interval_seconds=schedule.companies_house,
             description="Resolve UK listings to Companies House company numbers",
+            depends_on=("universe_refresh",),
             jitter_seconds=60,
             enabled=bool(env.companies_house_api_key),
             requires=("COMPANIES_HOUSE_API_KEY",),
@@ -117,6 +126,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.ingest_news_rss,
             interval_seconds=schedule.news_rss,
             description="Poll news feeds and classify new headlines",
+            depends_on=("universe_refresh",),
             jitter_seconds=45,
             enabled=True,
         ),
@@ -128,6 +138,8 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
                 "Appraise news sceptically: publisher, framing, independent "
                 "sources, claims and omissions"
             ),
+            # It appraises stored stories, so there must be stories to appraise.
+            depends_on=("news_rss",),
             jitter_seconds=120,
             enabled=True,
         ),
@@ -136,6 +148,11 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.aggregate_sentiment,
             interval_seconds=schedule.sentiment_aggregate,
             description="Aggregate news into per-stock and per-sector sentiment",
+            # Declared on news_rss rather than news_analysis: the scepticism
+            # appraisal improves the credibility weighting but is not required for
+            # the aggregate to exist, so treating it as a hard dependency would
+            # misreport a working pipeline as blocked.
+            depends_on=("news_rss",),
             jitter_seconds=120,
             enabled=True,
         ),
@@ -145,6 +162,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.run_valuations,
             interval_seconds=schedule.valuation,
             description="Recompute deterministic fair-value ranges",
+            depends_on=("price_eod", "fundamentals"),
             jitter_seconds=600,
             enabled=True,
         ),
@@ -153,6 +171,10 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.run_decisions,
             interval_seconds=schedule.decision,
             description="Produce typed decisions via JEV (or the fallback engines)",
+            # Price, accounts, sentiment and a valuation all reach the decision
+            # state. Sentiment is listed last because it is the one the engines
+            # tolerate missing; the others change the arithmetic.
+            depends_on=("valuation", "sentiment"),
             jitter_seconds=600,
             enabled=True,
         ),
@@ -161,6 +183,9 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             func=ingest_jobs.update_calibration,
             interval_seconds=schedule.calibration,
             description="Score elapsed decisions against subsequent prices",
+            # Prices again, because scoring needs the price at the horizon rather
+            # than only at the decision.
+            depends_on=("decision", "price_eod"),
             jitter_seconds=900,
             enabled=True,
         ),

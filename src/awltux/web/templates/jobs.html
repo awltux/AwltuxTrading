@@ -10,13 +10,47 @@
   <div class="stat"><span class="stat-value">{{ stats.decided }}</span><span class="stat-label">decided</span></div>
 </section>
 
+<h2>Run these next</h2>
+{% if queue %}
+<p class="muted small">
+  Jobs with work the data shows is missing, in dependency order. A job whose
+  prerequisite has never completed successfully is not listed here — running it
+  first is the mistake this list exists to prevent, and it is shown as blocked in
+  the table below instead.
+</p>
+<table class="grid compact">
+  <thead><tr><th>Job</th><th>What it still owes</th></tr></thead>
+  <tbody>
+  {% for status in queue %}
+    <tr>
+      {# The same button markup as the table, so the existing handler runs it. #}
+      <td>
+        <div class="job-cell">
+          <code>{{ status.id }}</code>
+          <button class="run-job" data-job="{{ status.id }}">Run now</button>
+        </div>
+      </td>
+      <td class="small">{{ status.reason }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted small">
+  Nothing is outstanding that can be run: every job either has all the data it
+  produces, or is waiting on a job that has not completed yet.
+</p>
+{% endif %}
+
 <h2>Scheduled jobs</h2>
 <p class="muted small">
   Jobs are triggered from here with the same code path the scheduler uses, so a
   manual run is recorded in the history below exactly like an automatic one.
+  <strong>Needs first</strong> is the declared pipeline order: those jobs must have
+  run for this one to have anything to work with.
 </p>
 <table class="grid compact">
-  <thead><tr><th>Job</th><th>Description</th><th class="num">Every</th><th>Next run</th><th>Status</th></tr></thead>
+  <thead><tr><th>Job</th><th>Description</th><th>Needs first</th><th class="num">Every</th><th>Next run</th><th>Status</th></tr></thead>
   <tbody>
   {% for job in jobs %}
     <tr>
@@ -34,6 +68,14 @@
         </div>
       </td>
       <td class="small">{{ job.description }}</td>
+      <td class="small">
+        {% if job.needs %}
+          {% for need in job.needs %}
+            {% if need in blocked_jobs %}<span class="bad" title="never completed successfully">{{ need }}</span>
+            {% else %}<span class="muted">{{ need }}</span>{% endif %}{% if not loop.last %}, {% endif %}
+          {% endfor %}
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
       <td class="num">{{ (job.interval_seconds / 60) | round(0) }}m</td>
       <td class="small muted">{{ job.next_run | datetime if job.next_run else '—' }}</td>
       <td>
@@ -43,7 +85,43 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="5" class="empty">Scheduler is not running.</td></tr>
+    <tr><td colspan="6" class="empty">Scheduler is not running.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>What each job has left to do</h2>
+<p class="muted small">
+  Measured from the data, not from the run history: a job that has never run and a
+  job whose prerequisite has never run look identical in a history and need
+  different actions. Counts are universe coverage — how many instruments are still
+  missing what this job produces.
+</p>
+<table class="grid compact">
+  <thead><tr><th>Job</th><th>Needs first</th><th class="num">Outstanding</th><th>Reading</th></tr></thead>
+  <tbody>
+  {% for status in statuses %}
+    <tr>
+      <td><code>{{ status.id }}</code></td>
+      <td class="small">
+        {% if status.depends_on %}{{ status.depends_on | join(', ') }}{% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="num">
+        {% if status.outstanding is none %}<span class="muted">n/a</span>
+        {% elif status.outstanding == 0 %}<span class="good">0</span>
+        {% else %}<span class="warn">{{ status.outstanding }}</span>{% endif %}
+      </td>
+      <td class="small">
+        {{ status.reason }}
+        {% if status.never_ran %}
+          {# A dependency that has never completed successfully is stated first,
+             because it changes what the reader should do. #}
+          <br><span class="bad">blocked: {{ status.never_ran | join(', ') }} has not completed successfully yet</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="empty">Scheduler is not running.</td></tr>
   {% endfor %}
   </tbody>
 </table>

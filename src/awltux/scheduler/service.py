@@ -44,6 +44,12 @@ class SchedulerService:
             self._schedule(spec)
 
     def specs(self) -> list[JobSpec]:
+        """The registered specs, in declaration order.
+
+        Registration order is the registry's order, which is written top-to-bottom
+        as the pipeline runs, so this doubles as the readable order for the
+        Operations page.
+        """
         return list(self._specs.values())
 
     def get(self, job_id: str) -> JobSpec | None:
@@ -128,6 +134,9 @@ class SchedulerService:
                     "interval_seconds": spec.interval_seconds,
                     "enabled": spec.enabled,
                     "paused": self._paused,
+                    # The declared pipeline order, so an API consumer does not have
+                    # to read the registry to know what must run first.
+                    "needs": list(spec.depends_on),
                     "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
                 }
             )

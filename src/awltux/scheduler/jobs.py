@@ -56,6 +56,12 @@ class JobSpec:
     start_delay_seconds: int = 0
     # A long ingest must not overlap itself.
     max_instances: int = 1
+    # Jobs that must have run for this one to do anything useful, in the order they
+    # should be run. This is a fact about the pipeline, so it is declared here
+    # rather than inferred from the run history -- a history shows what happened,
+    # not what is required. Surfaced on the Operations page and checked for cycles
+    # by tests/test_job_dependencies.py.
+    depends_on: tuple[str, ...] = ()
     # Jitter spreads provider calls so we do not hammer a free tier at :00.
     jitter_seconds: int = 0
     enabled: bool = True

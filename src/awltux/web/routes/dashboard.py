@@ -194,6 +194,24 @@ def jobs_page(request: Request) -> HTMLResponse:
             select(IngestRun).order_by(desc(IngestRun.started_at)).limit(100)
         ).scalars().all()
 
+    # What each job still owes, and which ones are worth running now. Computed
+    # from the data rather than the run history: "never run" and "its dependency
+    # never ran" look identical in a history and need different actions.
+    from awltux.scheduler.dependencies import (
+        job_statuses,
+        jobs_that_have_ever_succeeded,
+        next_steps,
+    )
+
+    specs = scheduler.specs() if scheduler else []
+    with session_scope() as session:
+        statuses = job_statuses(session, specs) if specs else []
+        succeeded = jobs_that_have_ever_succeeded(session) if specs else set()
+    queue = next_steps(statuses)
+    # Used to colour the "needs first" chips: a prerequisite that has never
+    # completed is a different problem from one that merely ran a while ago.
+    blocked_jobs = {spec.id for spec in specs} - succeeded
+
     return templates.TemplateResponse(
         request,
         "jobs.html",
@@ -201,6 +219,9 @@ def jobs_page(request: Request) -> HTMLResponse:
             "jobs": scheduler.status() if scheduler else [],
             "runs": runs,
             "stats": stats,
+            "statuses": statuses,
+            "queue": queue,
+            "blocked_jobs": blocked_jobs,
         },
     )
 
