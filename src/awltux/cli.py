@@ -206,16 +206,64 @@ def cmd_jobs(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _local_base_url(settings) -> str:
+    """Where a server started by `serve` would be listening.
+
+    ``0.0.0.0`` is a bind address, not a destination, so it is mapped to loopback —
+    the CLI and the server are on the same machine by construction.
+    """
+    host = settings.env.host or "127.0.0.1"
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
+    return f"http://{host}:{settings.env.port}"
+
+
+def _run_via_server(settings, job_id: str) -> dict | None:
+    """Ask a running server to run the job. ``None`` when nothing is listening.
+
+    Running the job here instead would open a second connection to the same SQLite
+    file while the server's scheduler is writing, and the loser gets "database is
+    locked". `busy_timeout` handles a brief wait; a job that sleeps inside a
+    rate-limit guard is longer than any sane timeout. The server is already
+    running the same code path and already holds the write lock correctly.
+    """
+    import httpx
+
+    url = f"{_local_base_url(settings)}/api/jobs/{job_id}/run"
+    try:
+        response = httpx.post(url, timeout=httpx.Timeout(600.0, connect=2.0))
+    except httpx.HTTPError:
+        # Nothing listening, or not answering. Fall through to a direct run: the
+        # CLI has to work when the server is down, which is half its purpose.
+        return None
+    if response.status_code == 404:
+        return None
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        print(f"server refused the job: {exc}", file=sys.stderr)
+        return {"error": str(exc)}
+    return response.json()
+
+
 def cmd_job(args: argparse.Namespace) -> int:
     from awltux.config import get_settings
     from awltux.scheduler.jobs import execute_job
     from awltux.scheduler.registry import build_job_specs
 
-    specs = {spec.id: spec for spec in build_job_specs(get_settings())}
+    settings = get_settings()
+    specs = {spec.id: spec for spec in build_job_specs(settings)}
     spec = specs.get(args.job_id)
     if spec is None:
         print(f"unknown job {args.job_id!r}. Available: {', '.join(sorted(specs))}", file=sys.stderr)
         return 2
+
+    if not args.direct:
+        delegated = _run_via_server(settings, args.job_id)
+        if delegated is not None:
+            print(f"ran {args.job_id} on the running server at {_local_base_url(settings)}")
+            print(json.dumps(delegated.get("detail") or delegated, indent=2, default=str))
+            return 0
 
     result = execute_job(spec)
     if result is not None:
@@ -275,6 +323,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     job = sub.add_parser("job", help="run one scheduled job now")
     job.add_argument("job_id")
+    job.add_argument(
+        "--direct",
+        action="store_true",
+        help=(
+            "run in this process instead of asking a running server to run it. "
+            "Only use it when no server is up: two processes writing the same "
+            "SQLite file contend for the write lock."
+        ),
+    )
     job.set_defaults(func=cmd_job)
 
     return parser
