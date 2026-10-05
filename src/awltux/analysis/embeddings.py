@@ -134,6 +134,20 @@ class EmbeddingClient:
                     f"{scheme} ...`). Check the key, and that this account can use "
                     f"`{self.config.model}`. Upstream said: {text[:200]}"
                 )
+                # Fal's OpenRouter passthrough answers this exact sentence when the
+                # key is fine but the organization behind it has no access to the
+                # route. It is worth saying plainly that no request shape fixes it,
+                # because the obvious next move -- trying a different model -- was
+                # measured and changes nothing: four model names, including two that
+                # do not exist on OpenRouter, all return it identically.
+                if "organization tied to the api key" in text.lower():
+                    result.errors.append(
+                        "the provider says the organization behind the key has no "
+                        "access to this route. For a routed passthrough the key is "
+                        "accepted and then refused upstream, so this is an account "
+                        "entitlement rather than a request problem -- and trying a "
+                        "different model name does not change it."
+                    )
             else:
                 result.errors.append(text)
             logger.warning("embedding request failed: %s", str(exc)[:200])

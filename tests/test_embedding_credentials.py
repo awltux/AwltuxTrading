@@ -187,3 +187,31 @@ class TestARejectedCredentialSaysSo:
         result = client.embed(["a headline"])
         assert result.fatal is False
         assert result.errors
+
+    def test_an_entitlement_refusal_says_no_request_shape_will_fix_it(
+        self, settings, monkeypatch
+    ):
+        """Fal's OpenRouter passthrough accepts the key and refuses upstream. The
+        obvious next move is to try another model, and that was measured: four model
+        names, two of them nonexistent, return this identically -- so the message
+        says so rather than sending the reader round the same loop."""
+        from awltux.providers.http import ProviderError
+
+        monkeypatch.setattr(settings.env, "falai_key", SecretStr("k"), raising=False)
+        client = _client(settings)
+
+        class Refusing(_Captured):
+            def request(self, method, path, **kwargs):
+                raise ProviderError(
+                    "embeddings",
+                    'HTTP 401: {"error":{"message":"You do not have access to the '
+                    'organization tied to the API key."}}',
+                )
+
+        monkeypatch.setattr(client, "_http", Refusing(), raising=False)
+        result = client.embed(["a headline"])
+
+        assert result.fatal is True
+        message = " ".join(result.errors)
+        assert "entitlement" in message
+        assert "different model name does not change it" in message
