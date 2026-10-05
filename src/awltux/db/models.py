@@ -390,6 +390,21 @@ class NewsItem(Base, TimestampMixin):
     #: what routes a claim to the register where its primary source would live: a
     #: results story has a filing behind it, a rumour has nothing.
     event_type: Mapped[str | None] = mapped_column(String(24), index=True)
+
+    #: Whether this story is a claim about a share price: it names an instrument
+    #: or a sector *and* carries a direction. See ``analysis/relevance.py`` for the
+    #: rule and the reasoning behind the conjunction.
+    #:
+    #: **Nullable on purpose.** ``None`` means "not assessed", which is a different
+    #: and more actionable state than "assessed as not relevant" -- the same
+    #: distinction ``ingest_run.ok`` needed. A story that was never judged should
+    #: be visible as pending rather than silently filed as irrelevant.
+    relevant: Mapped[bool | None] = mapped_column(Boolean, index=True)
+    #: The classifier's own one-sentence justification, which used to be produced
+    #: on every call and thrown away at this boundary. The news page shows it
+    #: beside the instruments, because "relevant" with no reason is unarguable.
+    relevance_reason: Mapped[str | None] = mapped_column(Text)
+
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     raw_path: Mapped[str | None] = mapped_column(String(512))
 

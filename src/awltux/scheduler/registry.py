@@ -144,6 +144,23 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="news_relevance",
+            func=ingest_jobs.assess_news_relevance,
+            interval_seconds=schedule.news_relevance,
+            description=(
+                "Decide whether stored stories are claims about a share price, "
+                "and backfill the ones nothing has judged"
+            ),
+            # Deliberately *not* declared on news_analysis. Relevance is the cheap
+            # classification that decides what belongs in the flash banner; the
+            # appraisal is the expensive deep read that weights it. A story can be
+            # relevant and unappraised, and blocking the banner's ordering behind a
+            # job rationed to forty calls a run would leave it unsorted for days.
+            depends_on=("news_rss",),
+            jitter_seconds=90,
+            enabled=True,
+        ),
+        JobSpec(
             id="sentiment",
             func=ingest_jobs.aggregate_sentiment,
             interval_seconds=schedule.sentiment_aggregate,

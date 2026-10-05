@@ -386,6 +386,144 @@ def analyse_news() -> JobResult:
     )
 
 
+def assess_news_relevance() -> JobResult:
+    """Decide whether stored stories are claims about a share price.
+
+    Relevance is normally settled at ingest, by the same classifier call that
+    produces the direction. This job exists for the rows that call never reached:
+
+    * items stored before the classifier was configured (the deployment has 261 of
+      them, all with ``direction`` and ``materiality`` NULL);
+    * items whose classification failed on a transient error;
+    * everything written before this rule existed, which the migration deliberately
+      left NULL rather than deciding in an unattended schema change.
+
+    It is a separate job from ``news_analysis`` because the two cost very different
+    things and answer different questions. Relevance is one cheap classification
+    per story -- about a five-hundred-token prompt -- while the scepticism
+    appraisal is a deep read rationed to sixty calls a run. Putting them in one job
+    would make the cheap backfill wait behind the expensive one.
+
+    Rationed for the same reason every other paid job is: a bounded number of
+    calls per run, oldest first, so a backlog drains over several runs instead of
+    spending the month's budget in one.
+    """
+    from sqlalchemy import select
+
+    from awltux.analysis.relevance import assess
+    from awltux.config import get_settings
+    from awltux.db import Instrument, NewsItem
+    from awltux.db.session import release_write_lock
+    from awltux.llm.classify import build_classifier
+    from awltux.providers.news_rss import RawNewsItem
+
+    settings = get_settings()
+    limit = settings.news.relevance_backfill_per_run
+    classifier = build_classifier(settings)
+
+    with session_scope() as session:
+        pending = list(
+            session.execute(
+                select(NewsItem)
+                .where(NewsItem.relevant.is_(None))
+                .order_by(NewsItem.id)
+                .limit(limit)
+            ).scalars().all()
+        )
+        if not pending:
+            return JobResult(note="every stored story already has a relevance verdict")
+
+        # Resolve the instrument a story was fetched for, so the classifier is
+        # asked about the right company rather than about the ticker string.
+        wanted = {ticker for item in pending for ticker in (item.tickers or [])}
+        instruments = (
+            {
+                row.t212_ticker: row
+                for row in session.execute(
+                    select(Instrument).where(Instrument.t212_ticker.in_(wanted))
+                ).scalars().all()
+            }
+            if wanted
+            else {}
+        )
+
+        assessed = 0
+        without_model = 0
+        errors: list[str] = []
+
+        for item in pending:
+            instrument = next(
+                (instruments.get(ticker) for ticker in (item.tickers or []) if instruments.get(ticker)),
+                None,
+            )
+            about: bool | None = None
+            if classifier is not None and instrument is not None:
+                # The same rule the ingest path follows: no provider call inside an
+                # open transaction.
+                release_write_lock(session)
+                raw = RawNewsItem(
+                    title=item.title,
+                    url=item.url or "",
+                    source=item.source,
+                    summary=item.summary,
+                    published_at=item.published_at,
+                    tickers=list(item.tickers or []),
+                )
+                try:
+                    updates = classifier(raw, instrument)
+                except Exception as exc:  # noqa: BLE001 - one story must not stop the run
+                    errors.append(f"{item.id}: {exc}")
+                    updates = None
+                if updates:
+                    item.materiality = updates.get("materiality")
+                    item.direction = updates.get("direction")
+                    item.horizon = updates.get("horizon")
+                    item.sentiment_score = updates.get("sentiment_score")
+                    item.relevance = updates.get("relevance")
+                    item.engine = updates.get("engine")
+                    item.event_type = updates.get("event_type")
+                    reasoning = updates.get("reasoning")
+                    if reasoning:
+                        item.relevance_reason = str(reasoning)[:1000]
+                    about = updates.get("is_about_this_company")
+            else:
+                without_model += 1
+
+            verdict = assess(
+                tickers=item.tickers,
+                sectors=item.sectors,
+                direction=item.direction,
+                materiality=item.materiality,
+                about=about,
+            )
+            item.relevant = verdict.relevant
+            if not item.relevance_reason:
+                item.relevance_reason = verdict.reason
+            assessed += 1
+
+        session.flush()
+
+    if classifier is None:
+        note = (
+            "relevance recorded structurally only: DeepSeek is not configured, so no "
+            "direction could be judged and the stories with no direction are not relevant"
+        )
+    elif without_model:
+        note = (
+            f"{without_model} of {assessed} had no instrument in the stored universe to "
+            "classify against, so only the structural half of the rule was applied"
+        )
+    else:
+        note = None
+
+    return JobResult(
+        items_seen=len(pending),
+        items_written=assessed,
+        note=note,
+        detail={"assessed": assessed, "without_model": without_model, "errors": errors[:10]},
+    )
+
+
 def ingest_edgar_events() -> JobResult:
     """Poll EDGAR's current-events feed for new US filings."""
     from awltux.ingest.edgar import ingest_current_events

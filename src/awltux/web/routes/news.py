@@ -14,12 +14,14 @@ import datetime as dt
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from starlette.concurrency import run_in_threadpool
 
+from awltux.analysis.relevance import assess, priority
 from awltux.db import NewsAnalysis, NewsItem, session_scope
+from awltux.timezones import format_moment
 
 router = APIRouter(tags=["news"])
 
@@ -28,21 +30,91 @@ POLL_SECONDS = 2.0
 #: Stop a stream that nobody is reading, so a dead client cannot leak a task.
 MAX_IDLE_SECONDS = 900.0
 
+#: How many recent stories to score before taking the top ``limit``.
+#:
+#: Priority is computed in Python -- it mixes materiality, the scepticism weight
+#: and an age decay -- so it cannot be an ``ORDER BY``. Scoring a bounded recent
+#: window and sorting that is the honest alternative to loading the whole table;
+#: the window is far larger than any banner needs, so nothing that could plausibly
+#: rank is excluded.
+RANKING_WINDOW = 600
+
+
+def _targets(item: NewsItem) -> list[dict[str, str]]:
+    """Everything this story can be attached to, with the kind of each."""
+    out: list[dict[str, str]] = []
+    for ticker in item.tickers or []:
+        out.append({"kind": "instrument", "id": str(ticker)})
+    for sector in item.sectors or []:
+        out.append({"kind": "sector", "id": str(sector)})
+    return out
+
+
+def _score(item: NewsItem, analysis: NewsAnalysis | None) -> tuple[float, dict[str, object]]:
+    """Priority, and every input that produced it."""
+    return priority(
+        materiality=item.materiality,
+        credibility=analysis.credibility if analysis else None,
+        published_at=item.published_at,
+    )
+
+
+def _relevance(item: NewsItem) -> dict[str, object]:
+    """The stored verdict, explained.
+
+    The verdict is read from the row rather than recomputed, because one input
+    cannot be recovered here: whether the classifier judged the article *about*
+    the company. A ticker on an item normally comes from the feed it was fetched
+    by, so recomputing without that fact would call a passing mention relevant --
+    which is the opposite of what was stored.
+
+    The structural rule is still evaluated, but only to explain a verdict whose
+    reason is missing, and it says which half held rather than contradicting the
+    stored answer. When the rule itself changes, rows keep their old verdicts until
+    the ``news_relevance`` job re-assesses them -- which is what that job is for.
+    """
+    structural = assess(
+        tickers=item.tickers,
+        sectors=item.sectors,
+        direction=item.direction,
+        materiality=item.materiality,
+    )
+    return {
+        "relevant": item.relevant,
+        "has_target": structural.has_target,
+        "directional": structural.directional,
+        "reason": item.relevance_reason or structural.reason,
+        "targets": structural.targets,
+    }
+
 
 def _serialise(item: NewsItem, analysis: NewsAnalysis | None = None) -> dict[str, object]:
+    score, inputs = _score(item, analysis)
     return {
         "id": item.id,
         "title": item.title,
         "url": item.url,
+        # The permanent, local page: everything above, plus which instruments this
+        # concerns and why, without leaving the app or hitting a paywall.
+        "local_url": f"/news/{item.id}",
         "source": item.source,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "tickers": item.tickers or [],
         "sectors": item.sectors or [],
+        "targets": _targets(item),
         "materiality": item.materiality,
         "direction": item.direction,
         "horizon": item.horizon,
         "sentiment": item.sentiment_score,
         "engine": item.engine,
+        "event_type": item.event_type,
+        # Whether this is a claim about a share price at all, and the sentence
+        # that says which half of the rule held. ``None`` is "not assessed".
+        "relevant": item.relevant,
+        "relevance": _relevance(item),
+        "relevance_reason": item.relevance_reason,
+        "priority": round(score, 6),
+        "priority_inputs": inputs,
         # The sceptical read travels with the item so a consumer of the API cannot
         # take the headline without also being told what it is worth. Omitting it
         # would make the flash feed the one place a raw claim reached the UI.
@@ -97,37 +169,66 @@ def _analyses_for(item_ids: list[int]) -> dict[int, NewsAnalysis]:
         return {row.news_item_id: row for row in rows}
 
 
+def _analyses_in(session, item_ids: list[int]) -> dict[int, NewsAnalysis]:
+    if not item_ids:
+        return {}
+    rows = session.execute(
+        select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(item_ids))
+    ).scalars().all()
+    return {row.news_item_id: row for row in rows}
+
+
+def _ranked(session, *, window: int, limit: int) -> list[tuple[NewsItem, NewsAnalysis | None]]:
+    """Recent stories a reader should see, best first.
+
+    Two filters, and the distinction between them is the point:
+
+    * **Not relevant is excluded.** A story with no instrument and no direction has
+      nothing to attach to, and the banner is not a general news feed.
+    * **Unassessed is kept**, after the relevant ones. ``relevant IS NULL`` means
+      nothing has judged it yet -- an item stored before the classifier was
+      configured, or one whose classification failed. Dropping those would hide a
+      gap; showing them as pending makes it visible.
+    """
+    rows = list(
+        session.execute(
+            select(NewsItem)
+            .where(or_(NewsItem.relevant.is_(True), NewsItem.relevant.is_(None)))
+            .order_by(desc(NewsItem.id))
+            .limit(window)
+        ).scalars().all()
+    )
+    analyses = _analyses_in(session, [row.id for row in rows])
+
+    def sort_key(row: NewsItem) -> tuple[int, float, int]:
+        # Assessed-relevant first, then unassessed, each by priority, then newest.
+        tier = 1 if row.relevant is True else 0
+        score, _ = _score(row, analyses.get(row.id))
+        return (tier, score, row.id or 0)
+
+    rows.sort(key=sort_key, reverse=True)
+    return [(row, analyses.get(row.id)) for row in rows[:limit]]
+
+
 def _fetch_since(item_id: int, limit: int) -> list[dict[str, object]]:
     with session_scope() as session:
         rows = session.execute(
             select(NewsItem)
             .where(NewsItem.id > item_id)
+            .where(or_(NewsItem.relevant.is_(True), NewsItem.relevant.is_(None)))
             .order_by(NewsItem.id)
             .limit(limit)
         ).scalars().all()
-        ids = [row.id for row in rows]
-        analyses = {
-            row.news_item_id: row
-            for row in session.execute(
-                select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(ids))
-            ).scalars().all()
-        } if ids else {}
+        analyses = _analyses_in(session, [row.id for row in rows])
         return [_serialise(row, analyses.get(row.id)) for row in rows]
 
 
 def _fetch_latest(limit: int) -> list[dict[str, object]]:
     with session_scope() as session:
-        rows = session.execute(
-            select(NewsItem).order_by(desc(NewsItem.id)).limit(limit)
-        ).scalars().all()
-        ids = [row.id for row in rows]
-        analyses = {
-            row.news_item_id: row
-            for row in session.execute(
-                select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(ids))
-            ).scalars().all()
-        } if ids else {}
-        return [_serialise(row, analyses.get(row.id)) for row in reversed(rows)]
+        # Reversed so the client receives them oldest-first and each new event
+        # lands to the right of the last, which is how the track is built.
+        ranked = _ranked(session, window=RANKING_WINDOW, limit=limit)
+        return [_serialise(row, analysis) for row, analysis in reversed(ranked)]
 
 
 @router.get("/api/news", summary="Recent news items")
@@ -139,14 +240,21 @@ def recent_news(
     from awltux.web import queries
 
     with session_scope() as session:
-        items = queries.recent_news(
-            session, limit=limit, min_materiality=materiality, ticker=ticker
-        )
-    analyses = _analyses_for([item.id for item in items])
-    return {
-        "items": [_serialise(item, analyses.get(item.id)) for item in items],
-        "count": len(items),
-    }
+        if ticker is None and materiality is None:
+            # The default feed is the flash banner: relevant first, best first.
+            ranked = _ranked(session, window=RANKING_WINDOW, limit=limit)
+            items = [row for row, _ in ranked]
+            analyses = {row.id: analysis for row, analysis in ranked if analysis}
+        else:
+            items = queries.recent_news(
+                session, limit=limit, min_materiality=materiality, ticker=ticker
+            )
+            analyses = _analyses_in(session, [item.id for item in items])
+        return {
+            "items": [_serialise(item, analyses.get(item.id)) for item in items],
+            "count": len(items),
+            "ordered_by": "priority" if ticker is None and materiality is None else "recency",
+        }
 
 
 @router.get("/partials/news-ticker", response_class=HTMLResponse, include_in_schema=False)
@@ -155,21 +263,65 @@ def news_ticker_partial(request: Request, limit: int = Query(15, ge=1, le=50)) -
     from awltux.web.templating import templates
 
     with session_scope() as session:
-        items = (
-            session.execute(select(NewsItem).order_by(desc(NewsItem.id)).limit(limit))
-            .scalars()
-            .all()
-        )
-        analyses = {
-            row.news_item_id: row
-            for row in session.execute(
-                select(NewsAnalysis).where(
-                    NewsAnalysis.news_item_id.in_([item.id for item in items])
-                )
-            ).scalars().all()
-        }
+        ranked = _ranked(session, window=RANKING_WINDOW, limit=limit)
+        items = [row for row, _ in ranked]
+        analyses = {row.id: analysis for row, analysis in ranked if analysis}
+        scores = {row.id: _serialise(row, analyses.get(row.id)) for row in items}
     return templates.TemplateResponse(
-        request, "partials/news_ticker.html", {"items": items, "analyses": analyses}
+        request,
+        "partials/news_ticker.html",
+        {"items": items, "analyses": analyses, "scores": scores},
+    )
+
+
+@router.get("/news/{item_id}", response_class=HTMLResponse, include_in_schema=False)
+def news_item_page(request: Request, item_id: int) -> HTMLResponse:
+    """One story, on a page of our own.
+
+    The flash banner links here rather than straight out to the publisher, because
+    the published article is the *input* to an assessment, not the assessment. What
+    a reader needs is what the system concluded and why: which instruments this
+    concerns, which way it points, what the scepticism layer made of the source,
+    and where the original is.
+    """
+    from awltux.web.templating import templates
+
+    with session_scope() as session:
+        item = session.get(NewsItem, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="no such news item")
+        analysis = session.execute(
+            select(NewsAnalysis).where(NewsAnalysis.news_item_id == item_id).limit(1)
+        ).scalar_one_or_none()
+        payload = _serialise(item, analysis)
+
+        # The instruments named by this story, resolved to their stored rows so the
+        # page can link to them and show what they are. An unknown ticker is shown
+        # as unknown rather than hidden: it is still what the story was attached to.
+        from awltux.db import Instrument
+
+        wanted = list(item.tickers or [])
+        instruments = (
+            {
+                row.t212_ticker: row
+                for row in session.execute(
+                    select(Instrument).where(Instrument.t212_ticker.in_(wanted))
+                ).scalars().all()
+            }
+            if wanted
+            else {}
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "news_item.html",
+        {
+            "item": item,
+            "analysis": analysis,
+            "payload": payload,
+            "instruments": instruments,
+            "published": format_moment(item.published_at) if item.published_at else None,
+        },
     )
 
 

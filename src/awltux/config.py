@@ -157,6 +157,7 @@ class ScheduleConfig(BaseModel):
     news_marketaux: int = 1_800
     news_gdelt: int = 900
     news_analysis: int = 1_800
+    news_relevance: int = 900
     sentiment_aggregate: int = 3_600
     valuation: int = 86_400
     decision: int = 86_400
@@ -375,6 +376,13 @@ class NewsConfig(BaseModel):
     ] = "mild"
     dedupe_window_hours: int = 72
     max_items_per_feed_poll: int = 50
+    #: How many stories the ``news_relevance`` job may classify in one run.
+    #:
+    #: Relevance is settled at ingest for anything new, so this only ever drains a
+    #: backlog -- items stored before the classifier was configured, or before the
+    #: rule existed. Bounded for the same reason every other paid job is: a large
+    #: backlog should cost several ordinary runs, not one month's budget.
+    relevance_backfill_per_run: int = 200
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     scepticism: ScepticismConfig = Field(default_factory=ScepticismConfig)
 

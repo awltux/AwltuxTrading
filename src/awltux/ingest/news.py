@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from awltux.analysis.relevance import assess
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, utcnow
 from awltux.db.session import release_write_lock
@@ -160,6 +161,49 @@ def _is_uk(instrument: Instrument) -> bool:
     return is_uk_listing(instrument.exchange_name, instrument.yahoo_symbol)
 
 
+def _merge_target(existing: NewsItem, item: RawNewsItem) -> None:
+    """Add a second feed's instrument to a story that is already stored.
+
+    Only the target is added. The direction and materiality are the story's --
+    judged once, against whichever instrument's feed found it first -- and
+    pretending otherwise per instrument would need a judgement per instrument.
+    """
+    tickers = list(existing.tickers or [])
+    for ticker in item.tickers or []:
+        if ticker not in tickers:
+            tickers.append(ticker)
+    existing.tickers = tickers
+
+    sectors = list(existing.sectors or [])
+    for sector in item.sectors or []:
+        if sector not in sectors:
+            sectors.append(sector)
+    existing.sectors = sectors
+
+
+def _apply_relevance(row: NewsItem, *, about: bool | None) -> None:
+    """Record whether this story is a claim about a share price.
+
+    ``None`` where nothing has judged it yet -- an item stored before the
+    classifier was configured, or one whose classification failed. That is left
+    NULL rather than defaulted to false, because "not assessed" is worth chasing
+    and "assessed as irrelevant" is not.
+    """
+    if row.direction is None and row.materiality is None and about is None:
+        return
+    verdict = assess(
+        tickers=row.tickers,
+        sectors=row.sectors,
+        direction=row.direction,
+        materiality=row.materiality,
+        about=about,
+    )
+    row.relevant = verdict.relevant
+    if not row.relevance_reason:
+        # The structural reason, used only where the model gave none.
+        row.relevance_reason = verdict.reason
+
+
 def persist_items(
     session: Session,
     items: Iterable[RawNewsItem],
@@ -176,10 +220,22 @@ def persist_items(
         report.by_source[item.source] = report.by_source.get(item.source, 0) + 1
 
         url_hash = item.url_hash
-        exists = session.execute(
-            select(NewsItem.id).where(NewsItem.url_hash == url_hash).limit(1)
+        existing = session.execute(
+            select(NewsItem).where(NewsItem.url_hash == url_hash).limit(1)
         ).scalar_one_or_none()
-        if exists is not None:
+        if existing is not None:
+            # The same story can surface in more than one instrument's feed, and a
+            # story about two companies is exactly the case the news page exists to
+            # show. This used to `continue` without recording the second ticker, so
+            # the row's ticker list could never hold more than the one feed that
+            # happened to win -- every stored item has exactly one, in a database
+            # of five thousand.
+            #
+            # The direction and materiality stay those of the first classification.
+            # Per-instrument judgements would need a link table and a second
+            # classifier call per instrument; until that exists, the page says the
+            # judgement is the story's rather than the instrument's.
+            _merge_target(existing, item)
             report.duplicates += 1
             continue
 
@@ -197,6 +253,9 @@ def persist_items(
             created_at=utcnow(),
         )
 
+        # The classifier's answer to "is this even about that company", kept so the
+        # relevance rule can tell a connection from a passing mention.
+        about: bool | None = None
         if classifier is not None:
             # Release SQLite's write lock before classifying. The previous
             # iteration's flush left a transaction open, and a model call takes
@@ -212,6 +271,7 @@ def persist_items(
                 updates = None
             if updates:
                 report.classified += 1
+                about = updates.get("is_about_this_company")
                 row.materiality = updates.get("materiality")
                 row.direction = updates.get("direction")
                 row.horizon = updates.get("horizon")
@@ -219,10 +279,16 @@ def persist_items(
                 row.relevance = updates.get("relevance")
                 row.engine = updates.get("engine")
                 row.event_type = updates.get("event_type")
+                # The classifier's own justification. It was produced on every
+                # call and thrown away here, which left "relevant" unarguable.
+                reasoning = updates.get("reasoning")
+                row.relevance_reason = str(reasoning)[:1000] if reasoning else None
                 if updates.get("tickers"):
                     row.tickers = list({*row.tickers, *updates["tickers"]})
                 if updates.get("sectors"):
                     row.sectors = list({*row.sectors, *updates["sectors"]})
+
+        _apply_relevance(row, about=about)
 
         # Flush inside the loop so the dedupe lookup sees rows added in this same
         # batch; without it, two copies of one story in a single feed both insert.

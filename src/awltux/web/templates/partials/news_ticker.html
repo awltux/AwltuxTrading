@@ -2,15 +2,27 @@
    initial paint; app.js replaces it with live Server-Sent Events once loaded.
 
    The ticker is the one place a bare headline could reach a reader without its
-   provenance attached, so the source and the weight travel with it. #}
+   provenance attached, so the source and the weight travel with it.
+
+   The link goes to our own page, not to the publisher. The published article is
+   the input to an assessment rather than the assessment, and it may be paywalled,
+   syndicated or gone by the time anyone clicks. The local page always has what the
+   system concluded, which instruments it concerns and why, and a link out for
+   anyone who wants the original. #}
 {% for item in items %}
   {% set analysis = analyses.get(item.id) if analyses else none %}
-  <a class="ticker-item mat-{{ item.materiality | materiality_class }}"
-     href="{{ item.url or '#' }}" target="_blank" rel="noopener noreferrer"
-     title="{{ item.title }}{% if item.tickers %} — {{ item.tickers | join(', ') }}{% endif %}{% if analysis %} · {{ analysis.evidence_grade }} evidence, weight {{ analysis.credibility | pct0 }}{% if analysis.source_name %} · {{ analysis.source_name }}{% endif %}{% endif %}">
+  {% set score = scores.get(item.id) if scores else none %}
+  <a class="ticker-item mat-{{ item.materiality | materiality_class }}{% if item.relevant is not true %} unassessed{% endif %}"
+     href="/news/{{ item.id }}"
+     title="{{ item.title }}{% if item.tickers %} — {{ item.tickers | join(', ') }}{% endif %}{% if score %} · priority {{ score.priority }}{% endif %}{% if analysis %} · {{ analysis.evidence_grade }} evidence, weight {{ analysis.credibility | pct0 }}{% if analysis.source_name %} · {{ analysis.source_name }}{% endif %}{% endif %}">
     {% if item.tickers %}<span class="chip">{{ item.tickers | join(', ') }}</span>{% endif %}
     <span class="ticker-title">{{ item.title }}</span>
     {% if item.direction %}<span class="dir dir-{{ item.direction }}">{{ item.direction }}</span>{% endif %}
+    {% if item.relevant is not true %}
+      {# Kept in the feed and labelled, rather than dropped: an item nothing has
+         judged yet is a gap worth seeing, not a story worth hiding. #}
+      <span class="badge unknown" title="Nothing has judged whether this is a claim about a share price">unassessed</span>
+    {% endif %}
     {% if analysis %}
       <span class="badge {{ analysis.evidence_grade | grade_class }}"
             title="How much weight this headline was given, after source, framing and corroboration">
@@ -30,5 +42,5 @@
     <span class="muted small">{{ item.published_at | ago }}</span>
   </a>
 {% else %}
-  <span class="muted">No headlines yet. Once news ingest runs, material items appear here.</span>
+  <span class="muted">No relevant headlines yet. A story appears once it names an instrument or sector and carries a direction.</span>
 {% endfor %}

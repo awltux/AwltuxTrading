@@ -255,6 +255,20 @@ def _probe_news_rss(session: Session) -> Coverage:
     return Coverage.all_or_nothing(0, f"{total:,} stories stored")
 
 
+def _probe_news_relevance(session: Session) -> Coverage:
+    total = _count(session, NewsItem)
+    if total == 0:
+        return Coverage.all_or_nothing(1, "no news stored")
+    pending = session.execute(
+        select(func.count()).select_from(NewsItem).where(NewsItem.relevant.is_(None))
+    ).scalar_one()
+    if pending == 0:
+        return Coverage.counted(0, total, f"all {total:,} stories have a relevance verdict")
+    return Coverage.counted(
+        pending, total, f"{pending:,} of {total:,} stories have no relevance verdict yet"
+    )
+
+
 def _probe_news_analysis(session: Session) -> Coverage:
     analysed = select(NewsAnalysis.news_item_id)
     window = [
@@ -345,6 +359,7 @@ PROBES = {
     "uk_companies": _probe_uk_companies,
     "news_rss": _probe_news_rss,
     "news_analysis": _probe_news_analysis,
+    "news_relevance": _probe_news_relevance,
     "sentiment": _probe_sentiment,
     "valuation": _probe_valuation,
     "decision": _probe_decision,

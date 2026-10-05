@@ -117,6 +117,11 @@ def normalise_classification(payload: dict[str, Any]) -> dict[str, Any] | None:
         "relevance": relevance if relevance is not None else (0.2 if is_about is False else 0.5),
         "reasoning": payload.get("reasoning"),
         "event_type": event_type,
+        # Kept, not just used to force materiality to "none". The ticker on a news
+        # item usually comes from the feed it was fetched by rather than from the
+        # article, so "this is not about that company" is what distinguishes a
+        # connection from a passing mention -- see analysis/relevance.py.
+        "is_about_this_company": is_about,
     }
 
 

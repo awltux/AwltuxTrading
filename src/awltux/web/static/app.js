@@ -56,12 +56,16 @@
   function tickerElement(item) {
     var link = document.createElement("a");
     link.className = "ticker-item mat-" + (item.materiality || "none");
-    link.href = item.url || "#";
-    link.target = "_blank";
+    // The local page, not the publisher. The article is the input to an
+    // assessment; the assessment is what a reader needs, and it does not expire,
+    // move behind a paywall or get rewritten.
+    link.href = item.local_url || ("/news/" + item.id);
     link.rel = "noopener noreferrer";
+    if (item.relevant === false) link.classList.add("not-relevant");
 
     var scepticism = item.scepticism || null;
     var title = item.title + (item.tickers && item.tickers.length ? " — " + item.tickers.join(", ") : "");
+    if (item.priority != null) title += " · priority " + item.priority;
     if (scepticism) {
       title += " · " + (scepticism.grade || "unrated") + " evidence";
       if (scepticism.credibility != null) {
@@ -78,6 +82,9 @@
     html += '<span class="ticker-title">' + escapeHtml(item.title) + "</span>";
     if (item.direction) {
       html += '<span class="dir dir-' + escapeHtml(item.direction) + '">' + escapeHtml(item.direction) + "</span>";
+    }
+    if (item.relevant !== true) {
+      html += '<span class="badge unknown" title="Nothing has judged whether this is a claim about a share price">unassessed</span>';
     }
     // The provenance travels with the headline here too, so a live-pushed item
     // cannot look more established than the same item rendered by the server.

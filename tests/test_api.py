@@ -218,7 +218,7 @@ class TestTemplatesRenderWithData:
         assert "running" in body
 
     def test_a_long_error_is_summarised_and_kept_behind_a_disclosure(
-        self, client, populated, session
+        self, client, universe_instrument, session
     ):
         """The stored error can be a whole SQL statement with its parameters, which
         buries the one line that identifies the failure."""
@@ -252,6 +252,193 @@ class TestTemplatesRenderWithData:
         for path in ("/sectors", "/calibration", "/jobs", "/info"):
             response = client.get(path)
             assert response.status_code == 200, path
+
+
+@pytest.fixture
+def universe_instrument(session):
+    """One instrument in the analysed universe.
+
+    The news tests need somewhere for a story to point; they do not need the
+    decision and valuation rows ``populated`` builds, and reusing that fixture
+    would tie the news page's tests to the decision pipeline's.
+    """
+    from tests.helpers import make_instrument
+
+    session.add(make_instrument("TEST_US_EQ", name="Test Industries", sector="Industrials"))
+    session.flush()
+    return "TEST_US_EQ"
+
+
+class TestTheNewsItemPage:
+    """The flash banner links here, not to the publisher.
+
+    The published article is the *input* to an assessment, not the assessment, and
+    it may be paywalled, syndicated or gone by the time anyone clicks. What the
+    local page always has is what the system concluded, which instruments the story
+    concerns, why, and a link out.
+    """
+
+    def _story(self, session, **overrides):
+        from awltux.db import NewsItem, utcnow
+
+        values = {
+            "source": "test",
+            "url": "https://publisher.example/story",
+            "url_hash": "abc123",
+            "title": "Acme wins a contract",
+            "summary": "Acme said the contract is worth 10m.",
+            "published_at": utcnow(),
+            "tickers": ["TEST_US_EQ"],
+            "sectors": [],
+            "materiality": "material",
+            "direction": "positive",
+            "horizon": "months",
+            "event_type": "product",
+            "relevant": True,
+            "relevance_reason": "names the company and reports a win, which is positive",
+        }
+        values.update(overrides)
+        row = NewsItem(**values)
+        session.add(row)
+        session.flush()
+        return row
+
+    def test_the_page_renders_with_the_verdict_and_the_reason(self, client, universe_instrument, session):
+        row = self._story(session)
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+        assert "Acme wins a contract" in body
+        assert "Relevant." in body
+        assert "names the company and reports a win" in body
+
+    def test_it_lists_the_instrument_the_story_concerns(self, client, universe_instrument, session):
+        row = self._story(session)
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+        assert "/instrument/TEST_US_EQ" in body, "the target must be reachable"
+
+    def test_it_links_to_the_source_article(self, client, universe_instrument, session):
+        row = self._story(session)
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+        assert "https://publisher.example/story" in body
+
+    def test_the_page_explains_the_priority(self, client, universe_instrument, session):
+        """A sort order nobody can argue with is a sort order nobody should trust."""
+        row = self._story(session)
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+        assert "materiality x credibility x recency" in body
+
+    def test_an_irrelevant_story_says_which_half_of_the_rule_failed(
+        self, client, universe_instrument, session
+    ):
+        row = self._story(
+            session,
+            url_hash="irrelevant",
+            url="https://publisher.example/irrelevant",
+            direction="neutral",
+            relevant=False,
+            relevance_reason=None,
+        )
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+        assert "Not relevant." in body
+        assert "not a claim about the share price" in body
+
+    def test_an_unassessed_story_says_so_rather_than_guessing(self, client, universe_instrument, session):
+        row = self._story(
+            session,
+            url_hash="unassessed",
+            url="https://publisher.example/unassessed",
+            materiality=None,
+            direction=None,
+            relevant=None,
+            relevance_reason=None,
+        )
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+        assert "Not assessed." in body
+        assert "news_relevance" in body
+
+    def test_an_unknown_story_is_a_404(self, client, universe_instrument):
+        assert client.get("/news/999999").status_code == 404
+
+
+class TestTheFlashBannerIsOrdered:
+    def test_only_relevant_stories_reach_the_banner(self, client, universe_instrument, session):
+        from awltux.db import NewsItem, utcnow
+
+        session.add(
+            NewsItem(
+                source="t", url="https://x/relevant", url_hash="r1", title="Relevant story",
+                published_at=utcnow(), tickers=["TEST_US_EQ"], direction="positive",
+                materiality="material", relevant=True,
+            )
+        )
+        session.add(
+            NewsItem(
+                source="t", url="https://x/irrelevant", url_hash="r2", title="Irrelevant story",
+                published_at=utcnow(), tickers=["TEST_US_EQ"], direction="neutral",
+                materiality="none", relevant=False,
+            )
+        )
+        session.commit()
+
+        body = client.get("/partials/news-ticker").text
+        assert "Relevant story" in body
+        assert "Irrelevant story" not in body
+
+    def test_a_more_important_story_is_served_first(self, client, universe_instrument, session):
+        from awltux.db import NewsItem, utcnow
+
+        now = utcnow()
+        session.add(
+            NewsItem(
+                source="t", url="https://x/minor", url_hash="m1", title="Minor story",
+                published_at=now, tickers=["TEST_US_EQ"], direction="positive",
+                materiality="mild", relevant=True,
+            )
+        )
+        session.add(
+            NewsItem(
+                source="t", url="https://x/major", url_hash="m2", title="Major story",
+                published_at=now, tickers=["TEST_US_EQ"], direction="negative",
+                materiality="critical", relevant=True,
+            )
+        )
+        session.commit()
+
+        items = client.get("/api/news").json()["items"]
+        titles = [item["title"] for item in items if item["title"].endswith("story")]
+        assert titles.index("Major story") < titles.index("Minor story")
+
+    def test_the_api_says_how_it_ordered_the_feed(self, client, universe_instrument):
+        assert client.get("/api/news").json()["ordered_by"] == "priority"
+
+    def test_the_api_carries_the_local_url_and_the_verdict(self, client, universe_instrument, session):
+        from awltux.db import NewsItem, utcnow
+
+        session.add(
+            NewsItem(
+                source="t", url="https://x/one", url_hash="s1", title="A story",
+                published_at=utcnow(), tickers=["TEST_US_EQ"], direction="positive",
+                materiality="material", relevant=True,
+            )
+        )
+        session.commit()
+
+        item = next(i for i in client.get("/api/news").json()["items"] if i["title"] == "A story")
+        assert item["local_url"].startswith("/news/")
+        assert item["relevant"] is True
+        assert item["priority"] > 0
+        assert item["priority_inputs"]["formula"]
 
 
 class TestInfoPage:
@@ -496,7 +683,9 @@ class TestNewsStreamContract:
     def test_ticker_partial_renders_without_javascript(self, client):
         response = client.get("/partials/news-ticker")
         assert response.status_code == 200
-        assert "No headlines yet" in response.text
+        # The empty state names the rule, because "no headlines" and "no headlines
+        # that touch a holding" are different and only one is worth worrying about.
+        assert "No relevant headlines yet" in response.text
 
 
 class TestNewsQueries:
@@ -526,39 +715,45 @@ class TestNewsQueries:
         session.commit()
 
         assert len(_fetch_latest(3)) == 3
-        # The first item's id is the oldest; asking for anything after it must
-        # return exactly the remaining two, with no gap and no duplicate.
-        oldest = _fetch_latest(3)[0]["id"]
-        newer = _fetch_since(int(oldest), 50)
+        # The replay is ordered by priority, not by id, so the cursor is the
+        # highest id in it rather than a positional guess. Asking for anything
+        # after that must return exactly the remaining two: no gap, no duplicate.
+        cursor = max(int(item["id"]) for item in _fetch_latest(3))
+        older = min(int(item["id"]) for item in _fetch_latest(3))
+        newer = _fetch_since(older, 50)
         assert len(newer) == 2
-        assert all(item["id"] > oldest for item in newer)
+        assert all(int(item["id"]) > older for item in newer)
+        assert cursor > older
 
-    def test_fetch_latest_is_chronological(self, session, settings):
+    def test_fetch_latest_ends_with_the_best_story(self, session, settings):
+        """The client inserts each event at the left edge, so the last one sent
+        ends up first in the banner. Sending worst-first is what puts the most
+        important story at the left."""
         import datetime as dt
 
         from awltux.db import NewsItem
         from awltux.web.routes.news import _fetch_latest
 
-        for index in range(3):
-            session.add(
-                NewsItem(
-                    source="rss",
-                    url=f"https://example.test/c{index}",
-                    url_hash=f"{index + 100:064d}",
-                    title=f"Chronological {index}",
-                    published_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=3 - index),
-                    tickers=["TEST_US_EQ"],
-                )
+        now = dt.datetime.now(dt.UTC)
+        session.add(
+            NewsItem(
+                source="rss", url="https://example.test/minor", url_hash="c0" * 32,
+                title="Minor", published_at=now, tickers=["TEST_US_EQ"],
+                materiality="mild", direction="positive", relevant=True,
             )
+        )
+        session.add(
+            NewsItem(
+                source="rss", url="https://example.test/major", url_hash="c1" * 32,
+                title="Major", published_at=now, tickers=["TEST_US_EQ"],
+                materiality="critical", direction="negative", relevant=True,
+            )
+        )
         session.flush()
         session.commit()
 
-        items = _fetch_latest(3)
-        assert [item["title"] for item in items] == [
-            "Chronological 0",
-            "Chronological 1",
-            "Chronological 2",
-        ]
+        items = _fetch_latest(2)
+        assert [item["title"] for item in items] == ["Minor", "Major"]
 
 
 class TestDisplayZone:

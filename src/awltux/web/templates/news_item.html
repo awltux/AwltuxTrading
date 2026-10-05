@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title | truncate(70) }} — {{ app_name }}{% endblock %}
+
+{% block content %}
+{#
+  One story, assessed, on a page of our own.
+
+  The order of this page is the order of the questions a reader actually has:
+  what is this, which of my shares does it touch, and how much should I believe
+  it. The article itself is the last link, not the first, because it is the input
+  to the assessment rather than the assessment -- and because it may be paywalled,
+  syndicated, or gone.
+#}
+
+<h1>{{ item.title }}</h1>
+
+<section class="kv">
+  <div><dt>Published</dt><dd>{{ published or '—' }}</dd></div>
+  <div><dt>Source</dt><dd>{{ item.source or '—' }}{% if analysis and analysis.source_name %} · {{ analysis.source_name }}{% endif %}</dd></div>
+  <div><dt>Event</dt><dd>{{ item.event_type or 'unclassified' }}</dd></div>
+  <div><dt>Classified by</dt><dd>{{ item.engine or 'not classified' }}</dd></div>
+</section>
+
+{# -------------------------------------------------------------- relevance #}
+<h2>Is this relevant?</h2>
+{% if item.relevant is true %}
+  <p><span class="good">Relevant.</span> {{ payload.relevance.reason }}.</p>
+{% elif item.relevant is false %}
+  <p><span class="bad">Not relevant.</span> {{ payload.relevance.reason }}.</p>
+  <p class="muted small">
+    It is kept on this page and in the API, but it is not shown in the flash
+    banner: a story with nothing to attach to is not a signal about a holding.
+  </p>
+{% else %}
+  <p><span class="warn">Not assessed.</span>
+    Nothing has judged whether this story is a claim about a share price — it was
+    stored before the classifier was configured, or its classification failed.
+    The <code>news_relevance</code> job backfills these.
+  </p>
+{% endif %}
+
+{% if item.relevance_reason %}
+  <p class="muted small">
+    <strong>Why, in the classifier's words:</strong> {{ item.relevance_reason }}
+  </p>
+{% endif %}
+
+{# --------------------------------------------------------------- targets #}
+<h2>What it concerns</h2>
+{% if item.tickers or item.sectors %}
+<table class="grid compact">
+  <thead><tr><th>Instrument</th><th>Name</th><th>Direction</th><th>Materiality</th><th>Relevance</th></tr></thead>
+  <tbody>
+  {% for ticker in item.tickers or [] %}
+    {% set instrument = instruments.get(ticker) %}
+    <tr>
+      <td><a href="/instrument/{{ ticker }}"><code>{{ ticker }}</code></a></td>
+      <td class="small">{{ instrument.name if instrument else 'not in the stored universe' }}</td>
+      {# The direction is the *story's*, judged against whichever feed found it
+         first. Per-instrument judgements would need a second classification per
+         instrument and are not made yet, so the page says so rather than
+         implying a precision that is not there. #}
+      <td>{% if item.direction %}<span class="dir dir-{{ item.direction }}">{{ item.direction }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="small">{{ item.materiality or '—' }}</td>
+      <td class="small muted">{{ item.relevance | pct(0) if item.relevance is not none else '—' }}</td>
+    </tr>
+  {% endfor %}
+  {% for sector in item.sectors or [] %}
+    <tr>
+      <td><span class="chip">{{ sector }}</span></td>
+      <td class="small muted" colspan="4">sector, not a specific instrument</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <p class="muted">This story names no instrument and no sector.</p>
+{% endif %}
+
+{# -------------------------------------------------------------- priority #}
+<h2>Why it ranks where it does</h2>
+{% set inputs = payload.priority_inputs %}
+<p class="small">
+  Priority <strong>{{ payload.priority }}</strong> =
+  {{ inputs.formula }}, where
+  materiality <strong>{{ item.materiality or 'none' }}</strong> contributes
+  {{ inputs.materiality_weight }},
+  credibility contributes {{ inputs.credibility }}
+  ({% if inputs.credibility_assessed %}from the scepticism appraisal{% else %}the unassessed default — no appraisal has run{% endif %}),
+  and age contributes {{ inputs.recency_weight }}.
+</p>
+
+{# ----------------------------------------------------------- scepticism #}
+<h2>How much should this be believed?</h2>
+{% if analysis %}
+  <section class="kv">
+    <div><dt>Evidence grade</dt><dd><span class="badge {{ analysis.evidence_grade | grade_class }}">{{ analysis.evidence_grade or 'unrated' }}</span></dd></div>
+    <div><dt>Weight</dt><dd>{{ analysis.credibility | pct0 if analysis.credibility is not none else '—' }}</dd></div>
+    <div><dt>Publisher</dt><dd>{{ analysis.source_name or 'unrated' }}
+      {% if analysis.source_kind %}<span class="muted small">({{ analysis.source_kind | replace('_', ' ') }})</span>{% endif %}</dd></div>
+    <div><dt>Publisher reliability</dt><dd>{{ analysis.source_reliability | pct0 if analysis.source_reliability is not none else 'unrated' }}</dd></div>
+    <div><dt>Independent sources</dt><dd>{{ analysis.independent_sources if analysis.independent_sources is not none else '—' }}
+      of {{ analysis.carrier_count if analysis.carrier_count is not none else '—' }} carrying it</dd></div>
+    <div><dt>Framing</dt><dd>{{ analysis.rhetoric_score | pct0 if analysis.rhetoric_score is not none else '—' }}</dd></div>
+  </section>
+
+  {% if analysis.scepticism_summary %}
+    <p>{{ analysis.scepticism_summary }}</p>
+  {% endif %}
+
+  {% if analysis.flags %}
+    <p>
+      {% for flag in analysis.flags %}
+        <span class="badge {% if flag in ('manipulative_framing', 'unsupported', 'unconfirmed') %}warn{% else %}unknown{% endif %}">{{ flag | replace('_', ' ') }}</span>
+      {% endfor %}
+    </p>
+  {% endif %}
+
+  {% if analysis.claims %}
+    <h3>What it claims</h3>
+    <ul class="small">
+      {% for claim in analysis.claims %}
+        <li>
+          {{ claim.text }}
+          {% if claim.type %}<span class="muted">— {{ claim.type | replace('_', ' ') }}</span>{% endif %}
+          {% if claim.checkable_against and claim.checkable_against != 'none' %}
+            <span class="muted">· checkable against {{ claim.checkable_against | replace('_', ' ') }}</span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if analysis.omissions %}
+    <h3>What it leaves out</h3>
+    <ul class="small">{% for omission in analysis.omissions %}<li>{{ omission }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if analysis.warnings %}
+    <h3>Warnings</h3>
+    <ul class="small">{% for warning in analysis.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if analysis.what_would_change_my_mind %}
+    <h3>What would change this reading</h3>
+    <p class="small">{{ analysis.what_would_change_my_mind }}</p>
+  {% endif %}
+
+  {% if analysis.primary_source %}
+    <p class="small"><strong>Where the underlying fact would be recorded:</strong>
+      {{ analysis.primary_source }}</p>
+  {% endif %}
+{% else %}
+  <p class="muted">
+    No scepticism appraisal has run for this story. Until it does, the headline is
+    shown but weighted at the unassessed default rather than treated as a finding.
+  </p>
+{% endif %}
+
+{# ------------------------------------------------------------------ source #}
+<h2>The original</h2>
+{% if item.url %}
+  <p><a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Read the article on {{ item.source or 'the publisher' }} &#8599;</a></p>
+  <p class="muted small">Opens in a new tab. The publisher may require a subscription.</p>
+{% else %}
+  <p class="muted">No source URL was recorded for this item.</p>
+{% endif %}
+
+{% if item.summary %}
+  <h3>Stored summary</h3>
+  <p class="small">{{ item.summary }}</p>
+  <p class="muted small">
+    This is what the feed supplied, which is usually a headline and a sentence.
+    The appraisal above sees no more than this; the article body is not fetched.
+  </p>
+{% endif %}
+{% endblock %}
