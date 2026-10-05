@@ -62,6 +62,33 @@ def _first_names(values: Any, limit: int = 3) -> str:
     return f"{joined} and {extra} more" if extra > 0 else joined
 
 
+#: How a ``{reason: count}`` detail key reads in a sentence. Anything unlisted is
+#: de-underscored rather than dropped, so a new reason is legible without a code
+#: change -- but a raw dict is never printed, which is what happened the first time
+#: this ran.
+_REASON_WORDS = {
+    "instrument_type": "not a tradeable share",
+    "no_symbol_mapping": "no price symbol could be derived",
+    "exchange_not_configured": "on an exchange with no configured provider",
+}
+
+
+def _reasons(value: Any, limit: int = 3) -> str:
+    """Render a ``{reason: count}`` map as prose, largest first."""
+    if isinstance(value, dict):
+        pairs = sorted(
+            ((key, count) for key, count in value.items() if isinstance(count, (int, float)) and count),
+            key=lambda pair: -pair[1],
+        )
+        return ", ".join(
+            f"{_n(count)} {_REASON_WORDS.get(key, str(key).replace('_', ' '))}"
+            for key, count in pairs[:limit]
+        )
+    if isinstance(value, (int, float)) and value:
+        return f"{_n(value)} filtered out"
+    return ""
+
+
 def _nothing(seen: int, what: str, because: str) -> str:
     return f"{_n(seen)} {what}, none written: {because}"
 
@@ -94,9 +121,9 @@ def _universe_refresh(detail: dict[str, Any]) -> str:
     line = f"{_n(selected)} of {_n(eligible)} eligible instruments selected"
     if cap:
         line += f" (capped at the largest {_n(cap)} by turnover)"
-    filtered = _get(detail, "filtered_out")
-    if filtered:
-        line += f"; {_n(filtered)} filtered out"
+    excluded = _reasons(detail.get("filtered_out"))
+    if excluded:
+        line += f"; excluded: {excluded}"
     return line
 
 

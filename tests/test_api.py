@@ -310,6 +310,9 @@ class TestTheRunHistoryIsExplained:
 
         body = client.get("/jobs").text
         assert "database is locked" in body
+        # Once, not twice: for a failure the error *is* the explanation, and
+        # printing both said the same sentence in two places.
+        assert body.count("database is locked") == 1
 
     def test_the_duration_is_shown(self, client, universe_instrument, session):
         import datetime as dt

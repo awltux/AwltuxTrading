@@ -121,6 +121,26 @@ class TestSuccessesAreExplainedToo:
         assert "50 rows pruned" in text
         assert "41 quote" in text
 
+    def test_a_reason_map_is_prose_not_a_dict(self):
+        """The first version printed the raw dict into the page."""
+        text = outcome(
+            job="universe_refresh",
+            detail={
+                "eligible": 6723,
+                "selected": 500,
+                "size_cap": 500,
+                "filtered_out": {
+                    "instrument_type": 6306,
+                    "no_symbol_mapping": 979,
+                    "exchange_not_configured": 4475,
+                },
+            },
+        )
+        assert "{" not in text
+        assert "6,306 not a tradeable share" in text
+        assert "4,475 on an exchange with no configured provider" in text
+        assert "979 no price symbol could be derived" in text
+
 
 class TestTheContracts:
     def test_a_jobs_own_note_wins(self):

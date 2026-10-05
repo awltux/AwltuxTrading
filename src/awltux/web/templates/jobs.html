@@ -206,9 +206,12 @@
         {% endif %}
         {# What it achieved, or why it achieved nothing. Derived from the stored
            detail rather than left as "ok" beside a zero -- the pair said nothing
-           and the reason was already recorded, just not in a sentence. #}
+           and the reason was already recorded, just not in a sentence.
+
+           Not shown for a failure: there the error below *is* the explanation, and
+           printing both said "interrupted: the process restarted..." twice. #}
         {% set explanation = outcomes.get(run.id) %}
-        {% if explanation %}
+        {% if explanation and run.ok is not false %}
           <br><span class="muted">{{ explanation }}</span>
         {% endif %}
         {% if run.ok is sameas false and run.error %}
