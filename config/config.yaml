@@ -148,6 +148,12 @@ decision:
   jev_model: jev-latest
   jev_max_state_tokens: 28000     # hard cap is 32k for state + longest question
   warn_if_fallback: true
+  # Output budget for one fallback decision, in tokens. A truncated answer is
+  # retried once at llm.max_output_tokens above; if it still does not fit, the
+  # instrument falls through to the deterministic engine with the reason recorded.
+  # Measured before this was configurable: the median response was ~3,500 tokens
+  # against a hardcoded 4,000, so one decision in four was lost to the ceiling.
+  deepseek_max_tokens: 6000
 
 # --- composite scoring --------------------------------------------------------
 # Weights are per horizon, because the two verdicts are built from different
