@@ -152,12 +152,12 @@ def _price_eod(detail: dict[str, Any]) -> str:
         line += f"; {_n(skipped)} bars skipped as a lower-ranked source"
     failed = _get(detail, "failed_count")
     if failed:
-        # The symbols are in the run detail; a standing list of the same names
-        # failing every run is a data-quality problem, not a transient one.
-        line += (
-            f". {_n(failed)} returned nothing at all -- "
-            f"{_first_names(detail.get('failed'))}"
-        )
+        # The stored list is truncated, so it is named as a sample. "92 returned
+        # nothing at all -- AACT, ADV.L and 22 more" reads as 114, which is the
+        # kind of sentence that makes a reader trust nothing on the page.
+        named = _first_names(detail.get("failed"), limit=3)
+        line += f". {_n(failed)} returned nothing at all"
+        line += f", including {named}" if named else ""
     return line
 
 

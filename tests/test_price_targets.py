@@ -177,7 +177,11 @@ class TestTheJobReportsWhatItAimedAt:
         assert "196,546 daily bars" in text
         assert "92 of those had no price history at all" in text
         assert "92 returned nothing at all" in text
-        assert "SGD" in text
+        assert "including SGD" in text
+        # The stored list is truncated, so it is a sample. The first version read
+        # "92 returned nothing -- SGD, PAFO and 22 more", which invites reading as
+        # 114 and makes a reader distrust the whole line.
+        assert "and 22 more" not in text
 
     def test_a_run_with_no_failures_does_not_claim_any(self):
         from awltux.scheduler.outcomes import outcome
