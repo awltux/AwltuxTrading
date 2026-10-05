@@ -55,7 +55,16 @@ awltux = "awltux.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-awltux = ["web/templates/**/*.html", "web/static/**/*", "llm/prompts/**/*.txt"]
+# build_info.json is not source: the Docker build writes it into src/awltux just
+# before installing, so the installed package can name the revision it came from.
+# It is gitignored, which is also what keeps the build's "was the tree dirty?"
+# check honest.
+awltux = [
+    "web/templates/**/*.html",
+    "web/static/**/*",
+    "llm/prompts/**/*.txt",
+    "build_info.json",
+]
 # Migration revisions are .py modules and ship as code, but the Alembic template
 # is not, and a missing script.py.mako would break `alembic revision`.
 "awltux.db.migrations" = ["*.mako", "versions/*.py"]

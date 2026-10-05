@@ -177,9 +177,100 @@ class TestTemplatesRenderWithData:
             assert response.status_code == 200, horizon
 
     def test_other_pages_render(self, client):
-        for path in ("/sectors", "/calibration", "/jobs"):
+        for path in ("/sectors", "/calibration", "/jobs", "/info"):
             response = client.get(path)
             assert response.status_code == 200, path
+
+
+class TestInfoPage:
+    """The build-provenance page.
+
+    ``load_build_info`` reads the live checkout when there is one, which would
+    make these tests depend on the machine's git state -- so the checkout is
+    removed and the baked artifact is pointed at a fixture instead. That is also
+    the case the page exists for: an installed copy with no ``.git``.
+    """
+
+    @pytest.fixture
+    def bundled(self, settings, monkeypatch, temp_dir):
+        import json
+
+        from awltux import buildinfo
+
+        payload = {
+            "generated_at": "2026-03-04T05:06:07+00:00",
+            "head": "deadbeef" * 5,
+            "dirty": False,
+            "commits": [
+                {
+                    "hash": "deadbeef" * 5,
+                    "short_hash": "deadbee",
+                    "author": "Ada Lovelace",
+                    "date": "2026-03-04T05:06:07+00:00",
+                    "subject": "Record the revision in the image",
+                },
+                {
+                    "hash": "cafebabe" * 5,
+                    "short_hash": "cafebab",
+                    "author": "Grace Hopper",
+                    "date": "2026-03-03T01:02:03+00:00",
+                    "subject": "Add the info page",
+                },
+            ],
+        }
+        path = temp_dir / "build_info.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        monkeypatch.setattr(buildinfo, "BUNDLED_PATH", path)
+        monkeypatch.setattr(buildinfo, "repo_root", lambda *_, **__: None)
+        return payload
+
+    def test_the_info_page_lists_commits_with_their_hashes(self, client, bundled):
+        body = client.get("/info").text
+        assert "deadbee" in body
+        assert "Record the revision in the image" in body
+        assert "cafebab" in body
+        assert "Add the info page" in body
+        # The full hash is available, not just the abbreviation.
+        assert "deadbeef" * 5 in body
+
+    def test_the_page_names_where_the_history_came_from(self, client, bundled):
+        body = client.get("/info").text
+        assert "baked in at build time" in body
+        assert "2026-03-04" in body  # the capture timestamp, not just the commits
+
+    def test_a_dirty_build_is_admitted_rather_than_hidden(self, client, bundled, monkeypatch, temp_dir):
+        import json
+
+        bundled["dirty"] = True
+        path = temp_dir / "dirty.json"
+        path.write_text(json.dumps(bundled), encoding="utf-8")
+        from awltux import buildinfo
+
+        monkeypatch.setattr(buildinfo, "BUNDLED_PATH", path)
+
+        body = client.get("/info").text
+        assert "has uncommitted changes" in body
+        # And the consequence is spelled out rather than left to the reader.
+        assert "built from a dirty tree" in body
+
+    def test_an_install_that_cannot_name_its_revision_says_so(self, client, settings, monkeypatch, temp_dir):
+        from awltux import buildinfo
+
+        monkeypatch.setattr(buildinfo, "BUNDLED_PATH", temp_dir / "absent.json")
+        monkeypatch.setattr(buildinfo, "repo_root", lambda *_, **__: None)
+
+        response = client.get("/info")
+        assert response.status_code == 200
+        assert "unavailable" in response.text
+        assert "cannot name" in response.text
+
+    def test_the_api_link_opens_in_a_new_tab(self, client):
+        body = client.get("/dashboard").text
+        assert 'href="/docs" target="_blank" rel="noopener"' in body
+
+    def test_the_navigation_links_to_the_info_page(self, client):
+        assert 'href="/info"' in client.get("/dashboard").text
 
 
 class TestJsonApi:

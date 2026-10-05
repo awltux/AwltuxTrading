@@ -24,6 +24,11 @@ venv/
 .coverage
 htmlcov/
 
+# generated at image build time: the commit history baked into the package, so
+# the Info page can name the revision an installed copy is running. Not source,
+# and keeping it out of git is what makes the build's dirty-tree check reliable.
+src/awltux/build_info.json
+
 # local scratch: pip's temp dir and the test suite's working directory. Both
 # live inside the repo so they work under a file-access sandbox.
 .pip-tmp/

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Info — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Build information</h1>
+
+{# Provenance is the whole point of this page: a decision is only reproducible
+   if the code that produced it can be named. So the commit, whether the tree was
+   clean when it was captured, and where the history was read from are all shown
+   as facts rather than assumed to be fine. #}
+<section class="summary">
+  <div class="stat">
+    <span class="stat-value">{{ info.head_short or '—' }}</span>
+    <span class="stat-label">running commit</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value">{{ version }}</span>
+    <span class="stat-label">version</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value">{{ info.commits | length }}</span>
+    <span class="stat-label">commits listed</span>
+  </div>
+</section>
+
+<table class="grid compact">
+  <tbody>
+    <tr>
+      <th>Commit history</th>
+      <td>
+        {% if info.source == 'git' %}<span class="good">live checkout</span>
+        {% elif info.source == 'bundled' %}<span class="good">baked in at build time</span>
+        {% else %}<span class="bad">unavailable</span>{% endif %}
+        <br><span class="muted small">{{ provenance }}</span>
+      </td>
+    </tr>
+    <tr>
+      <th>Full commit</th>
+      <td><code>{{ info.head or '—' }}</code></td>
+    </tr>
+    <tr>
+      <th>Captured</th>
+      <td class="small">{{ info.generated_at | datetime if info.generated_at else 'not captured — read live' }}</td>
+    </tr>
+    <tr>
+      <th>Working tree</th>
+      <td>
+        {% if info.dirty is none %}<span class="muted">not established</span>
+        {% elif info.dirty %}<span class="bad">has uncommitted changes</span>
+        <br><span class="muted small">
+          {%- if info.source == 'git' -%}
+            The running code is not exactly this commit, so a result cannot be traced to it.
+          {%- else -%}
+            The image was built from a dirty tree, so a result cannot be tied to a commit.
+            Rebuild from a clean checkout before trusting one.
+          {%- endif -%}</span>
+        {% else %}<span class="good">clean</span>{% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Database revision</th>
+      <td><code>{{ revision or '—' }}</code>
+        {% if not revision %}<span class="muted small">unstamped: run <code>awltux migrate</code></span>{% endif %}
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Last {{ info.commits | length }} commits</h2>
+<table class="grid compact">
+  <thead>
+    <tr><th>Commit</th><th>Date</th><th>Author</th><th>Message</th></tr>
+  </thead>
+  <tbody>
+  {% for commit in info.commits %}
+    <tr>
+      {# The short hash is the clickable-looking identifier; the full one is kept
+         in the tooltip so it can be copied without cluttering the row. #}
+      <td><code title="{{ commit.hash }}">{{ commit.short_hash }}</code></td>
+      <td class="small muted">{{ commit.date | datetime('%Y-%m-%d %H:%M') }}</td>
+      <td class="small">{{ commit.author }}</td>
+      <td>{{ commit.subject }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="empty">No commit history is available to this install.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

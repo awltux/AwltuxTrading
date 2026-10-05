@@ -1,0 +1,25 @@
+# Keep the build context to what the Dockerfile actually COPYs: pyproject.toml,
+# README.md, config/, alembic.ini, src/ and .git/.
+#
+# .git is deliberately NOT excluded. The whole history is copied into the builder
+# stage so the commit list can be recorded before the image loses access to it,
+# and it is the only reason this file cannot be trivial: at ~200MB the virtualenv
+# alone dominated every build otherwise.
+#
+# .env is excluded so the credentials never leave the host, even though no COPY
+# would have picked it up.
+.venv/
+venv/
+.pip-tmp/
+.tests-tmp/
+.ruff_cache/
+.pytest_cache/
+pytest-cache-files-*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+data/
+tests/
+.env
+*.log
+logs/

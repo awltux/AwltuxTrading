@@ -232,6 +232,10 @@ measures it.
 | **Sectors** | Sector sentiment heatmap, drill-down to constituents |
 | **Calibration** | Per-horizon tabs; realised hit rate and return by confidence and by engine; high-confidence misses |
 | **Operations** | Job status and history, provider health, LLM spend, ledger verification; run any job by hand |
+| **Info** | The commit this process is running, whether the tree was clean when it was captured, the database revision, and the last ten commits with their hashes |
+
+The **API** link in the navigation opens the OpenAPI docs in a new tab rather
+than navigating away from the dashboard.
 
 The **news flash ticker** streams over Server-Sent Events, colour-coded by
 materiality, tagged with affected tickers and sectors, linking to the source.
@@ -313,6 +317,21 @@ The test suite runs **entirely offline** — no network, no API keys — and cov
 the currency normalisation, symbol resolution, valuation methods, sentiment,
 canonical state hashing, every gate refusal path, engine answer parsing, the full
 pipeline end to end, ledger integrity, replay, and the HTTP layer.
+
+### Build provenance
+
+An installed copy has no `.git` and no `git`, so the commit history the **Info**
+page shows has to be recorded while both are still available. `docker build` does
+that: it copies `.git` into the builder stage, runs
+
+```bash
+PYTHONPATH=src python -m awltux.buildinfo --write src/awltux/build_info.json
+```
+
+and fails the build if no commits were captured. The file is gitignored, which is
+what keeps the *"was the tree clean?"* flag on the page honest — commit first,
+then build, and the image can name the exact revision it came from. A source
+checkout ignores the artifact and reads `git log` live.
 
 ### Layout
 

@@ -12,7 +12,9 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from awltux import __version__
 from awltux.audit.calibration import calibration_report
+from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
 from awltux.db import session_scope
 from awltux.ingest.universe import cached_t212_capabilities
@@ -198,5 +200,52 @@ def jobs_page(request: Request) -> HTMLResponse:
             "jobs": scheduler.status() if scheduler else [],
             "runs": runs,
             "stats": stats,
+        },
+    )
+
+
+def _schema_revision() -> str | None:
+    """The Alembic revision the live database is stamped with.
+
+    Read through the session's own connection rather than ``migrate.current_revision``,
+    which would open a second engine just to answer a question the dashboard can
+    already ask. The failure text is deliberately not surfaced -- it can quote the
+    database URL, and this page is unauthenticated.
+    """
+    from alembic.runtime.migration import MigrationContext
+
+    try:
+        with session_scope() as session:
+            return MigrationContext.configure(session.connection()).get_current_revision()
+    except Exception:  # noqa: BLE001 - an unknown revision must not break the page
+        return None
+
+
+def _provenance_note(info) -> str:
+    """Say where the history on the page came from, because the sources differ in
+    how much they can be trusted."""
+    if info.source == "git":
+        return "Read live from the git checkout this process was started from."
+    if info.source == "bundled":
+        when = f" on {info.generated_at}" if info.generated_at else ""
+        return f"Recorded in the installed package when the image was built{when}."
+    return (
+        "No git checkout and no recorded build artifact, so this install cannot "
+        "name the revision it is running."
+    )
+
+
+@router.get("/info", response_class=HTMLResponse, include_in_schema=False)
+def info_page(request: Request) -> HTMLResponse:
+    """What this process is running, and which commit that was."""
+    info = load_build_info(DEFAULT_COMMIT_COUNT)
+    return templates.TemplateResponse(
+        request,
+        "info.html",
+        {
+            "info": info,
+            "version": __version__,
+            "revision": _schema_revision(),
+            "provenance": _provenance_note(info),
         },
     )

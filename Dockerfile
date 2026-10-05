@@ -17,14 +17,24 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# lxml needs these to build if no wheel matches the platform.
+# lxml needs these to build if no wheel matches the platform. git is only here to
+# read the commit history that gets baked into the package (see below); neither
+# the wheel nor the runtime stage needs it.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential libxml2-dev libxslt1-dev \
+ && apt-get install -y --no-install-recommends build-essential libxml2-dev libxslt1-dev git \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src ./src
+# The image has no .git and no git, so the Info page's commit history has to be
+# recorded *now*, while both are available. Copying .git is the price of being
+# able to name the revision a running container came from. The generator writes
+# the artifact and exits non-zero if it captured nothing, which fails the build:
+# an image that cannot say what it is built from is worse than no image.
+COPY .git ./.git
+RUN PYTHONPATH=/build/src python -m awltux.buildinfo --write /build/src/awltux/build_info.json
+
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip \
  && /opt/venv/bin/pip install .
@@ -35,6 +45,10 @@ RUN python -m venv /opt/venv \
 RUN test -f /opt/venv/lib/python3.12/site-packages/awltux/db/migrations/env.py \
  && test -d /opt/venv/lib/python3.12/site-packages/awltux/db/migrations/versions \
  && ls /opt/venv/lib/python3.12/site-packages/awltux/db/migrations/versions/*.py
+# Same reasoning for the build provenance: if package-data failed to ship it, the
+# Info page would silently fall back to "unavailable" in exactly the deployment
+# that has no other way to answer.
+RUN test -s /opt/venv/lib/python3.12/site-packages/awltux/build_info.json
 
 
 FROM python:3.12-slim AS runtime

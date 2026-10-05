@@ -18,7 +18,10 @@
       <a href="/sectors" {% if request.url.path == '/sectors' %}class="active"{% endif %}>Sectors</a>
       <a href="/calibration" {% if request.url.path == '/calibration' %}class="active"{% endif %}>Calibration</a>
       <a href="/jobs" {% if request.url.path == '/jobs' %}class="active"{% endif %}>Operations</a>
-      <a href="/docs">API</a>
+      {# Interactive OpenAPI docs: a separate reading surface, so it opens in its
+         own tab and leaves the dashboard where it was. #}
+      <a href="/docs" target="_blank" rel="noopener">API</a>
+      <a href="/info" {% if request.url.path == '/info' %}class="active"{% endif %}>Info</a>
     </nav>
   </header>
 
