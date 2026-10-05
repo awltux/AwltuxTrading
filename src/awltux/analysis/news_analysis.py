@@ -382,6 +382,12 @@ def analyse_universe(
         else:
             analyser_for_item = analyser
 
+        # Release the write lock before appraising. The appraisal is where the
+        # model call happens, and the release at the end of this loop body comes
+        # too late: the transaction opened by the previous item's flush would
+        # otherwise be held across this item's model call, locking out every
+        # other writer for the duration.
+        release_write_lock(session)
         try:
             row = appraise_item(
                 item,

@@ -152,7 +152,43 @@ def release_write_lock(session: Session) -> None:
     Using this gives up atomicity for the enclosing batch, which is the right
     trade for idempotent ingest: a partially ingested feed poll is fine to repeat,
     whereas a lock held for minutes is not.
+
+    **Prefer :func:`release_before_network` for anything that is about to make a
+    network call.** Placing this by hand at the end of a loop body is what failed
+    twice -- see that function.
     """
+    if session.in_transaction():
+        session.commit()
+
+
+def release_before_network() -> None:
+    """Commit this thread's open transaction, if it has one, before network I/O.
+
+    Called at the network boundary -- by the HTTP client and the model client --
+    rather than remembered at each call site, because remembering it did not work.
+    The rule "a job must not hold a transaction across a slow provider call" is in
+    this module's docstring, and it was violated twice by *new* code added to
+    existing loops:
+
+    * ``ingest_rss_news`` was fixed with an explicit release between feed polls;
+      a per-headline classifier call was later added inside the same transaction,
+      holding the lock for ~20 seconds per instrument instead of per poll;
+    * ``news_analysis`` releases between items, but the appraisal -- which is where
+      the model call happens -- runs before that release, so the lock is held
+      across it.
+
+    Both looked correct, because in both the release is present and near the loop.
+    Placing the commit *at the boundary* makes the property hold for code that has
+    not been written yet, which is the only kind of guarantee worth having here.
+
+    The atomicity given up is the same as :func:`release_write_lock`'s, and for the
+    same reason: ingest and appraisal are idempotent and repeatable, whereas a lock
+    held across a provider call fails every other writer.
+    """
+    stack: list[Session] | None = getattr(_state, "stack", None)
+    if not stack:
+        return
+    session = stack[-1]
     if session.in_transaction():
         session.commit()
 

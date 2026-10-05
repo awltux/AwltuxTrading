@@ -27,6 +27,7 @@ from awltux.db.session import (
     healthcheck,
     in_transaction,
     init_db,
+    release_before_network,
     reset_engine,
     session_scope,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "healthcheck",
     "in_transaction",
     "init_db",
+    "release_before_network",
     "reset_engine",
     "session_scope",
     "utcnow",

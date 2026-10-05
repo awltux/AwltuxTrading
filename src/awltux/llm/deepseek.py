@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from awltux.config import Settings, get_settings
-from awltux.db import LLMCall, session_scope
+from awltux.db import LLMCall, release_before_network, session_scope
 from awltux.providers.http import HttpClient, ProviderError, ProviderNotConfigured
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,18 @@ class Completion:
             if self.finish_reason == "length":
                 # Say the useful thing. The JSON error names the character offset,
                 # which tells the reader nothing about why there is nothing after it.
+                if not text:
+                    # Observed in production: `Expecting value at char 0` means the
+                    # response body was empty, not that the JSON was cut short. The
+                    # output budget was spent before an answer began, so there is no
+                    # partial object to inspect -- and the old message sent the
+                    # reader looking for a truncation point that does not exist.
+                    raise TruncatedResponse(
+                        f"the model returned no content at all before reaching the "
+                        f"{self.output_tokens or '?'}-token output limit, so there is "
+                        "no JSON to parse (the budget went before the answer did); "
+                        "raise max_tokens or ask for a shorter answer"
+                    ) from exc
                 raise TruncatedResponse(
                     f"response was cut off at the {self.output_tokens or '?'}-token output "
                     f"limit, so the JSON is incomplete ({exc.msg} at char {exc.pos}); "
@@ -244,6 +256,11 @@ class DeepSeekClient:
             body["response_format"] = {"type": "json_object"}
 
         started = time.perf_counter()
+        # Give up this thread's SQLite write lock before the request. A model call
+        # takes seconds to tens of seconds, and a job that holds the write lock
+        # across one fails every other writer with "database is locked" after
+        # busy_timeout -- including the insert that records this very call.
+        release_before_network()
         try:
             result = self.client().post(
                 "/chat/completions",

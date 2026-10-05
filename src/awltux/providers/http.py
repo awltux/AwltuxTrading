@@ -32,7 +32,7 @@ from typing import Any
 import httpx
 
 from awltux.config import BudgetRule, Settings, get_settings
-from awltux.db import ProviderBudget, session_scope, utcnow
+from awltux.db import ProviderBudget, release_before_network, session_scope, utcnow
 from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
@@ -520,6 +520,11 @@ class HttpClient:
         last_error: Exception | None = None
 
         for attempt in range(attempts + 1):
+            # Give up this thread's SQLite write lock before waiting on the rate
+            # limiter and before the request itself. A throttled provider can sit
+            # here for seconds, and a job holding the write lock across that
+            # blocks every other writer until busy_timeout expires.
+            release_before_network()
             if self.budget is not None:
                 self.budget.acquire()
             try:

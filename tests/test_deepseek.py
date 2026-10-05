@@ -53,6 +53,17 @@ class TestJsonObject:
         assert "max_tokens" in message
         assert "500" in message
 
+    def test_an_empty_response_says_there_is_nothing_to_parse(self):
+        """Observed in production as ``Expecting value at char 0``, which sent the
+        reader looking for a truncation point in a response that had no content:
+        the output budget went before the answer began."""
+        with pytest.raises(TruncatedResponse) as excinfo:
+            completion("", finish_reason="length").json_object()
+
+        message = str(excinfo.value)
+        assert "no content at all" in message
+        assert "incomplete" not in message
+
     def test_json_that_is_not_an_object_is_rejected(self):
         with pytest.raises(DeepSeekError):
             completion("[1, 2, 3]").json_object()

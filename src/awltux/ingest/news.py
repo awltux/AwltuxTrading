@@ -197,6 +197,12 @@ def persist_items(
         )
 
         if classifier is not None:
+            # Release SQLite's write lock before classifying. The previous
+            # iteration's flush left a transaction open, and a model call takes
+            # seconds: holding it here is what made a concurrent job fail with
+            # "database is locked". The lock is also released inside the model
+            # client; this is the same guarantee stated where the slow call is.
+            release_write_lock(session)
             try:
                 updates = classifier(item, instrument)
             except Exception as exc:
