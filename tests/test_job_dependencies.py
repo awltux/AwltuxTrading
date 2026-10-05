@@ -182,6 +182,12 @@ class TestCoverageCounts:
         assert statuses["calibration"].outstanding is None
         assert "waiting for their horizon" in statuses["calibration"].reason
 
+    def test_no_decisions_does_not_read_as_up_to_date(self, session, specs):
+        """"All 0 decisions have been scored" is true and useless."""
+        statuses = {status.id: status for status in job_statuses(session, specs)}
+        assert statuses["calibration"].outstanding is None
+        assert "nothing to score" in statuses["calibration"].reason
+
     def test_the_appraisal_counts_only_recent_material_stories(self, session, specs):
         session.add(make_instrument("A_US_EQ", in_universe=True))
         fresh_material = NewsItem(

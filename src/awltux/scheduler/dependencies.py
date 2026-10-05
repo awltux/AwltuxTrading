@@ -249,16 +249,21 @@ def _probe_decision(session: Session) -> tuple[int | None, str]:
 
 
 def _probe_calibration(session: Session) -> tuple[int | None, str]:
+    total = _count(session, DecisionRun)
+    if total == 0:
+        # Saying "every decision has been scored" when there are no decisions is
+        # true and reads as "up to date", which is the opposite of useful.
+        return None, "no decisions recorded yet, so there is nothing to score"
     waiting = session.execute(
         select(func.count())
         .select_from(DecisionRun)
         .where(DecisionRun.id.not_in(select(DecisionOutcome.decision_run_id)))
     ).scalar_one()
     if waiting == 0:
-        return 0, "every decision has been scored"
+        return 0, f"all {total:,} decisions have been scored"
     # Not outstanding work: the horizons have to elapse before there is anything
     # to score. Reporting a waiting count as a queue would invite pointless runs.
-    return None, f"{waiting:,} decisions waiting for their horizon to elapse"
+    return None, f"{waiting:,} of {total:,} decisions waiting for their horizon to elapse"
 
 
 def _probe_retention(session: Session) -> tuple[int | None, str]:

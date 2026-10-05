@@ -13,10 +13,10 @@
 <h2>Run these next</h2>
 {% if queue %}
 <p class="muted small">
-  Jobs with work the data shows is missing, in dependency order. A job whose
-  prerequisite has never completed successfully is not listed here — running it
-  first is the mistake this list exists to prevent, and it is shown as blocked in
-  the table below instead.
+  Jobs with work the data shows is missing, in dependency order. A job is left out
+  when something it declares has neither completed a run nor produced anything to
+  read — running it first is the mistake this list exists to prevent, and the
+  reason is shown against it in the tables below.
 </p>
 <table class="grid compact">
   <thead><tr><th>Job</th><th>What it still owes</th></tr></thead>
