@@ -89,6 +89,18 @@ def _reasons(value: Any, limit: int = 3) -> str:
     return ""
 
 
+def _sample(values: Any, limit: int = 3) -> str:
+    """Name a few entries of a list that is truncated at the source.
+
+    No "and N more": the stored list is already capped, so a count taken from it
+    is a count of the sample and not of the whole. "92 returned nothing --
+    AACT, ADV.L and 22 more" reads as 114.
+    """
+    if not isinstance(values, list):
+        return ""
+    return ", ".join(str(value).split(":")[0].strip() for value in values[:limit])
+
+
 def _nothing(seen: int, what: str, because: str) -> str:
     return f"{_n(seen)} {what}, none written: {because}"
 
@@ -152,10 +164,9 @@ def _price_eod(detail: dict[str, Any]) -> str:
         line += f"; {_n(skipped)} bars skipped as a lower-ranked source"
     failed = _get(detail, "failed_count")
     if failed:
-        # The stored list is truncated, so it is named as a sample. "92 returned
-        # nothing at all -- AACT, ADV.L and 22 more" reads as 114, which is the
-        # kind of sentence that makes a reader trust nothing on the page.
-        named = _first_names(detail.get("failed"), limit=3)
+        # The stored list is capped at 25, so it is named as a sample and its own
+        # length is never reported -- see :func:`_sample`.
+        named = _sample(detail.get("failed"), limit=3)
         line += f". {_n(failed)} returned nothing at all"
         line += f", including {named}" if named else ""
     return line
