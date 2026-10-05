@@ -48,6 +48,34 @@ _PARTIAL_NAME = 0.60
 #: A candidate whose instrument type disagrees with ours is almost never right.
 _TYPE_PENALTY = 0.25
 
+#: A candidate on a *known-different* venue.
+#:
+#: Found by reading the first real run rather than its count: 79 of 92 resolved, and
+#: two of them were cross-listings -- ``DOOO_US_EQ`` (a Nasdaq instrument) came back
+#: as ``DOO.TO`` in Toronto, and ``EVTCY_US_EQ`` as ``EVTA.F`` in Frankfurt. An ISIN
+#: identifies the *company*, and a company can be listed in several places; the
+#: venue decides the price, the currency and the liquidity. A Toronto price attached
+#: to a Nasdaq instrument is a plausible number that is simply not the right one.
+#:
+#: Large enough to drop an otherwise-exact ISIN match below the apply floor, so the
+#: instrument stays visibly unresolved and asks for a human instead. That is the
+#: right trade: a wrong-venue price is worse than a visible gap.
+_VENUE_PENALTY = 0.45
+
+#: Venue families, matched on substrings because providers spell exchanges
+#: differently ("NASDAQ", "NasdaqGS", "NMS"; "LSE", "London"; "TOR", "Toronto").
+_VENUE_FAMILIES: dict[str, tuple[str, ...]] = {
+    "us": ("nasdaq", "nms", "ngm", "ncm", "nyse", "nyq", "new york", "nysearca", "pcx"),
+    "uk": ("lse", "london", "lon"),
+    "de": ("fra", "frankfurt", "stu", "stuttgart", "ham", "hamburg", "mun", "munich",
+           "ber", "berlin", "dus", "dusseldorf", "xetra", "ger"),
+    "ca": ("tor", "toronto", "tsx", "cve", "van", "vancouver"),
+    "au": ("asx", "sydney"),
+}
+
+#: Suffixes that mark a listing away from the company's home market.
+_FOREIGN_SUFFIX = re.compile(r"\.(F|SG|TO|V|BE|DU|HM|MU|XC|XA|IL|ST|CO|HE|PA|AS|MI|BR)$")
+
 #: Suffixes and words that mark a derivative rather than the share itself. A name
 #: search for Kodiak AI returns ``KDKRW`` "Kodiak AI, Inc. Warrants" second, and a
 #: warrant has its own price series that would look plausible and be wrong.
@@ -111,6 +139,25 @@ def _is_derivative(candidate: SymbolCandidate) -> bool:
     return bool(candidate.name and _DERIVATIVE_WORDS.search(candidate.name))
 
 
+def _venue_family(exchange: str | None, symbol: str | None = None) -> str | None:
+    """Which market a candidate trades on, as far as can be told.
+
+    The symbol suffix is consulted as well as the venue name, because a provider
+    can return a venue string this does not know while the suffix still says
+    plainly that it is a foreign listing.
+    """
+    for text in (exchange or "", symbol or ""):
+        lowered = text.lower()
+        if not lowered:
+            continue
+        for family, spellings in _VENUE_FAMILIES.items():
+            if any(spelling in lowered for spelling in spellings):
+                return family
+    if symbol and _FOREIGN_SUFFIX.search(symbol):
+        return "other"
+    return None
+
+
 def _exchange_agrees(candidate_exchange: str | None, instrument_exchange: str | None) -> bool:
     """Whether the venue in the search result matches where we think it trades.
 
@@ -123,15 +170,23 @@ def _exchange_agrees(candidate_exchange: str | None, instrument_exchange: str | 
     right = instrument_exchange.lower()
     if left == right:
         return True
-    aliases = {
-        "lse": ("london", "lse"),
-        "nasdaq": ("nasdaq", "nms", "ngm", "ncm", "nasdaqgs", "nasdaqgm", "nasdaqcm"),
-        "nyse": ("nyse", "new york"),
-    }
-    for key, spellings in aliases.items():
-        if key in right and any(spelling in left for spelling in spellings):
-            return True
-    return "london" in left and "lse" in right
+    ours = _venue_family(instrument_exchange)
+    theirs = _venue_family(candidate_exchange)
+    return bool(ours and ours == theirs)
+
+
+def _venue_disagrees(candidate: SymbolCandidate, instrument_exchange: str | None) -> bool:
+    """Whether we can tell the candidate is on a *different* market to ours.
+
+    Only a positive disagreement counts. An unrecognised venue is not evidence of a
+    mismatch, and penalising it would drop correct resolutions for every exchange
+    this has never heard of.
+    """
+    ours = _venue_family(instrument_exchange)
+    theirs = _venue_family(candidate.exchange, candidate.symbol)
+    if ours is None or theirs is None:
+        return False
+    return ours != theirs
 
 
 def score_candidate(
@@ -198,6 +253,12 @@ def score_candidate(
     if _exchange_agrees(candidate.exchange, instrument_exchange):
         confidence = min(1.0, confidence + 0.05)
         reasons.append("exchange agrees")
+    elif _venue_disagrees(candidate, instrument_exchange):
+        confidence = max(0.0, confidence - _VENUE_PENALTY)
+        reasons.append(
+            f"listed on a different market ({candidate.exchange or candidate.symbol}); "
+            "the price, currency and liquidity would be another venue's"
+        )
 
     if _is_derivative(candidate):
         # A warrant or a right has its own plausible-looking price series.

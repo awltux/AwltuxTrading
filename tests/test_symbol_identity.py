@@ -202,6 +202,51 @@ class TestItRefusesWhatItShould:
         assert elsewhere.confidence < agreeing.confidence
         assert elsewhere.confidence > 0
 
+    def test_a_cross_listing_on_another_market_is_refused(self):
+        """Found by reading the first real run rather than its count: 79 of 92
+        resolved, and two were cross-listings -- a Nasdaq instrument came back as
+        ``DOO.TO`` in Toronto and another as ``EVTA.F`` in Frankfurt.
+
+        An ISIN identifies the *company*; a company can be listed in several places,
+        and the venue decides the price, currency and liquidity.
+        """
+        from awltux.ingest.identity import _venue_disagrees
+
+        toronto = SymbolCandidate(symbol="DOO.TO", name="BRP Inc.", exchange="TOR")
+        frankfurt = SymbolCandidate(symbol="EVTA.F", name="Evotec SE", exchange="FRA")
+        nasdaq = SymbolCandidate(symbol="DOOO", name="BRP Inc.", exchange="NMS")
+
+        assert _venue_disagrees(toronto, "NASDAQ")
+        assert _venue_disagrees(frankfurt, "NASDAQ")
+        assert not _venue_disagrees(nasdaq, "NASDAQ")
+
+        scored = score_candidate(
+            toronto,
+            instrument_name="BRP",
+            instrument_exchange="NASDAQ",
+            instrument_type="STOCK",
+            queried_by_isin=True,
+        )
+        assert not scored.usable, "a Toronto price must not be applied to a Nasdaq row"
+        assert any("different market" in reason for reason in scored.reasons)
+
+    def test_a_uk_instrument_is_not_refused_its_london_listing(self):
+        """The penalty must not break the case it was measured on."""
+        from awltux.ingest.identity import _venue_disagrees
+
+        assert not _venue_disagrees(
+            SymbolCandidate(symbol="BCE.L", exchange="LSE"), "LSE"
+        )
+
+    def test_an_unknown_venue_is_not_treated_as_a_mismatch(self):
+        """An unrecognised venue is not evidence of anything, and penalising it
+        would drop correct resolutions for every exchange this has never heard of."""
+        from awltux.ingest.identity import _venue_disagrees
+
+        assert not _venue_disagrees(
+            SymbolCandidate(symbol="XYZ", exchange="Some Exchange"), "NASDAQ"
+        )
+
     def test_no_candidates_at_all_is_none(self):
         assert choose_symbol([], instrument_name="Acme") is None
         assert choose_symbol([{"name": "no symbol"}], instrument_name="Acme") is None
