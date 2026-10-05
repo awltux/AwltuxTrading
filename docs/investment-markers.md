@@ -19,6 +19,23 @@ sophisticated way of losing money.
 | **C** | Plausible, widely used, but the evidence is thin, contested, or from a single paper |
 | **D** | Popular and largely unsupported — listed so it is not added by accident |
 
+**This note is the synthesis, not the evidence base.** The source-grounded detail —
+per-marker definitions, originating papers, sample periods, reported effect sizes,
+and an explicit UNVERIFIED marker wherever a claim could not be checked — is in four
+companion reports under [`docs/research/`](research/):
+
+| Report | Covers |
+|---|---|
+| [machine-analysable-filings.md](research/machine-analysable-filings.md) | annotating and extracting from filings; what LLM/NLP extraction is validated to do |
+| [text-and-news-signals.md](research/text-and-news-signals.md) | filing language, earnings-call text, and the news-sentiment record |
+| [dividend-and-capital-allocation.md](research/dividend-and-capital-allocation.md) | dividend policy and capital allocation |
+| [ma-and-capital-allocation.md](research/ma-and-capital-allocation.md) | acquisitions: acquirer value creation and destruction |
+
+Between them they carry several hundred cited URLs and a large number of explicit
+"could not verify" markers. Where this note states a number and the companion
+reports disagree, **the reports are the more detailed record** — this one is a
+judgement built on top of them.
+
 **And the distinction that matters most.** Three different questions get conflated
 in most write-ups, and they have very different answers:
 

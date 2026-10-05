@@ -45,6 +45,11 @@ pytest-cache-files-*/
 _tmp/
 .pdftools/
 _news_pdfs/
+papers/
+pylibs/
+wtmp/
+_*.py
+_wtest.txt
 *.pdf
 
 # editors / os
