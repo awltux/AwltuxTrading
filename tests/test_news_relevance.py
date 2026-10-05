@@ -317,3 +317,108 @@ def _hash(url: str) -> str:
     from awltux.providers.news_rss import RawNewsItem
 
     return RawNewsItem(title="", url=url, source="test").url_hash
+
+
+class TestTheBackfillJobDoesNotPayTwice:
+    """Relevance is settled at ingest; the job exists for the rows it missed.
+
+    The first draft classified every pending row, which in a database of 5,800
+    stories would have been 5,500 model calls to re-derive an answer already
+    stored. A row that carries a direction is decided entirely by the structural
+    half of the rule.
+    """
+
+    def _seed(self, session, **overrides):
+        from awltux.db import NewsItem, utcnow
+
+        values = {
+            "source": "test",
+            "url": "https://example.test/x",
+            "url_hash": "x" * 8,
+            "title": "Acme warns",
+            "published_at": utcnow(),
+            "tickers": ["TEST_US_EQ"],
+            "sectors": [],
+        }
+        values.update(overrides)
+        row = NewsItem(**values)
+        session.add(row)
+        session.flush()
+        return row
+
+    def test_only_stories_without_a_direction_cost_a_model_call(self, session, settings, monkeypatch):
+        from awltux.db import utcnow
+        from awltux.ingest import jobs as ingest_jobs
+        from awltux.llm import classify as classify_module
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Industries"))
+        self._seed(
+            session, url="https://example.test/known", url_hash="k" * 8,
+            title="Already judged", direction="negative", materiality="material",
+        )
+        self._seed(
+            session, url="https://example.test/unknown", url_hash="u" * 8,
+            title="Never judged", direction=None, materiality=None,
+        )
+        session.commit()
+
+        called: list[str] = []
+
+        def classifier(raw, instrument):
+            called.append(raw.title)
+            return {
+                "materiality": "moderate",
+                "direction": "positive",
+                "reasoning": "classified by the backfill",
+                "is_about_this_company": True,
+            }
+
+        monkeypatch.setattr(classify_module, "build_classifier", lambda settings=None: classifier)
+        assert utcnow() is not None
+
+        result = ingest_jobs.assess_news_relevance()
+
+        assert called == ["Never judged"], "the stored direction must not be re-bought"
+        assert result.detail["classified"] == 1
+        assert result.detail["decided_structurally"] == 1
+        assert result.items_written == 2
+
+    def test_the_structural_row_gets_a_verdict_from_what_was_stored(self, session, settings, monkeypatch):
+        from awltux.db import NewsItem, session_scope
+        from awltux.ingest import jobs as ingest_jobs
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Industries"))
+        self._seed(
+            session, url="https://example.test/known", url_hash="k2" * 4,
+            title="Already judged", direction="positive", materiality="material",
+        )
+        session.commit()
+
+        ingest_jobs.assess_news_relevance()
+
+        with session_scope() as fresh:
+            row = fresh.query(NewsItem).filter_by(url_hash="k2" * 4).one()
+            assert row.relevant is True
+            assert "positive" in row.relevance_reason
+
+    def test_a_story_with_no_direction_and_no_model_is_not_relevant(self, session, settings):
+        from awltux.db import NewsItem, session_scope
+        from awltux.ingest import jobs as ingest_jobs
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Industries"))
+        self._seed(
+            session, url="https://example.test/silent", url_hash="s2" * 4,
+            title="Nothing to go on", direction=None, materiality=None,
+        )
+        session.commit()
+
+        result = ingest_jobs.assess_news_relevance()
+
+        assert result.detail["classified"] == 0, "no key is configured in the suite"
+        with session_scope() as fresh:
+            row = fresh.query(NewsItem).filter_by(url_hash="s2" * 4).one()
+            assert row.relevant is False
+            assert "no direction" in row.relevance_reason

@@ -224,6 +224,14 @@ news:
   ticker_min_materiality: mild
   dedupe_window_hours: 72
   max_items_per_feed_poll: 50
+  # Output budget for one headline classification. This is NOT the length of the
+  # answer (~120 tokens): it has to cover reasoning the API does not return, which
+  # consumed the whole of the original 500-token cap on 6.7% of calls and returned
+  # an empty body. A truncated answer is retried once at llm.max_output_tokens.
+  classify_max_tokens: 2000
+  # How many stories the news_relevance job may classify in one run. Relevance is
+  # settled at ingest, so this only ever drains a backlog.
+  relevance_backfill_per_run: 200
   # Headline-level prefilter before spending an LLM call.
   prefilter:
     min_title_chars: 25

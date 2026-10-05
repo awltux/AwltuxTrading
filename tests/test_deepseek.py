@@ -108,7 +108,12 @@ class TestClassifierRetry:
 
         assert result is not None
         assert result["materiality"] == "material"
-        assert fake.calls == [500, 1_500], "the retry must ask for more tokens"
+        assert fake.calls == [2_000, 8_000], "the retry must ask for more tokens"
+        assert fake.calls[0] > 500, (
+            "the first budget must cover the reasoning the API does not return, not "
+            "just the answer: 6.7% of calls burned a 500-token budget and returned "
+            "nothing at all"
+        )
 
     def test_a_second_truncation_gives_up_rather_than_looping(self, settings):
         fake = _FakeCompletions(
@@ -123,6 +128,11 @@ class TestClassifierRetry:
         )
         assert result is None
         assert len(fake.calls) == 2, "exactly one retry, not an unbounded loop"
+
+    def test_the_budgets_come_from_configuration(self, settings):
+        """Both were magic numbers, and the first one was the wrong size."""
+        assert settings.news.classify_max_tokens > 1_500
+        assert settings.llm.max_output_tokens > settings.news.classify_max_tokens
 
     def test_malformed_json_is_not_retried(self, settings):
         """Only truncation is worth another call; nonsense will be nonsense again."""

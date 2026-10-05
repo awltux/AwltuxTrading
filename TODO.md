@@ -65,17 +65,24 @@ returning zeros, or should it queue behind the scheduled run? Whatever is chosen
 the refusal has to be visible to the CLI and the Run now button, both of which
 currently treat a `None` result as "nothing to do".
 
-### The classifier's first attempt is truncated on about 5% of headlines
+### The classifier's output budget was sized to the answer, not to the call
 
-Measured from the container's `llm_call` records: 56 of 1037 `news_classification`
-calls ended at exactly the 500-token limit. The retry at 1500 succeeds, so nothing
-is lost — but 5% of headlines cost two calls instead of one.
+**Fixed and worth recording, because the diagnosis took three attempts.** A
+headline classification was truncated on 6.7% of calls (165 of 2,474) and the log
+said the response was incomplete JSON. It was not: the body was **empty**. The
+`max_tokens` cap was 500, the *content* of a successful call is about 120 tokens,
+and the rest of the recorded output was reasoning the API does not return in
+`message.content` — so the budget was sized to the answer when it had to cover the
+thinking.
 
-What those responses actually contain is worth knowing: the message the model
-returns is `Expecting value at char 0`, meaning the body was **empty**. The output
-budget was spent before the answer began, so raising the first-attempt budget may
-fix it entirely rather than merely widening the retry. `Completion.json_object`
-now says this instead of claiming the JSON was incomplete.
+`news.classify_max_tokens` is now 2,000 with the retry at `llm.max_output_tokens`.
+Raising a `max_tokens` cap is close to free: it is a cap, not a reservation, so an
+ordinary call generates exactly what it did before. Five calls had also burned
+their retry at 1,500 and were lost entirely.
+
+The lesson is in `Completion.json_object`, which now names this cause when it sees
+an empty body, because "the JSON is incomplete" sent three people looking for a
+truncation point that did not exist.
 
 ### Build the accounting-quality markers from `docs/investment-markers.md`
 

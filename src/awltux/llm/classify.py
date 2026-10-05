@@ -158,11 +158,28 @@ def classify_headline(
         instruction=NEWS_CLASSIFICATION_INSTRUCTION,
     )
 
-    # 500 tokens is enough for the schema, but the optional `reasoning` field can
-    # run long enough to truncate the whole object -- and a truncated response used
-    # to be discarded silently, leaving the headline unclassified for no visible
-    # reason. One retry with room to finish is cheaper than losing the item.
-    for attempt, budget in enumerate((500, 1_500)):
+    # Two budgets, and the first one has to cover more than the answer.
+    #
+    # Measured over 2,474 calls: the mean output was 235 tokens while the returned
+    # *content* was about 120, and 165 of them (6.7%) spent the whole 500-token
+    # budget and returned an empty body. The tokens went to reasoning that
+    # `message.content` does not carry, so a budget sized to the JSON alone is
+    # sized to the wrong thing -- which is why the log said "no content at all"
+    # rather than "cut off mid-object".
+    #
+    # Raising it is close to free: `max_tokens` is a cap rather than a reservation,
+    # so an ordinary call generates exactly what it did before. What it removes is
+    # the second request for the 6.7% that ran out of room, and the handful that
+    # ran out twice and were lost.
+    budgets = list(
+        dict.fromkeys(
+            (
+                settings.news.classify_max_tokens,
+                settings.llm.max_output_tokens,
+            )
+        )
+    )
+    for attempt, budget in enumerate(budgets):
         try:
             completion = client.complete(
                 purpose=PURPOSE,
@@ -179,19 +196,21 @@ def classify_headline(
             return None
         except TruncatedResponse as exc:
             logger.warning(
-                "classification truncated for %r (attempt %d): %s",
+                "classification truncated for %r (attempt %d of %d at %d tokens): %s",
                 headline[:70],
                 attempt + 1,
+                len(budgets),
+                budget,
                 exc,
             )
+            if attempt == len(budgets) - 1:
+                logger.warning("classification gave up on %r after a truncated retry", headline[:70])
+                return None
             continue
         except DeepSeekError as exc:
             logger.debug("classification failed for %r: %s", headline[:70], exc)
             return None
         break
-    else:
-        logger.warning("classification gave up on %r after a truncated retry", headline[:70])
-        return None
 
     result = normalise_classification(payload)
     if result is None:

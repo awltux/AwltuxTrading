@@ -92,15 +92,21 @@ class Completion:
                 # which tells the reader nothing about why there is nothing after it.
                 if not text:
                     # Observed in production: `Expecting value at char 0` means the
-                    # response body was empty, not that the JSON was cut short. The
-                    # output budget was spent before an answer began, so there is no
-                    # partial object to inspect -- and the old message sent the
-                    # reader looking for a truncation point that does not exist.
+                    # response body was empty, not that the JSON was cut short.
+                    #
+                    # Measured, the tokens went somewhere the caller never sees: over
+                    # 2,474 classification calls the mean *output* was 235 tokens
+                    # while the returned content was about 120, and the calls that
+                    # produced nothing had burned their entire budget. So the message
+                    # names the likely cause rather than only the symptom -- the
+                    # budget was spent on reasoning, and sizing it to the answer is
+                    # sizing it to the wrong thing.
                     raise TruncatedResponse(
                         f"the model returned no content at all before reaching the "
-                        f"{self.output_tokens or '?'}-token output limit, so there is "
-                        "no JSON to parse (the budget went before the answer did); "
-                        "raise max_tokens or ask for a shorter answer"
+                        f"{self.output_tokens or '?'}-token output limit. The budget was "
+                        "spent before the answer began, which usually means reasoning "
+                        "the API does not return in `content`: raise max_tokens well "
+                        "above the length of the answer, or ask for a shorter one"
                     ) from exc
                 raise TruncatedResponse(
                     f"response was cut off at the {self.output_tokens or '?'}-token output "

@@ -383,6 +383,20 @@ class NewsConfig(BaseModel):
     #: rule existed. Bounded for the same reason every other paid job is: a large
     #: backlog should cost several ordinary runs, not one month's budget.
     relevance_backfill_per_run: int = 200
+
+    #: Output budget for one headline classification, in tokens.
+    #:
+    #: **This has to cover reasoning the API does not return.** Measured over 2,474
+    #: classification calls: the mean output was 235 tokens while the *content* was
+    #: about 120, and 165 calls (6.7%) burned the whole 500-token budget and
+    #: returned an empty body -- 500 tokens spent, nothing to parse. The tokens went
+    #: to reasoning, which ``message.content`` does not carry, so a budget sized to
+    #: the answer alone is a budget sized to the wrong thing.
+    #:
+    #: Raising it costs almost nothing: ``max_tokens`` is a cap, not a reservation,
+    #: and the ordinary call still generates what it always did. What disappears is
+    #: the second request for the 6.7% that ran out of room.
+    classify_max_tokens: int = 2_000
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     scepticism: ScepticismConfig = Field(default_factory=ScepticismConfig)
 

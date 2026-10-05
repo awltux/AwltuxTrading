@@ -448,7 +448,8 @@ def assess_news_relevance() -> JobResult:
         )
 
         assessed = 0
-        without_model = 0
+        classified = 0
+        structural = 0
         errors: list[str] = []
 
         for item in pending:
@@ -457,7 +458,17 @@ def assess_news_relevance() -> JobResult:
                 None,
             )
             about: bool | None = None
-            if classifier is not None and instrument is not None:
+
+            # Only ask the model where there is something to ask. A row that already
+            # carries a direction is decided entirely by the structural half of the
+            # rule, and re-classifying it would pay again for an answer that is
+            # already stored -- 5,500 of the 5,800 rows in this deployment are in
+            # that position. The model is needed only for rows whose classification
+            # never ran or failed, which is the backlog this job exists for.
+            needs_model = (
+                item.direction is None and classifier is not None and instrument is not None
+            )
+            if needs_model:
                 # The same rule the ingest path follows: no provider call inside an
                 # open transaction.
                 release_write_lock(session)
@@ -486,8 +497,9 @@ def assess_news_relevance() -> JobResult:
                     if reasoning:
                         item.relevance_reason = str(reasoning)[:1000]
                     about = updates.get("is_about_this_company")
+                    classified += 1
             else:
-                without_model += 1
+                structural += 1
 
             verdict = assess(
                 tickers=item.tickers,
@@ -505,22 +517,30 @@ def assess_news_relevance() -> JobResult:
 
     if classifier is None:
         note = (
-            "relevance recorded structurally only: DeepSeek is not configured, so no "
-            "direction could be judged and the stories with no direction are not relevant"
+            "relevance recorded structurally only: DeepSeek is not configured, so "
+            "stories with no stored direction are not relevant"
         )
-    elif without_model:
+    elif classified == 0:
         note = (
-            f"{without_model} of {assessed} had no instrument in the stored universe to "
-            "classify against, so only the structural half of the rule was applied"
+            f"no model calls needed: all {assessed} stories already carried a stored "
+            "direction, so the rule decided them"
         )
     else:
-        note = None
+        note = (
+            f"{classified} stories had no direction and were classified; {structural} "
+            "were decided from what was already stored"
+        )
 
     return JobResult(
         items_seen=len(pending),
         items_written=assessed,
         note=note,
-        detail={"assessed": assessed, "without_model": without_model, "errors": errors[:10]},
+        detail={
+            "assessed": assessed,
+            "classified": classified,
+            "decided_structurally": structural,
+            "errors": errors[:10],
+        },
     )
 
 
