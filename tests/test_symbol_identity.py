@@ -247,6 +247,21 @@ class TestItRefusesWhatItShould:
             SymbolCandidate(symbol="XYZ", exchange="Some Exchange"), "NASDAQ"
         )
 
+    def test_a_provider_placeholder_is_not_a_resolution(self):
+        """``DUMY0001134`` came back for BioKey and its name matched exactly, so it
+        applied. A placeholder carries no price series: resolving to one just moves
+        the failure one step later and makes it look like success in the meantime."""
+        scored = score_candidate(
+            SymbolCandidate(symbol="DUMY0001134", name="BioKey, Inc.", exchange="PNK"),
+            instrument_name="BioKey",
+            instrument_exchange="NASDAQ",
+            instrument_type="STOCK",
+            queried_by_isin=True,
+        )
+        assert not scored.usable
+        assert scored.confidence == 0.0
+        assert any("placeholder" in reason for reason in scored.reasons)
+
     def test_no_candidates_at_all_is_none(self):
         assert choose_symbol([], instrument_name="Acme") is None
         assert choose_symbol([{"name": "no symbol"}], instrument_name="Acme") is None

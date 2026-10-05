@@ -85,6 +85,13 @@ _DERIVATIVE_WORDS = re.compile(
 )
 _DERIVATIVE_SUFFIX = re.compile(r"(?:\.(?:WS|WT|RT|U)|(?:WS|WT|RT|UN))$", re.IGNORECASE)
 
+#: Yahoo's placeholder for a company with no live listing.
+#:
+#: ``DUMY0001134`` came back for BioKey, whose name matched well enough to apply.
+#: A placeholder carries no price series, so "resolving" to one just moves the
+#: failure one step later and makes it look like success in the meantime.
+_PLACEHOLDER_SYMBOL = re.compile(r"^DUMY", re.IGNORECASE)
+
 
 @dataclass(slots=True)
 class SymbolCandidate:
@@ -137,6 +144,11 @@ def _is_derivative(candidate: SymbolCandidate) -> bool:
     if _DERIVATIVE_SUFFIX.search(candidate.symbol or ""):
         return True
     return bool(candidate.name and _DERIVATIVE_WORDS.search(candidate.name))
+
+
+def _is_placeholder(candidate: SymbolCandidate) -> bool:
+    """Yahoo's ``DUMY...`` stand-in for a company with no live listing."""
+    return bool(_PLACEHOLDER_SYMBOL.match(candidate.symbol or ""))
 
 
 def _venue_family(exchange: str | None, symbol: str | None = None) -> str | None:
@@ -264,6 +276,11 @@ def score_candidate(
         # A warrant or a right has its own plausible-looking price series.
         confidence = 0.0
         reasons.append("this is a warrant, right or unit, not the share")
+    elif _is_placeholder(candidate):
+        # Resolving to a placeholder just moves the failure one step later, and
+        # makes it look like success in the meantime.
+        confidence = 0.0
+        reasons.append("this is a provider placeholder for a company with no listing")
 
     candidate.confidence = round(confidence, 4)
     candidate.reasons = reasons
