@@ -133,6 +133,14 @@ green suite because the tests never had rows. Templates and pages are now covere
 with a populated database, but the *empty* states are mostly asserted only for a
 200.
 
+### The build's `--paths` list and the image's `COPY` list can drift
+
+`--paths` is what stops the builder calling itself dirty, so it has to name
+everything the runtime image copies. Adding a directory to the image without
+adding it to `--paths` fails quietly in the wrong direction: the check simply
+stops covering that path, and a modified file in it will not be reported. The
+Dockerfile says so in a comment, which is not a test.
+
 ---
 
 ## Deliberately not doing
