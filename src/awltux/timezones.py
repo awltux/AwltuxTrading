@@ -105,6 +105,41 @@ def utc_day_start(moment: dt.datetime | None = None) -> dt.datetime:
     return moment.astimezone(dt.UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def parse_moment(value: Any, *, end_of_day: bool = False) -> dt.datetime | None:
+    """Read a filter value from a query string as an aware UTC instant.
+
+    Accepts ``YYYY-MM-DD`` from a date input and ``YYYY-MM-DDTHH:MM`` from a
+    datetime-local input. A bare date becomes midnight, or the last instant of that
+    day when ``end_of_day`` is set -- which is what a reader means by "until the
+    5th", and a filter that silently excludes the day you chose is worse than no
+    filter at all.
+
+    Returns ``None`` for anything unparseable rather than raising: a filter box is
+    a text field, and a typo in it should narrow the list to nothing obvious rather
+    than 500 the page.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    date_only = len(text) == 10
+    try:
+        if date_only:
+            parsed = dt.datetime.fromisoformat(text)
+        else:
+            parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if date_only:
+        if end_of_day:
+            parsed = parsed + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
+        return parsed.replace(tzinfo=dt.UTC)
+    return parsed.replace(tzinfo=dt.UTC) if parsed.tzinfo is None else parsed.astimezone(dt.UTC)
+
+
 def as_utc(value: dt.datetime | None) -> dt.datetime | None:
     """Normalise a datetime read back from storage to aware UTC.
 

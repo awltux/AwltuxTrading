@@ -127,6 +127,22 @@ table.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
    read together rather than matched up by counting across the row. */
 .job-cell { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
 .job-cell code { color: var(--fg); }
+
+/* Run-history filters. The history grows without bound, so finding one ingest
+   among hundreds is a filter problem, not a scrolling problem. */
+.filters { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin: 12px 0 6px; }
+.filters label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.filters input, .filters select {
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 4px 6px; font: inherit; font-size: 13px;
+}
+.filters button {
+  background: transparent; color: var(--fg);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.filters button:hover { border-color: var(--muted); }
 table.grid.compact th, table.grid.compact td { padding: 5px 8px; font-size: 13px; }
 .empty { text-align: center; color: var(--muted); padding: 28px !important; }
 .sort { color: var(--muted); }

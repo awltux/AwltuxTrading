@@ -206,7 +206,7 @@ class TestTemplatesRenderWithData:
         for job_id in ids:
             assert f'data-job="{job_id}"' in body, job_id
 
-    def test_an_open_run_is_shown_as_running(self, client, populated, session):
+    def test_an_open_run_is_shown_as_running(self, client, universe_instrument, session):
         """The display half of the fix in test_job_reporting: a run that has not
         finished must not read as its previous failure."""
         from awltux.db import IngestRun
@@ -217,7 +217,7 @@ class TestTemplatesRenderWithData:
         body = client.get("/jobs").text
         assert "running" in body
 
-    def test_both_tables_agree_about_a_running_job(self, client, populated, session):
+    def test_both_tables_agree_about_a_running_job(self, client, universe_instrument, session):
         """A job listed in "Run these next" *and* "Scheduled jobs" used to show
         "Running…" in one table and an enabled "Run now" in the other, offering to
         start a job that was already going."""
@@ -233,7 +233,7 @@ class TestTemplatesRenderWithData:
             head = segment[:240]
             assert "Run now" not in head, "a running job still offers to start: " + head[:100]
 
-    def test_the_api_reports_which_jobs_are_in_flight(self, client, populated, session):
+    def test_the_api_reports_which_jobs_are_in_flight(self, client, universe_instrument, session):
         """The browser cannot be trusted to remember this across a reload, and the
         first job to finish triggers one."""
         from awltux.db import IngestRun
@@ -243,13 +243,223 @@ class TestTemplatesRenderWithData:
 
         assert client.get("/api/jobs").json()["in_flight"] == ["news_rss"]
 
-    def test_a_finished_job_is_not_in_flight(self, client, populated, session):
+    def test_a_finished_job_is_not_in_flight(self, client, universe_instrument, session):
         from awltux.db import IngestRun
 
         session.add(IngestRun(job="news_rss", started_at=utcnow(), finished_at=utcnow(), ok=True))
         session.commit()
 
         assert client.get("/api/jobs").json()["in_flight"] == []
+
+    def test_the_calibration_page_renders_for_both_horizons(self, client, populated):
+        for horizon in ("long_term", "short_term"):
+            response = client.get(f"/calibration?horizon={horizon}")
+            assert response.status_code == 200, horizon
+
+    def test_other_pages_render(self, client):
+        for path in ("/sectors", "/calibration", "/jobs", "/info"):
+            response = client.get(path)
+            assert response.status_code == 200, path
+
+
+class TestTheRunHistoryIsExplained:
+    """`seen 500, written 0, ok` is two true numbers and no answer.
+
+    The Operations page now says what the run achieved, or why it achieved nothing,
+    taken from the detail the job already recorded.
+    """
+
+    def _run(self, session, **overrides):
+        import datetime as dt
+
+        from awltux.db import IngestRun
+
+        values = {
+            "job": "valuation",
+            "started_at": utcnow(),
+            "finished_at": utcnow(),
+            "ok": True,
+            "items_seen": 500,
+            "items_written": 0,
+            "detail": {"attempted": 500, "valued": 0, "insufficient_data": 500, "no_peers": 408},
+        }
+        values.update(overrides)
+        row = IngestRun(**values)
+        session.add(row)
+        session.flush()
+        assert dt is not None
+        return row
+
+    def test_a_zero_is_explained_on_the_page(self, client, universe_instrument, session):
+        self._run(session)
+        session.commit()
+
+        body = client.get("/jobs").text
+        assert "500 instruments attempted" in body
+        assert "none written" in body
+
+    def test_a_failed_run_shows_its_error(self, client, universe_instrument, session):
+        self._run(
+            session,
+            ok=False,
+            error="OperationalError: database is locked",
+            detail=None,
+            items_seen=0,
+        )
+        session.commit()
+
+        body = client.get("/jobs").text
+        assert "database is locked" in body
+
+    def test_the_duration_is_shown(self, client, universe_instrument, session):
+        import datetime as dt
+
+        start = utcnow()
+        self._run(session, started_at=start, finished_at=start + dt.timedelta(minutes=42))
+        session.commit()
+
+        body = client.get("/jobs").text
+        assert "42m" in body
+
+
+class TestTheRunHistoryPagesAndFilters:
+    """The history grows without bound — one row per job per interval — so finding
+    one ingest among hundreds is a filter problem, not a scrolling problem."""
+
+    def _seed(self, session, count: int, job: str = "news_rss"):
+        import datetime as dt
+
+        from awltux.db import IngestRun
+
+        base = utcnow() - dt.timedelta(days=1)
+        for index in range(count):
+            started = base + dt.timedelta(hours=index)
+            session.add(
+                IngestRun(
+                    job=job,
+                    started_at=started,
+                    finished_at=started + dt.timedelta(seconds=30 + index),
+                    ok=True,
+                    items_seen=1,
+                    items_written=1,
+                    detail={},
+                )
+            )
+        session.flush()
+
+    def test_only_one_page_is_served_at_a_time(self, client, universe_instrument, session):
+        self._seed(session, 40)
+        session.commit()
+
+        body = client.get("/jobs?run_per_page=10").text
+        assert "page 1 of 4" in body
+        assert "40 runs matched" in body
+
+    def test_the_second_page_shows_different_runs(self, client, universe_instrument, session):
+        self._seed(session, 40)
+        session.commit()
+
+        first = client.get("/jobs?run_per_page=10&run_page=1").text
+        second = client.get("/jobs?run_per_page=10&run_page=2").text
+        assert "page 1 of 4" in first
+        assert "page 2 of 4" in second
+        assert first != second
+
+    def test_a_page_beyond_the_end_is_clamped_rather_than_empty(
+        self, client, universe_instrument, session
+    ):
+        """A stale link should show the last page, not an empty table that reads as
+        "no runs recorded" -- which would be a lie."""
+        self._seed(session, 20)
+        session.commit()
+
+        body = client.get("/jobs?run_per_page=10&run_page=99").text
+        assert "page 2 of 2" in body
+
+    def test_filtering_by_job(self, client, universe_instrument, session):
+        self._seed(session, 5, job="news_rss")
+        self._seed(session, 3, job="retention")
+        session.commit()
+
+        body = client.get("/jobs?run_job=retention").text
+        assert "3 runs matched" in body
+        assert "<code>retention</code>" in body
+        # The scheduled-jobs table still lists every job; only the history is
+        # filtered, which is the point.
+        assert 'value="retention" selected' in body
+
+    def test_filtering_by_duration_finds_the_long_ones(self, client, universe_instrument, session):
+        self._seed(session, 5)  # 30-34 seconds each
+        session.commit()
+
+        """Duration is derived from the two timestamps, not stored."""
+        assert "5 runs matched" in client.get("/jobs?run_min_seconds=10").text
+        assert "0 runs matched" in client.get("/jobs?run_min_seconds=600").text
+
+    def test_filtering_by_date_range(self, client, universe_instrument, session):
+        import datetime as dt
+
+        from awltux.db import IngestRun
+
+        now = utcnow()
+        session.add_all(
+            [
+                IngestRun(
+                    job="old",
+                    started_at=now - dt.timedelta(days=10),
+                    finished_at=now - dt.timedelta(days=10) + dt.timedelta(seconds=5),
+                    ok=True,
+                ),
+                IngestRun(
+                    job="recent",
+                    started_at=now - dt.timedelta(hours=1),
+                    finished_at=now - dt.timedelta(hours=1) + dt.timedelta(seconds=5),
+                    ok=True,
+                ),
+            ]
+        )
+        session.commit()
+
+        today = now.date().isoformat()
+        body = client.get(f"/jobs?run_since={today}").text
+        assert "1 run matched" in body
+
+    def test_an_until_date_includes_the_whole_day_you_picked(
+        self, client, universe_instrument, session
+    ):
+        """A filter that silently excludes the day you chose is worse than none."""
+        from awltux.db import IngestRun
+
+        now = utcnow()
+        today = now.date()
+        session.add(
+            IngestRun(
+                job="late",
+                # 23:30 today, which a naive date comparison would exclude.
+                started_at=now.replace(hour=23, minute=30, second=0, microsecond=0),
+                finished_at=now.replace(hour=23, minute=30, second=5, microsecond=0),
+                ok=True,
+            )
+        )
+        session.commit()
+
+        body = client.get(f"/jobs?run_until={today.isoformat()}").text
+        assert "1 run matched" in body
+
+    def test_a_nonsense_filter_narrows_rather_than_500s(self, client, universe_instrument, session):
+        self._seed(session, 3)
+        session.commit()
+
+        response = client.get("/jobs?run_since=not-a-date&run_until=also-not&run_min_seconds=abc")
+        assert response.status_code in (200, 422)
+
+    def test_the_filter_state_survives_the_round_trip(self, client, universe_instrument, session):
+        self._seed(session, 4, job="news_rss")
+        session.commit()
+
+        body = client.get("/jobs?run_job=news_rss&run_min_seconds=60").text
+        assert 'value="news_rss" selected' in body
+        assert 'value="60" selected' in body
 
     def test_a_long_error_is_summarised_and_kept_behind_a_disclosure(
         self, client, universe_instrument, session
@@ -276,16 +486,6 @@ class TestTemplatesRenderWithData:
         assert "…" in body
         assert "<details>" in body
         assert body.index("…") < body.index("<details>")
-
-    def test_the_calibration_page_renders_for_both_horizons(self, client, populated):
-        for horizon in ("long_term", "short_term"):
-            response = client.get(f"/calibration?horizon={horizon}")
-            assert response.status_code == 200, horizon
-
-    def test_other_pages_render(self, client):
-        for path in ("/sectors", "/calibration", "/jobs", "/info"):
-            response = client.get(path)
-            assert response.status_code == 200, path
 
 
 @pytest.fixture

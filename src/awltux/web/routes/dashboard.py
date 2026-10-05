@@ -179,20 +179,83 @@ def calibration_page(
 
 
 @router.get("/jobs", response_class=HTMLResponse, include_in_schema=False)
-def jobs_page(request: Request) -> HTMLResponse:
+def jobs_page(
+    request: Request,
+    run_job: str | None = None,
+    run_since: str | None = None,
+    run_until: str | None = None,
+    run_min_seconds: float | None = None,
+    run_page: int = 1,
+    run_per_page: int = 25,
+) -> HTMLResponse:
+    """Operations: the pipeline, and the history of what it has actually done.
+
+    The history grows without bound -- one row per job per interval, so a few
+    hundred a week -- so it is paged and filtered rather than capped at the newest
+    hundred. Finding "the ingest that took forty minutes last Tuesday" is the whole
+    point of keeping it.
+    """
     scheduler = getattr(request.app.state, "scheduler", None)
     with session_scope() as session:
         stats = queries.universe_stats(session)
 
-    # Recent runs per job, newest first, for the operations panel.
-    from sqlalchemy import desc, select
+    from sqlalchemy import desc, func, select
 
     from awltux.db import IngestRun
+    from awltux.scheduler.outcomes import outcome_for
+    from awltux.timezones import parse_moment
+
+    run_page = max(1, run_page)
+    run_per_page = min(max(run_per_page, 10), 200)
 
     with session_scope() as session:
-        runs = session.execute(
-            select(IngestRun).order_by(desc(IngestRun.started_at)).limit(100)
-        ).scalars().all()
+        conditions = []
+        if run_job:
+            conditions.append(IngestRun.job == run_job)
+
+        # Dates are inclusive of the whole day the reader picked, because a filter
+        # that silently excludes the day you chose is worse than no filter.
+        since = parse_moment(run_since, end_of_day=False)
+        until = parse_moment(run_until, end_of_day=True)
+        if since is not None:
+            conditions.append(IngestRun.started_at >= since)
+        if until is not None:
+            conditions.append(IngestRun.started_at <= until)
+        if run_min_seconds is not None and run_min_seconds > 0:
+            # Duration is not stored: it is the gap between two timestamps, and
+            # SQLite compares them as text in the same sortable format.
+            conditions.append(
+                (func.julianday(IngestRun.finished_at) - func.julianday(IngestRun.started_at))
+                * 86400.0
+                >= run_min_seconds
+            )
+
+        total = session.execute(
+            select(func.count()).select_from(IngestRun).where(*conditions)
+        ).scalar_one()
+        pages = max(1, -(-total // run_per_page))
+        run_page = min(run_page, pages)
+
+        runs = list(
+            session.execute(
+                select(IngestRun)
+                .where(*conditions)
+                .order_by(desc(IngestRun.started_at))
+                .offset((run_page - 1) * run_per_page)
+                .limit(run_per_page)
+            ).scalars().all()
+        )
+        job_names = [
+            name
+            for (name,) in session.execute(
+                select(IngestRun.job).distinct().order_by(IngestRun.job)
+            ).all()
+            if name
+        ]
+        # Derived here rather than stored: the wording improves, and every past run
+        # should benefit from a better explanation instead of being frozen at the
+        # phrasing that happened to be current when it ran.
+        outcomes = {run.id: outcome_for(run) for run in runs}
 
     # What each job still owes, and which ones are worth running now. Computed
     # from the data rather than the run history: "never run" and "its dependency
@@ -229,6 +292,18 @@ def jobs_page(request: Request) -> HTMLResponse:
             # remember that across a reload, and the first job to finish triggers
             # one.
             "in_flight": in_flight,
+            "outcomes": outcomes,
+            "job_names": job_names,
+            "run_total": total,
+            "run_page": run_page,
+            "run_pages": pages,
+            "run_per_page": run_per_page,
+            "filters": {
+                "job": run_job or "",
+                "since": run_since or "",
+                "until": run_until or "",
+                "min_seconds": run_min_seconds if run_min_seconds else "",
+            },
         },
     )
 

@@ -75,6 +75,50 @@ def fmt_datetime(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
     return str(value)
 
 
+def fmt_duration(started: Any, finished: Any) -> str:
+    """How long a run took, from its two timestamps.
+
+    Duration is not stored: it is the gap between two instants, and storing it
+    would create a second source of truth for something already derivable. Rendered
+    without a zone label for the same reason ``fmt_ago`` is -- an elapsed span is
+    the same number of seconds wherever it is read from.
+
+    An unfinished run says so rather than showing a duration that is still growing.
+    """
+    if started is None or finished is None:
+        return "—"
+    start = _as_moment(started)
+    end = _as_moment(finished)
+    if start is None or end is None:
+        return "—"
+
+    seconds = (end - start).total_seconds()
+    if seconds < 0:
+        # Clock skew, or a row written by a machine whose clock disagrees. Saying
+        # so is better than rendering a negative duration as if it meant something.
+        return "clock skew"
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 172800:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
+def _as_moment(value: Any) -> dt.datetime | None:
+    if isinstance(value, str):
+        try:
+            value = dt.datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, dt.datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=dt.UTC)
+
+
 def fmt_ago(value: Any) -> str:
     """Human-readable age, e.g. "3h ago". Used for the freshness column.
 
@@ -171,6 +215,7 @@ def create_templates() -> Jinja2Templates:
             "pct0": pct0,
             "ratio": fmt_ratio,
             "datetime": fmt_datetime,
+            "duration": fmt_duration,
             "ago": fmt_ago,
             "action_class": action_class,
             "materiality_class": materiality_class,

@@ -141,33 +141,79 @@
 </table>
 
 <h2>Recent runs</h2>
+{# The history grows without bound -- one row per job per interval -- so it is
+   paged and filtered rather than capped at the newest hundred. Finding "the ingest
+   that took forty minutes last Tuesday" is the point of keeping it. #}
+<form class="filters" method="get" action="/jobs">
+  <label>Job
+    <select name="run_job">
+      <option value="">any</option>
+      {% for name in job_names %}
+        <option value="{{ name }}" {% if filters.job == name %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>From <input type="date" name="run_since" value="{{ filters.since }}"></label>
+  <label>To <input type="date" name="run_until" value="{{ filters.until }}"></label>
+  <label>Took at least
+    <select name="run_min_seconds">
+      <option value="">any length</option>
+      {% for seconds, label in ((60, '1 minute'), (300, '5 minutes'), (900, '15 minutes'), (3600, '1 hour')) %}
+        <option value="{{ seconds }}" {% if filters.min_seconds == seconds %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+  {% if filters.job or filters.since or filters.until or filters.min_seconds %}
+    <a class="muted small" href="/jobs">clear</a>
+  {% endif %}
+</form>
+
+<p class="muted small">
+  {{ run_total }} run{{ '' if run_total == 1 else 's' }} matched; page {{ run_page }} of {{ run_pages }}.
+</p>
+
 <table class="grid compact">
-  <thead><tr><th>Job</th><th>Started</th><th class="num">Seen</th><th class="num">Written</th><th>Result</th></tr></thead>
+  <thead>
+    <tr>
+      <th>Job</th><th>Started</th><th class="num">Took</th>
+      <th class="num">Seen</th><th class="num">Written</th><th>Result</th>
+    </tr>
+  </thead>
   <tbody>
   {% for run in runs %}
     <tr>
       <td><code>{{ run.job }}</code></td>
       <td class="small">{{ run.started_at | datetime }}</td>
+      <td class="num small">{{ run.started_at | duration(run.finished_at) }}</td>
       <td class="num">{{ run.items_seen }}</td>
-      <td class="num">{{ run.items_written }}</td>
-      <td class="small">
-        {% if run.ok %}
-          <span class="good">ok</span>
-          {# A zero with no explanation is indistinguishable from a bug, so the
-             reason a job did nothing is shown next to the counts. #}
-          {% if run.detail and run.detail.get('note') %}
-            <br><span class="muted">{{ run.detail.get('note') }}</span>
-          {% elif run.items_written == 0 and run.items_seen == 0 %}
-            <br><span class="muted">ran but had nothing to do</span>
-          {% endif %}
-        {% elif run.ok is none %}<span class="muted">running</span>
+      <td class="num">
+        {% if run.ok is not false and run.items_written == 0 and run.items_seen %}
+          {# Seen work, wrote none. Both numbers are true and the pair is
+             alarming, so it is marked rather than left to be noticed. #}
+          <span class="warn">{{ run.items_written }}</span>
         {% else %}
-          {# The stored error can be a whole SQL statement with its bound
-             parameters, which is unreadable in a table cell and buries the one
-             line that identifies the failure. The first line is shown, and the
-             rest is kept behind a disclosure rather than discarded. #}
-          {% set err = run.error or 'failed' %}
-          <span class="bad">{{ err[:200] }}{% if err | length > 200 %}…{% endif %}</span>
+          {{ run.items_written }}
+        {% endif %}
+      </td>
+      <td class="small">
+        {% if run.ok is none %}
+          <span class="muted">running</span>
+        {% elif run.ok %}
+          <span class="good">ok</span>
+        {% else %}
+          <span class="bad">failed</span>
+        {% endif %}
+        {# What it achieved, or why it achieved nothing. Derived from the stored
+           detail rather than left as "ok" beside a zero -- the pair said nothing
+           and the reason was already recorded, just not in a sentence. #}
+        {% set explanation = outcomes.get(run.id) %}
+        {% if explanation %}
+          <br><span class="muted">{{ explanation }}</span>
+        {% endif %}
+        {% if run.ok is sameas false and run.error %}
+          {% set err = run.error %}
+          <br><span class="bad">{{ err[:200] }}{% if err | length > 200 %}…{% endif %}</span>
           {% if err | length > 200 %}
             <details><summary class="muted small">full error</summary><pre class="small">{{ err }}</pre></details>
           {% endif %}
@@ -175,8 +221,27 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="5" class="empty">No runs recorded yet.</td></tr>
+    <tr><td colspan="6" class="empty">
+      {% if filters.job or filters.since or filters.until or filters.min_seconds %}
+        No runs match this filter.
+      {% else %}
+        No runs recorded yet.
+      {% endif %}
+    </td></tr>
   {% endfor %}
   </tbody>
 </table>
+
+{% if run_pages > 1 %}
+  {% set query = 'run_job=' ~ (filters.job | urlencode) ~ '&run_since=' ~ filters.since ~ '&run_until=' ~ filters.until ~ '&run_min_seconds=' ~ filters.min_seconds ~ '&run_per_page=' ~ run_per_page %}
+  <nav class="pager">
+    {% if run_page > 1 %}
+      <a href="/jobs?{{ query }}&run_page={{ run_page - 1 }}">&larr; newer</a>
+    {% else %}<span class="muted">← newer</span>{% endif %}
+    <span class="muted small">page {{ run_page }} of {{ run_pages }}</span>
+    {% if run_page < run_pages %}
+      <a href="/jobs?{{ query }}&run_page={{ run_page + 1 }}">older &rarr;</a>
+    {% else %}<span class="muted">older →</span>{% endif %}
+  </nav>
+{% endif %}
 {% endblock %}
