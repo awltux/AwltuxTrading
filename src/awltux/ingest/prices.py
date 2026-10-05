@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from awltux.analysis import fx
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, PriceBar, Quote, utcnow
+from awltux.db.session import release_write_lock
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import BarSeries, YahooProvider
 
@@ -105,6 +106,13 @@ def persist_batch(
             continue
         report.tickers_returned += 1
         written += store_bar_series(session, instrument, series, report=report)
+        # Commit per instrument. A batch of 40 is roughly 20,000 bars, and writing
+        # that as one transaction holds SQLite's write lock long enough to time
+        # out any other writer -- which is exactly what happened when a price run
+        # overlapped the scheduler's own jobs. Per-instrument granularity keeps
+        # each lock acquisition to about 500 rows, while the HTTP calls stay
+        # batched, which is what the rate limits care about.
+        release_write_lock(session)
     session.flush()
     return written
 
