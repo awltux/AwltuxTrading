@@ -73,6 +73,18 @@ def api_health(request: Request) -> dict[str, object]:
             "companies_house": {"configured": bool(settings.env.companies_house_api_key)},
             "finnhub": {"configured": bool(settings.env.finnhub_api_key)},
             "marketaux": {"configured": bool(settings.env.marketaux_api_key)},
+            # Groups stories covering one event. Reported with its model and whether
+            # a credential is present, because "configured" here means the endpoint
+            # is set -- a local Ollama needs no key, and a hosted one needs one that
+            # this cannot check without spending a request.
+            "embeddings": {
+                "configured": settings.news.embeddings.configured,
+                "endpoint": settings.news.embeddings.base_url or None,
+                "model": settings.news.embeddings.model,
+                "credential": bool(
+                    settings.news.embeddings.credential(settings.env)
+                ),
+            },
         },
         "decision": {
             "engine_priority": settings.decision.engine_priority,

@@ -79,10 +79,17 @@ class EmbeddingClient:
 
     def _client(self) -> HttpClient:
         if self._http is None:
-            api_key = (
-                self.config.api_key.get_secret_value() if self.config.api_key else None
-            )
-            headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+            headers = None
+            # The scheme is configuration rather than an assumption. Fal.ai wants
+            # `Authorization: Key <key>` and an OpenAI client whose own `api_key` is
+            # a placeholder -- so a client that assumes `Bearer` gets a 401 against a
+            # perfectly good key, which reads as "the key is wrong".
+            credential = self.config.credential(self.settings.env)
+            if credential:
+                scheme = self.config.auth_scheme.strip()
+                headers = {
+                    "Authorization": f"{scheme} {credential}".strip() if scheme else credential
+                }
             self._http = HttpClient(
                 EMBEDDING_PROVIDER,
                 base_url=self.config.base_url.rstrip("/"),
@@ -109,9 +116,25 @@ class EmbeddingClient:
                 json_body={"model": self.config.model, "input": texts},
             )
             payload = response.json()
-        except (ProviderError, ValueError) as exc:
+        except ProviderError as exc:
+            # A rejected credential is the likeliest first-run failure for a hosted
+            # endpoint, and it is indistinguishable from a broken one unless the
+            # message says which header was sent with which scheme. It never prints
+            # the key.
+            text = str(exc)
+            if "401" in text or "403" in text:
+                scheme = self.config.auth_scheme.strip() or "(none)"
+                result.errors.append(
+                    f"the endpoint rejected our credential (sent as `Authorization: "
+                    f"{scheme} ...`). Check the key, and that this account can use "
+                    f"`{self.config.model}`. Upstream said: {text[:200]}"
+                )
+            else:
+                result.errors.append(text)
+            logger.warning("embedding request failed: %s", str(exc)[:200])
+            return result
+        except ValueError as exc:
             result.errors.append(str(exc))
-            logger.warning("embedding request failed: %s", exc)
             return result
 
         rows = (payload or {}).get("data")

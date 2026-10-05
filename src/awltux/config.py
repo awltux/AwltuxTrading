@@ -70,6 +70,11 @@ class EnvSettings(BaseSettings):
     # Companies House
     companies_house_api_key: SecretStr | None = None
 
+    # Fal.ai -- embeddings, used to group stories covering one event. The credential
+    # goes in a header rather than as a bearer token, so it is not interchangeable
+    # with the others; see EmbeddingsConfig.auth_scheme.
+    falai_key: SecretStr | None = None
+
     # news providers
     finnhub_api_key: SecretStr | None = None
     marketaux_api_key: SecretStr | None = None
@@ -408,6 +413,13 @@ class EmbeddingsConfig(BaseModel):
     base_url: str = ""
     model: str = "text-embedding-3-small"
     api_key: SecretStr | None = None
+    #: The authorization scheme, and it is not always ``Bearer``.
+    #:
+    #: Fal.ai wants ``Authorization: Key <key>`` with the OpenAI client's own
+    #: ``api_key`` set to a placeholder -- so a client that assumes ``Bearer`` gets a
+    #: 401 against a perfectly valid key, which reads as "the key is wrong" rather
+    #: than "the header is wrong".
+    auth_scheme: str = "Bearer"
     #: Headlines embedded per request. Endpoints vary; this is conservative.
     batch_size: int = 64
     #: Items embedded per job run. The backfill is a one-off, so it is rationed like
@@ -425,6 +437,18 @@ class EmbeddingsConfig(BaseModel):
     @property
     def configured(self) -> bool:
         return bool(self.base_url.strip())
+
+    def credential(self, env: Any) -> str | None:
+        """The key to send, from whichever place it was supplied.
+
+        The YAML field wins where it is set, because a deployment that wrote it
+        there meant it; otherwise the environment is the documented path, and
+        ``AWLTUX_FALAI_KEY`` is the one this deployment uses.
+        """
+        if self.api_key is not None:
+            return self.api_key.get_secret_value()
+        key = getattr(env, "falai_key", None)
+        return key.get_secret_value() if key is not None else None
 
 
 class NewsConfig(BaseModel):
@@ -613,6 +637,8 @@ def redacted_dump(settings: Settings) -> dict[str, Any]:
         "companies_house_configured": bool(env.companies_house_api_key),
         "finnhub_configured": bool(env.finnhub_api_key),
         "marketaux_configured": bool(env.marketaux_api_key),
+        "falai_configured": bool(env.falai_key),
+        "embeddings_configured": settings.news.embeddings.configured,
         "engine_priority": settings.decision.engine_priority,
         "universe_size": settings.universe.size,
     }

@@ -62,6 +62,10 @@ budgets:
   finnhub:      { requests: 55,   window_seconds: 60 }
   marketaux:    { requests: 100,  window_seconds: 86400 }
   gdelt:        { requests: 1,    window_seconds: 5 }
+  # Embeddings, batched 64 headlines a request, so this is generous in request
+  # terms and the real cost is tokens. Named for the capability rather than the
+  # vendor, because the endpoint is whatever `news.embeddings.base_url` points at.
+  embeddings:   { requests: 60,   window_seconds: 60 }
   deepseek:     { requests: 200,  window_seconds: 60 }
   typesafe:     { requests: 60,   window_seconds: 1 }
 
@@ -233,15 +237,24 @@ news:
   # settled at ingest, so this only ever drains a backlog.
   relevance_backfill_per_run: 200
   # Vectorise stories so several outlets covering one event show as one entry.
-  # `base_url` is any OpenAI-compatible /embeddings endpoint and no key is needed
-  # for a local one, so this works with Ollama without signing up for anything:
+  #
+  # This deployment uses Fal.ai, which proxies an OpenAI-compatible embeddings API.
+  # Two things about it are not the OpenAI defaults: the key travels in an
+  # `Authorization: Key ...` header rather than as a bearer token, and the OpenAI
+  # client's own api_key is a placeholder. Both are why `auth_scheme` exists -- a
+  # client that assumes Bearer returns 401 against a perfectly valid key, which
+  # reads as "the key is wrong".
+  #
+  # The credential comes from AWLTUX_FALAI_KEY in .env. For a local Ollama instead:
   #   base_url: http://host.docker.internal:11434/v1
   #   model: nomic-embed-text
+  #   auth_scheme: ""
   # Empty base_url leaves the feature off and the lexical comparison in use, which
   # the banner says rather than implying stories were grouped when they were not.
   embeddings:
-    base_url: ""
-    model: text-embedding-3-small
+    base_url: https://fal.run/openrouter/router/openai/v1
+    model: openai/text-embedding-3-small
+    auth_scheme: Key
     # Cosine similarity at or above which two stories are the same event. High on
     # purpose: joining two different events asserts something false, while missing
     # a join only shows two entries instead of one.
