@@ -42,6 +42,7 @@ from awltux.db import (
     ValuationRun,
     utcnow,
 )
+from awltux.db.session import release_write_lock
 from awltux.decision.composite import compute_both
 from awltux.decision.engine import (
     DecisionEngine,
@@ -644,6 +645,12 @@ def decide_universe(
                 )
             if decision.conflict_flag:
                 stats.conflicts += 1
+
+            # Release the write lock between instruments. Deciding one instrument
+            # can make several model calls, so a sweep of the universe would hold
+            # a single transaction across hundreds of network round trips -- which
+            # locked every other writer out for the duration.
+            release_write_lock(session)
     finally:
         for engine in engines.values():
             close = getattr(engine, "close", None)

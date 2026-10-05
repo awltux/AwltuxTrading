@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from awltux.analysis.technical import volatility
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, PriceBar, SentimentSeries, utcnow
+from awltux.db.session import release_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,11 @@ def aggregate_all(
             sector_articles[instrument.sector] = (
                 sector_articles.get(instrument.sector, 0) + components.article_count
             )
+
+        # Release the write lock between instruments. This loop runs over the whole
+        # universe and holds a transaction the entire time, which starves every
+        # other writer for as long as it takes.
+        release_write_lock(session)
 
     # Sector score is the mean of its constituents' scores: a breadth-weighted
     # read, so one very negative name cannot define a whole sector.

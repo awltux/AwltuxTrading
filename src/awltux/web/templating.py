@@ -143,6 +143,10 @@ def create_templates() -> Jinja2Templates:
     env.globals.update(
         {
             "app_name": "AwltuxTrading",
+            # Also exposed as a global, not only as a filter: templates call it as
+            # `engine_label(engine, uncalibrated)` because it takes two arguments,
+            # and a filter-style call would raise `'engine_label' is undefined`.
+            "engine_label": engine_label,
             "disclaimer": (
                 "Advisory tooling for personal research only. Not financial advice. "
                 "Free-tier market data is unofficial and may be delayed or wrong."

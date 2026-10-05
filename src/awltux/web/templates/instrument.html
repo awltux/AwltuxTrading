@@ -132,11 +132,14 @@
       {% for name, answer in (decision.answers or {}).items() %}
         <tr>
           <td>{{ name | replace('_', ' ') }}</td>
-          <td><strong>{{ answer.choice or answer.noul or answer.score }}</strong></td>
-          <td class="num">{{ answer.confidence | pct(0) }}</td>
+          {# `.get()` throughout: answers are stored dicts, and a `noul` answer
+             legitimately carries no confidence, so attribute access raises rather
+             than rendering blank. #}
+          <td><strong>{{ answer.get('choice') or answer.get('noul') or answer.get('score') }}</strong></td>
+          <td class="num">{{ answer.get('confidence') | pct(0) }}</td>
           <td class="small muted">
-            {% if answer.probabilities %}
-              {% for option, probability in answer.probabilities.items() %}
+            {% if answer.get('probabilities') %}
+              {% for option, probability in answer.get('probabilities').items() %}
                 {{ option }}:{{ probability | pct(0) }}{% if not loop.last %} · {% endif %}
               {% endfor %}
             {% else %}—{% endif %}

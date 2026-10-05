@@ -40,6 +40,7 @@ from awltux.analysis.fundamental import FundamentalSnapshot, build_snapshot
 from awltux.analysis.technical import TechnicalSnapshot, analyse
 from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument, PriceBar, ValuationRun, utcnow
+from awltux.db.session import release_write_lock
 from awltux.ingest.prices import bar_currency
 
 logger = logging.getLogger(__name__)
@@ -949,6 +950,10 @@ def run_valuations(
             stats["valued"] += 1
         else:
             stats["insufficient_data"] += 1
+
+        # Release the write lock between instruments: a full sweep otherwise holds
+        # one transaction for the whole universe and starves every other writer.
+        release_write_lock(session)
 
     session.flush()
     logger.info("valuation run: %s", stats)

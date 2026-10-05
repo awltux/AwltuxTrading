@@ -90,6 +90,92 @@ class TestDashboard:
     def test_unknown_instrument_returns_404(self, client):
         assert client.get("/instrument/DOES_NOT_EXIST").status_code == 404
 
+
+class TestTemplatesRenderWithData:
+    """Template helpers are only exercised once there are rows to render.
+
+    ``engine_label`` was registered as a Jinja *filter* but called as a
+    *function*, so the recommendations page raised
+    ``UndefinedError: 'engine_label' is undefined``. No test caught it, because
+    every dashboard test ran against an empty database -- where the row loop never
+    executes and the helper is never reached. These tests seed a decision first.
+    """
+
+    @pytest.fixture
+    def populated(self, settings, session):
+        """One instrument with a decision and a valuation, committed."""
+        import datetime as dt
+
+        from awltux.analysis.valuation import run_valuations
+        from awltux.decision.service import decide_universe
+        from tests.helpers import healthy_metrics, make_bars, make_instrument, make_period
+
+        session.add(
+            make_instrument(
+                "TEST_US_EQ",
+                name="Test Industries",
+                sector="Industrials",
+                median_daily_turnover_gbp=5_000_000.0,
+            )
+        )
+        session.flush()
+        for bar in make_bars("TEST_US_EQ", [10.0 * (1.0009**n) for n in range(260)]):
+            session.add(bar)
+        for year in (2022, 2023, 2024):
+            session.add(make_period("TEST_US_EQ", dt.date(year, 12, 31), healthy_metrics()))
+        session.flush()
+
+        run_valuations(session, tickers=["TEST_US_EQ"])
+        decide_universe(session, tickers=["TEST_US_EQ"])
+        session.commit()
+
+    def test_engine_label_is_a_global_not_only_a_filter(self):
+        """Two-argument helpers cannot be reached through filter syntax."""
+        from awltux.web.templating import templates
+
+        assert "engine_label" in templates.env.globals
+        assert "engine_label" in templates.env.filters
+
+    def test_the_recommendations_page_renders_with_a_decision(self, client, populated):
+        response = client.get("/dashboard")
+        assert response.status_code == 200
+        # The label the helper produces must actually appear.
+        assert "offline" in response.text
+        assert "TEST_US_EQ" in response.text
+
+    def test_both_horizon_columns_render(self, client, populated):
+        body = client.get("/dashboard").text
+        assert "Long term" in body
+        assert "Short term" in body
+
+    def test_dashboard_variants_render_with_data(self, client, populated):
+        for query in (
+            "?view=suggestions",
+            "?view=held",
+            "?horizon=short_term",
+            "?sort=short_term_action",
+            "?sort=horizon_fit",
+            "?horizon_fit=both",
+        ):
+            response = client.get(f"/dashboard{query}")
+            assert response.status_code == 200, query
+
+    def test_the_instrument_page_renders_with_a_decision(self, client, populated):
+        response = client.get("/instrument/TEST_US_EQ")
+        assert response.status_code == 200
+        assert "offline" in response.text
+        # The per-horizon cards are only reached when a decision exists.
+        assert "Long term" in response.text
+        assert "Short term" in response.text
+
+    def test_the_operations_page_renders_run_history(self, client, populated):
+        assert client.get("/jobs").status_code == 200
+
+    def test_the_calibration_page_renders_for_both_horizons(self, client, populated):
+        for horizon in ("long_term", "short_term"):
+            response = client.get(f"/calibration?horizon={horizon}")
+            assert response.status_code == 200, horizon
+
     def test_other_pages_render(self, client):
         for path in ("/sectors", "/calibration", "/jobs"):
             response = client.get(path)
