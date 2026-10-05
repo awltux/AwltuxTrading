@@ -134,6 +134,64 @@ class YahooProvider:
         for _ in range(max(count, 1)):
             self.budget.acquire()
 
+    # -------------------------------------------------------------- identity
+    def search_symbols(self, query: str, *, max_results: int = 6) -> list[dict[str, Any]]:
+        """Look a company up by ISIN or by name, rather than by guessing its ticker.
+
+        **This is the missing half of identity resolution.** A symbol derived from
+        the T212 ticker is only as good as that ticker, and Trading 212's tickers
+        are frequently *former* ones: Humacyte is `AHAC_US_EQ` on T212 and `HUMA` on
+        Yahoo, Vertical Aerospace is `BSN_US_EQ` and `EVTL`. Deriving the symbol
+        cannot recover from that -- the error is in the input.
+
+        An ISIN does not have that problem. It is stable across renames and
+        restructurings, Trading 212 supplies it, and searching by it returned the
+        right company for seven of the first eight instruments that no derived
+        symbol could reach.
+
+        Untrusted output, like the rest of this provider: ``yfinance.Search`` is an
+        unofficial scrape of an endpoint Yahoo does not document, so every candidate
+        is returned as-is for the caller to score and corroborate. Nothing here
+        decides anything.
+        """
+        text = (query or "").strip()
+        if not text:
+            return []
+
+        self._account(1)
+        try:
+            search = self.yf.Search(
+                text,
+                max_results=max(1, min(max_results, 20)),
+                news_count=0,
+                lists_count=0,
+                include_cb=False,
+                include_nav_links=False,
+                include_research=False,
+                include_cultural_assets=False,
+            )
+            quotes = getattr(search, "quotes", None) or []
+        except Exception as exc:
+            raise ProviderError(SOURCE, f"symbol search for {text!r} failed: {exc}") from exc
+
+        out: list[dict[str, Any]] = []
+        for quote in quotes:
+            if not isinstance(quote, dict):
+                continue
+            symbol = quote.get("symbol")
+            if not symbol:
+                continue
+            out.append(
+                {
+                    "symbol": str(symbol),
+                    "name": quote.get("longname") or quote.get("shortname"),
+                    "exchange": quote.get("exchDisp") or quote.get("exchange"),
+                    "quote_type": quote.get("quoteType"),
+                    "score": _as_float(quote.get("score")),
+                }
+            )
+        return out
+
     # ------------------------------------------------------------- history
     def get_history(
         self,

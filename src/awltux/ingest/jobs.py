@@ -679,6 +679,165 @@ def assess_news_relevance() -> JobResult:
     )
 
 
+def resolve_symbols() -> JobResult:
+    """Look up the provider symbol for instruments a derived one cannot reach.
+
+    Every price, account and news item joins on a provider symbol, and until now
+    that symbol was *derived* from the Trading 212 ticker. That works until the
+    ticker is stale, and T212's are frequently former ones -- Humacyte is
+    ``AHAC_US_EQ`` there and ``HUMA`` on Yahoo. Deriving cannot recover from that,
+    and 92 of 500 instruments were failing every price run forever, invisibly.
+
+    An ISIN does not go stale. It is Trading 212's own identifier, it survives
+    renames and restructurings, and searching by it returned the right company for
+    seven of the first eight instruments that no derived symbol could reach.
+
+    Only instruments that are actually *stuck* are looked up: those with no stored
+    bar. Re-resolving the whole universe would spend hundreds of searches a day to
+    confirm what is already working.
+
+    Every outcome is recorded on the alias, including the failures. An alias saying
+    "below the 0.70 floor, names share 40% of their words" is a request for a human;
+    an instrument with no alias at all is one nobody will ever look at.
+    """
+    from sqlalchemy import select
+
+    from awltux.config import get_settings
+    from awltux.db import Instrument, InstrumentAlias, PriceBar, utcnow
+    from awltux.db.session import release_write_lock
+    from awltux.ingest.identity import APPLY_FLOOR, choose_symbol, describe
+    from awltux.providers.http import ProviderError
+    from awltux.providers.yahoo import YahooProvider
+
+    settings = get_settings()
+    limit = settings.schedule.symbol_resolution_per_run
+    provider = YahooProvider(settings)
+
+    with session_scope() as session:
+        priced = select(PriceBar.instrument_t212_ticker).distinct()
+        stuck = list(
+            session.execute(
+                select(Instrument)
+                .where(Instrument.in_universe.is_(True))
+                .where(Instrument.excluded.is_(False))
+                .where(Instrument.isin.is_not(None))
+                .where(Instrument.t212_ticker.not_in(priced))
+                .order_by(Instrument.t212_ticker)
+                .limit(limit)
+            ).scalars().all()
+        )
+        if not stuck:
+            return JobResult(
+                note=(
+                    "every universe instrument with an ISIN has price history, so "
+                    "there is no symbol left to resolve"
+                )
+            )
+
+    resolved: list[str] = []
+    rejected: list[str] = []
+    unresolved: list[str] = []
+    errors: list[str] = []
+
+    for instrument in stuck:
+        # Release before the search, like every other network call in this codebase.
+        with session_scope() as session:
+            release_write_lock(session)
+
+        candidates: list[dict[str, Any]] = []
+        by_isin = True
+        try:
+            candidates = provider.search_symbols(instrument.isin or "")
+            if not candidates:
+                # A SPAC that has completed, or a company with no listing left.
+                # Falling back to the name is worth one more request.
+                by_isin = False
+                candidates = provider.search_symbols(instrument.name)
+        except ProviderError as exc:
+            errors.append(f"{instrument.t212_ticker}: {exc}")
+            continue
+
+        resolution = choose_symbol(
+            candidates,
+            instrument_name=instrument.name,
+            instrument_exchange=instrument.exchange_name,
+            instrument_type=instrument.instrument_type,
+            queried_by_isin=by_isin,
+        )
+
+        with session_scope() as session:
+            row = session.get(Instrument, instrument.t212_ticker)
+            if row is None:
+                continue
+            alias = session.execute(
+                select(InstrumentAlias).where(
+                    InstrumentAlias.instrument_t212_ticker == row.t212_ticker,
+                    InstrumentAlias.provider == "yahoo",
+                )
+            ).scalar_one_or_none()
+            if alias is None:
+                alias = InstrumentAlias(
+                    instrument_t212_ticker=row.t212_ticker, provider="yahoo", symbol=""
+                )
+                session.add(alias)
+
+            # A human's correction is never overwritten -- the same rule the
+            # universe sync follows, for the same reason.
+            if alias.is_manual:
+                continue
+
+            applied = resolution is not None and resolution.usable
+            if resolution is not None:
+                alias.symbol = resolution.symbol
+                alias.confidence = resolution.confidence
+                alias.method = resolution.method
+                alias.note = describe(resolution, instrument_name=instrument.name)
+            else:
+                alias.confidence = 0.0
+                alias.method = "isin" if by_isin else "name"
+                alias.note = describe(None)
+            alias.verified_at = utcnow()
+
+            if applied and resolution is not None:
+                row.yahoo_symbol = resolution.symbol
+                row.mapping_confidence = resolution.confidence
+                resolved.append(f"{row.t212_ticker}->{resolution.symbol}")
+            elif resolution is not None:
+                # Recorded but not trusted. Left unresolved on purpose: attaching
+                # another company's prices would be worse than a visible gap.
+                rejected.append(f"{row.t212_ticker}->{resolution.symbol}")
+            else:
+                unresolved.append(row.t212_ticker)
+            session.flush()
+
+    if errors:
+        note = f"{len(errors)} lookups failed and will retry: {errors[0]}"
+    elif not resolved and not rejected:
+        note = (
+            f"{len(unresolved)} instruments were searched and none has a listing "
+            "that matches, so they need a human"
+        )
+    else:
+        note = None
+
+    return JobResult(
+        items_seen=len(stuck),
+        items_written=len(resolved),
+        note=note,
+        detail={
+            "looked_up": len(stuck),
+            "resolved": len(resolved),
+            "resolved_symbols": resolved[:25],
+            "rejected_below_floor": len(rejected),
+            "rejected_symbols": rejected[:25],
+            "no_match": len(unresolved),
+            "no_match_tickers": unresolved[:25],
+            "floor": APPLY_FLOOR,
+            "errors": errors[:10],
+        },
+    )
+
+
 def ingest_edgar_events() -> JobResult:
     """Poll EDGAR's current-events feed for new US filings."""
     from awltux.ingest.edgar import ingest_current_events

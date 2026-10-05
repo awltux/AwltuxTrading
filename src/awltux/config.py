@@ -155,6 +155,10 @@ class ScheduleConfig(BaseModel):
     #: never-priced instruments, then the least recently covered. Without that
     #: ordering a cap would starve the tail of the universe permanently.
     price_eod_max_per_run: int = 0
+    #: Instruments the symbol-resolution job looks up in one run. Each one costs a
+    #: provider search and the search endpoint is rate-limited like everything else,
+    #: so a backlog drains over several runs rather than in one burst.
+    symbol_resolution_per_run: int = 120
     quotes_held: int = 300
     fundamentals_rotation_per_day: int = 70
     edgar_submissions: int = 3_600
@@ -167,6 +171,7 @@ class ScheduleConfig(BaseModel):
     news_analysis: int = 1_800
     news_relevance: int = 900
     news_embeddings: int = 1_800
+    symbol_resolution: int = 86_400
     sentiment_aggregate: int = 3_600
     valuation: int = 86_400
     decision: int = 86_400

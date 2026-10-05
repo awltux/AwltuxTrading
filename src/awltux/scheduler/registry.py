@@ -40,6 +40,20 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             requires=("T212_API_KEY", "T212_API_SECRET"),
         ),
         JobSpec(
+            id="symbol_resolution",
+            func=ingest_jobs.resolve_symbols,
+            interval_seconds=schedule.symbol_resolution,
+            description=(
+                "Look up the provider symbol by ISIN for instruments a derived one "
+                "cannot reach"
+            ),
+            # After the universe exists, and after a price run has had a chance to
+            # fail: the job's whole input is "instruments with no bars".
+            depends_on=("t212_instruments", "price_eod"),
+            jitter_seconds=240,
+            enabled=True,
+        ),
+        JobSpec(
             id="universe_refresh",
             func=ingest_jobs.refresh_universe,
             interval_seconds=schedule.t212_instruments,

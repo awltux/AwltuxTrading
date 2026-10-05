@@ -269,6 +269,34 @@ def _probe_news_relevance(session: Session) -> Coverage:
     )
 
 
+def _probe_symbol_resolution(session: Session) -> Coverage:
+    """Instruments in the universe carrying an ISIN but no price history.
+
+    The precise population this job exists for: a symbol that could not be derived.
+    Counting the whole universe would bury the number that matters.
+    """
+    priced = select(PriceBar.instrument_t212_ticker).distinct()
+    total = session.execute(
+        select(func.count()).select_from(Instrument).where(Instrument.in_universe.is_(True))
+    ).scalar_one()
+    stuck = session.execute(
+        select(func.count())
+        .select_from(Instrument)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .where(Instrument.isin.is_not(None))
+        .where(Instrument.t212_ticker.not_in(priced))
+    ).scalar_one()
+    if stuck == 0:
+        return Coverage.counted(0, total, "every instrument with an ISIN has price history")
+    return Coverage.counted(
+        stuck,
+        total,
+        f"{stuck:,} of {total:,} instruments have an ISIN but no price history, so "
+        "their derived symbol does not resolve",
+    )
+
+
 def _probe_news_embeddings(session: Session) -> Coverage:
     from awltux.db import NewsEmbedding
 
@@ -380,6 +408,7 @@ PROBES = {
     "news_analysis": _probe_news_analysis,
     "news_relevance": _probe_news_relevance,
     "news_embeddings": _probe_news_embeddings,
+    "symbol_resolution": _probe_symbol_resolution,
     "sentiment": _probe_sentiment,
     "valuation": _probe_valuation,
     "decision": _probe_decision,

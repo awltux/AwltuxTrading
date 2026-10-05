@@ -395,6 +395,32 @@ def _calibration(detail: dict[str, Any]) -> str:
     return f"{_n(scored)} elapsed decisions scored against their horizon price"
 
 
+def _symbol_resolution(detail: dict[str, Any]) -> str:
+    looked = _get(detail, "looked_up")
+    resolved = _get(detail, "resolved")
+    rejected = _get(detail, "rejected_below_floor")
+    no_match = _get(detail, "no_match")
+    if not looked:
+        return "no instrument needed a symbol looked up"
+    if not resolved:
+        line = _nothing(
+            looked,
+            "instruments looked up",
+            f"{_n(rejected)} matched something but too weakly to trust and {_n(no_match)} "
+            "matched nothing at all",
+        )
+        return line
+    line = f"{_n(resolved)} of {_n(looked)} resolved by looking the company up"
+    if rejected:
+        line += f"; {_n(rejected)} matched too weakly to apply"
+    if no_match:
+        line += f"; {_n(no_match)} matched nothing"
+    sample = _sample(detail.get("resolved_symbols"), limit=3)
+    if sample:
+        line += f" (including {sample})"
+    return line
+
+
 def _retention(detail: dict[str, Any]) -> str:
     removed = detail.get("removed")
     if isinstance(removed, dict):
@@ -419,6 +445,7 @@ SUMMARISERS: dict[str, Summariser] = {
     "news_analysis": _news_analysis,
     "news_relevance": _news_relevance,
     "news_embeddings": _news_embeddings,
+    "symbol_resolution": _symbol_resolution,
     "sentiment": _sentiment,
     "valuation": _valuation,
     "decision": _decision,
