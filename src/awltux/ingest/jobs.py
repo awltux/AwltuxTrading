@@ -21,6 +21,10 @@ from awltux.scheduler.jobs import JobResult
 
 logger = logging.getLogger(__name__)
 
+#: Rows the relevance backfill will load in one run. Only bounds memory: the work
+#: that costs money is capped separately, by ``news.relevance_backfill_per_run``.
+RELEVANCE_BACKFILL_ROWS = 5_000
+
 
 def universe_is_empty(session) -> bool:
     """Whether anything is actually in scope for the universe-driven jobs.
@@ -404,9 +408,10 @@ def assess_news_relevance() -> JobResult:
     appraisal is a deep read rationed to sixty calls a run. Putting them in one job
     would make the cheap backfill wait behind the expensive one.
 
-    Rationed for the same reason every other paid job is: a bounded number of
+    Rationed for the same reason every other paid job is: a bounded number of model
     calls per run, oldest first, so a backlog drains over several runs instead of
-    spending the month's budget in one.
+    spending the month's budget in one. The bound is on calls rather than on rows,
+    because the rows decided from what is already stored cost nothing.
     """
     from sqlalchemy import select
 
@@ -418,7 +423,13 @@ def assess_news_relevance() -> JobResult:
     from awltux.providers.news_rss import RawNewsItem
 
     settings = get_settings()
-    limit = settings.news.relevance_backfill_per_run
+    # The cap is on *model calls*, not rows. Relevance is decided structurally
+    # wherever a direction is already stored -- which is 5,500 of the 5,800 rows in
+    # this deployment -- so bounding the row window would make a free, instant
+    # backfill take thirty runs to drain while protecting nothing. The paid work is
+    # what needs rationing, and the row window is only there to bound memory.
+    call_limit = settings.news.relevance_backfill_per_run
+    row_limit = RELEVANCE_BACKFILL_ROWS
     classifier = build_classifier(settings)
 
     with session_scope() as session:
@@ -427,7 +438,7 @@ def assess_news_relevance() -> JobResult:
                 select(NewsItem)
                 .where(NewsItem.relevant.is_(None))
                 .order_by(NewsItem.id)
-                .limit(limit)
+                .limit(row_limit)
             ).scalars().all()
         )
         if not pending:
@@ -465,8 +476,12 @@ def assess_news_relevance() -> JobResult:
             # already stored -- 5,500 of the 5,800 rows in this deployment are in
             # that position. The model is needed only for rows whose classification
             # never ran or failed, which is the backlog this job exists for.
+            # The row window bounds memory; the call limit bounds spend.
             needs_model = (
-                item.direction is None and classifier is not None and instrument is not None
+                item.direction is None
+                and classifier is not None
+                and instrument is not None
+                and classified < call_limit
             )
             if needs_model:
                 # The same rule the ingest path follows: no provider call inside an
@@ -524,6 +539,12 @@ def assess_news_relevance() -> JobResult:
         note = (
             f"no model calls needed: all {assessed} stories already carried a stored "
             "direction, so the rule decided them"
+        )
+    elif classified >= call_limit:
+        remaining = len(pending) - assessed
+        note = (
+            f"hit the {call_limit}-call ceiling for one run; "
+            f"{remaining} stories were not examined and will be picked up next run"
         )
     else:
         note = (
