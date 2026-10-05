@@ -7,11 +7,14 @@ fits comfortably. It is configured properly rather than casually:
 * **WAL** so the scheduler's writes do not block dashboard reads.
 * **foreign_keys=ON** -- off by default in SQLite, and our cascades depend on it.
 * **busy_timeout** so a concurrent write waits instead of raising.
-* **BEGIN IMMEDIATE** so a transaction that reads then writes cannot fail on the
-  lock upgrade, which SQLite refuses to retry.
 * **check_same_thread=False** because the scheduler runs in worker threads.
 * **A re-entrant ``session_scope``** so a nested call joins the open transaction
   rather than opening a competing connection. See :func:`session_scope`.
+* **No ``BEGIN IMMEDIATE``.** It was tried and removed: taking the write lock at
+  the start of *every* transaction means a job that holds one across a rate-limit
+  wait blocks reads as well as writes, and the dashboard 500s with "database is
+  locked". WAL already lets readers proceed during a write; the remaining rule is
+  that jobs must not hold a transaction across a slow provider call.
 """
 
 from __future__ import annotations
@@ -50,26 +53,6 @@ def _configure_sqlite(dbapi_connection, _connection_record) -> None:
         cursor.close()
 
 
-def _begin_immediate(connection) -> None:
-    """Start every transaction with ``BEGIN IMMEDIATE``.
-
-    Without this, a transaction that issues a ``SELECT`` first holds a *read*
-    lock, and upgrading to a write later can fail immediately with
-    ``SQLITE_BUSY`` -- ``busy_timeout`` deliberately does **not** retry that case,
-    because resolving it would require aborting one of the two transactions.
-
-    That is exactly what happened here: the scheduler wrote while a request
-    thread read, and the job died with "database is locked" even with a 15-second
-    timeout configured. Taking the write lock up front turns the deadlock into an
-    orderly queue, which ``busy_timeout`` then handles correctly.
-
-    The cost is that read-only transactions also serialise. For a single-user app
-    with short transactions that is a good trade; the alternative is intermittent
-    write failures under exactly the load the scheduler creates.
-    """
-    connection.exec_driver_sql("BEGIN IMMEDIATE")
-
-
 def create_db_engine(settings: Settings | None = None, *, echo: bool = False) -> Engine:
     settings = settings or get_settings()
     settings.ensure_dirs()
@@ -82,7 +65,6 @@ def create_db_engine(settings: Settings | None = None, *, echo: bool = False) ->
         pool_pre_ping=True,
     )
     event.listen(engine, "connect", _configure_sqlite)
-    event.listen(engine, "begin", _begin_immediate)
     return engine
 
 

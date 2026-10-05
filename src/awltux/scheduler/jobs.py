@@ -18,11 +18,24 @@ JobFunc = Callable[[], dict[str, Any] | None]
 
 @dataclass(slots=True)
 class JobResult:
-    """What a job reports back. ``items_seen``/``items_written`` drive the UI."""
+    """What a job reports back.
+
+    ``items_seen``/``items_written`` drive the counters, while ``note`` explains a
+    zero. A job that legitimately had nothing to do and one that ran and found
+    nothing look identical in the numbers, so the distinction is recorded rather
+    than left to the reader.
+    """
 
     items_seen: int = 0
     items_written: int = 0
+    note: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        payload = dict(self.detail)
+        if self.note:
+            payload["note"] = self.note
+        return payload
 
 
 @dataclass(slots=True)
@@ -89,13 +102,16 @@ def execute_job(spec: JobSpec) -> JobResult | None:
     elapsed = (dt.datetime.now(dt.UTC) - started).total_seconds()
     if result is not None:
         result.detail.setdefault("elapsed_seconds", round(elapsed, 3))
+        if result.note:
+            result.detail.setdefault("note", result.note)
     record_run(spec.id, started, result, error)
     logger.info(
-        "job %s: done in %.2fs seen=%s written=%s%s",
+        "job %s: done in %.2fs seen=%s written=%s%s%s",
         spec.id,
         elapsed,
         result.items_seen if result else "-",
         result.items_written if result else "-",
+        f" note={result.note}" if result and result.note else "",
         f" error={error}" if error else "",
     )
     return result

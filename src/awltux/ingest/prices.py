@@ -58,8 +58,108 @@ class PriceIngestReport:
         }
 
 
-def _chunks(items: list[str], size: int) -> list[list[str]]:
+def chunks(items: list[str], size: int) -> list[list[str]]:
+    """Split a list into batches, so fetch and persist can alternate.
+
+    Public because the scheduler job drives the batch loop itself: it fetches a
+    batch with no transaction open, then opens one only to persist.
+    """
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def load_price_targets(session: Session) -> dict[str, Instrument]:
+    """The instruments to price, keyed by provider symbol.
+
+    A separate step from :func:`persist_batch` so the network phase can run with
+    no transaction open.
+    """
+    rows = session.execute(
+        select(Instrument)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .where(Instrument.yahoo_symbol.is_not(None))
+    ).scalars().all()
+    return {row.yahoo_symbol: row for row in rows if row.yahoo_symbol}
+
+
+def persist_batch(
+    session: Session,
+    symbols: list[str],
+    series_map: dict[str, BarSeries],
+    *,
+    report: PriceIngestReport | None = None,
+) -> int:
+    """Store one already-fetched batch. Returns rows written."""
+    report = report or PriceIngestReport()
+    written = 0
+    for symbol in symbols:
+        series = series_map.get(symbol)
+        if series is None or not series.bars:
+            report.tickers_failed.append(symbol)
+            continue
+        instrument = session.execute(
+            select(Instrument).where(Instrument.yahoo_symbol == symbol).limit(1)
+        ).scalar_one_or_none()
+        if instrument is None:
+            report.tickers_failed.append(symbol)
+            continue
+        report.tickers_returned += 1
+        written += store_bar_series(session, instrument, series, report=report)
+    session.flush()
+    return written
+
+
+@dataclass(slots=True)
+class QuoteIngestReport:
+    """Outcome of a quote refresh."""
+
+    tickers_requested: int = 0
+    tickers_returned: int = 0
+    tickers_failed: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "tickers_requested": self.tickers_requested,
+            "tickers_returned": self.tickers_returned,
+            "failed_count": len(self.tickers_failed),
+            "failed": self.tickers_failed[:25],
+        }
+
+
+def persist_quotes(
+    session: Session,
+    snapshots: list[tuple[str, Any]],
+    *,
+    report: QuoteIngestReport | None = None,
+) -> int:
+    """Store already-fetched quotes. Returns rows written."""
+    report = report or QuoteIngestReport()
+    now = utcnow()
+    written = 0
+
+    for ticker, snapshot in snapshots:
+        instrument = session.get(Instrument, ticker)
+        if instrument is None:
+            continue
+        session.add(
+            Quote(
+                instrument_t212_ticker=ticker,
+                ts=now,
+                price=snapshot.price,
+                currency=snapshot.currency,
+                raw_currency=snapshot.raw_currency,
+                raw_multiplier=snapshot.raw_multiplier,
+                source=snapshot.source,
+                fetched_at=now,
+            )
+        )
+        if snapshot.market_cap:
+            instrument.market_cap = snapshot.market_cap
+        report.tickers_returned += 1
+        written += 1
+
+    session.flush()
+    return written
 
 
 def store_bar_series(
@@ -158,7 +258,7 @@ def refresh_prices(
         return report
 
     symbols = list(by_symbol)
-    for batch in _chunks(symbols, BATCH_SIZE):
+    for batch in chunks(symbols, BATCH_SIZE):
         try:
             series_map = provider.get_history_batch(batch, period=period)
         except ProviderError as exc:

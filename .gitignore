@@ -28,6 +28,8 @@ htmlcov/
 # live inside the repo so they work under a file-access sandbox.
 .pip-tmp/
 .tests-tmp/
+# pytest leaves these behind when a sandbox denies its cache directory.
+pytest-cache-files-*/
 
 # editors / os
 .vscode/

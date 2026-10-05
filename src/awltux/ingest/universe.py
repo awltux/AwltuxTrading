@@ -106,17 +106,33 @@ def synchronize_instruments(
     session: Session,
     provider: T212Provider | None = None,
     settings: Settings | None = None,
+    *,
+    exchanges: list[dict[str, Any]] | None = None,
+    instruments: list[dict[str, Any]] | None = None,
 ) -> SyncReport:
-    """Fetch every accessible instrument and upsert it with resolved symbols."""
+    """Upsert every accessible instrument with its resolved provider symbols.
+
+    **Pre-fetched payloads are passed in by the caller.** A scheduler job should
+    fetch first and persist second, because Trading 212's limits are strict enough
+    that a call can sleep for a minute inside ``BudgetGuard`` -- and holding an
+    open transaction across that wait takes SQLite's write lock for the whole
+    duration, which locks every other writer (and, with ``BEGIN IMMEDIATE``,
+    readers too) out of the database.
+
+    Fetching here is still supported for tests and one-off use, but it is the
+    slower path by design.
+    """
     settings = settings or get_settings()
     provider = provider or T212Provider(settings)
     report = SyncReport()
 
-    exchanges = provider.get_exchanges()
+    if exchanges is None:
+        exchanges = provider.get_exchanges()
     report.exchanges = synchronize_exchanges(session, exchanges=exchanges)
     schedule_map = _schedule_to_exchange_map(exchanges)
 
-    instruments = provider.get_instruments()
+    if instruments is None:
+        instruments = provider.get_instruments()
     report.instruments_seen = len(instruments)
     existing = {
         row.t212_ticker: row

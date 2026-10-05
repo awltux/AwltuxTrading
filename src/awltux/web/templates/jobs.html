@@ -53,7 +53,15 @@
       <td class="num">{{ run.items_seen }}</td>
       <td class="num">{{ run.items_written }}</td>
       <td class="small">
-        {% if run.ok %}<span class="good">ok</span>
+        {% if run.ok %}
+          <span class="good">ok</span>
+          {# A zero with no explanation is indistinguishable from a bug, so the
+             reason a job did nothing is shown next to the counts. #}
+          {% if run.detail and run.detail.get('note') %}
+            <br><span class="muted">{{ run.detail.get('note') }}</span>
+          {% elif run.items_written == 0 and run.items_seen == 0 %}
+            <br><span class="muted">ran but had nothing to do</span>
+          {% endif %}
         {% elif run.ok is none %}<span class="muted">running</span>
         {% else %}<span class="bad">{{ run.error }}</span>{% endif %}
       </td>

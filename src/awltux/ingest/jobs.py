@@ -13,6 +13,7 @@ decisions from being refreshed.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from awltux.config import get_settings
 from awltux.db import session_scope
@@ -21,27 +22,141 @@ from awltux.scheduler.jobs import JobResult
 logger = logging.getLogger(__name__)
 
 
-def sync_instruments() -> JobResult:
-    """Pull the Trading 212 instrument universe and resolve provider symbols."""
-    from awltux.ingest.universe import (
-        mark_held_instruments,
-        refresh_t212_capabilities,
-        synchronize_instruments,
+def universe_is_empty(session) -> bool:
+    """Whether anything is actually in scope for the universe-driven jobs.
+
+    Several jobs read ``in_universe`` instruments and legitimately do nothing when
+    there are none -- but they reported that as a bare ``0``, which looks
+    identical to a job that ran and found no news. Naming the cause is the
+    difference between "nothing happened" and "nothing could happen".
+    """
+    from sqlalchemy import func, select
+
+    from awltux.db import Instrument
+
+    count = session.execute(
+        select(func.count())
+        .select_from(Instrument)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+    ).scalar_one()
+    return int(count or 0) == 0
+
+
+def empty_universe_note(session) -> str | None:
+    """Explain a zero-result run, or return ``None`` if the universe is populated."""
+    if not universe_is_empty(session):
+        return None
+
+    from sqlalchemy import func, select
+
+    from awltux.db import Instrument
+
+    total = session.execute(select(func.count()).select_from(Instrument)).scalar_one()
+    if int(total or 0) == 0:
+        return (
+            "nothing to do: no instruments are stored yet. Run the "
+            "'t212_instruments' job first (it needs a working Trading 212 API key)."
+        )
+    return (
+        f"nothing to do: {total} instruments are stored but none are in the "
+        "analysed universe. Run the 'universe_refresh' job, or check that the "
+        "instrument window includes the exchanges you want."
     )
 
+
+def sync_instruments() -> JobResult:
+    """Pull the Trading 212 instrument universe and resolve provider symbols.
+
+    **Fetch first, then persist.** Trading 212's limits are strict enough that a
+    call can sleep for a minute inside the rate-limit guard, and holding a
+    transaction across that wait takes SQLite's write lock for the whole time --
+    which is what produced "database is locked" for every other writer, and for
+    readers once ``BEGIN IMMEDIATE`` was in play.
+    """
+    from awltux.ingest.universe import (
+        synchronize_instruments,
+    )
+    from awltux.providers.t212 import T212Provider
+
+    provider = T212Provider()
+
+    # --- network phase: no transaction open ---------------------------------
+    exchanges = provider.get_exchanges()
+    instruments = provider.get_instruments()
+
+    try:
+        positions = provider.get_positions()
+        holds_readable = True
+    except Exception as exc:
+        # A metadata-only key cannot read positions. That is a supported
+        # configuration, so it is recorded rather than treated as a failure.
+        logger.info("positions are not readable with this key: %s", exc)
+        positions = []
+        holds_readable = False
+
+    # --- database phase: short, and with nothing left to wait for -----------
     with session_scope() as session:
-        report = synchronize_instruments(session)
-        held = mark_held_instruments(session)
-        # Probe the key's scopes here rather than per request: the answer changes
-        # only when the key does, and the dashboard needs it to explain why
-        # holdings may be empty.
-        capabilities = refresh_t212_capabilities(session)
+        report = synchronize_instruments(
+            session, provider=provider, exchanges=exchanges, instruments=instruments
+        )
+        held = _apply_positions(session, positions) if holds_readable else 0
+        capabilities = _record_capabilities(session, holds_readable, bool(exchanges))
 
     return JobResult(
         items_seen=report.instruments_seen,
         items_written=report.instruments_created + report.instruments_updated,
         detail={**report.as_dict(), "held": held, "capabilities": capabilities},
     )
+
+
+def _apply_positions(session, positions: list[dict[str, Any]]) -> int:
+    """Flag held instruments from an already-fetched positions payload."""
+    from sqlalchemy import select
+
+    from awltux.db import Instrument
+
+    held = {
+        str((position.get("instrument") or {}).get("ticker") or position.get("ticker"))
+        for position in positions
+    }
+    held.discard("None")
+    count = 0
+    for row in session.execute(select(Instrument)).scalars().all():
+        was_held = row.is_held
+        row.is_held = row.t212_ticker in held
+        if row.is_held and not was_held:
+            count += 1
+    session.flush()
+    return len(held)
+
+
+def _record_capabilities(session, holds_readable: bool, metadata_ok: bool) -> dict[str, Any]:
+    """Cache what this key can do, so the UI can explain a reduced feature set."""
+    from awltux.db import AppSetting, utcnow
+    from awltux.ingest.universe import CAPABILITIES_KEY
+
+    capabilities: dict[str, Any] = {
+        "metadata": metadata_ok,
+        "portfolio": holds_readable,
+        "checked_at": utcnow().isoformat(),
+        "errors": {}
+        if holds_readable
+        else {"portfolio": "the key lacks the 'portfolio' scope, or the read failed"},
+    }
+    row = session.get(AppSetting, CAPABILITIES_KEY)
+    if row is None:
+        session.add(
+            AppSetting(
+                key=CAPABILITIES_KEY,
+                value=capabilities,
+                note="Cached Trading 212 key capabilities",
+            )
+        )
+    else:
+        row.value = capabilities
+    session.flush()
+    return capabilities
 
 
 def refresh_universe() -> JobResult:
@@ -59,13 +174,53 @@ def refresh_universe() -> JobResult:
 
 
 def refresh_prices_eod() -> JobResult:
-    """End-of-day OHLCV for the whole universe, plus FX for the majors."""
-    from awltux.analysis import fx
-    from awltux.ingest.prices import refresh_prices
+    """End-of-day OHLCV for the whole universe, plus FX for the majors.
 
+    Alternates network and database phases per batch rather than wrapping the
+    whole run in one transaction. A single transaction spanning every batch would
+    hold SQLite's write lock across hundreds of provider calls, locking out the
+    dashboard for the duration.
+    """
+    from awltux.analysis import fx
+    from awltux.ingest.prices import (
+        PriceIngestReport,
+        chunks,
+        load_price_targets,
+        persist_batch,
+        update_turnover_estimates,
+    )
+    from awltux.providers.yahoo import YahooProvider
+
+    settings = get_settings()
+    provider = YahooProvider(settings)
+    report = PriceIngestReport()
+
+    # --- database phase: which instruments, and their symbols ----------------
     with session_scope() as session:
-        report = refresh_prices(session)
-        rates = fx.refresh_common_rates()
+        targets = load_price_targets(session)
+    report.tickers_requested = len(targets)
+    if not targets:
+        return JobResult(detail={**report.as_dict(), "skipped": "empty universe"})
+
+    symbols = list(targets)
+    for batch in chunks(symbols, 40):
+        # --- network phase: no transaction open -----------------------------
+        try:
+            series_map = provider.get_history_batch(batch, period="2y")
+        except Exception as exc:
+            logger.warning("price batch failed (%d symbols): %s", len(batch), exc)
+            report.tickers_failed.extend(batch)
+            continue
+
+        # --- database phase: short ------------------------------------------
+        with session_scope() as session:
+            persist_batch(session, batch, series_map, report=report)
+
+    # --- turnover and FX, each in their own short phase ---------------------
+    with session_scope() as session:
+        report.turnover_updated = update_turnover_estimates(session)
+
+    rates = fx.refresh_common_rates()
 
     return JobResult(
         items_seen=report.tickers_requested,
@@ -76,24 +231,45 @@ def refresh_prices_eod() -> JobResult:
 
 def refresh_prices_intraday() -> JobResult:
     """Quotes for held and pinned names while their markets are open."""
-    from awltux.ingest.prices import refresh_quotes
+    from sqlalchemy import select
+
+    from awltux.db import Instrument
+    from awltux.ingest.prices import QuoteIngestReport, persist_quotes
+    from awltux.providers.yahoo import YahooProvider
+
+    settings = get_settings()
+    provider = YahooProvider(settings)
 
     with session_scope() as session:
-        from sqlalchemy import select
-
-        from awltux.db import Instrument
-
         # Intraday polling is rationed: held and pinned names only. Refreshing
         # quotes for 500 names every 15 minutes would exhaust the free tier.
-        tickers = [
-            row.t212_ticker
-            for row in session.execute(
-                select(Instrument).where(Instrument.is_held.is_(True) | Instrument.pinned.is_(True))
-            ).scalars().all()
+        rows = session.execute(
+            select(Instrument).where(
+                Instrument.is_held.is_(True) | Instrument.pinned.is_(True)
+            )
+        ).scalars().all()
+        targets = [
+            (row.t212_ticker, row.yahoo_symbol)
+            for row in rows
+            if row.yahoo_symbol
         ]
-        if not tickers:
-            return JobResult(detail={"skipped": "no held or pinned instruments"})
-        report = refresh_quotes(session, tickers=tickers)
+
+    if not targets:
+        return JobResult(detail={"skipped": "no held or pinned instruments"})
+
+    report = QuoteIngestReport(tickers_requested=len(targets))
+    # --- network phase ------------------------------------------------------
+    snapshots: list[tuple[str, object]] = []
+    for ticker, symbol in targets:
+        try:
+            snapshots.append((ticker, provider.get_quote(symbol)))
+        except Exception as exc:
+            logger.debug("quote failed for %s: %s", symbol, exc)
+            report.tickers_failed.append(symbol)
+
+    # --- database phase -----------------------------------------------------
+    with session_scope() as session:
+        persist_quotes(session, snapshots, report=report)
 
     return JobResult(
         items_seen=report.tickers_requested,
@@ -109,11 +285,22 @@ def ingest_news_rss() -> JobResult:
 
     classifier = build_classifier()
     with session_scope() as session:
+        note = empty_universe_note(session)
+        if note:
+            # A bare zero here was misleading: it looked like "no news was
+            # published" rather than "there was nothing to look for".
+            logger.info("news ingest skipped: %s", note)
+            return JobResult(note=note)
         report = ingest_rss_news(session, classifier=classifier)
 
     return JobResult(
         items_seen=report.fetched,
         items_written=report.written,
+        note=(
+            "polled the whole universe but every feed returned nothing"
+            if report.fetched == 0
+            else None
+        ),
         detail=report.as_dict(),
     )
 
@@ -123,6 +310,10 @@ def ingest_edgar_events() -> JobResult:
     from awltux.ingest.edgar import ingest_current_events
 
     with session_scope() as session:
+        note = empty_universe_note(session)
+        if note:
+            logger.info("edgar event ingest skipped: %s", note)
+            return JobResult(note=note)
         report = ingest_current_events(session)
 
     return JobResult(
@@ -134,11 +325,37 @@ def ingest_edgar_events() -> JobResult:
 
 def sync_filings() -> JobResult:
     """Refresh filing history for instruments with a resolved CIK."""
+    from sqlalchemy import func, select
+
+    from awltux.db import Instrument
     from awltux.ingest.edgar import resolve_ciks
     from awltux.ingest.edgar import sync_filings as _sync
 
     with session_scope() as session:
+        note = empty_universe_note(session)
+        if note:
+            logger.info("filing sync skipped: %s", note)
+            return JobResult(note=note)
+
+        with_cik = session.execute(
+            select(func.count())
+            .select_from(Instrument)
+            .where(Instrument.sec_cik.is_not(None))
+        ).scalar_one()
+
         resolution = resolve_ciks(session)
+        if int(with_cik or 0) == 0 and not resolution.resolved:
+            # Worth naming explicitly: EDGAR covers US filers only, so a
+            # London-only book legitimately has nothing here.
+            return JobResult(
+                note=(
+                    "no instruments have a resolved SEC CIK. EDGAR covers US "
+                    "filers only; a London-only listing is absent by design and is "
+                    "served by Companies House instead."
+                ),
+                detail={"cik_resolution": resolution.as_dict()},
+            )
+
         report = _sync(session)
 
     return JobResult(
@@ -159,6 +376,10 @@ def sync_fundamentals_job() -> JobResult:
 
     per_run = max(1, settings.schedule.fundamentals_rotation_per_day // 24)
     with session_scope() as session:
+        note = empty_universe_note(session)
+        if note:
+            logger.info("fundamentals sync skipped: %s", note)
+            return JobResult(note=note)
         report = sync_fundamentals(session, limit=per_run)
 
     return JobResult(
