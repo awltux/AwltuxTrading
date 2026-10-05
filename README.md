@@ -325,13 +325,19 @@ page shows has to be recorded while both are still available. `docker build` doe
 that: it copies `.git` into the builder stage, runs
 
 ```bash
-PYTHONPATH=src python -m awltux.buildinfo --write src/awltux/build_info.json
+PYTHONPATH=src python -m awltux.buildinfo --write src/awltux/build_info.json \
+    --paths src pyproject.toml README.md config alembic.ini
 ```
 
-and fails the build if no commits were captured. The file is gitignored, which is
-what keeps the *"was the tree clean?"* flag on the page honest — commit first,
-then build, and the image can name the exact revision it came from. A source
-checkout ignores the artifact and reads `git log` live.
+and fails the build if no commits were captured. `--paths` exists because the
+builder holds only part of the tree: a whole-tree `git status` reports every
+uncopied file as deleted, which would mark every image a dirty build. The list
+must cover everything the image copies.
+
+The file is gitignored, which is what keeps the *"was the tree clean?"* flag on
+the page honest — commit first, then build, and the image can name the exact
+revision it came from. A source checkout ignores the artifact and reads `git log`
+live.
 
 ### Layout
 
@@ -346,6 +352,9 @@ src/awltux/
 ├─ scheduler/    job registry and the background runner
 └─ web/          FastAPI routes, Jinja templates, SSE
 ```
+
+Known bugs, open questions and deferred work live in [`TODO.md`](TODO.md), each
+with the evidence that found it.
 
 ---
 

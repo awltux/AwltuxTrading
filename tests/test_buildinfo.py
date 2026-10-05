@@ -129,6 +129,47 @@ class TestCollectFromGit:
         assert info.dirty is None, "unknown is not the same as clean"
         assert info.is_dirty is False
 
+    def test_paths_limit_the_dirty_check_to_a_partial_checkout(self, monkeypatch, temp_dir):
+        """A container copies part of the tree; the rest reads as deleted.
+
+        This is the bug that made every image report itself as a dirty build: only
+        ``src/`` and a few root files are copied, so a whole-tree status listed
+        every other tracked file as missing.
+        """
+        seen: list[list[str]] = []
+
+        def fake_run_git(args, cwd):
+            seen.append(list(args))
+            if args[0] == "log":
+                return git_record(HASH_A, "aaaaaaa", "Ada", "2026-01-02T03:04:05+00:00", "First")
+            if args[0] == "rev-parse":
+                return HASH_A
+            return ""
+
+        monkeypatch.setattr(buildinfo, "_run_git", fake_run_git)
+        info = buildinfo.collect_from_git(root=temp_dir, paths=["src", "pyproject.toml"])
+
+        status = next(args for args in seen if args[0] == "status")
+        assert status == ["status", "--porcelain", "--", "src", "pyproject.toml"]
+        assert info.dirty is False
+
+    def test_without_paths_the_whole_tree_is_checked(self, monkeypatch, temp_dir):
+        seen: list[list[str]] = []
+
+        def fake_run_git(args, cwd):
+            seen.append(list(args))
+            if args[0] == "log":
+                return git_record(HASH_A, "aaaaaaa", "Ada", "2026-01-02T03:04:05+00:00", "First")
+            if args[0] == "rev-parse":
+                return HASH_A
+            return "?? stray.py\n"
+
+        monkeypatch.setattr(buildinfo, "_run_git", fake_run_git)
+        info = buildinfo.collect_from_git(root=temp_dir)
+
+        assert next(a for a in seen if a[0] == "status") == ["status", "--porcelain"]
+        assert info.dirty is True
+
     def test_this_checkout_reports_its_own_history(self):
         """The local-development path, against the real repository."""
         if buildinfo.repo_root(REPO_ROOT) is None or shutil.which("git") is None:

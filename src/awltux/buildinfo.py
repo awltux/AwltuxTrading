@@ -24,7 +24,7 @@ import datetime as dt
 import json
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -177,8 +177,20 @@ def _run_git(args: Iterable[str], cwd: Path) -> str | None:
     return completed.stdout
 
 
-def collect_from_git(count: int = DEFAULT_COMMIT_COUNT, root: Path | None = None) -> BuildInfo:
-    """Read the history out of a checkout. Returns *unavailable* if it cannot."""
+def collect_from_git(
+    count: int = DEFAULT_COMMIT_COUNT,
+    root: Path | None = None,
+    paths: Sequence[str] | None = None,
+) -> BuildInfo:
+    """Read the history out of a checkout. Returns *unavailable* if it cannot.
+
+    ``paths`` limits the cleanliness check to part of the tree, which a container
+    build needs: the image copies only ``src/`` and a couple of root files out of
+    a full checkout, so a whole-tree ``git status`` reports every uncopied file as
+    deleted and every image looks dirty. Passing the copied paths asks the
+    question that actually matters -- *are the files that went into this build
+    modified or untracked?*
+    """
     root = repo_root() if root is None else root
     if root is None:
         return BuildInfo.unavailable()
@@ -191,7 +203,10 @@ def collect_from_git(count: int = DEFAULT_COMMIT_COUNT, root: Path | None = None
         return BuildInfo.unavailable()
 
     head = (_run_git(["rev-parse", "HEAD"], root) or "").strip() or None
-    status = _run_git(["status", "--porcelain"], root)
+    status_args = ["status", "--porcelain"]
+    if paths:
+        status_args += ["--", *paths]
+    status = _run_git(status_args, root)
     return BuildInfo(
         source="git",
         generated_at=None,
@@ -249,7 +264,10 @@ def load_build_info(count: int = DEFAULT_COMMIT_COUNT) -> BuildInfo:
 
 
 def snapshot(
-    path: Path, count: int = DEFAULT_COMMIT_COUNT, root: Path | None = None
+    path: Path,
+    count: int = DEFAULT_COMMIT_COUNT,
+    root: Path | None = None,
+    paths: Sequence[str] | None = None,
 ) -> BuildInfo:
     """Write the artifact for a build to bake in, and return what was captured.
 
@@ -257,7 +275,7 @@ def snapshot(
     the evidence behind, but the caller is expected to treat an empty result as a
     failed build.
     """
-    info = collect_from_git(count, root=root)
+    info = collect_from_git(count, root=root, paths=paths)
     payload: dict[str, Any] = {
         "generated_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         "head": info.head,
@@ -279,17 +297,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-n", "--count", type=int, default=DEFAULT_COMMIT_COUNT)
     parser.add_argument("--write", type=Path, default=None, help="write the artifact here")
     parser.add_argument("--root", type=Path, default=None, help="repository root to read")
+    parser.add_argument(
+        "--paths",
+        nargs="+",
+        default=None,
+        help="limit the dirty-tree check to these paths (a partial checkout, e.g. a "
+        "container build, reports every uncopied file as deleted otherwise)",
+    )
     args = parser.parse_args(argv)
 
     count = max(args.count, 1)
     if args.write is None:
-        info = collect_from_git(count, root=args.root)
+        info = collect_from_git(count, root=args.root, paths=args.paths)
         print(json.dumps([commit.to_dict() for commit in info.commits], indent=2))
         return 0 if info.is_known else 1
 
-    # --root is only there for testing and for building from somewhere other
-    # than the checkout the module lives in; a Docker build needs neither.
-    info = snapshot(args.write, count, root=args.root)
+    # --root and --paths exist for testing and for building somewhere other than
+    # the checkout the module lives in; a Docker build needs only the latter.
+    info = snapshot(args.write, count, root=args.root, paths=args.paths)
 
     if not info.is_known:
         print(

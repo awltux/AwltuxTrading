@@ -27,13 +27,24 @@ RUN apt-get update \
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src ./src
+# Copied only so the cleanliness check below can see them: both are baked into
+# the runtime stage, so an uncommitted edit to either genuinely makes this image
+# not match its commit.
+COPY config ./config
+COPY alembic.ini ./
 # The image has no .git and no git, so the Info page's commit history has to be
 # recorded *now*, while both are available. Copying .git is the price of being
 # able to name the revision a running container came from. The generator writes
 # the artifact and exits non-zero if it captured nothing, which fails the build:
 # an image that cannot say what it is built from is worse than no image.
+#
+# --paths must list everything the image copies. Without it, `git status` would
+# report every uncopied tracked file (tests/, docker-compose.yml, ...) as deleted
+# and brand every single image a dirty build.
 COPY .git ./.git
-RUN PYTHONPATH=/build/src python -m awltux.buildinfo --write /build/src/awltux/build_info.json
+RUN PYTHONPATH=/build/src python -m awltux.buildinfo \
+        --write /build/src/awltux/build_info.json \
+        --paths src pyproject.toml README.md config alembic.ini
 
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip \
