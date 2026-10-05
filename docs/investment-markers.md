@@ -493,13 +493,30 @@ strict and cited, not a reason to trust its judgement more.
 
 ### 5.2 Readability and obfuscation
 
-**Tier C.** The finding that less readable annual reports are associated with worse
-earnings persistence and worse subsequent performance is one of the most-cited
-results in the area (Li, 2008, *Journal of Accounting and Economics*, on the Fog
-Index). It is plausible, it has a causal story (managers obscure bad news), and it
-has been challenged — including work arguing the effect is weaker or partly a proxy
-for complexity rather than intent. Treat length and complexity as a **reason to
-read more carefully**, not as a score.
+**Tier B — but only in a specific construction, and the specificity is the point.**
+
+The general finding that less readable annual reports accompany worse earnings
+persistence is one of the most-cited results in the area (Li, 2008, *Journal of
+Accounting and Economics*, on the Fog Index), and it has been challenged — partly
+on the grounds that it may be a proxy for complexity rather than intent.
+
+The result that answers that objection is Lo, Ramos and Rogo (*Journal of
+Accounting and Economics*, 2017): firms that **meet or just beat** prior-year EPS
+have *less readable* MD&A (coefficient 0.163–0.209), rising to **0.385–0.419** where
+discretionary accruals are also high, and with a **placebo that is insignificant**.
+Crucially, *missing* the benchmark shows an effect three to six times smaller — so
+the readability signal attaches to the specific act of managing an expectation
+upward, not to bad news generally. That is what rules out the pure
+"unreadable-because-the-news-is-bad" reading and makes it evidence of obfuscation.
+
+*Practical consequence:* readability is worth computing **only as a conditional
+flag** — "this report is unusually hard to read *and* the company just beat by a
+cent — look at the accruals" — and is close to worthless as a standalone score.
+Combined with the accrual work in Part 2 it becomes genuinely interesting, because
+the two signals reinforce the same story.
+
+(Reported by the research subagent with the coefficients and the placebo attached;
+not independently fetched here.)
 
 ### 5.3 Tone, hedging and boilerplate
 
@@ -549,17 +566,28 @@ What is genuinely worth attaching to a filing, in priority order:
 
 1. **Cited figures** — every number with its quoted span and location (already
    implemented here; this is the foundation and it is right).
-2. **Accounting-policy changes and estimate changes** — a change in revenue
+2. **Year-over-year textual similarity, by section** — and this one reversed a
+   judgement in an earlier draft of this note, which had ranked boilerplate drift
+   last. It is in fact the **strongest verified filing-based return result there
+   is**: comparing a filing's text against the company's own previous filing, the
+   risk-factor section alone produced 188 bps/month and the headline portfolio
+   34–58 bps/month, 1995–2014, with the inattention mechanism independently
+   supported by FOIA EDGAR download logs (Cohen, Malloy & Nguyen, "Lazy Prices").
+   Note what the signal is: **change**, not tone. A company that says something
+   different this year is telling you something; one that says the same thing is
+   not, however it is worded.
+3. **Accounting-policy changes and estimate changes** — a change in revenue
    recognition, depreciation life, or provisioning assumptions is a discrete,
    checkable event with a clear direction of travel. This is under-exploited.
-3. **Going-concern and qualification language** — rare, unambiguous, high value.
-4. **Litigious and uncertainty language** — LM categories, cheap, directional.
-5. **Related-party and non-recurring items** — needs note-level reading.
-6. **Readability and boilerplate drift** — lowest priority, weakest evidence.
+4. **Going-concern and qualification language** — rare, unambiguous, high value.
+5. **Loughran-McDonald category counts, computed per section rather than over the
+   whole document** — the `uncertainty` and `litigious` categories especially.
+6. **Related-party and non-recurring items** — needs note-level reading.
 
-Note the ordering principle: **discrete, checkable events first; continuous
-text scores last.** A policy change either happened or did not. A readability
-score is an opinion with a number attached.
+Note the ordering principle: **discrete, checkable events and changes first;
+whole-document text scores last.** A policy change either happened or did not. A
+readability score for an entire 10-K is an opinion with a number attached —
+readability is only informative in the specific construction in 5.2.
 
 **A practical warning about the input itself.** The "decorate the document" step
 fails at the extraction layer before it fails at the analysis layer, and this is
@@ -587,11 +615,45 @@ literature, and the research says something more uncomfortable than expected.
 
 **Coverage follows price at least as much as price follows coverage.** This is the
 central methodological problem in the media-sentiment literature: journalists write
-about what has already moved. Much of the apparent predictive power of news
-sentiment is momentum, liquidity or attention in disguise. Any news signal must
-therefore be validated with the price move controlled for — and a system that
-weights news heavily without that control is likely measuring yesterday's return
-and calling it sentiment.
+about what has already moved. The cleanest causal design holds the information
+event fixed and varies only *access* to it — Engelberg and Parsons, on local media
+outlets and local trading — and finds that media moves **trading, not
+information**. That is the finding to weigh most heavily, because it isolates the
+mechanism rather than correlating two things that move together.
+
+**And the return signature is pressure followed by reversal, not drift.** Tetlock
+(2007), Da, Engelberg and Gao (two weeks up, then reversal within the year) and
+Hillert and co-authors (long-run reversal) all point the same way. A system that
+overweights news is therefore not making a modest bet on a weak signal; beyond a
+few weeks it is **structurally betting against itself**. Any news feature should
+carry an explicit decay, and the honest default is that syndicated or reprinted
+coverage contains approximately no information at all.
+
+**The decay priors are not small.** McLean and Pontiff, across 97 published
+predictors, found returns **26% lower out-of-sample and 58% lower
+post-publication**, with the decay *worse* for high in-sample returns and
+illiquid portfolios — which is exactly where news signals live. Those two numbers
+should be applied as shrinkage before believing any news backtest, including one
+run on this system's own data.
+
+**But there is one narrow news result with real fundamental content**, and it is
+worth having: **negative** words in **firm-specific, fundamentals-focused** stories
+forecast low earnings (Tetlock, Saar-Tsechansky and Macskassy, 2008). Note the
+three restrictions — negative, firm-specific, fundamentals-focused. Generality is
+what kills news signals; specificity is what leaves one alive.
+
+**Source bias is commercially induced and measurable**, not a matter of opinion:
+Gurun and Butler found that local firms' advertising spend buys softer coverage of
+those firms. This is the strongest argument for the source-reliability registry
+already built here — the bias is a mechanism, not a vibe.
+
+**The largest gap in the whole review, stated plainly.** No source found
+quantifies the right weight for text against accounting data, and no verified
+incremental information coefficient for text exists once value, profitability and
+accruals are controlled for. **Anyone quoting a figure like "text should be 20% of
+the decision" is not citing this literature, because the number is not in it.**
+That is a reason for the current bounded weighting and against inventing a
+precision the evidence does not support.
 
 **Asymmetry is the more robust finding.** Negative news appears to carry more
 information than positive news, and the effect of sentiment appears stronger in
@@ -680,6 +742,11 @@ tool with annual/interim accounts and no paid data.
    the list, both computable from two figures already extracted, both describing
    the business rather than predicting the market. Add the trend, and compare
    within sector.
+1a. **Year-over-year textual similarity, by section.** The single strongest
+   verified filing signal, and the one that most deserves a place ahead of
+   everything text-related below it. It needs the previous filing, section
+   detection, and a similarity measure — no lexicon, no model, no threshold
+   guessing.
 2. **Piotroski's nine checks, displayed as nine checks.** Not a score out of nine —
    the individual answers are the value, and they are all verifiable against the
    accounts by the reader.
