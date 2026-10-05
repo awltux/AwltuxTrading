@@ -312,8 +312,22 @@ def sectors(days: int = Query(60, ge=1, le=730)) -> dict[str, Any]:
 def jobs(request: Request) -> dict[str, Any]:
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler is None:
-        return {"running": False, "jobs": []}
-    return {"running": not scheduler.paused, "jobs": scheduler.status()}
+        return {"running": False, "jobs": [], "in_flight": []}
+
+    from awltux.db import session_scope
+    from awltux.scheduler.jobs import running_jobs
+
+    with session_scope() as session:
+        in_flight = sorted(running_jobs(session))
+    return {
+        "running": not scheduler.paused,
+        "jobs": scheduler.status(),
+        # Which jobs are executing right now, from the open run rows rather than
+        # from anything the browser remembers. A tab that reloads mid-run has no
+        # other way to know, and a button offering to start a job that is already
+        # running is worse than no button.
+        "in_flight": in_flight,
+    }
 
 
 @router.post("/jobs/{job_id}/run", summary="Trigger a job now")

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from awltux.db.models import IngestRun
+from awltux.db.models import IngestRun, utcnow
 from awltux.db.session import session_scope
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,61 @@ class JobSpec:
     jitter_seconds: int = 0
     enabled: bool = True
     requires: tuple[str, ...] = ()
+
+
+def running_jobs(session) -> set[str]:
+    """Jobs with a run open right now.
+
+    A run row is opened when a job starts and closed when it finishes, so an open
+    row means a job is *currently* executing -- which is what the Operations page
+    needs to disable the right buttons rather than the ones that happen to have been
+    clicked in this browser tab.
+    """
+    from sqlalchemy import select
+
+    return {
+        job
+        for (job,) in session.execute(
+            select(IngestRun.job).where(IngestRun.finished_at.is_(None)).distinct()
+        ).all()
+        if job
+    }
+
+
+def close_orphaned_runs() -> int:
+    """Mark runs left open by a previous process as interrupted, and return how many.
+
+    If the process dies mid-run -- a restart, a redeploy, a crash -- the row it
+    opened is never closed. The Operations page then shows that job as running
+    forever, with its button disabled, and the only person who could tell the
+    difference is the one who remembers deploying.
+
+    That is worse than showing nothing: it hides the fact that the work did not
+    finish. Called once at startup, when the only process that could own an open row
+    is the one that has just gone away.
+    """
+    from sqlalchemy import select
+
+    closed = 0
+    try:
+        with session_scope() as session:
+            rows = (
+                session.execute(select(IngestRun).where(IngestRun.finished_at.is_(None)))
+                .scalars()
+                .all()
+            )
+            for row in rows:
+                row.finished_at = utcnow()
+                row.ok = False
+                note = "interrupted: the process restarted while this run was in progress"
+                row.error = f"{row.error}\n{note}" if row.error else note
+                closed += 1
+    except Exception:  # pragma: no cover - observability must not stop startup
+        logger.exception("could not close orphaned runs")
+        return 0
+    if closed:
+        logger.info("closed %d run(s) left open by a previous process", closed)
+    return closed
 
 
 def start_run(job_id: str, started: dt.datetime) -> int | None:

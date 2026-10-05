@@ -23,11 +23,18 @@
   <tbody>
   {% for status in queue %}
     <tr>
-      {# The same button markup as the table, so the existing handler runs it. #}
+      {# The same button markup as the table below, so the existing handler runs it
+         and the two stay in step. The running state comes from the open run row,
+         not from the browser, so a reload mid-run shows the truth. #}
       <td>
         <div class="job-cell">
           <code>{{ status.id }}</code>
-          <button class="run-job" data-job="{{ status.id }}">Run now</button>
+          {% if status.id in in_flight %}
+            <button class="run-job" data-job="{{ status.id }}" disabled
+                    title="A run is in progress">Running…</button>
+          {% else %}
+            <button class="run-job" data-job="{{ status.id }}">Run now</button>
+          {% endif %}
         </div>
       </td>
       <td class="small">{{ status.reason }}</td>
@@ -61,10 +68,15 @@
       <td>
         <div class="job-cell">
           <code>{{ job.id }}</code>
-          <button class="run-job" data-job="{{ job.id }}"
-                  {% if not job.enabled %}disabled title="Requires a credential in .env"{% endif %}>
-            Run now
-          </button>
+          {% if job.id in in_flight %}
+            <button class="run-job" data-job="{{ job.id }}" disabled
+                    title="A run is in progress">Running…</button>
+          {% else %}
+            <button class="run-job" data-job="{{ job.id }}"
+                    {% if not job.enabled %}disabled title="Requires a credential in .env"{% endif %}>
+              Run now
+            </button>
+          {% endif %}
         </div>
       </td>
       <td class="small">{{ job.description }}</td>

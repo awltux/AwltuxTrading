@@ -245,13 +245,61 @@
   }
 
   // ---------------------------------------------------------------- job runs
-  function wireJobButtons() {
-    document.querySelectorAll(".run-job").forEach(function (button) {
-      button.addEventListener("click", function () {
-        var jobId = button.dataset.job;
-        var original = button.textContent;
+  //
+  // Every button for a job is updated together, and the running state is read
+  // back from the server rather than remembered here.
+  //
+  // Two bugs made this necessary. The handler used to act on the clicked element
+  // alone, so a job listed in both "Run these next" and "Scheduled jobs" would
+  // show "Running…" in one table and an enabled "Run now" in the other -- offering
+  // to start a job that was already running. And on success it reloaded the page
+  // after 900ms, which reset every *other* running job's button while those jobs
+  // were still going, leaving no way to tell they were alive.
+  var runningJobs = new Set();
+
+  function buttonsFor(jobId) {
+    return document.querySelectorAll('.run-job[data-job="' + jobId + '"]');
+  }
+
+  function setRunning(jobId, running) {
+    buttonsFor(jobId).forEach(function (button) {
+      if (running) {
         button.disabled = true;
         button.textContent = "Running…";
+        button.title = "A run is in progress";
+      } else {
+        button.disabled = false;
+        button.textContent = "Run now";
+        button.title = "";
+      }
+    });
+  }
+
+  function refreshRunning() {
+    fetch("/api/jobs")
+      .then(function (response) { return response.json(); })
+      .then(function (body) {
+        var inFlight = new Set(body.in_flight || []);
+        // Clear jobs that finished, set jobs that started elsewhere -- another
+        // tab, the scheduler, a previous page load.
+        runningJobs.forEach(function (jobId) {
+          if (!inFlight.has(jobId)) setRunning(jobId, false);
+        });
+        inFlight.forEach(function (jobId) { setRunning(jobId, true); });
+        runningJobs = inFlight;
+      })
+      .catch(function () { /* the page still works without the poll */ });
+  }
+
+  function wireJobButtons() {
+    var buttons = document.querySelectorAll(".run-job");
+    if (!buttons.length) return;
+
+    buttons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        var jobId = button.dataset.job;
+        setRunning(jobId, true);
+        runningJobs.add(jobId);
 
         fetch("/api/jobs/" + encodeURIComponent(jobId) + "/run", { method: "POST" })
           .then(function (response) {
@@ -261,27 +309,36 @@
           })
           .then(function (result) {
             if (!result.ok) {
-              button.textContent = "Failed";
-              button.title = result.body.detail || "job failed";
-            } else {
-              var body = result.body;
-              button.textContent = "Wrote " + (body.items_written || 0);
-              window.setTimeout(function () {
-                window.location.reload();
-              }, 900);
+              // A refusal is the server's answer, so show it rather than
+              // pretending the run happened.
+              buttonsFor(jobId).forEach(function (other) {
+                other.disabled = false;
+                other.textContent = "Failed";
+                other.title = result.body.detail || "job failed";
+              });
+              runningJobs.delete(jobId);
+              return;
             }
+            // Reload to refresh the history and the coverage counts. Safe now that
+            // the server renders which jobs are still running: the other buttons
+            // come back as "Running…" instead of being quietly reset.
+            window.setTimeout(function () { window.location.reload(); }, 900);
           })
           .catch(function () {
-            button.textContent = "Error";
-          })
-          .finally(function () {
-            window.setTimeout(function () {
-              button.disabled = false;
-              button.textContent = original;
-            }, 2500);
+            buttonsFor(jobId).forEach(function (other) {
+              other.disabled = false;
+              other.textContent = "Error";
+            });
+            runningJobs.delete(jobId);
           });
       });
     });
+
+    // The scheduler runs jobs on its own schedule, so the page has to notice
+    // starts it did not initiate. Polling is deliberately slow: this is a status
+    // display, not a control loop.
+    refreshRunning();
+    window.setInterval(refreshRunning, 5000);
   }
 
   function init() {

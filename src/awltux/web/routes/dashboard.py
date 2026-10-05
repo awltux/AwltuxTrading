@@ -202,11 +202,13 @@ def jobs_page(request: Request) -> HTMLResponse:
         jobs_that_have_ever_succeeded,
         next_steps,
     )
+    from awltux.scheduler.jobs import running_jobs
 
     specs = scheduler.specs() if scheduler else []
     with session_scope() as session:
         statuses = job_statuses(session, specs) if specs else []
         succeeded = jobs_that_have_ever_succeeded(session) if specs else set()
+        in_flight = running_jobs(session) if specs else set()
     queue = next_steps(statuses)
     # Used to colour the "needs first" chips: a prerequisite that has never
     # completed is a different problem from one that merely ran a while ago.
@@ -222,6 +224,11 @@ def jobs_page(request: Request) -> HTMLResponse:
             "statuses": statuses,
             "queue": queue,
             "blocked_jobs": blocked_jobs,
+            # A job appears in two tables -- "run these next" and "scheduled jobs"
+            # -- so both must show the same state. The browser cannot be trusted to
+            # remember that across a reload, and the first job to finish triggers
+            # one.
+            "in_flight": in_flight,
         },
     )
 

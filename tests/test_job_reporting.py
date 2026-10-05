@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from awltux.db import Instrument, session_scope
+from awltux.db import Instrument, session_scope, utcnow
 from awltux.ingest.jobs import empty_universe_note, universe_is_empty
 from awltux.scheduler.jobs import JobResult
 from tests.helpers import make_instrument
@@ -214,3 +214,110 @@ class TestARunningJobIsVisibleWhileItRuns:
         row = self._newest()
         assert row.ok is True
         assert row.items_written == 1
+
+
+class TestInterruptedRunsAreClosed:
+    """A run left open by a process that died must not look like a running job.
+
+    If it does, the Operations page disables that job's button forever and says it
+    is running -- hiding the fact that the work never finished. The deployment
+    restarts often enough that this is the normal case, not an edge one.
+    """
+
+    def _open_run(self, job: str = "news_rss"):
+        from awltux.db import IngestRun
+
+        with session_scope() as session:
+            row = IngestRun(job=job, started_at=utcnow(), finished_at=None, ok=None)
+            session.add(row)
+            session.flush()
+            return row.id
+
+    def test_an_open_run_is_marked_interrupted_at_startup(self, settings):
+        from awltux.scheduler.jobs import close_orphaned_runs
+
+        run_id = self._open_run()
+
+        assert close_orphaned_runs() == 1
+
+        from awltux.db import IngestRun
+
+        with session_scope() as session:
+            row = session.get(IngestRun, run_id)
+            assert row.finished_at is not None
+            assert row.ok is False
+            assert "interrupted" in row.error
+
+    def test_it_does_not_touch_a_run_that_finished(self, settings):
+        from awltux.db import IngestRun
+        from awltux.scheduler.jobs import close_orphaned_runs
+
+        with session_scope() as session:
+            session.add(
+                IngestRun(job="retention", started_at=utcnow(), finished_at=utcnow(), ok=True)
+            )
+
+        assert close_orphaned_runs() == 0
+
+        with session_scope() as session:
+            row = session.query(IngestRun).filter_by(job="retention").one()
+            assert row.ok is True
+            assert row.error is None
+
+    def test_an_existing_error_is_kept_alongside_the_interruption(self, settings):
+        from awltux.db import IngestRun
+        from awltux.scheduler.jobs import close_orphaned_runs
+
+        with session_scope() as session:
+            row = IngestRun(
+                job="news_rss", started_at=utcnow(), finished_at=None, ok=None, error="earlier"
+            )
+            session.add(row)
+            session.flush()
+            run_id = row.id
+
+        close_orphaned_runs()
+
+        with session_scope() as session:
+            row = session.get(IngestRun, run_id)
+            assert "earlier" in row.error
+            assert "interrupted" in row.error
+
+
+class TestRunningJobs:
+    """What the Operations page reads to decide which buttons to disable."""
+
+    def test_an_open_run_means_the_job_is_running(self, settings):
+        from awltux.db import IngestRun
+        from awltux.scheduler.jobs import running_jobs
+
+        with session_scope() as session:
+            session.add(IngestRun(job="news_rss", started_at=utcnow(), finished_at=None, ok=None))
+
+        with session_scope() as session:
+            assert running_jobs(session) == {"news_rss"}
+
+    def test_a_finished_run_is_not_running(self, settings):
+        from awltux.db import IngestRun
+        from awltux.scheduler.jobs import running_jobs
+
+        with session_scope() as session:
+            session.add(
+                IngestRun(job="news_rss", started_at=utcnow(), finished_at=utcnow(), ok=True)
+            )
+
+        with session_scope() as session:
+            assert running_jobs(session) == set()
+
+    def test_a_job_running_twice_is_reported_once(self, settings):
+        from awltux.db import IngestRun
+        from awltux.scheduler.jobs import running_jobs
+
+        with session_scope() as session:
+            for _ in range(2):
+                session.add(
+                    IngestRun(job="news_rss", started_at=utcnow(), finished_at=None, ok=None)
+                )
+
+        with session_scope() as session:
+            assert running_jobs(session) == {"news_rss"}

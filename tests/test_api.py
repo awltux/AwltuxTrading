@@ -217,6 +217,40 @@ class TestTemplatesRenderWithData:
         body = client.get("/jobs").text
         assert "running" in body
 
+    def test_both_tables_agree_about_a_running_job(self, client, populated, session):
+        """A job listed in "Run these next" *and* "Scheduled jobs" used to show
+        "Running…" in one table and an enabled "Run now" in the other, offering to
+        start a job that was already going."""
+        from awltux.db import IngestRun
+
+        session.add(IngestRun(job="news_rss", started_at=utcnow(), finished_at=None, ok=None))
+        session.commit()
+
+        body = client.get("/jobs").text
+        segments = body.split('data-job="news_rss"')
+        assert len(segments) >= 1
+        for segment in segments[1:]:
+            head = segment[:240]
+            assert "Run now" not in head, "a running job still offers to start: " + head[:100]
+
+    def test_the_api_reports_which_jobs_are_in_flight(self, client, populated, session):
+        """The browser cannot be trusted to remember this across a reload, and the
+        first job to finish triggers one."""
+        from awltux.db import IngestRun
+
+        session.add(IngestRun(job="news_rss", started_at=utcnow(), finished_at=None, ok=None))
+        session.commit()
+
+        assert client.get("/api/jobs").json()["in_flight"] == ["news_rss"]
+
+    def test_a_finished_job_is_not_in_flight(self, client, populated, session):
+        from awltux.db import IngestRun
+
+        session.add(IngestRun(job="news_rss", started_at=utcnow(), finished_at=utcnow(), ok=True))
+        session.commit()
+
+        assert client.get("/api/jobs").json()["in_flight"] == []
+
     def test_a_long_error_is_summarised_and_kept_behind_a_disclosure(
         self, client, universe_instrument, session
     ):

@@ -50,6 +50,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler = SchedulerService(build_job_specs(settings))
     app.state.scheduler = scheduler
     app.state.settings = settings
+
+    # Anything still open was owned by the process that just went away, so it is
+    # interrupted rather than running. Done before the scheduler starts, so the
+    # sweep cannot close a run this process has just opened.
+    from awltux.scheduler.jobs import close_orphaned_runs
+
+    close_orphaned_runs()
+
     try:
         scheduler.start()
     except Exception:
