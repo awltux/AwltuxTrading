@@ -29,6 +29,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -493,6 +494,42 @@ class NewsAnalysis(Base):
 
     __table_args__ = (
         Index("ix_news_analysis_grade_credibility", "evidence_grade", "credibility"),
+    )
+
+
+class NewsEmbedding(Base):
+    """The vector for one story, so the same event can be recognised as one event.
+
+    A profit warning reaches this system five or six times, from different outlets,
+    rewritten each time. The corroboration layer already collapses syndication --
+    the same text pasted everywhere -- by comparing word sets. It cannot see the
+    commoner case: one event reported in different words. A vector can, because it
+    compares what the text means rather than which words it uses.
+
+    **A separate table, not columns on the story.** The vector is only meaningful
+    alongside the model that produced it -- re-embedding with another model is a
+    different measurement, not an update -- so the model name is part of the row.
+    And ``news_item`` is read on every dashboard render while this is read only
+    when clustering, so a kilobyte of float32 does not belong on the hot path.
+
+    Stored as raw ``float32`` bytes rather than JSON: a quarter the size, and it
+    exists only to be fed back into numpy.
+    """
+
+    __tablename__ = "news_embedding"
+
+    news_item_id: Mapped[int] = mapped_column(
+        ForeignKey("news_item.id", ondelete="CASCADE"), primary_key=True
+    )
+    #: Which model produced it. Two vectors are comparable only if this matches.
+    model: Mapped[str] = mapped_column(String(96), index=True)
+    dim: Mapped[int] = mapped_column(Integer)
+    vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: Hash of the text that was embedded, so a change to the input can be spotted
+    #: rather than silently compared against vectors built from something else.
+    text_hash: Mapped[str] = mapped_column(String(64))
+    embedded_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
 

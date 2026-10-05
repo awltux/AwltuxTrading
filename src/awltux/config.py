@@ -158,6 +158,7 @@ class ScheduleConfig(BaseModel):
     news_gdelt: int = 900
     news_analysis: int = 1_800
     news_relevance: int = 900
+    news_embeddings: int = 1_800
     sentiment_aggregate: int = 3_600
     valuation: int = 86_400
     decision: int = 86_400
@@ -370,6 +371,49 @@ class ScepticismConfig(BaseModel):
     min_credibility: float = 0.05
 
 
+class EmbeddingsConfig(BaseModel):
+    """Vector embeddings of headlines, used to collapse one event into one entry.
+
+    A story about a profit warning reaches this system five or six times, from
+    different outlets, rewritten each time. The existing corroboration layer spots
+    near-duplicates by comparing word sets, which catches syndication -- the same
+    text pasted everywhere -- and misses the commoner case: the same *event*
+    reported in different words.
+
+    Embeddings catch that, because they compare meaning rather than vocabulary.
+
+    **Deliberately provider-agnostic.** ``base_url`` and ``model`` describe any
+    OpenAI-compatible embeddings endpoint, which covers a hosted service and a
+    local Ollama alike. There is no key requirement: pointing at
+    ``http://localhost:11434/v1`` needs none, so the feature is usable without
+    signing up for anything. Unset means embeddings are off and the lexical
+    comparison is used, exactly as before.
+    """
+
+    #: An OpenAI-compatible base URL, e.g. ``https://api.openai.com/v1`` or a local
+    #: ``http://host.docker.internal:11434/v1``. Empty disables the feature.
+    base_url: str = ""
+    model: str = "text-embedding-3-small"
+    api_key: SecretStr | None = None
+    #: Headlines embedded per request. Endpoints vary; this is conservative.
+    batch_size: int = 64
+    #: Items embedded per job run. The backfill is a one-off, so it is rationed like
+    #: every other paid call.
+    max_per_run: int = 1_000
+    #: Cosine similarity at or above which two stories are the same event.
+    #:
+    #: 0.86 is deliberately high. The cost of joining two different events is a
+    #: reader being told one thing happened when two did; the cost of missing a
+    #: join is two entries instead of one. Those are not symmetric, so the threshold
+    #: errs towards keeping them apart, and every cluster shows its members so a
+    #: wrong join is visible rather than hidden.
+    same_event_threshold: float = 0.86
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url.strip())
+
+
 class NewsConfig(BaseModel):
     ticker_min_materiality: Literal[
         "none", "mild", "moderate", "material", "critical"
@@ -399,6 +443,7 @@ class NewsConfig(BaseModel):
     classify_max_tokens: int = 2_000
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     scepticism: ScepticismConfig = Field(default_factory=ScepticismConfig)
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
 
 
 class RetentionConfig(BaseModel):

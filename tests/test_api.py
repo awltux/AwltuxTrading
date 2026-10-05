@@ -756,6 +756,125 @@ class TestNewsQueries:
         assert [item["title"] for item in items] == ["Minor", "Major"]
 
 
+class TestTheBannerGroupsOneEventIntoOneEntry:
+    """Five outlets rewriting one profit warning is one piece of news, not five.
+
+    The grouping is only as good as the vectors behind it, so these tests seed
+    vectors directly rather than pretending to embed anything.
+    """
+
+    def _story(self, session, key: str, title: str, **overrides):
+        from awltux.db import NewsItem, utcnow
+
+        values = {
+            "source": "test",
+            "url": f"https://example.test/{key}",
+            "url_hash": key * 8,
+            "title": title,
+            "published_at": utcnow(),
+            "tickers": ["TEST_US_EQ"],
+            "direction": "negative",
+            "materiality": "material",
+            "relevant": True,
+        }
+        values.update(overrides)
+        row = NewsItem(**values)
+        session.add(row)
+        session.flush()
+        return row
+
+    def _vector(self, session, row, vector):
+        import numpy as np
+
+        from awltux.db import NewsEmbedding
+
+        array = np.asarray(vector, dtype=np.float32)
+        session.add(
+            NewsEmbedding(
+                news_item_id=row.id,
+                model="test-model",
+                dim=int(array.shape[0]),
+                vector=array.tobytes(),
+                text_hash="x",
+            )
+        )
+        session.flush()
+
+    def _configure(self, settings) -> None:
+        settings.news.embeddings.base_url = "http://localhost:11434/v1"
+        settings.news.embeddings.model = "test-model"
+
+    def _cluster(self, item_ids, settings):
+        from sqlalchemy import select
+
+        from awltux.analysis.embeddings import cluster_items
+        from awltux.db import NewsItem, session_scope
+
+        with session_scope() as fresh:
+            rows = list(
+                fresh.execute(
+                    select(NewsItem).where(NewsItem.id.in_(item_ids))
+                ).scalars().all()
+            )
+            return cluster_items(rows, settings=settings)
+
+    def test_two_stories_about_one_event_are_one_entry(
+        self, client, universe_instrument, session, settings
+    ):
+        self._configure(settings)
+        first = self._story(session, "a", "Acme warns on profit")
+        second = self._story(session, "b", "Acme cuts its full-year outlook")
+        self._vector(session, first, [1.0, 0.0, 0.0])
+        self._vector(session, second, [1.0, 0.05, 0.0])
+        session.commit()
+
+        events, note = self._cluster([first.id, second.id], settings)
+
+        assert note is None
+        assert len(events) == 1
+        assert events[0].members == [first.id, second.id]
+
+    def test_unrelated_stories_stay_separate(
+        self, client, universe_instrument, session, settings
+    ):
+        self._configure(settings)
+        first = self._story(session, "c", "Acme warns on profit")
+        second = self._story(session, "d", "Acme wins a contract")
+        self._vector(session, first, [1.0, 0.0, 0.0])
+        self._vector(session, second, [0.0, 1.0, 0.0])
+        session.commit()
+
+        events, _ = self._cluster([first.id, second.id], settings)
+        assert [len(event.members) for event in events] == [1, 1]
+
+    def test_the_reason_grouping_did_not_happen_is_reported(
+        self, client, universe_instrument, session, settings
+    ):
+        """"One entry per event" and "one entry per story" look identical on screen,
+        and only one of them means the feature works."""
+        settings.news.embeddings.base_url = ""
+        first = self._story(session, "e", "Acme warns on profit")
+        session.commit()
+
+        events, note = self._cluster([first.id], settings)
+        assert note is not None
+        assert "not configured" in note
+        assert events[0].members == [first.id]
+
+    def test_a_story_with_no_vector_is_not_grouped_with_anything(
+        self, client, universe_instrument, session, settings
+    ):
+        self._configure(settings)
+        embedded = self._story(session, "f", "Acme warns on profit")
+        plain = self._story(session, "g", "Acme warns on profit again")
+        self._vector(session, embedded, [1.0, 0.0, 0.0])
+        session.commit()
+
+        events, note = self._cluster([embedded.id, plain.id], settings)
+        assert note is None
+        assert [event.members for event in events] == [[embedded.id], [plain.id]]
+
+
 class TestDisplayZone:
     """Store UTC, show the reader's clock.
 

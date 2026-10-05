@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 #: that costs money is capped separately, by ``news.relevance_backfill_per_run``.
 RELEVANCE_BACKFILL_ROWS = 5_000
 
+#: Rows written before the backfill releases SQLite's write lock. See
+#: ``INSTRUMENT_FLUSH_EVERY`` in ``ingest/universe.py`` for why an unbounded bulk
+#: write is not acceptable here.
+RELEVANCE_FLUSH_EVERY = 250
+
 
 def universe_is_empty(session) -> bool:
     """Whether anything is actually in scope for the universe-driven jobs.
@@ -390,6 +395,91 @@ def analyse_news() -> JobResult:
     )
 
 
+def embed_news() -> JobResult:
+    """Give stored stories a vector, so one event can be recognised as one event.
+
+    Only relevant stories are embedded. A story with no instrument and no direction
+    never reaches the banner, so a vector for it would be paid for and never
+    compared against anything.
+
+    Newest first, because clustering is what the banner uses and the banner looks at
+    recent stories. An old backlog is worth less than today's coverage.
+
+    Rationed like every other paid job, and it records *why* it did nothing: "one
+    entry per event" and "one entry per story" look identical in the UI, and only
+    one of them means the feature works.
+    """
+    from sqlalchemy import select
+
+    from awltux.analysis.embeddings import EmbeddingClient, embed_text, store_vectors
+    from awltux.config import get_settings
+    from awltux.db import NewsEmbedding, NewsItem
+    from awltux.db.session import release_write_lock
+
+    settings = get_settings()
+    config = settings.news.embeddings
+    client = EmbeddingClient(settings)
+    if not client.configured:
+        return JobResult(
+            note=(
+                "embeddings are not configured, so stories cannot be grouped by "
+                "event: set news.embeddings.base_url to an OpenAI-compatible endpoint"
+            )
+        )
+
+    embedded = 0
+    errors: list[str] = []
+    with session_scope() as session:
+        already = select(NewsEmbedding.news_item_id).where(
+            NewsEmbedding.model == config.model
+        )
+        pending = list(
+            session.execute(
+                select(NewsItem)
+                .where(NewsItem.relevant.is_(True))
+                .where(NewsItem.id.not_in(already))
+                .order_by(NewsItem.id.desc())
+                .limit(config.max_per_run)
+            ).scalars().all()
+        )
+        if not pending:
+            return JobResult(note="every relevant story already has a vector")
+
+        batch_size = max(1, config.batch_size)
+        for start in range(0, len(pending), batch_size):
+            batch = pending[start : start + batch_size]
+            texts = [embed_text(item) for item in batch]
+            # Vector maths is ours; the provider only turns text into numbers.
+            release_write_lock(session)
+            result = client.embed(texts)
+            errors.extend(result.errors)
+            if result.vectors:
+                kept = len(result.vectors)
+                embedded += store_vectors(
+                    [item.id for item in batch][:kept],
+                    texts[:kept],
+                    result.vectors,
+                    model=config.model,
+                )
+            release_write_lock(session)
+
+    client.close()
+
+    if embedded == 0:
+        note = "no vectors were produced: " + ("; ".join(errors[:2]) or "the provider returned nothing")
+    elif errors:
+        note = f"{embedded} stories embedded; {len(errors)} batch(es) failed and will retry"
+    else:
+        note = None
+
+    return JobResult(
+        items_seen=len(pending),
+        items_written=embedded,
+        note=note,
+        detail={"embedded": embedded, "model": config.model, "errors": errors[:5]},
+    )
+
+
 def assess_news_relevance() -> JobResult:
     """Decide whether stored stories are claims about a share price.
 
@@ -527,6 +617,15 @@ def assess_news_relevance() -> JobResult:
             if not item.relevance_reason:
                 item.relevance_reason = verdict.reason
             assessed += 1
+
+            # Bound the transaction, not just the calls. Only a couple of hundred of
+            # the five thousand rows need a model call, so releasing the lock only
+            # around those leaves long stretches where thousands of pending updates
+            # accumulate and land in one flush -- the same shape as the 31-second
+            # instrument sync that broke every concurrent writer.
+            if assessed % RELEVANCE_FLUSH_EVERY == 0:
+                session.flush()
+                release_write_lock(session)
 
         session.flush()
 

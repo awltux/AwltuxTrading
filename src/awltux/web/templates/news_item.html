@@ -157,6 +157,37 @@
   </p>
 {% endif %}
 
+{# ------------------------------------------------------------------ event #}
+<h2>Other coverage of this event</h2>
+{% if siblings %}
+  <p class="small">
+    {{ siblings | length }} other
+    {{ 'story covers' if siblings | length == 1 else 'stories cover' }}
+    the same event, by comparing what each one says rather than the words it uses.
+    The grouping is a similarity threshold and not a fact, so the list is here to be
+    argued with.
+  </p>
+  <table class="grid compact">
+    <thead><tr><th>Story</th><th>Source</th><th>Published</th></tr></thead>
+    <tbody>
+    {% for sibling in siblings %}
+      <tr>
+        <td class="small"><a href="/news/{{ sibling.id }}">{{ sibling.title }}</a></td>
+        <td class="small muted">{{ sibling.source }}</td>
+        <td class="small muted">{{ sibling.published_at | datetime if sibling.published_at else '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% elif clustering_note %}
+  <p class="muted small">
+    Not grouped by event: {{ clustering_note }}. Every story is shown separately,
+    which is the honest state rather than a claim that nothing else covered this.
+  </p>
+{% else %}
+  <p class="muted">No other story in the recent window covers this event.</p>
+{% endif %}
+
 {# ------------------------------------------------------------------ source #}
 <h2>The original</h2>
 {% if item.url %}

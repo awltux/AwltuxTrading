@@ -232,6 +232,22 @@ news:
   # How many stories the news_relevance job may classify in one run. Relevance is
   # settled at ingest, so this only ever drains a backlog.
   relevance_backfill_per_run: 200
+  # Vectorise stories so several outlets covering one event show as one entry.
+  # `base_url` is any OpenAI-compatible /embeddings endpoint and no key is needed
+  # for a local one, so this works with Ollama without signing up for anything:
+  #   base_url: http://host.docker.internal:11434/v1
+  #   model: nomic-embed-text
+  # Empty base_url leaves the feature off and the lexical comparison in use, which
+  # the banner says rather than implying stories were grouped when they were not.
+  embeddings:
+    base_url: ""
+    model: text-embedding-3-small
+    # Cosine similarity at or above which two stories are the same event. High on
+    # purpose: joining two different events asserts something false, while missing
+    # a join only shows two entries instead of one.
+    same_event_threshold: 0.86
+    batch_size: 64
+    max_per_run: 1000
   # Headline-level prefilter before spending an LLM call.
   prefilter:
     min_title_chars: 25

@@ -128,6 +128,20 @@ covered) or a threshold that nothing can clear. **Not investigated.**
 check refused it. The gate reason strings are supposed to be specific enough to
 answer that from the receipt alone, so if they are not, that is the bug.
 
+### A headline classification occasionally needs thousands of output tokens
+
+The budget is now 2,000 with an 8,000 retry, and one call in the live log produced
+**6,529 output tokens to classify one headline**. Raising the cap made these
+succeed, so nothing is lost — but 6.5k tokens of deliberation to emit a
+150-character JSON object is not explainable by the task, and it is the same hidden
+reasoning that made the original 500-token budget look adequate.
+
+**Worth understanding before trusting the cost model:** either the prompt invites
+much more deliberation than the schema requires, or the model loops on some inputs
+(duplicates, very short summaries, non-English headlines). `llm_call` records
+`input_tokens` and `output_tokens` for every call, so the inputs that trigger it can
+be found rather than guessed at.
+
 ### The news-to-fundamentals weighting is an assumption, not a finding
 
 News currently enters sentiment with a 0.55 component weight. The research note

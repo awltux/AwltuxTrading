@@ -39,6 +39,11 @@ MAX_IDLE_SECONDS = 900.0
 #: rank is excluded.
 RANKING_WINDOW = 600
 
+#: Stories scanned when finding the other reports of one event. Smaller than the
+#: ranking window because the question is only "who else covered this", and the
+#: answer is always recent.
+EVENT_WINDOW = 300
+
 
 def _targets(item: NewsItem) -> list[dict[str, str]]:
     """Everything this story can be attached to, with the kind of each."""
@@ -210,6 +215,57 @@ def _ranked(session, *, window: int, limit: int) -> list[tuple[NewsItem, NewsAna
     return [(row, analyses.get(row.id)) for row in rows[:limit]]
 
 
+def _events(
+    session, *, window: int, limit: int
+) -> tuple[list[dict[str, object]], str | None]:
+    """The banner's entries: one per event, best first.
+
+    Ranking happens per *story*, then stories describing the same event collapse
+    into one entry led by the best of them. Doing it in that order matters: the
+    alternative -- cluster first, rank the clusters -- would let a well-covered
+    minor event outrank a poorly-covered important one, which is exactly backwards.
+
+    Where embeddings are not configured nothing collapses and ``note`` says so.
+    "One entry per event" and "one entry per story" look identical on screen, and
+    only one of them means the feature works.
+    """
+    from awltux.analysis.embeddings import cluster_items
+
+    ranked = _ranked(session, window=window, limit=limit)
+    items = [row for row, _ in ranked]
+    analyses = {row.id: analysis for row, analysis in ranked if analysis}
+
+    events, note = cluster_items(items)
+    by_id = {row.id: row for row in items}
+
+    payload: list[dict[str, object]] = []
+    for event in events:
+        members = [by_id[mid] for mid in event.members if mid in by_id]
+        if not members:
+            continue
+        lead = members[0]
+        entry = _serialise(lead, analyses.get(lead.id))
+        entry["event"] = {
+            "size": event.size,
+            "similarity": event.similarity,
+            "members": [
+                {
+                    "id": member.id,
+                    "title": member.title,
+                    "source": member.source,
+                    "url": member.url,
+                    "local_url": f"/news/{member.id}",
+                    "published_at": (
+                        member.published_at.isoformat() if member.published_at else None
+                    ),
+                }
+                for member in members[1:]
+            ],
+        }
+        payload.append(entry)
+    return payload, note
+
+
 def _fetch_since(item_id: int, limit: int) -> list[dict[str, object]]:
     with session_scope() as session:
         rows = session.execute(
@@ -227,8 +283,8 @@ def _fetch_latest(limit: int) -> list[dict[str, object]]:
     with session_scope() as session:
         # Reversed so the client receives them oldest-first and each new event
         # lands to the right of the last, which is how the track is built.
-        ranked = _ranked(session, window=RANKING_WINDOW, limit=limit)
-        return [_serialise(row, analysis) for row, analysis in reversed(ranked)]
+        events, _ = _events(session, window=RANKING_WINDOW, limit=limit)
+        return list(reversed(events))
 
 
 @router.get("/api/news", summary="Recent news items")
@@ -241,19 +297,20 @@ def recent_news(
 
     with session_scope() as session:
         if ticker is None and materiality is None:
-            # The default feed is the flash banner: relevant first, best first.
-            ranked = _ranked(session, window=RANKING_WINDOW, limit=limit)
-            items = [row for row, _ in ranked]
-            analyses = {row.id: analysis for row, analysis in ranked if analysis}
+            # The default feed is the flash banner: one entry per event, best first.
+            items, clustering = _events(session, window=RANKING_WINDOW, limit=limit)
         else:
-            items = queries.recent_news(
+            rows = queries.recent_news(
                 session, limit=limit, min_materiality=materiality, ticker=ticker
             )
-            analyses = _analyses_in(session, [item.id for item in items])
+            analyses = _analyses_in(session, [item.id for item in rows])
+            items = [_serialise(row, analyses.get(row.id)) for row in rows]
+            clustering = "filtered view: one entry per story"
         return {
-            "items": [_serialise(item, analyses.get(item.id)) for item in items],
+            "items": items,
             "count": len(items),
             "ordered_by": "priority" if ticker is None and materiality is None else "recency",
+            "clustering": clustering,
         }
 
 
@@ -263,14 +320,11 @@ def news_ticker_partial(request: Request, limit: int = Query(15, ge=1, le=50)) -
     from awltux.web.templating import templates
 
     with session_scope() as session:
-        ranked = _ranked(session, window=RANKING_WINDOW, limit=limit)
-        items = [row for row, _ in ranked]
-        analyses = {row.id: analysis for row, analysis in ranked if analysis}
-        scores = {row.id: _serialise(row, analyses.get(row.id)) for row in items}
+        entries, clustering = _events(session, window=RANKING_WINDOW, limit=limit)
     return templates.TemplateResponse(
         request,
         "partials/news_ticker.html",
-        {"items": items, "analyses": analyses, "scores": scores},
+        {"entries": entries, "clustering": clustering},
     )
 
 
@@ -312,6 +366,32 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
             else {}
         )
 
+        # Which other stories cover the same event. Computed against the same
+        # ranking window the banner uses, so the page and the banner agree about
+        # what the event is -- a page that said "3 stories" while the banner showed
+        # the entry alone would be worse than either.
+        from awltux.analysis.embeddings import cluster_items
+
+        window_rows = list(
+            session.execute(
+                select(NewsItem)
+                .where(or_(NewsItem.relevant.is_(True), NewsItem.relevant.is_(None)))
+                .order_by(desc(NewsItem.id))
+                .limit(EVENT_WINDOW)
+            ).scalars().all()
+        )
+        events, clustering_note = cluster_items(window_rows)
+        siblings: list[NewsItem] = []
+        for event in events:
+            if item_id in event.members:
+                by_id_local = {row.id: row for row in window_rows}
+                siblings = [
+                    by_id_local[mid]
+                    for mid in event.members
+                    if mid != item_id and mid in by_id_local
+                ]
+                break
+
     return templates.TemplateResponse(
         request,
         "news_item.html",
@@ -321,6 +401,8 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
             "payload": payload,
             "instruments": instruments,
             "published": format_moment(item.published_at) if item.published_at else None,
+            "siblings": siblings,
+            "clustering_note": clustering_note,
         },
     )
 

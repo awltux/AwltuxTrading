@@ -1,46 +1,53 @@
 {# Server-rendered ticker fragment. This is the no-JavaScript fallback and the
    initial paint; app.js replaces it with live Server-Sent Events once loaded.
 
-   The ticker is the one place a bare headline could reach a reader without its
-   provenance attached, so the source and the weight travel with it.
+   One entry per *event*, not per story. A profit warning reaches this system five
+   or six times from different outlets, rewritten each time; six entries that say
+   the same thing is not more information, it is the same information six times.
+   The entry is led by the best story covering the event and carries the count of
+   the others, which are listed on the local page.
 
    The link goes to our own page, not to the publisher. The published article is
    the input to an assessment rather than the assessment, and it may be paywalled,
-   syndicated or gone by the time anyone clicks. The local page always has what the
-   system concluded, which instruments it concerns and why, and a link out for
-   anyone who wants the original. #}
-{% for item in items %}
-  {% set analysis = analyses.get(item.id) if analyses else none %}
-  {% set score = scores.get(item.id) if scores else none %}
-  <a class="ticker-item mat-{{ item.materiality | materiality_class }}{% if item.relevant is not true %} unassessed{% endif %}"
-     href="/news/{{ item.id }}"
-     title="{{ item.title }}{% if item.tickers %} — {{ item.tickers | join(', ') }}{% endif %}{% if score %} · priority {{ score.priority }}{% endif %}{% if analysis %} · {{ analysis.evidence_grade }} evidence, weight {{ analysis.credibility | pct0 }}{% if analysis.source_name %} · {{ analysis.source_name }}{% endif %}{% endif %}">
-    {% if item.tickers %}<span class="chip">{{ item.tickers | join(', ') }}</span>{% endif %}
-    <span class="ticker-title">{{ item.title }}</span>
-    {% if item.direction %}<span class="dir dir-{{ item.direction }}">{{ item.direction }}</span>{% endif %}
-    {% if item.relevant is not true %}
+   syndicated or gone by the time anyone clicks. #}
+{% for entry in entries %}
+  <a class="ticker-item mat-{{ entry.materiality | materiality_class }}{% if entry.relevant is not true %} unassessed{% endif %}"
+     href="{{ entry.local_url }}"
+     title="{{ entry.title }}{% if entry.tickers %} — {{ entry.tickers | join(', ') }}{% endif %} · priority {{ entry.priority }}{% if entry.event and entry.event.size > 1 %} · {{ entry.event.size }} stories covering this{% endif %}{% if entry.scepticism %} · {{ entry.scepticism.grade }} evidence, weight {{ entry.scepticism.credibility | pct0 }}{% if entry.scepticism.source %} · {{ entry.scepticism.source }}{% endif %}{% endif %}">
+    {% if entry.tickers %}<span class="chip">{{ entry.tickers | join(', ') }}</span>{% endif %}
+    <span class="ticker-title">{{ entry.title }}</span>
+    {% if entry.direction %}<span class="dir dir-{{ entry.direction }}">{{ entry.direction }}</span>{% endif %}
+    {% if entry.event and entry.event.size > 1 %}
+      <span class="badge ok" title="{{ entry.event.size }} stories cover this event; open for the list">
+        {{ entry.event.size }}&times;
+      </span>
+    {% endif %}
+    {% if entry.relevant is not true %}
       {# Kept in the feed and labelled, rather than dropped: an item nothing has
          judged yet is a gap worth seeing, not a story worth hiding. #}
       <span class="badge unknown" title="Nothing has judged whether this is a claim about a share price">unassessed</span>
     {% endif %}
-    {% if analysis %}
-      <span class="badge {{ analysis.evidence_grade | grade_class }}"
+    {% if entry.scepticism %}
+      <span class="badge {{ entry.scepticism.grade | grade_class }}"
             title="How much weight this headline was given, after source, framing and corroboration">
-        {{ analysis.evidence_grade or 'unrated' }}
+        {{ entry.scepticism.grade or 'unrated' }}
       </span>
-      {% if 'manipulative_framing' in (analysis.flags or []) %}
-        <span class="badge bad" title="Written to provoke: {{ analysis.warnings | join(' ') }}">
-          framing
-        </span>
+      {% if 'manipulative_framing' in (entry.scepticism.flags or []) %}
+        <span class="badge bad" title="Written to provoke">framing</span>
       {% endif %}
-      {% if 'unconfirmed' in (analysis.flags or []) %}
+      {% if 'unconfirmed' in (entry.scepticism.flags or []) %}
         <span class="badge warn" title="A material claim from a single source — a lead, not a fact">
           unconfirmed
         </span>
       {% endif %}
     {% endif %}
-    <span class="muted small">{{ item.published_at | ago }}</span>
+    <span class="muted small">{{ entry.published_at | ago }}</span>
   </a>
 {% else %}
   <span class="muted">No relevant headlines yet. A story appears once it names an instrument or sector and carries a direction.</span>
 {% endfor %}
+{% if clustering %}
+  {# "One entry per event" and "one entry per story" look identical on screen, and
+     only one of them means the grouping is working. #}
+  <span class="muted small" title="{{ clustering }}">· not grouped by event</span>
+{% endif %}

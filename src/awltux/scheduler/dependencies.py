@@ -269,6 +269,25 @@ def _probe_news_relevance(session: Session) -> Coverage:
     )
 
 
+def _probe_news_embeddings(session: Session) -> Coverage:
+    from awltux.db import NewsEmbedding
+
+    relevant = session.execute(
+        select(func.count()).select_from(NewsItem).where(NewsItem.relevant.is_(True))
+    ).scalar_one()
+    if relevant == 0:
+        return Coverage.all_or_nothing(0, "no relevant stories to vectorise yet")
+    embedded = session.execute(
+        select(func.count(func.distinct(NewsEmbedding.news_item_id)))
+    ).scalar_one()
+    missing = max(relevant - embedded, 0)
+    if missing == 0:
+        return Coverage.counted(0, relevant, f"all {relevant:,} relevant stories have a vector")
+    return Coverage.counted(
+        missing, relevant, f"{missing:,} of {relevant:,} relevant stories have no vector"
+    )
+
+
 def _probe_news_analysis(session: Session) -> Coverage:
     analysed = select(NewsAnalysis.news_item_id)
     window = [
@@ -360,6 +379,7 @@ PROBES = {
     "news_rss": _probe_news_rss,
     "news_analysis": _probe_news_analysis,
     "news_relevance": _probe_news_relevance,
+    "news_embeddings": _probe_news_embeddings,
     "sentiment": _probe_sentiment,
     "valuation": _probe_valuation,
     "decision": _probe_decision,

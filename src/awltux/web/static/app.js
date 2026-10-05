@@ -86,6 +86,12 @@
     if (item.relevant !== true) {
       html += '<span class="badge unknown" title="Nothing has judged whether this is a claim about a share price">unassessed</span>';
     }
+    // One entry per event: say how many other stories reported it, because the
+    // grouping is the thing the reader cannot see from a single headline.
+    if (item.event && item.event.size > 1) {
+      html += '<span class="badge ok" title="' + item.event.size +
+        ' stories cover this event; open for the list">' + item.event.size + "&times;</span>";
+    }
     // The provenance travels with the headline here too, so a live-pushed item
     // cannot look more established than the same item rendered by the server.
     if (scepticism) {

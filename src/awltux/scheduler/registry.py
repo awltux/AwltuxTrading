@@ -161,6 +161,23 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="news_embeddings",
+            func=ingest_jobs.embed_news,
+            interval_seconds=schedule.news_embeddings,
+            description=(
+                "Vectorise relevant stories so several outlets covering one event "
+                "show as a single entry"
+            ),
+            # On news_rss, not on news_relevance: a story needs a vector to be
+            # grouped, and it needs a relevance verdict to be worth the vector, so
+            # the ordering is rss -> relevance -> embeddings. Declaring it on
+            # relevance alone would leave it wedged whenever relevance had nothing
+            # to do.
+            depends_on=("news_relevance",),
+            jitter_seconds=150,
+            enabled=True,
+        ),
+        JobSpec(
             id="sentiment",
             func=ingest_jobs.aggregate_sentiment,
             interval_seconds=schedule.sentiment_aggregate,
