@@ -47,6 +47,23 @@ MATERIALITY_ORDER = ["none", "mild", "moderate", "material", "critical"]
 VALID_DIRECTIONS = {"positive", "negative", "neutral"}
 VALID_HORIZONS = {"days", "weeks", "months", "years"}
 
+#: Closed set of event types. These are not decoration: each one maps to the
+#: register where the claim's primary source would be found, so an invented label
+#: would silently break primary-source resolution.
+VALID_EVENT_TYPES = {
+    "earnings",
+    "guidance",
+    "m_and_a",
+    "capital_raise",
+    "regulatory",
+    "legal",
+    "management_change",
+    "product",
+    "macro",
+    "analyst",
+    "other",
+}
+
 
 def _clamp(value: Any, low: float, high: float) -> float | None:
     try:
@@ -87,6 +104,10 @@ def normalise_classification(payload: dict[str, Any]) -> dict[str, Any] | None:
     if horizon not in VALID_HORIZONS:
         horizon = None  # type: ignore[assignment]
 
+    event_type = str(payload.get("event_type") or "").strip().lower()
+    if event_type not in VALID_EVENT_TYPES:
+        event_type = "other"
+
     return {
         "materiality": materiality,
         "direction": direction,
@@ -94,7 +115,7 @@ def normalise_classification(payload: dict[str, Any]) -> dict[str, Any] | None:
         "sentiment_score": sentiment,
         "relevance": relevance if relevance is not None else (0.2 if is_about is False else 0.5),
         "reasoning": payload.get("reasoning"),
-        "event_type": payload.get("event_type"),
+        "event_type": event_type,
     }
 
 

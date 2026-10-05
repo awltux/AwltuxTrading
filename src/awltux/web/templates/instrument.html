@@ -272,16 +272,166 @@
 
 {# ---------------------------------------------------------------------- news #}
 <h2>News</h2>
+<p class="muted small">
+  Every headline is a claim by an interested party, so each one is appraised
+  before it is allowed to move anything: who published it and what they stand to
+  gain, how many <em>independent</em> sources carry it (republication is not
+  corroboration), what it actually asserts, and what it leaves out. The
+  credibility shown is the weight the sentiment model gave it — not whether the
+  story is true, which this system cannot know.
+</p>
 {% if news %}
-  <ul class="news-list">
+  <ul class="news-list sceptic">
     {% for item in news %}
+      {% set analysis = news_analysis.get(item.id) %}
       <li class="mat-{{ item.materiality | materiality_class }}">
         <a href="{{ item.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>
+
         <span class="muted small">
-          {{ item.source }} · {{ item.published_at | ago }}
+          {% if analysis and analysis.source_name %}
+            {{ analysis.source_name }}
+            {%- if analysis.source_kind %} ({{ analysis.source_kind | replace('_', ' ') }}){% endif %}
+          {% else %}
+            {{ item.source }}
+          {% endif %}
+          · {{ item.published_at | ago }}
           {% if item.direction %} · {{ item.direction }}{% endif %}
           {% if item.materiality %} · {{ item.materiality }}{% endif %}
         </span>
+
+        {% if analysis %}
+          <div class="sceptic-badges">
+            <span class="badge {{ analysis.evidence_grade | grade_class }}">
+              {{ analysis.evidence_grade or 'unrated' }} evidence
+            </span>
+            <span class="badge" title="Weight this article was given in the sentiment score">
+              weight {{ analysis.credibility | pct0 }}
+            </span>
+            {% if analysis.independent_sources is not none %}
+              <span class="badge"
+                    title="{{ analysis.carrier_count }} domain(s) carrying it, {{ analysis.independent_sources }} independent origin(s)">
+                {{ analysis.independent_sources }} independent source{{ '' if analysis.independent_sources == 1 else 's' }}
+                {%- if analysis.carrier_count and analysis.carrier_count > analysis.independent_sources %}
+                  of {{ analysis.carrier_count }} carriers{% endif %}
+              </span>
+            {% endif %}
+            {% if analysis.source_biases %}
+              <span class="badge" title="{{ analysis.source_basis }}">
+                {{ analysis.source_biases | join(', ') | replace('_', ' ') }}
+              </span>
+            {% endif %}
+            {% if analysis.injection_suspected %}
+              <span class="badge bad" title="The item contains text that reads as an attempt to instruct the analyser">
+                prompt-injection suspected
+              </span>
+            {% endif %}
+          </div>
+
+          {% if analysis.warnings %}
+            <ul class="sceptic-warnings">
+              {% for warning in analysis.warnings %}<li>{{ warning }}</li>{% endfor %}
+            </ul>
+          {% endif %}
+
+          <details class="sceptic-detail">
+            <summary>What this story rests on</summary>
+
+            {% if analysis.scepticism_summary %}
+              <p>{{ analysis.scepticism_summary }}</p>
+            {% endif %}
+
+            {% if analysis.claims %}
+              <h4>Claims, and where each could be checked</h4>
+              <table class="grid compact">
+                <thead><tr><th>Claim</th><th>Type</th><th>Attribution</th><th>Check against</th></tr></thead>
+                <tbody>
+                {% for claim in analysis.claims %}
+                  <tr>
+                    <td>{{ claim.get('text') }}</td>
+                    <td class="small">{{ claim.get('claim_type', '') | replace('_', ' ') }}</td>
+                    <td class="small">
+                      {{ claim.get('attribution', '') | replace('_', ' ') }}
+                      {%- if not claim.get('checkable') %} <span class="muted">(uncheckable)</span>{% endif %}
+                    </td>
+                    <td class="small">{{ claim.get('primary_register') or '—' }}</td>
+                  </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            {% endif %}
+
+            {% if analysis.techniques %}
+              <h4>Techniques used on the reader</h4>
+              <ul>
+                {% for technique in analysis.techniques %}
+                  <li><strong>{{ technique.get('label') }}</strong>
+                    {%- if technique.get('example') %}: &ldquo;{{ technique.get('example') }}&rdquo;{% endif %}
+                    {%- if technique.get('why') %} — {{ technique.get('why') }}{% endif %}
+                  </li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+
+            {% if analysis.rhetoric and analysis.rhetoric.get('findings') %}
+              <p class="muted small">
+                Pattern scan (no model involved): score {{ analysis.rhetoric.get('score') }}.
+                {% for finding in analysis.rhetoric.get('findings') %}
+                  {{ finding.get('label') }}{% if not loop.last %}, {% endif %}
+                {% endfor %}.
+              </p>
+            {% endif %}
+
+            {% if analysis.omissions %}
+              <h4>What a complete account would include</h4>
+              <ul>{% for omission in analysis.omissions %}<li>{{ omission }}</li>{% endfor %}</ul>
+            {% endif %}
+
+            {% if analysis.headline_overstates %}
+              <p><strong>Headline overstates:</strong> {{ analysis.headline_overstates }}</p>
+            {% elif analysis.headline_matches_body is false %}
+              <p><strong>The headline asserts more than the text supports.</strong></p>
+            {% endif %}
+
+            {% if analysis.who_benefits %}
+              <p><strong>Who benefits if this is believed:</strong> {{ analysis.who_benefits }}
+                {%- if analysis.agenda_basis %} <span class="muted">({{ analysis.agenda_basis }})</span>{% endif %}
+              </p>
+            {% endif %}
+
+            {% if analysis.base_rate %}
+              <p><strong>Base rate:</strong> {{ analysis.base_rate }}
+                <span class="muted">— what this kind of event usually means, before the story's framing.</span>
+              </p>
+            {% endif %}
+
+            {% if analysis.primary_source %}
+              <p><strong>Ultimate source:</strong> {{ analysis.primary_source }}</p>
+            {% endif %}
+
+            {% if analysis.what_would_change_my_mind %}
+              <p><strong>What would settle it:</strong> {{ analysis.what_would_change_my_mind }}</p>
+            {% endif %}
+
+            {% if analysis.caveats %}
+              <h4>Also worth knowing</h4>
+              <ul>{% for caveat in analysis.caveats %}<li>{{ caveat }}</li>{% endfor %}</ul>
+            {% endif %}
+
+            <p class="muted small">
+              Appraised by {{ analysis.engine or 'the deterministic rules' }}
+              {%- if analysis.source_assessed is not none and not analysis.source_assessed %}
+                · the publisher has no assessment on file
+              {%- endif %}
+              {%- if analysis.source_basis %} · {{ analysis.source_basis }}{% endif %}
+            </p>
+          </details>
+        {% else %}
+          <div class="sceptic-badges">
+            <span class="badge unknown" title="This story has not been appraised yet">
+              not yet appraised
+            </span>
+          </div>
+        {% endif %}
       </li>
     {% endfor %}
   </ul>

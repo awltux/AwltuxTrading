@@ -22,7 +22,17 @@
     link.href = item.url || "#";
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.title = item.title + (item.tickers && item.tickers.length ? " — " + item.tickers.join(", ") : "");
+
+    var scepticism = item.scepticism || null;
+    var title = item.title + (item.tickers && item.tickers.length ? " — " + item.tickers.join(", ") : "");
+    if (scepticism) {
+      title += " · " + (scepticism.grade || "unrated") + " evidence";
+      if (scepticism.credibility != null) {
+        title += ", weight " + Math.round(scepticism.credibility * 100) + "%";
+      }
+      if (scepticism.source) title += " · " + scepticism.source;
+    }
+    link.title = title;
 
     var html = "";
     if (item.tickers && item.tickers.length) {
@@ -32,8 +42,31 @@
     if (item.direction) {
       html += '<span class="dir dir-' + escapeHtml(item.direction) + '">' + escapeHtml(item.direction) + "</span>";
     }
+    // The provenance travels with the headline here too, so a live-pushed item
+    // cannot look more established than the same item rendered by the server.
+    if (scepticism) {
+      html += gradeBadge(scepticism);
+    }
     link.innerHTML = html;
     return link;
+  }
+
+  function gradeBadge(scepticism) {
+    var grade = scepticism.grade || "unrated";
+    var classes = {
+      strong: "good", moderate: "ok", mixed: "warn", weak: "bad", unsupported: "bad"
+    };
+    var html = '<span class="badge ' + (classes[grade] || "unknown") + '">' +
+      escapeHtml(grade) + "</span>";
+
+    var flags = scepticism.flags || [];
+    if (flags.indexOf("manipulative_framing") !== -1) {
+      html += '<span class="badge bad" title="Written to provoke rather than inform">framing</span>';
+    }
+    if (flags.indexOf("unconfirmed") !== -1) {
+      html += '<span class="badge warn" title="A material claim from a single source — a lead, not a fact">unconfirmed</span>';
+    }
+    return html;
   }
 
   function startTicker() {

@@ -124,6 +124,32 @@ def engine_label(engine: str | None, uncalibrated: bool = False) -> str:
     return f"{base} (uncalibrated)" if uncalibrated else base
 
 
+def grade_class(grade: str | None) -> str:
+    """CSS class for an evidence grade. Unknown grades are visibly unknown."""
+    return {
+        "strong": "good",
+        "moderate": "ok",
+        "mixed": "warn",
+        "weak": "bad",
+        "unsupported": "bad",
+    }.get(grade or "", "unknown")
+
+
+def pct0(value: Any) -> str:
+    """A 0..1 weight as a whole percentage.
+
+    Deliberately not :func:`fmt_pct`: that adds a sign and assumes a change. A
+    credibility or a confidence is a proportion, and rendering it as "+25%" would
+    suggest a movement that did not happen.
+    """
+    if value is None:
+        return "\u2014"
+    try:
+        return f"{float(value) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return "\u2014"
+
+
 def create_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
     env = templates.env
@@ -132,11 +158,13 @@ def create_templates() -> Jinja2Templates:
             "number": fmt_number,
             "money": fmt_money,
             "pct": fmt_pct,
+            "pct0": pct0,
             "ratio": fmt_ratio,
             "datetime": fmt_datetime,
             "ago": fmt_ago,
             "action_class": action_class,
             "materiality_class": materiality_class,
+            "grade_class": grade_class,
             "engine_label": engine_label,
         }
     )

@@ -305,6 +305,57 @@ def ingest_news_rss() -> JobResult:
     )
 
 
+def analyse_news() -> JobResult:
+    """Sceptically appraise recent news: sources, framing, corroboration, claims.
+
+    Deliberately a separate job from the poll. The poll is volume work on hundreds
+    of loose headlines and has to stay cheap; this is per-story work that costs a
+    model call for the stories that warrant one, and mixing the two would put the
+    paid work on the critical path of every five-minute poll.
+    """
+    from awltux.analysis.news_analysis import analyse_universe
+    from awltux.config import get_settings
+    from awltux.llm.news_sceptic import build_analyser
+
+    settings = get_settings()
+    config = settings.news.scepticism
+    if not config.enabled:
+        return JobResult(note="news scepticism is disabled in configuration")
+
+    analyser = build_analyser(settings)
+    with session_scope() as session:
+        report = analyse_universe(
+            session,
+            settings=settings,
+            analyser=analyser,
+            days=config.lookback_days,
+            limit=config.max_deep_per_run,
+            refresh_after_days=config.refresh_after_days,
+        )
+
+    if report["examined"] == 0:
+        note = "no news in the lookback window to appraise"
+    elif report["selected"] == 0:
+        note = (
+            f"appraised nothing: none of the {report['examined']} recent items cleared "
+            "the interest threshold (materiality, framing, held position or thin coverage)"
+        )
+    elif analyser is None:
+        note = (
+            "deterministic appraisal only: DeepSeek is not configured, so claims, "
+            "omissions and primary-source tracing were not produced"
+        )
+    else:
+        note = None
+
+    return JobResult(
+        items_seen=report["selected"],
+        items_written=report["appraised"],
+        note=note,
+        detail=report,
+    )
+
+
 def ingest_edgar_events() -> JobResult:
     """Poll EDGAR's current-events feed for new US filings."""
     from awltux.ingest.edgar import ingest_current_events

@@ -386,11 +386,98 @@ class NewsItem(Base, TimestampMixin):
     relevance: Mapped[float | None] = mapped_column(Float)
 
     engine: Mapped[str | None] = mapped_column(String(16))  # which model classified it
+    #: What kind of event the classifier judged this to be. Recorded because it is
+    #: what routes a claim to the register where its primary source would live: a
+    #: results story has a filing behind it, a rumour has nothing.
+    event_type: Mapped[str | None] = mapped_column(String(24), index=True)
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     raw_path: Mapped[str | None] = mapped_column(String(512))
 
     __table_args__ = (
         Index("ix_news_published_materiality", "published_at", "materiality"),
+    )
+
+
+class NewsAnalysis(Base):
+    """The sceptical read of one news item.
+
+    Separate from :class:`NewsItem` on purpose. The item is the *observation* --
+    what a publisher said, kept verbatim and never rewritten. This is the
+    *appraisal* -- who said it, what it rests on, what it leaves out, and how much
+    weight it therefore gets.
+
+    Keeping them apart means the appraisal can be recomputed when the source
+    registry or the prompts change without touching the record of what was
+    published, and a disagreement with the appraisal is arguable without accusing
+    the system of altering the evidence.
+
+    ``claims``, ``techniques``, ``omissions`` and ``corroboration`` are stored as
+    JSON rather than normalised into tables. They are read as a document, per
+    article, and never aggregated across articles in SQL; splitting them into four
+    more tables would buy joins nothing asks for.
+    """
+
+    __tablename__ = "news_analysis"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    news_item_id: Mapped[int] = mapped_column(
+        ForeignKey("news_item.id", ondelete="CASCADE"), unique=True, index=True
+    )
+
+    # --- who published it, and what that is worth ---------------------------
+    source_domain: Mapped[str | None] = mapped_column(String(96), index=True)
+    source_name: Mapped[str | None] = mapped_column(String(128))
+    source_kind: Mapped[str | None] = mapped_column(String(24))
+    source_reliability: Mapped[float | None] = mapped_column(Float)
+    source_independence: Mapped[float | None] = mapped_column(Float)
+    source_biases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_basis: Mapped[str | None] = mapped_column(Text)
+    source_assessed: Mapped[bool | None] = mapped_column(Boolean)
+
+    # --- presentation -------------------------------------------------------
+    rhetoric_score: Mapped[float | None] = mapped_column(Float, index=True)
+    rhetoric: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    techniques: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    # --- corroboration ------------------------------------------------------
+    carrier_count: Mapped[int | None] = mapped_column(Integer)
+    independent_sources: Mapped[int | None] = mapped_column(Integer)
+    corroboration: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+    # --- what it claims -----------------------------------------------------
+    claims: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    omissions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    headline_matches_body: Mapped[bool | None] = mapped_column(Boolean)
+    headline_overstates: Mapped[str | None] = mapped_column(Text)
+    who_benefits: Mapped[str | None] = mapped_column(Text)
+    agenda_basis: Mapped[str | None] = mapped_column(Text)
+    base_rate: Mapped[str | None] = mapped_column(Text)
+    what_would_change_my_mind: Mapped[str | None] = mapped_column(Text)
+    primary_source: Mapped[str | None] = mapped_column(Text)
+    scepticism_summary: Mapped[str | None] = mapped_column(Text)
+    injection_suspected: Mapped[bool | None] = mapped_column(Boolean)
+
+    # --- the conclusion -----------------------------------------------------
+    credibility: Mapped[float | None] = mapped_column(Float, index=True)
+    evidence_grade: Mapped[str | None] = mapped_column(String(16), index=True)
+    flags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    caveats: Mapped[list[str]] = mapped_column(JSON, default=list)
+    factors: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+    #: Which model produced the reading half, and when. The arithmetic half is
+    #: ours and is versioned by the code, not recorded here.
+    engine: Mapped[str | None] = mapped_column(String(64))
+    analysed_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_news_analysis_grade_credibility", "evidence_grade", "credibility"),
     )
 
 

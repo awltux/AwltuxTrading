@@ -113,6 +113,17 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="news_analysis",
+            func=ingest_jobs.analyse_news,
+            interval_seconds=schedule.news_analysis,
+            description=(
+                "Appraise news sceptically: publisher, framing, independent "
+                "sources, claims and omissions"
+            ),
+            jitter_seconds=120,
+            enabled=True,
+        ),
+        JobSpec(
             id="sentiment",
             func=ingest_jobs.aggregate_sentiment,
             interval_seconds=schedule.sentiment_aggregate,

@@ -119,6 +119,7 @@ def instrument_page(request: Request, ticker: str) -> HTMLResponse:
             "filings": detail["filings"],
             "fundamentals": detail["fundamentals"],
             "news": detail["news"],
+            "news_analysis": detail["news_analysis"],
             "outcomes": detail["outcomes"],
             "horizons": {
                 "long_term": get_settings().horizons.long_term,

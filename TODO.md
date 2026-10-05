@@ -106,6 +106,48 @@ reader to guess.
 
 ## Correctness questions still open
 
+### The news appraisal only ever sees the headline and the snippet
+
+RSS gives a title and a short summary; Finnhub and Marketaux give little more. So
+the claim extraction, the omissions list and the technique detection all work from
+a few sentences, and the appraisal says so. Fetching the article body would make
+the analysis substantially better, and is deliberately not done: publisher terms,
+paywalls and robots rules are a legal surface this project is not going to take on
+unilaterally.
+
+**Consider instead:** following the *free* primary documents we already hold — EDGAR
+filings, Companies House accounts — and matching them to a claim, which would let
+"the filing says otherwise" be a checkable outcome rather than a suggestion.
+
+### Cross-domain corroboration does not use GDELT yet
+
+`analysis/corroboration.py` counts origins by clustering what is already in our
+database, so it can only see coverage we happened to ingest for that ticker. GDELT
+is already integrated and keyless, and its DOC API can be searched for an exact
+headline to find syndicated copies we never fetched. That would make the carrier
+count evidence rather than inference.
+
+### `unconfirmed` material claims do not reach the decision gate
+
+The appraisal flags a material story carried by a single source, and the flag is
+stored and shown. Nothing in `decision/gate.py` reads it yet, so an unconfirmed
+story can still contribute to a `news_materiality` answer. Decide whether an
+unconfirmed material claim should block a short-term suggestion, or merely be
+shown — and if it blocks, make the refusal reason name the flag.
+
+### News ingested before this change has no event type
+
+`news_item.event_type` was always computed by the classifier and thrown away, so
+rows written before migration `0004` are `NULL`. Primary-source routing falls back
+to nothing for them. Re-classifying the last 30 days would fix it; nothing does so
+automatically.
+
+### Sentiment aggregation loads the whole news window per run
+
+`aggregate_all` loads every item in a 30-day window once, then filters by ticker in
+Python because the tickers column is JSON. That is correct and portable, and it is
+also the slowest part of the job. Worth revisiting only if the window grows.
+
 ### Portfolio limits are reported NOT VERIFIED rather than failing closed
 
 The gate reports the portfolio-limits check as **NOT VERIFIED** (non-blocking)

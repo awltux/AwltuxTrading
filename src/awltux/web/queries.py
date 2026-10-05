@@ -21,6 +21,7 @@ from awltux.db import (
     FundamentalPeriod,
     IngestRun,
     Instrument,
+    NewsAnalysis,
     NewsItem,
     PriceBar,
     Quote,
@@ -438,6 +439,17 @@ def instrument_detail(session: Session, ticker: str) -> dict[str, Any] | None:
     # membership differs between SQLite and Postgres.
     related_news = [n for n in news if ticker in (n.tickers or [])][:25]
 
+    # The sceptical appraisals for exactly those stories, keyed by item id so the
+    # template can pair them without a second lookup.
+    appraisals: dict[int, NewsAnalysis] = {}
+    if related_news:
+        rows = session.execute(
+            select(NewsAnalysis).where(
+                NewsAnalysis.news_item_id.in_([n.id for n in related_news])
+            )
+        ).scalars().all()
+        appraisals = {row.news_item_id: row for row in rows}
+
     outcomes = []
     if decision is not None:
         outcomes = [
@@ -458,6 +470,7 @@ def instrument_detail(session: Session, ticker: str) -> dict[str, Any] | None:
         "filings": filings,
         "fundamentals": fundamentals,
         "news": related_news,
+        "news_analysis": appraisals,
         "outcomes": outcomes,
     }
 

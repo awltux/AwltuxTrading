@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import desc, select
 from starlette.concurrency import run_in_threadpool
 
-from awltux.db import NewsItem, session_scope
+from awltux.db import NewsAnalysis, NewsItem, session_scope
 
 router = APIRouter(tags=["news"])
 
@@ -29,7 +29,7 @@ POLL_SECONDS = 2.0
 MAX_IDLE_SECONDS = 900.0
 
 
-def _serialise(item: NewsItem) -> dict[str, object]:
+def _serialise(item: NewsItem, analysis: NewsAnalysis | None = None) -> dict[str, object]:
     return {
         "id": item.id,
         "title": item.title,
@@ -43,6 +43,25 @@ def _serialise(item: NewsItem) -> dict[str, object]:
         "horizon": item.horizon,
         "sentiment": item.sentiment_score,
         "engine": item.engine,
+        # The sceptical read travels with the item so a consumer of the API cannot
+        # take the headline without also being told what it is worth. Omitting it
+        # would make the flash feed the one place a raw claim reached the UI.
+        "scepticism": _serialise_analysis(analysis) if analysis else None,
+    }
+
+
+def _serialise_analysis(analysis: NewsAnalysis) -> dict[str, object]:
+    return {
+        "credibility": analysis.credibility,
+        "grade": analysis.evidence_grade,
+        "flags": analysis.flags or [],
+        "source": analysis.source_name,
+        "source_kind": analysis.source_kind,
+        "source_biases": analysis.source_biases or [],
+        "independent_sources": analysis.independent_sources,
+        "carriers": analysis.carrier_count,
+        "warnings": analysis.warnings or [],
+        "summary": analysis.scepticism_summary,
     }
 
 
@@ -67,6 +86,17 @@ def format_comment(text: str) -> bytes:
     return f": {text}\n\n".encode()
 
 
+def _analyses_for(item_ids: list[int]) -> dict[int, NewsAnalysis]:
+    """Appraisals for a batch of items, keyed by item id."""
+    if not item_ids:
+        return {}
+    with session_scope() as session:
+        rows = session.execute(
+            select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(item_ids))
+        ).scalars().all()
+        return {row.news_item_id: row for row in rows}
+
+
 def _fetch_since(item_id: int, limit: int) -> list[dict[str, object]]:
     with session_scope() as session:
         rows = session.execute(
@@ -75,7 +105,14 @@ def _fetch_since(item_id: int, limit: int) -> list[dict[str, object]]:
             .order_by(NewsItem.id)
             .limit(limit)
         ).scalars().all()
-        return [_serialise(row) for row in rows]
+        ids = [row.id for row in rows]
+        analyses = {
+            row.news_item_id: row
+            for row in session.execute(
+                select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(ids))
+            ).scalars().all()
+        } if ids else {}
+        return [_serialise(row, analyses.get(row.id)) for row in rows]
 
 
 def _fetch_latest(limit: int) -> list[dict[str, object]]:
@@ -83,7 +120,14 @@ def _fetch_latest(limit: int) -> list[dict[str, object]]:
         rows = session.execute(
             select(NewsItem).order_by(desc(NewsItem.id)).limit(limit)
         ).scalars().all()
-        return [_serialise(row) for row in reversed(rows)]
+        ids = [row.id for row in rows]
+        analyses = {
+            row.news_item_id: row
+            for row in session.execute(
+                select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(ids))
+            ).scalars().all()
+        } if ids else {}
+        return [_serialise(row, analyses.get(row.id)) for row in reversed(rows)]
 
 
 @router.get("/api/news", summary="Recent news items")
@@ -98,7 +142,11 @@ def recent_news(
         items = queries.recent_news(
             session, limit=limit, min_materiality=materiality, ticker=ticker
         )
-    return {"items": [_serialise(item) for item in items], "count": len(items)}
+    analyses = _analyses_for([item.id for item in items])
+    return {
+        "items": [_serialise(item, analyses.get(item.id)) for item in items],
+        "count": len(items),
+    }
 
 
 @router.get("/partials/news-ticker", response_class=HTMLResponse, include_in_schema=False)
@@ -112,8 +160,16 @@ def news_ticker_partial(request: Request, limit: int = Query(15, ge=1, le=50)) -
             .scalars()
             .all()
         )
+        analyses = {
+            row.news_item_id: row
+            for row in session.execute(
+                select(NewsAnalysis).where(
+                    NewsAnalysis.news_item_id.in_([item.id for item in items])
+                )
+            ).scalars().all()
+        }
     return templates.TemplateResponse(
-        request, "partials/news_ticker.html", {"items": items}
+        request, "partials/news_ticker.html", {"items": items, "analyses": analyses}
     )
 
 

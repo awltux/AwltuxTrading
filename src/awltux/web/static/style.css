@@ -225,6 +225,32 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 .news-list li.mat-material { border-left-color: var(--warn); }
 .news-list li.mat-moderate { border-left-color: #6cb6ff; }
 
+/* ------------------------------------------------- news scepticism appraisal */
+/* A headline is a claim, so its provenance is rendered next to it rather than
+   being something the reader has to go looking for. */
+.sceptic-badges { display: flex; flex-wrap: wrap; gap: 5px; margin: 4px 0 2px; }
+.badge {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2);
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.badge.good { color: var(--good); border-color: rgba(63,185,80,.4); }
+.badge.ok { color: #6cb6ff; border-color: rgba(108,182,255,.4); }
+.badge.warn { color: var(--warn); border-color: rgba(210,153,34,.4); }
+.badge.bad { color: var(--bad); border-color: rgba(248,81,73,.4); }
+.badge.unknown { color: var(--muted); }
+
+.sceptic-warnings { margin: 4px 0 2px; padding-left: 18px; }
+.sceptic-warnings li { border: none; padding: 0; color: var(--warn); font-size: 12px; }
+
+.news-list li .sceptic-detail { margin-top: 6px; }
+.sceptic-detail h4 { font-size: 12px; margin: 12px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.sceptic-detail p { margin: 6px 0; font-size: 13px; }
+.sceptic-detail ul { margin: 4px 0; padding-left: 18px; font-size: 13px; }
+.sceptic-detail li { border: none; padding: 2px 0; }
+
+.ticker-item .badge { margin-left: 4px; font-size: 10px; padding: 0 5px; }
+
 .sparkline { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 .sparkline canvas { width: 100%; display: block; }
 

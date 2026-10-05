@@ -156,6 +156,7 @@ class ScheduleConfig(BaseModel):
     news_finnhub: int = 1_200
     news_marketaux: int = 1_800
     news_gdelt: int = 900
+    news_analysis: int = 1_800
     sentiment_aggregate: int = 3_600
     valuation: int = 86_400
     decision: int = 86_400
@@ -322,6 +323,42 @@ class PrefilterConfig(BaseModel):
     require_any_ticker_mention: bool = False
 
 
+class ScepticismConfig(BaseModel):
+    """How hard news is interrogated, and how much it is allowed to matter.
+
+    Defaults are deliberately suspicious. The failure mode being engineered
+    against is not "missed a story" -- it is "acted on a story that was one
+    company's press release, repeated".
+    """
+
+    #: Appraise during ingest at all. Off leaves headlines classified but unweighted.
+    enabled: bool = True
+    #: Materiality at or above which a story is always appraised.
+    attention_materiality: Literal[
+        "none", "mild", "moderate", "material", "critical"
+    ] = "material"
+    #: Rhetoric score at or above which the *framing* is itself the reason to look.
+    #: Matches ``rhetoric.SUSPICION_THRESHOLD``; kept in config so a deployment can
+    #: raise it if the flags prove too eager.
+    rhetoric_attention_threshold: float = 0.30
+    #: How far either side of a story to look for other outlets carrying it.
+    corroboration_window_hours: int = 72
+    #: Recent items scanned to find corroboration for any one story.
+    corroboration_pool: int = 400
+    #: How many model-backed appraisals one run may make.
+    max_deep_per_run: int = 40
+    #: How many days back a run looks for stories worth appraising.
+    lookback_days: int = 14
+    #: Re-appraise after this long, so a stale verdict is refreshed.
+    refresh_after_days: int = 7
+    #: Weight given to an unappraised article's sentiment. Below 1.0 because
+    #: "unexamined" must not be worth as much as "examined and found sound".
+    unassessed_weight: float = 0.6
+    #: Floor on how far an assessed article's sentiment can be shrunk. Non-zero so
+    #: a weak story is damped rather than erased: the reader still sees it.
+    min_credibility: float = 0.05
+
+
 class NewsConfig(BaseModel):
     ticker_min_materiality: Literal[
         "none", "mild", "moderate", "material", "critical"
@@ -329,6 +366,7 @@ class NewsConfig(BaseModel):
     dedupe_window_hours: int = 72
     max_items_per_feed_poll: int = 50
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
+    scepticism: ScepticismConfig = Field(default_factory=ScepticismConfig)
 
 
 class RetentionConfig(BaseModel):

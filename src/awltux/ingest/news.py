@@ -211,6 +211,7 @@ def persist_items(
                 row.sentiment_score = updates.get("sentiment_score")
                 row.relevance = updates.get("relevance")
                 row.engine = updates.get("engine")
+                row.event_type = updates.get("event_type")
                 if updates.get("tickers"):
                     row.tickers = list({*row.tickers, *updates["tickers"]})
                 if updates.get("sectors"):

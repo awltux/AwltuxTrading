@@ -487,3 +487,71 @@ class TestNewsQueries:
             "Chronological 1",
             "Chronological 2",
         ]
+
+
+class TestNewsScepticismSurface:
+    """The appraisal has to reach the reader, not just the database.
+
+    A credibility weight that only exists in a table is indistinguishable from not
+    having one, and the flash ticker is the one place a bare headline could still
+    reach someone -- so both surfaces are checked here.
+    """
+
+    @pytest.fixture
+    def appraised(self, session, settings):
+        import datetime as dt
+
+        from awltux.analysis.news_analysis import analyse_universe
+        from awltux.db import Instrument, NewsItem
+
+        session.add(
+            Instrument(
+                t212_ticker="TEST_US_EQ",
+                name="Test Industries",
+                instrument_type="STOCK",
+                exchange_name="NASDAQ",
+                yahoo_symbol="TEST",
+                in_universe=True,
+            )
+        )
+        item = NewsItem(
+            source="google_news",
+            url="https://unknown-blog.example/shocking",
+            url_hash="a" * 64,
+            title="SHOCKING: test company meltdown wipes out investors",
+            summary="Investors are fleeing in a bloodbath, sources say, as savings are wiped out.",
+            published_at=dt.datetime.now(dt.UTC),
+            tickers=["TEST_US_EQ"],
+            materiality="critical",
+            direction="negative",
+            sentiment_score=-0.9,
+            relevance=0.9,
+            event_type="other",
+        )
+        session.add(item)
+        session.flush()
+        analyse_universe(session, settings=settings)
+        session.commit()
+        return item
+
+    def test_the_api_carries_the_appraisal_with_the_item(self, client, appraised):
+        body = client.get("/api/news").json()
+        assert body["count"] == 1
+        scepticism = body["items"][0]["scepticism"]
+        assert scepticism is not None
+        assert scepticism["grade"] in ("unsupported", "weak")
+        assert scepticism["credibility"] <= 0.3
+        assert scepticism["flags"]
+        assert scepticism["warnings"]
+
+    def test_the_flash_ticker_shows_the_weight_beside_the_headline(self, client, appraised):
+        body = client.get("/partials/news-ticker").text
+        assert "wipes out investors" in body
+        assert "badge" in body
+        assert "unconfirmed" in body or "framing" in body
+
+    def test_the_instrument_page_explains_what_the_story_rests_on(self, client, appraised):
+        body = client.get("/instrument/TEST_US_EQ").text
+        assert "What this story rests on" in body
+        assert "independent source" in body
+        assert "not yet appraised" not in body

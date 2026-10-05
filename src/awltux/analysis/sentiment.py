@@ -65,6 +65,13 @@ class SentimentComponents:
     momentum: float | None = None
     volume: float | None = None
     trend: float | None = None
+    #: Articles whose sceptical appraisal found them weak. Counted separately
+    #: because "the news is negative" and "some weak sources are being negative"
+    #: are different claims, and averaging them together hides which happened.
+    low_credibility_articles: int = 0
+    #: Material stories carried by a single source, so unconfirmed.
+    unconfirmed_articles: int = 0
+    mean_credibility: float | None = None
     notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -72,6 +79,9 @@ class SentimentComponents:
             "news_raw": self.news_raw,
             "news_weight": self.news_weight,
             "article_count": self.article_count,
+            "low_credibility_articles": self.low_credibility_articles,
+            "unconfirmed_articles": self.unconfirmed_articles,
+            "mean_credibility": self.mean_credibility,
             "momentum": self.momentum,
             "volume": self.volume,
             "trend": self.trend,
@@ -93,16 +103,41 @@ def _decay(age_days: float, half_life: float = NEWS_HALF_LIFE_DAYS) -> float:
     return 0.5 ** (age_days / half_life)
 
 
+#: An article the sceptical appraisal has not looked at yet. Below 1.0 on purpose:
+#: "unexamined" should not count for as much as "examined and found sound", and an
+#: unconfigured install must not get full-weight news by accident.
+UNASSESSED_WEIGHT = 0.6
+
+#: Credibility below which an article is counted as weak coverage.
+LOW_CREDIBILITY = 0.35
+
+
 def news_sentiment(
-    items: list[NewsItem], *, as_of: dt.datetime | None = None
+    items: list[NewsItem],
+    *,
+    credibility: dict[int, float] | None = None,
+    unconfirmed: set[int] | None = None,
+    unassessed_weight: float = UNASSESSED_WEIGHT,
+    as_of: dt.datetime | None = None,
 ) -> tuple[float | None, float, int]:
     """Weighted average sentiment across articles.
 
     Returns ``(score, total_weight, article_count)``. Provider-supplied and
     self-classified scores are used together, with the provider value preferred
     when both exist because it is measured rather than inferred.
+
+    The scepticism enters through the **weight**, not the score. An article judged
+    weak still says what it says; it simply stops being able to move the average
+    much on its own. Shrinking the score instead would silently rewrite the
+    article's content, and doing both would square the discount without ever
+    saying so.
+
+    ``credibility`` maps ``news_item.id`` to the weight the appraisal settled on.
+    An item with no entry has not been appraised and is discounted, not ignored.
     """
     as_of = as_of or utcnow()
+    credibility = credibility or {}
+    unconfirmed = unconfirmed or set()
     numerator = 0.0
     denominator = 0.0
     count = 0
@@ -127,10 +162,13 @@ def news_sentiment(
             age_days = (as_of - published).total_seconds() / 86400.0
 
         relevance = item.relevance if item.relevance is not None else 0.5
+        belief = credibility.get(item.id)
+        belief_weight = unassessed_weight if belief is None else max(0.0, min(1.0, belief))
         weight = (
             _decay(age_days)
             * MATERIALITY_WEIGHT.get(item.materiality, MATERIALITY_WEIGHT[None])
             * max(0.0, min(float(relevance), 1.0))
+            * belief_weight
         )
         if weight <= 0:
             continue
@@ -189,15 +227,45 @@ def compute_instrument_sentiment(
     *,
     items: list[NewsItem],
     bars: list[PriceBar],
+    credibility: dict[int, float] | None = None,
+    unconfirmed: set[int] | None = None,
+    unassessed_weight: float = UNASSESSED_WEIGHT,
     as_of: dt.datetime | None = None,
 ) -> tuple[float | None, SentimentComponents]:
     """Blend the components into one score for an instrument."""
     components = SentimentComponents()
 
-    score, weight, count = news_sentiment(items, as_of=as_of)
+    score, weight, count = news_sentiment(
+        items,
+        credibility=credibility,
+        unconfirmed=unconfirmed,
+        unassessed_weight=unassessed_weight,
+        as_of=as_of,
+    )
     components.news_raw = score
     components.news_weight = weight
     components.article_count = count
+
+    if credibility:
+        assessed = [credibility[item.id] for item in items if item.id in credibility]
+        if assessed:
+            components.mean_credibility = sum(assessed) / len(assessed)
+    components.low_credibility_articles = sum(
+        1 for item in items if item.id in credibility and credibility[item.id] < LOW_CREDIBILITY
+    )
+    components.unconfirmed_articles = sum(
+        1 for item in items if item.id in (unconfirmed or ())
+    )
+
+    if components.low_credibility_articles:
+        components.notes.append(
+            f"{components.low_credibility_articles} of {count} articles scored as weak "
+            "coverage and were given little weight"
+        )
+    if components.unconfirmed_articles:
+        components.notes.append(
+            f"{components.unconfirmed_articles} material claims rest on a single source"
+        )
 
     closes = [bar.close for bar in bars if bar.close]
     momentum, vol = momentum_component(closes)
@@ -241,6 +309,33 @@ def _recent_items(session: Session, ticker: str, *, days: int = 30) -> list[News
     return [row for row in rows if ticker in (row.tickers or [])]
 
 
+def _appraisals(
+    session: Session, item_ids: list[int]
+) -> tuple[dict[int, float], set[int]]:
+    """Credibility per article, and which carry an unconfirmed material claim.
+
+    One query for the whole batch rather than one per instrument: every instrument
+    reads from the same recent window, so a per-instrument lookup would rescan the
+    same rows hundreds of times.
+    """
+    if not item_ids:
+        return {}, set()
+    from awltux.db import NewsAnalysis
+
+    rows = session.execute(
+        select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(item_ids))
+    ).scalars().all()
+
+    credibility: dict[int, float] = {}
+    unconfirmed: set[int] = set()
+    for row in rows:
+        if row.credibility is not None:
+            credibility[row.news_item_id] = float(row.credibility)
+        if "unconfirmed" in (row.flags or []):
+            unconfirmed.add(row.news_item_id)
+    return credibility, unconfirmed
+
+
 def aggregate_all(
     session: Session, *, settings: Settings | None = None, days: int = 30
 ) -> dict[str, Any]:
@@ -257,6 +352,17 @@ def aggregate_all(
     sector_accumulator: dict[str, list[float]] = {}
     sector_articles: dict[str, int] = {}
 
+    # Appraisals for the whole window, fetched once.
+    cutoff = now - dt.timedelta(days=days)
+    window_ids = list(
+        session.execute(
+            select(NewsItem.id).where(NewsItem.published_at >= cutoff)
+        ).scalars().all()
+    )
+    credibility, unconfirmed = _appraisals(session, window_ids)
+    stats["articles_appraised"] = len(credibility)
+    stats["articles_unconfirmed"] = len(unconfirmed)
+
     for instrument in instruments:
         stats["instruments_seen"] += 1
 
@@ -269,7 +375,14 @@ def aggregate_all(
         )
         items = _recent_items(session, instrument.t212_ticker, days=days)
 
-        score, components = compute_instrument_sentiment(items=items, bars=bars, as_of=now)
+        score, components = compute_instrument_sentiment(
+            items=items,
+            bars=bars,
+            credibility=credibility,
+            unconfirmed=unconfirmed,
+            unassessed_weight=settings.news.scepticism.unassessed_weight,
+            as_of=now,
+        )
         if score is None:
             stats["skipped_no_data"] += 1
             continue

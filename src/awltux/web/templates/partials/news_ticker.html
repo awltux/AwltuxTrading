@@ -1,12 +1,32 @@
 {# Server-rendered ticker fragment. This is the no-JavaScript fallback and the
-   initial paint; app.js replaces it with live Server-Sent Events once loaded. #}
+   initial paint; app.js replaces it with live Server-Sent Events once loaded.
+
+   The ticker is the one place a bare headline could reach a reader without its
+   provenance attached, so the source and the weight travel with it. #}
 {% for item in items %}
+  {% set analysis = analyses.get(item.id) if analyses else none %}
   <a class="ticker-item mat-{{ item.materiality | materiality_class }}"
      href="{{ item.url or '#' }}" target="_blank" rel="noopener noreferrer"
-     title="{{ item.title }}{% if item.tickers %} — {{ item.tickers | join(', ') }}{% endif %}">
+     title="{{ item.title }}{% if item.tickers %} — {{ item.tickers | join(', ') }}{% endif %}{% if analysis %} · {{ analysis.evidence_grade }} evidence, weight {{ analysis.credibility | pct0 }}{% if analysis.source_name %} · {{ analysis.source_name }}{% endif %}{% endif %}">
     {% if item.tickers %}<span class="chip">{{ item.tickers | join(', ') }}</span>{% endif %}
     <span class="ticker-title">{{ item.title }}</span>
     {% if item.direction %}<span class="dir dir-{{ item.direction }}">{{ item.direction }}</span>{% endif %}
+    {% if analysis %}
+      <span class="badge {{ analysis.evidence_grade | grade_class }}"
+            title="How much weight this headline was given, after source, framing and corroboration">
+        {{ analysis.evidence_grade or 'unrated' }}
+      </span>
+      {% if 'manipulative_framing' in (analysis.flags or []) %}
+        <span class="badge bad" title="Written to provoke: {{ analysis.warnings | join(' ') }}">
+          framing
+        </span>
+      {% endif %}
+      {% if 'unconfirmed' in (analysis.flags or []) %}
+        <span class="badge warn" title="A material claim from a single source — a lead, not a fact">
+          unconfirmed
+        </span>
+      {% endif %}
+    {% endif %}
     <span class="muted small">{{ item.published_at | ago }}</span>
   </a>
 {% else %}

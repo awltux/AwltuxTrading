@@ -197,6 +197,67 @@ recorded as decisions but never become trade suggestions.
 
 ---
 
+## News is a claim, not a measurement
+
+Financial news is written by organisations with interests, to be read by people in
+a hurry. Most of it is honest and still not evidence. So a headline is never fed
+straight into sentiment: it is **appraised** first, and the appraisal decides how
+much weight it may carry.
+
+**Who is speaking.** Every item is resolved to a publisher, and the publisher to a
+curated assessment: what kind of document it is (the regulatory record, the company
+speaking about itself, a wire, an outlet with its own reporting, an aggregator, a
+press-release distributor, opinion), its track record for financial accuracy, and
+its **independence** — freedom from a stake in the story. Bias and ownership are
+recorded with the basis for each judgement, because a judgement with no stated
+basis is indistinguishable from a prejudice. The table is dated; unknown publishers
+are *unrated*, which is not the same as disreputable.
+
+Self-interest does not push credibility one way. A company announcing good news
+about itself is discounted hard; the same company announcing a profit warning is
+not, because nobody says that against their own interest casually.
+
+**How it is written.** A pattern scan detects the recognisable manipulation
+techniques — appeal to fear, shock language, manufactured urgency, unnamed
+authority, anonymous sourcing, absolute claims, loaded language, bandwagon
+appeals, "analysts say" consensus, clickbait construction — and records the words
+that triggered each one. This runs in code, not in a prompt, for a specific reason:
+a model asked "is this manipulative?" is judging its own input, and a confidently
+written article reads as confidently written. The scan cannot be talked out of it.
+It also notes alarming claims that are hedged into unfalsifiability, percentages
+with no base, and headlines more extreme than the text beneath them.
+
+**How many sources.** "Multiple outlets are reporting it" is the most common
+defence of a story and one of the weakest. A wire story appears on dozens of
+domains. Carriers are counted separately from **origins**, near-identical
+headlines collapse, and wire credits in the text are followed. Twelve domains
+carrying one Reuters story is one source, and the UI says so.
+
+**What it actually claims.** For stories worth the cost, the model restates each
+claim without the article's framing, tags its type and attribution, and names
+where the underlying fact would be *recorded* — the filing, the register, the
+court docket, the statistical agency. Each claim must quote a verbatim span from
+the item or it is dropped. A claim about results routes to the filings register; a
+rumour has no primary source and is recorded as having none, rather than being
+routed to the filings register because its subject happens to be results.
+
+It also records what a complete account would have included and this did not, who
+benefits if it is believed (incentives only — never an accusation), the base rate,
+and **what would change the assessment**.
+
+**The arithmetic is ours.** The credibility weight — source × corroboration ×
+framing × claim support — is computed in code, with explicit ceilings: a
+single-source story from an unrated publisher written in shock language cannot
+exceed a low weight however favourable the rest looks, and severe framing caps an
+article even from a wire. A model persuaded by the article never gets to vote on
+how persuasive it was.
+
+A weak story is not deleted or hidden. It keeps its score, loses most of its
+influence, and carries the reasons why on the instrument page and in the flash
+ticker. That is the difference between scepticism and censorship.
+
+---
+
 ## Provability
 
 Every decision stores: the canonical state and its SHA-256, the exact questions,
