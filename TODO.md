@@ -50,7 +50,6 @@ Worth either raising the cap, or asking for less prose, or retrying once with th
 **Diagnosed 2026-10-05, and it was never a code bug.** The recommendation page's
 `'engine_label' is undefined` and the missing Info menu item had the same cause and
 it was not in the source: the running container predated both fixes.
-
 ```
 container awltux-trading  image 496a71dc5da1  created 12:30:12  up 2 hours
 image     awltux-trading:0.1.0                built   13:59:55  (different ID)
@@ -69,6 +68,15 @@ GET /info      -> 200
 so the sequence "build four times, report 'image rebuilt', never recreate the
 container" leaves the user on old code while every check I ran passed, because
 those checks ran against the *image*, not the *deployment*.
+
+**A second thing I got wrong, corrected here.** I had assumed the `engine_label`
+call was only reachable when the database held *decision* rows, because the helper
+sits inside the table's row loop. It is not: the recommendations table iterates
+**universe instruments**, left-joining their decision, so any non-empty universe
+reaches the helper whether or not a decision exists. That matters because the live
+volume has `decision_run = 0` and 500 instruments in universe — so the error was
+reachable on the real deployment at all times, and the "no rows, so no crash"
+reasoning I used to explain away the container check earlier was wrong.
 
 **Why it matters more than the two symptoms:** the failure mode is silent and it
 cost two separate investigations, one of which I recorded as a suspected template
@@ -95,21 +103,32 @@ is no ordering between them, so on a fresh database they run concurrently:
 zero rows, selects zero instruments, and writes `in_universe = 0` for nothing —
 leaving every instrument outside the analysed universe.
 
-**Evidence** (the live database, 2026-10-05):
+**Evidence, corrected.** The first version of this item cited `data/awltux.db` on
+the host, which the container does not use — it mounts the named volume
+`awltux-data` at `/data`. That was my error, and it made the bug look worse than it
+is. The race is real, and the container's own run history shows it:
 
 ```
-ingest_run:  t212_instruments  11:54:05.075  seen 18483  written 18483
-             universe_refresh   11:54:05.077  seen 0      written 0     <- 2ms later
-instrument:  18483 rows, 17434 with a Yahoo symbol, 0 with in_universe = 1
+11:30:21.458  t212_instruments   seen 18483  written 18483
+11:30:21.460  universe_refresh   seen 0      written 0      <- 2ms later, the race
+11:32:24.155  universe_refresh   seen 6723   written 500    <- recovered on the next run
 ```
 
-Both timestamps are the *start* of each job. Nothing re-runs `universe_refresh`
-until its next interval, so the empty universe persists and the dashboard has
-nothing to show.
+So the accurate statement is: the race produces **one empty selection**, and the
+next `universe_refresh` repairs it. The deployment was never broken by this — the
+volume held 500 instruments in universe and 17,553 price bars throughout. The
+earlier claim that "the dashboard has nothing to show" was wrong and came from the
+wrong file.
 
-**Why it matters:** the app looks broken for no visible reason, and the failure
-is silent — `eligible = 0` produces a run record identical to a legitimate "no
-instruments qualified" outcome.
+**Why it still matters, at the right severity:** a stale or spurious universe for
+one interval is a real defect — any valuation or decision job that runs in that
+window sees zero instruments and records a clean-looking no-op — but it is a
+transient wrong answer, not a broken install. Severity: P2, not P1.
+
+**Done when:** the startup chain is ordered (`t212_instruments` → `universe_refresh`,
+or the refresh waits for a non-empty instrument table), and a zero-eligible run
+records a `note` saying which filter emptied it, the way the other empty jobs now
+do.
 
 **Done when:** the startup chain is ordered (`t212_instruments` → `universe_refresh`,
 or the refresh waits for a non-empty instrument table), and a zero-eligible run
