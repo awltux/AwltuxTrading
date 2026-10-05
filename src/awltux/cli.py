@@ -30,8 +30,26 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     from awltux.config import get_settings
+    from awltux.db.migrate import run_migrations
 
     settings = get_settings()
+
+    # Migrate before serving, exactly as the container does. `serve` used to call
+    # only ``init_db`` (via the app's lifespan), which creates *missing tables* and
+    # never alters existing ones -- so running it against a database from a
+    # previous version failed at the first query with a raw "no such column",
+    # naming the symptom and not the cause. The deployment path never saw this
+    # because the image chains `migrate && serve`; a local run did.
+    #
+    # A migration failure is logged and stepped over rather than fatal: on a fresh
+    # database ``init_db`` will still build the schema, and refusing to start would
+    # turn a recoverable state into a dead one.
+    try:
+        revision = run_migrations(settings)
+        print(f"schema at revision {revision}")
+    except Exception as exc:
+        print(f"warning: could not migrate ({exc}); continuing with create_all")
+
     uvicorn.run(
         "awltux.main:app",
         host=args.host or settings.env.host,

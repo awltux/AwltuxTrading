@@ -226,8 +226,18 @@
     </tr>
   {% else %}
     <tr><td colspan="14" class="empty">
-      Nothing to show yet. Run the <code>t212_instruments</code> and <code>price_eod</code>
-      jobs from <a href="/jobs">Operations</a>, then <code>valuation</code> and <code>decision</code>.
+      {% if stats.universe_size == 0 %}
+        Nothing is being analysed yet: the analysed universe is <strong>empty</strong>,
+        which is why this table is blank rather than showing cheap or expensive
+        names. Run <code>t212_instruments</code>, then <code>universe_refresh</code>
+        to select what to follow, then <code>price_eod</code>,
+        <code>valuation</code> and <code>decision</code> — all from
+        <a href="/jobs">Operations</a>.
+      {% else %}
+        No decisions yet for the {{ stats.universe_size }} instruments in the
+        universe. Run <code>price_eod</code>, then <code>valuation</code> and
+        <code>decision</code> from <a href="/jobs">Operations</a>.
+      {% endif %}
     </td></tr>
   {% endfor %}
   </tbody>

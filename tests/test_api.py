@@ -71,6 +71,18 @@ class TestDashboard:
         # The disclaimer must always be visible.
         assert "Not financial advice" in response.text
 
+    def test_the_empty_dashboard_names_the_step_that_fills_the_universe(self, client):
+        """A blank table with no explanation is indistinguishable from a bug.
+
+        The jobs list used to omit `universe_refresh`, which is exactly the step
+        that selects what gets analysed — so a reader following it in order still
+        ended up with an empty universe and no idea why.
+        """
+        body = client.get("/dashboard").text
+        assert "universe is <strong>empty</strong>" in body
+        assert "universe_refresh" in body
+        assert "t212_instruments" in body
+
     def test_dashboard_accepts_sort_and_filter_parameters(self, client):
         for query in (
             "?sort=margin_of_safety&direction=asc",

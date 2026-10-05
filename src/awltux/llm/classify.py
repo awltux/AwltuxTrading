@@ -27,6 +27,7 @@ from awltux.llm.deepseek import (
     BudgetExceeded,
     DeepSeekClient,
     DeepSeekError,
+    TruncatedResponse,
     build_messages,
     model_for_purpose,
 )
@@ -152,22 +153,39 @@ def classify_headline(
         instruction=NEWS_CLASSIFICATION_INSTRUCTION,
     )
 
-    try:
-        completion = client.complete(
-            purpose=PURPOSE,
-            messages=messages,
-            model=model_for_purpose(settings, PURPOSE),
-            json_mode=True,
-            max_tokens=500,
-            prompt_hash=prompt_fingerprint(NEWS_CLASSIFICATION_SYSTEM),
-        )
-        payload = completion.json_object()
-    except BudgetExceeded as exc:
-        # Expected and benign: stop classifying, keep ingesting.
-        logger.warning("news classification paused: %s", exc)
-        return None
-    except DeepSeekError as exc:
-        logger.debug("classification failed for %r: %s", headline[:70], exc)
+    # 500 tokens is enough for the schema, but the optional `reasoning` field can
+    # run long enough to truncate the whole object -- and a truncated response used
+    # to be discarded silently, leaving the headline unclassified for no visible
+    # reason. One retry with room to finish is cheaper than losing the item.
+    for attempt, budget in enumerate((500, 1_500)):
+        try:
+            completion = client.complete(
+                purpose=PURPOSE,
+                messages=messages,
+                model=model_for_purpose(settings, PURPOSE),
+                json_mode=True,
+                max_tokens=budget,
+                prompt_hash=prompt_fingerprint(NEWS_CLASSIFICATION_SYSTEM),
+            )
+            payload = completion.json_object()
+        except BudgetExceeded as exc:
+            # Expected and benign: stop classifying, keep ingesting.
+            logger.warning("news classification paused: %s", exc)
+            return None
+        except TruncatedResponse as exc:
+            logger.warning(
+                "classification truncated for %r (attempt %d): %s",
+                headline[:70],
+                attempt + 1,
+                exc,
+            )
+            continue
+        except DeepSeekError as exc:
+            logger.debug("classification failed for %r: %s", headline[:70], exc)
+            return None
+        break
+    else:
+        logger.warning("classification gave up on %r after a truncated retry", headline[:70])
         return None
 
     result = normalise_classification(payload)

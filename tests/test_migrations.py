@@ -239,6 +239,49 @@ class TestMigrationPath:
         assert "awltux.cli migrate" in text, "the image must migrate on startup"
         assert "alembic.ini" in text, "the image must ship alembic.ini to migrate"
 
+    def test_serve_migrates_before_starting_the_server(self, settings, monkeypatch):
+        """`serve` used to call only init_db, which creates missing tables and
+        never alters existing ones.
+
+        So a local run against a database from a previous version died at the first
+        query with a raw ``no such column``. The container was immune because the
+        image chains ``migrate && serve``; the source path was not, and that is the
+        path a developer uses.
+        """
+        import awltux.cli as cli
+        import awltux.db.migrate as migrate
+
+        calls: list[str] = []
+        monkeypatch.setattr(migrate, "run_migrations", lambda *a, **k: calls.append("migrate") or "head")
+        monkeypatch.setattr(
+            "uvicorn.run", lambda *a, **k: calls.append("serve")
+        )
+
+        code = cli.main(["serve"])
+
+        assert code == 0
+        assert calls == ["migrate", "serve"], "migration must happen before serving"
+
+    def test_serve_still_starts_when_migration_fails(self, settings, monkeypatch):
+        """A migration failure must not turn a recoverable state into a dead one.
+
+        On a fresh database init_db still builds the schema during the app's
+        lifespan, so refusing to start would break the simplest case in order to
+        protect the rarest one.
+        """
+        import awltux.cli as cli
+        import awltux.db.migrate as migrate
+
+        def explode(*_a, **_k):
+            raise FileNotFoundError("alembic.ini not found")
+
+        started: list[str] = []
+        monkeypatch.setattr(migrate, "run_migrations", explode)
+        monkeypatch.setattr("uvicorn.run", lambda *a, **k: started.append("serve"))
+
+        assert cli.main(["serve"]) == 0
+        assert started == ["serve"]
+
     def test_get_engine_is_not_needed_by_the_migration_path(self, settings: Settings):
         """Migrations run before the app opens its engine, so they must not depend
         on one already existing."""

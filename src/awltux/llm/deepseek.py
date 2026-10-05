@@ -46,6 +46,17 @@ class BudgetExceeded(DeepSeekError):
     """The configured monthly spend ceiling would be breached."""
 
 
+class TruncatedResponse(DeepSeekError):
+    """The model hit its output limit, so the response is incomplete.
+
+    Distinct from a generic parse failure because it is *actionable*: the caller
+    can retry with a larger budget, and the log can say what actually happened.
+    Without this, a truncated JSON body surfaced as "Unterminated string
+    starting at..." -- a message that describes a symptom and hides the cause,
+    which is how it reached a decision narrative instead of a diagnosis.
+    """
+
+
 @dataclass(slots=True)
 class Completion:
     """A model response plus the accounting needed to attribute its cost."""
@@ -76,6 +87,14 @@ class Completion:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError as exc:
+            if self.finish_reason == "length":
+                # Say the useful thing. The JSON error names the character offset,
+                # which tells the reader nothing about why there is nothing after it.
+                raise TruncatedResponse(
+                    f"response was cut off at the {self.output_tokens or '?'}-token output "
+                    f"limit, so the JSON is incomplete ({exc.msg} at char {exc.pos}); "
+                    "raise max_tokens or ask for a shorter answer"
+                ) from exc
             raise DeepSeekError(f"model did not return valid JSON: {exc}") from exc
         if not isinstance(parsed, dict):
             raise DeepSeekError("model returned JSON that was not an object")
