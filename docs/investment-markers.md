@@ -26,9 +26,11 @@ companion reports under [`docs/research/`](research/):
 
 | Report | Covers |
 |---|---|
+| [accounting-red-flags.md](research/accounting-red-flags.md) | accruals, Beneish, Altman, Piotroski, receivables and inventory drift, goodwill, auditor events |
 | [machine-analysable-filings.md](research/machine-analysable-filings.md) | annotating and extracting from filings; what LLM/NLP extraction is validated to do |
 | [text-and-news-signals.md](research/text-and-news-signals.md) | filing language, earnings-call text, and the news-sentiment record |
-| [dividend-and-capital-allocation.md](research/dividend-and-capital-allocation.md) | dividend policy and capital allocation |
+| [dividend-and-capital-allocation.md](research/dividend-and-capital-allocation.md) | dividend policy |
+| [buybacks.md](research/buybacks.md) | share repurchases and dilution |
 | [ma-and-capital-allocation.md](research/ma-and-capital-allocation.md) | acquisitions: acquirer value creation and destruction |
 
 Between them they carry several hundred cited URLs and a large number of explicit
