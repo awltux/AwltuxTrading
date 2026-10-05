@@ -438,7 +438,9 @@ src/awltux/
 ```
 
 Known bugs, open questions and deferred work live in [`TODO.md`](TODO.md), each
-with the evidence that found it.
+with the evidence that found it. The research behind the marker set — what the
+accounting, quality, language and news literature actually supports, and what it
+does not — is in [`docs/investment-markers.md`](docs/investment-markers.md).
 
 ---
 

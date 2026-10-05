@@ -36,6 +36,17 @@ src/awltux/build_info.json
 # pytest leaves these behind when a sandbox denies its cache directory.
 pytest-cache-files-*/
 
+# Research scratch. Long-lived background agents fetch papers and extract their
+# text; that material is large, third-party and not source, so it must never be
+# committed. The canonical home for it is .tests-tmp/; these patterns exist
+# because a stray directory at the repo root should not be able to land in a
+# commit just because someone ran `git add -A`.
+.tmp/
+_tmp/
+.pdftools/
+_news_pdfs/
+*.pdf
+
 # editors / os
 .vscode/
 .idea/

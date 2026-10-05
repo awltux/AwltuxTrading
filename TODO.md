@@ -133,6 +133,52 @@ reader to guess.
 
 ## Correctness questions still open
 
+### Build the accounting-quality markers from `docs/investment-markers.md`
+
+The research note ranks the markers worth having. The first dependency is data,
+not code: `CANONICAL_METRICS` in `llm/extractors.py` is a closed set, so any figure
+the extractor is not asked for does not exist downstream. Most of the accounting
+markers need: receivables, inventory, payables, depreciation and amortisation,
+stock-based compensation, goodwill, intangibles, short-term debt, EBIT, pretax
+income, tax expense, R&D and lease liabilities.
+
+Then, in the order the note argues for:
+
+1. multi-year cash conversion and accrual ratio (the strongest diagnostic, two
+   figures, and the current version is a single-period check where the evidence
+   calls for a trend);
+2. Piotroski's nine tests, displayed as nine named checks rather than a score;
+3. Altman Z'' and a 5-variable Beneish M, as within-sector **rankings with their
+   inputs shown** — never as a verdict, and never colour-coded;
+4. receivables and inventory drift relative to revenue;
+5. filing events: auditor change, restatement, going-concern, accounting-policy
+   change (rare, discrete, unambiguous, and cheap once the text is read);
+6. ROIC against an explicitly stated WACC — the economic question the system
+   currently cannot answer;
+7. goodwill/intangibles intensity and a serial-acquirer flag;
+8. Loughran-McDonald `litigious` and `uncertainty` counts on filing text — the
+   finance-specific lexicon, not a general-purpose one.
+
+Two cautions the note raises that belong with the implementation:
+
+- **Do not port US-calibrated scores to UK accounts unmodified.** Beneish and
+  Altman were fitted to US GAAP data; FRS 102 and IFRS differ on leases,
+  development-cost capitalisation and goodwill. Recalibration or a stated caveat is
+  required, not optional.
+- **Every score must show its inputs.** The failure mode of these tools is a number
+  that reads as a verdict; the note's recommendation is that a flag means "read
+  this" and never "this is fraud".
+
+### The news-to-fundamentals weighting is an assumption, not a finding
+
+News currently enters sentiment with a 0.55 component weight. The research note
+finds no support for *increasing* it, and a specific methodological hazard: coverage
+follows price at least as much as price follows coverage, so much apparent news
+signal is momentum or attention in disguise. Worth testing this system's own
+sentiment scores against forward returns **with the trailing price move controlled
+for**, which the calibration page is already positioned to do — and worth saying so
+on the calibration page if the control is not possible.
+
 ### The news appraisal only ever sees the headline and the snippet
 
 RSS gives a title and a short summary; Finnhub and Marketaux give little more. So
