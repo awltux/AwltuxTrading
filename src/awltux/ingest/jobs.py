@@ -160,15 +160,45 @@ def _record_capabilities(session, holds_readable: bool, metadata_ok: bool) -> di
 
 
 def refresh_universe() -> JobResult:
-    """Re-select which instruments are actively analysed."""
+    """Re-select which instruments are actively analysed.
+
+    The ``note`` matters more here than in most jobs. This runs on startup
+    alongside ``t212_instruments``, and on a fresh database it can read the
+    instrument table before that job has committed -- producing a run that selected
+    nothing and looks identical to a legitimate "no instrument qualified". That
+    happened: the container's own run history shows the two jobs starting 2ms
+    apart, the refresh seeing 0 instruments, and the next run selecting 500.
+    """
     from awltux.ingest.universe import refresh_universe as _refresh
 
     with session_scope() as session:
         stats = _refresh(session)
 
+    stored = stats.get("instruments_stored", 0)
+    eligible = stats.get("eligible", 0)
+    selected = stats.get("selected", 0)
+
+    note: str | None = None
+    if selected == 0:
+        if stored == 0:
+            note = (
+                "no instruments are stored yet, so there was nothing to select from. "
+                "This is expected on a fresh database while t212_instruments is still "
+                "running; re-run once it has finished."
+            )
+        elif eligible == 0:
+            filters = stats.get("filtered_out") or {}
+            reasons = ", ".join(f"{count} by {name}" for name, count in filters.items() if count)
+            note = (
+                f"{stored} instruments stored but none eligible"
+                + (f" ({reasons})" if reasons else "")
+                + ". Check universe.instrument_types and universe.exchanges."
+            )
+
     return JobResult(
-        items_seen=stats.get("eligible", 0),
-        items_written=stats.get("selected", 0),
+        items_seen=eligible,
+        items_written=selected,
+        note=note,
         detail=stats,
     )
 

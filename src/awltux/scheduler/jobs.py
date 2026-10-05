@@ -49,6 +49,11 @@ class JobSpec:
     # Do not run immediately on startup; a fresh container should come up fast
     # and let the dashboard respond before ingest begins.
     run_on_start: bool = False
+    # Wait this long after startup before the first run. Only meaningful with
+    # ``run_on_start``. Needed where one startup job depends on another's output:
+    # jobs scheduled for "now" all fire together, so a job that reads what a
+    # sibling writes can otherwise run first and act on an empty table.
+    start_delay_seconds: int = 0
     # A long ingest must not overlap itself.
     max_instances: int = 1
     # Jitter spreads provider calls so we do not hammer a free tier at :00.

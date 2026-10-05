@@ -279,16 +279,25 @@ def refresh_universe(session: Session, settings: Settings | None = None) -> dict
     ).scalars().all()
 
     eligible: list[Instrument] = []
+    # Counted so a zero can be explained rather than merely reported. "0 eligible"
+    # is the same number whether the table is empty, every symbol is unmapped, or
+    # the exchange filter is wrong -- and those need different fixes.
+    filtered_out_type = 0
+    filtered_out_unmapped = 0
+    filtered_out_exchange = 0
     for row in rows:
         if row.pinned or row.is_held:
             eligible.append(row)
             continue
         if row.instrument_type not in config.instrument_types:
+            filtered_out_type += 1
             continue
         if row.yahoo_symbol is None:
             # No price source means no analysis: it cannot be valued or decided.
+            filtered_out_unmapped += 1
             continue
         if config.exchanges and row.exchange_name and row.exchange_name not in config.exchanges:
+            filtered_out_exchange += 1
             continue
         eligible.append(row)
 
@@ -314,11 +323,17 @@ def refresh_universe(session: Session, settings: Settings | None = None) -> dict
         "eligible": len(eligible),
         "selected": len(selected),
         "size_cap": config.size,
+        "instruments_stored": len(rows),
         "uk": sum(1 for row in selected if is_uk_listing(row.exchange_name, row.yahoo_symbol)),
         "us": sum(
             1 for row in selected if not is_uk_listing(row.exchange_name, row.yahoo_symbol)
         ),
         "unmapped_eligible": sum(1 for row in rows if row.yahoo_symbol is None),
+        "filtered_out": {
+            "instrument_type": filtered_out_type,
+            "no_symbol_mapping": filtered_out_unmapped,
+            "exchange_not_configured": filtered_out_exchange,
+        },
     }
     logger.info("universe refreshed: %s", stats)
     return stats

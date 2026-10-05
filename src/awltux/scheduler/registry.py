@@ -45,6 +45,14 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             interval_seconds=schedule.t212_instruments,
             description="Re-select the analysed universe by size and liquidity",
             run_on_start=True,
+            # Deliberately after t212_instruments, which fetches from the network and
+            # commits at the end. Both used to be scheduled for "now", so on a fresh
+            # database the refresh read the instrument table before that commit and
+            # selected nothing — the container's run history shows them starting 2ms
+            # apart with the refresh seeing 0 instruments. Ordering by delay is a
+            # heuristic rather than a guarantee, which is why the job also explains a
+            # zero result instead of reporting a silent no-op.
+            start_delay_seconds=900,
             jitter_seconds=180,
             enabled=t212_ready,
             requires=("T212_API_KEY", "T212_API_SECRET"),

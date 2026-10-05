@@ -98,7 +98,9 @@ class SchedulerService:
             replace_existing=True,
             max_instances=spec.max_instances,
             next_run_time=(
-                dt.datetime.now(dt.UTC) if spec.run_on_start else None
+                dt.datetime.now(dt.UTC) + dt.timedelta(seconds=spec.start_delay_seconds)
+                if spec.run_on_start
+                else None
             ),
         )
 
