@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from statistics import median
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from awltux.analysis import fx
@@ -68,19 +68,97 @@ def chunks(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def load_price_targets(session: Session) -> dict[str, Instrument]:
-    """The instruments to price, keyed by provider symbol.
+@dataclass(slots=True)
+class PriceTargets:
+    """Which instruments to price, in the order they should be asked for."""
+
+    #: Provider symbols, most deserving first.
+    symbols: list[str] = field(default_factory=list)
+    #: Instruments with no stored bar at all -- the ones this job exists to fill.
+    never_priced: int = 0
+    #: Instruments whose newest bar predates the newest in the universe.
+    stale: int = 0
+    #: Oldest coverage date among the targets, for the run report.
+    oldest_bar: str | None = None
+    newest_bar: str | None = None
+
+    def __len__(self) -> int:
+        return len(self.symbols)
+
+
+def load_price_targets(session: Session, *, limit: int | None = None) -> PriceTargets:
+    """The instruments to price, **most in need first**.
 
     A separate step from :func:`persist_batch` so the network phase can run with
     no transaction open.
+
+    The order answers a question the old selection did not: which instruments
+    actually need this run? It used to return every universe instrument in rowid
+    order -- stable, arbitrary, and with no way to tell an instrument that has
+    never been priced from one that was priced an hour ago.
+
+    Priority, and it is deliberately this way round:
+
+    1. **Never priced.** No bar at all: the instrument is invisible to every
+       downstream model, so it is worth more than a refresh of anything else.
+    2. **Oldest coverage.** Least recently priced first, so a run that cannot
+       cover everything rotates through the universe instead of refreshing the
+       same head of the list every day.
+    3. Ticker, so the order is deterministic and a run can be reproduced.
+
+    ``limit`` caps the run. The default prices everything, which is what a daily
+    job on a 500-name universe can afford; the cap exists so a deployment on a
+    tight rate limit can ration, and it is the priority order above that makes
+    rationing fair rather than arbitrary.
     """
-    rows = session.execute(
-        select(Instrument)
+    coverage = (
+        select(
+            PriceBar.instrument_t212_ticker.label("ticker"),
+            func.max(PriceBar.date).label("last_bar"),
+        )
+        .group_by(PriceBar.instrument_t212_ticker)
+        .subquery()
+    )
+
+    statement = (
+        select(Instrument, coverage.c.last_bar)
+        .outerjoin(coverage, coverage.c.ticker == Instrument.t212_ticker)
         .where(Instrument.in_universe.is_(True))
         .where(Instrument.excluded.is_(False))
         .where(Instrument.yahoo_symbol.is_not(None))
-    ).scalars().all()
-    return {row.yahoo_symbol: row for row in rows if row.yahoo_symbol}
+        .order_by(
+            # `IS NULL` is 1/0 in SQLite and every other engine, so descending
+            # puts the never-priced instruments first. Portable, unlike
+            # NULLS FIRST, which SQLite only gained in 3.30.
+            coverage.c.last_bar.is_(None).desc(),
+            coverage.c.last_bar.asc(),
+            Instrument.t212_ticker.asc(),
+        )
+    )
+    rows = session.execute(statement).all()
+
+    targets = PriceTargets()
+    dated: list[str] = []
+    for instrument, last_bar in rows:
+        if not instrument.yahoo_symbol:
+            continue
+        targets.symbols.append(instrument.yahoo_symbol)
+        if last_bar is None:
+            targets.never_priced += 1
+        else:
+            dated.append(str(last_bar))
+
+    if dated:
+        targets.oldest_bar = min(dated)
+        targets.newest_bar = max(dated)
+        # "Stale" is relative: anything behind the newest coverage in the
+        # universe. An absolute cutoff would call the whole universe stale on a
+        # quiet day and nothing stale after a market holiday.
+        targets.stale = sum(1 for value in dated if value < targets.newest_bar)
+
+    if limit is not None and limit > 0:
+        targets.symbols = targets.symbols[:limit]
+    return targets
 
 
 def persist_batch(

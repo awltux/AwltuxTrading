@@ -213,12 +213,16 @@ def refresh_universe() -> JobResult:
 
 
 def refresh_prices_eod() -> JobResult:
-    """End-of-day OHLCV for the whole universe, plus FX for the majors.
+    """End-of-day OHLCV for the universe, plus FX for the majors.
 
     Alternates network and database phases per batch rather than wrapping the
     whole run in one transaction. A single transaction spanning every batch would
     hold SQLite's write lock across hundreds of provider calls, locking out the
     dashboard for the duration.
+
+    Instruments are asked for **most in need first** -- never priced, then least
+    recently covered -- so a run that cannot reach everything still makes progress
+    on the gaps rather than refreshing whichever names happened to sort first.
     """
     from awltux.analysis import fx
     from awltux.ingest.prices import (
@@ -234,14 +238,16 @@ def refresh_prices_eod() -> JobResult:
     provider = YahooProvider(settings)
     report = PriceIngestReport()
 
-    # --- database phase: which instruments, and their symbols ----------------
+    # --- database phase: which instruments, in what order --------------------
     with session_scope() as session:
-        targets = load_price_targets(session)
+        targets = load_price_targets(
+            session, limit=settings.schedule.price_eod_max_per_run or None
+        )
     report.tickers_requested = len(targets)
-    if not targets:
+    if not targets.symbols:
         return JobResult(detail={**report.as_dict(), "skipped": "empty universe"})
 
-    symbols = list(targets)
+    symbols = targets.symbols
     for batch in chunks(symbols, 40):
         # --- network phase: no transaction open -----------------------------
         try:
@@ -264,7 +270,16 @@ def refresh_prices_eod() -> JobResult:
     return JobResult(
         items_seen=report.tickers_requested,
         items_written=report.bars_written,
-        detail={**report.as_dict(), "fx": rates},
+        detail={
+            **report.as_dict(),
+            "fx": rates,
+            # What the run was aiming at, so the page can say whether it is
+            # closing the gaps or just keeping the covered names fresh.
+            "never_priced_targeted": targets.never_priced,
+            "stale_targeted": targets.stale,
+            "oldest_coverage": targets.oldest_bar,
+            "newest_coverage": targets.newest_bar,
+        },
     )
 
 

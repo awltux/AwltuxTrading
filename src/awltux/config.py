@@ -147,6 +147,14 @@ class ScheduleConfig(BaseModel):
     t212_account: int = 300
     prices_intraday: int = 900
     prices_eod: int = 86_400
+    #: Instruments the end-of-day price job asks for in one run. ``0`` prices the
+    #: whole universe, which is what a daily job on 500 names can afford.
+    #:
+    #: The cap exists so a deployment on a tighter rate limit can ration, and it is
+    #: only safe to set because the job asks for the **most in need first** --
+    #: never-priced instruments, then the least recently covered. Without that
+    #: ordering a cap would starve the tail of the universe permanently.
+    price_eod_max_per_run: int = 0
     quotes_held: int = 300
     fundamentals_rotation_per_day: int = 70
     edgar_submissions: int = 3_600

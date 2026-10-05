@@ -142,6 +142,41 @@ much more deliberation than the schema requires, or the model loops on some inpu
 `input_tokens` and `output_tokens` for every call, so the inputs that trigger it can
 be found rather than guessed at.
 
+### 92 instruments have a price symbol that does not resolve
+
+`price_eod` asks the provider for all 500 universe instruments every run and gets
+history for 408. The other 92 fail **every single run**, and no amount of
+re-prioritising will change that: the derived symbols are wrong.
+
+The cause is that `derive_yahoo_symbol` builds the symbol from the Trading 212
+ticker, and Trading 212's tickers are frequently **former** tickers for companies
+that renamed, restructured or completed a SPAC merger. From the live failure list:
+
+| T212 ticker | Derived | Company | Actually trades as |
+|---|---|---|---|
+| `AHAC_US_EQ` | `AHAC` | Humacyte | `HUMA` |
+| `BSN_US_EQ` | `BSN` | Vertical Aerospace | `EVTL` |
+| `CCXX_US_EQ` | `CCXX` | Claritev | `MPLN` |
+| `CNX1_US_EQ` | `CNX1` | CNX Resources | `CNX` |
+| `CENH_US_EQ` | `CENH` | Arqit Quantum | `ARQQ` |
+| `CHFS_US_EQ` | `CHFS` | Nuwellis | `NUWE` |
+| `APFl_EQ` | `APF.L` | Ecora Royalties | `ECOR.L` |
+| `CNCTl_EQ` | `CNCT.L` | Smiths News | `SNWS.L` |
+
+**These are illustrative, not verified** — they are what the names are known to
+trade as, and each needs checking against a provider before being used.
+
+**This is a data-quality problem that is invisible, not a transient failure.**
+`mapping_confidence` is only ever *raised* by a successful derivation, so a wrong
+symbol scores the same as a right one, the instrument stays in the universe, and
+the only symptom is a count in a job detail that nobody reads twice.
+
+**Decide:** look the symbol up by ISIN or by company-name search rather than
+deriving it from a ticker that may be stale, and record the failure durably on the
+instrument so a symbol that has failed ten runs in a row is visible as broken
+rather than retried forever. A name-search provider is the missing piece; Yahoo's
+search endpoint is unofficial and would need the same care as `yfinance`.
+
 ### The news-to-fundamentals weighting is an assumption, not a finding
 
 News currently enters sentiment with a 0.55 component weight. The research note

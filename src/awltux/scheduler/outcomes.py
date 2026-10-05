@@ -138,12 +138,26 @@ def _price_eod(detail: dict[str, Any]) -> str:
             "the provider had no bars for them (delisted, suspended, or the symbol "
             "is not the one the provider uses)",
         )
-    line = (
-        f"{_n(bars)} daily bars written for {_n(returned)} of {_n(requested)} tickers"
-    )
+    line = f"{_n(bars)} daily bars written for {_n(returned)} of {_n(requested)} tickers"
+    # What the run was aiming at. Without this the line reads the same whether the
+    # job is closing the gaps or refreshing names that were already covered.
+    never = _get(detail, "never_priced_targeted")
+    if never:
+        line += f"; {_n(never)} of those had no price history at all"
+    stale = _get(detail, "stale_targeted")
+    if stale and never:
+        line += f", {_n(stale)} were behind the newest coverage"
     skipped = _get(detail, "bars_skipped_lower_rank")
     if skipped:
         line += f"; {_n(skipped)} bars skipped as a lower-ranked source"
+    failed = _get(detail, "failed_count")
+    if failed:
+        # The symbols are in the run detail; a standing list of the same names
+        # failing every run is a data-quality problem, not a transient one.
+        line += (
+            f". {_n(failed)} returned nothing at all -- "
+            f"{_first_names(detail.get('failed'))}"
+        )
     return line
 
 
