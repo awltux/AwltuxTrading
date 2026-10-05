@@ -16,11 +16,23 @@
   manual run is recorded in the history below exactly like an automatic one.
 </p>
 <table class="grid compact">
-  <thead><tr><th>Job</th><th>Description</th><th class="num">Every</th><th>Next run</th><th>Status</th><th></th></tr></thead>
+  <thead><tr><th>Job</th><th>Description</th><th class="num">Every</th><th>Next run</th><th>Status</th></tr></thead>
   <tbody>
   {% for job in jobs %}
     <tr>
-      <td><code>{{ job.id }}</code></td>
+      {# The run button sits with the job it runs, rather than in a column at the
+         far right. Across six columns the far-right button is the wrong one to
+         aim at: the only mistake this table affords is running the wrong job, and
+         a button that has to be matched to a name by counting columns invites it. #}
+      <td>
+        <div class="job-cell">
+          <code>{{ job.id }}</code>
+          <button class="run-job" data-job="{{ job.id }}"
+                  {% if not job.enabled %}disabled title="Requires a credential in .env"{% endif %}>
+            Run now
+          </button>
+        </div>
+      </td>
       <td class="small">{{ job.description }}</td>
       <td class="num">{{ (job.interval_seconds / 60) | round(0) }}m</td>
       <td class="small muted">{{ job.next_run | datetime if job.next_run else '—' }}</td>
@@ -29,15 +41,9 @@
         {% elif job.paused %}<span class="muted">paused</span>
         {% else %}<span class="good">enabled</span>{% endif %}
       </td>
-      <td>
-        <button class="run-job" data-job="{{ job.id }}"
-                {% if not job.enabled %}disabled title="Requires a credential in .env"{% endif %}>
-          Run now
-        </button>
-      </td>
     </tr>
   {% else %}
-    <tr><td colspan="6" class="empty">Scheduler is not running.</td></tr>
+    <tr><td colspan="5" class="empty">Scheduler is not running.</td></tr>
   {% endfor %}
   </tbody>
 </table>

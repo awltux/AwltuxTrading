@@ -171,6 +171,27 @@ class TestTemplatesRenderWithData:
     def test_the_operations_page_renders_run_history(self, client, populated):
         assert client.get("/jobs").status_code == 200
 
+    def test_the_run_button_sits_with_the_job_it_runs(self, client):
+        """The button belongs beside the name, not in a column at the far right.
+
+        Running the wrong job is the one mistake this table affords, and a button
+        that has to be associated with a name by counting across six columns
+        invites it. Asserted as document order rather than as markup, so the cell
+        can be restyled without the test having an opinion about it.
+        """
+        body = client.get("/jobs").text
+        assert 'class="run-job"' in body
+
+        button = body.index('data-job="t212_instruments"')
+        description = body.index("Sync Trading 212 instruments")
+        assert button < description, "the run button must precede the job description"
+
+    def test_every_job_row_has_a_run_button(self, client):
+        body = client.get("/jobs").text
+        ids = ["price_eod", "news_rss", "sentiment", "decision", "retention"]
+        for job_id in ids:
+            assert f'data-job="{job_id}"' in body, job_id
+
     def test_the_calibration_page_renders_for_both_horizons(self, client, populated):
         for horizon in ("long_term", "short_term"):
             response = client.get(f"/calibration?horizon={horizon}")

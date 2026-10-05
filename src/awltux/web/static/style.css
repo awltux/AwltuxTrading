@@ -122,6 +122,11 @@ table.grid tbody tr:hover { background: #1b2028; }
 table.grid tr.held { border-left: 3px solid #6cb6ff; }
 table.grid tr.conflict { background: rgba(210, 153, 34, .07); }
 table.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Keep a row's action with the thing it acts on, so the name and the button are
+   read together rather than matched up by counting across the row. */
+.job-cell { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.job-cell code { color: var(--fg); }
 table.grid.compact th, table.grid.compact td { padding: 5px 8px; font-size: 13px; }
 .empty { text-align: center; color: var(--muted); padding: 28px !important; }
 .sort { color: var(--muted); }
