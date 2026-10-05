@@ -168,7 +168,7 @@ class DeepSeekDecisionEngine(DecisionEngine):
                 messages=messages,
                 model=model_for_purpose(self.settings, PURPOSE),
                 json_mode=True,
-                max_tokens=2000,
+                max_tokens=4000,
                 prompt_hash=prompt_fingerprint(SYSTEM, PROMPT_VERSION),
             )
             payload = completion.json_object()

@@ -119,6 +119,55 @@ def _wrap(text: str, width: int) -> list[str]:
     return textwrap.wrap(text, width=width) or [""]
 
 
+def cmd_seed_demo(args: argparse.Namespace) -> int:
+    """Create a synthetic universe so the whole app can be exercised offline.
+
+    Deliberately writes into ``universe`` and then runs the real valuation and
+    decision pipelines, so what you see is the actual dashboard behaviour rather
+    than a mocked-up set of rows.
+    """
+    from awltux.config import get_settings
+    from awltux.db import session_scope
+    from awltux.db.migrate import run_migrations
+    from awltux.demo import seed_demo_data
+
+    settings = get_settings()
+    try:
+        run_migrations(settings)
+    except Exception as exc:
+        print(f"warning: could not migrate ({exc}); continuing")
+
+    with session_scope() as session:
+        report = seed_demo_data(session, history_days=args.days, reset=args.reset)
+        print(f"seeded {report.instruments} instruments, {report.bars} bars, "
+              f"{report.periods} account periods, {report.news} news items")
+        for error in report.errors:
+            print(f"  warning: {error}")
+
+        if not args.no_analysis:
+            # Run the real pipelines so the dashboard has verdicts to show.
+            from awltux.analysis.sentiment import aggregate_all
+            from awltux.analysis.valuation import run_valuations
+            from awltux.decision.service import decide_universe
+
+            valuations = run_valuations(session)
+            print(f"valued {valuations.get('valued', 0)} of "
+                  f"{valuations.get('attempted', 0)} "
+                  f"({valuations.get('insufficient_data', 0)} lacked enough data)")
+            sentiment = aggregate_all(session)
+            print(f"sentiment rows: {sentiment.get('rows_written', 0)}")
+            decisions = decide_universe(session)
+            print(f"decided {decisions.get('decided', 0)}: "
+                  f"{decisions.get('long_term_suggestions', 0)} long-term and "
+                  f"{decisions.get('short_term_suggestions', 0)} short-term suggestions")
+
+    print()
+    print("Open the dashboard and look for the DEMO tickers. Remove them with")
+    print("`awltux seed-demo --reset --no-analysis` and a fresh database, or by")
+    print(f"editing out rows whose industry is '{'__demo__'}'.")
+    return 0
+
+
 def cmd_settings(_args: argparse.Namespace) -> int:
     from awltux.config import get_settings, redacted_dump
 
@@ -184,6 +233,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("-v", "--verbose", action="store_true", help="show all hints")
     doctor.set_defaults(func=cmd_doctor)
+
+    seed = sub.add_parser(
+        "seed-demo",
+        help="create synthetic instruments so the dashboard works without any keys",
+    )
+    seed.add_argument(
+        "--days", type=int, default=400, help="trading days of price history"
+    )
+    seed.add_argument(
+        "--reset", action="store_true", help="remove previously seeded rows first"
+    )
+    seed.add_argument(
+        "--no-analysis",
+        action="store_true",
+        help="seed data only, without running valuation, sentiment and decisions",
+    )
+    seed.set_defaults(func=cmd_seed_demo)
     sub.add_parser("settings", help="print effective configuration").set_defaults(
         func=cmd_settings
     )

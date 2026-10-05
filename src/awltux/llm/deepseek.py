@@ -290,8 +290,8 @@ class DeepSeekClient:
             error=None,
             # Truncate the prompt: it is the document, and the document is already
             # archived under data/raw. Keeping it here would bloat the table.
-            request_excerpt=_excerpt(messages),
-            response_excerpt=text[:4000],
+            request_json=_excerpt(messages),
+            response_json=text[:4000],
         )
 
         if finish_reason == "length":
@@ -332,18 +332,31 @@ class DeepSeekClient:
             cost_usd=None,
             latency_ms=None,
             error=str(exc)[:1000],
-            request_excerpt=_excerpt(messages),
-            response_excerpt=None,
+            request_json=_excerpt(messages),
+            response_json=None,
         )
 
     @staticmethod
     def _write_call(**fields: Any) -> int | None:
-        """Persist one call. Never raises: accounting must not break the caller."""
+        """Persist one call. Never raises, and never poisons the caller.
+
+        Two things this gets right:
+
+        * ``provider`` is supplied here rather than by each caller, because it is
+          NOT NULL on the model and a caller that forgot it crashed the whole
+          accounting path.
+        * The insert runs inside a **savepoint**. ``session_scope`` is re-entrant,
+          so this joins the caller's transaction -- meaning a failed insert would
+          otherwise roll back the very decision it was trying to record and leave
+          the session unusable for everything after it, which is exactly what a
+          missing ``provider`` did.
+        """
         try:
             with session_scope() as session:
-                row = LLMCall(**fields)
-                session.add(row)
-                session.flush()
+                with session.begin_nested():
+                    row = LLMCall(provider=SOURCE, **fields)
+                    session.add(row)
+                    session.flush()
                 return row.id
         except Exception:  # pragma: no cover - accounting is best-effort
             logger.exception("failed to record DeepSeek call")
