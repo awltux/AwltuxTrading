@@ -114,9 +114,11 @@
       <td class="small">
         {{ status.reason }}
         {% if status.never_ran %}
-          {# A dependency that has never completed successfully is stated first,
-             because it changes what the reader should do. #}
-          <br><span class="bad">blocked: {{ status.never_ran | join(', ') }} has not completed successfully yet</span>
+          {# A dependency that has neither completed a run nor produced anything is
+             stated plainly, because it changes what the reader should do. An
+             interrupted long-running job that has already stored its output is
+             *not* reported here -- see awltux/scheduler/dependencies.py. #}
+          <br><span class="bad">waiting on {{ status.never_ran | join(', ') }}: no successful run and nothing stored yet</span>
         {% endif %}
       </td>
     </tr>

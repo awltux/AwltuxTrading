@@ -331,32 +331,54 @@ def jobs_that_have_ever_succeeded(session: Session) -> set[str]:
 def job_statuses(session: Session, specs: list[JobSpec]) -> list[JobStatus]:
     """Every job in dependency order, with what it needs and what it owes."""
     succeeded = jobs_that_have_ever_succeeded(session)
+    built: dict[str, JobStatus] = {}
     statuses: list[JobStatus] = []
 
     for spec in dependency_order(specs):
         probe = PROBES.get(spec.id)
         outstanding, reason = probe(session) if probe else (None, "no coverage check defined")
-        statuses.append(
-            JobStatus(
-                id=spec.id,
-                description=spec.description,
-                depends_on=tuple(spec.depends_on),
-                # Only a *declared* dependency can block. A job that merely reads a
-                # table another job writes, without saying so, is a missing
-                # declaration rather than a silent pass.
-                never_ran=[dep for dep in spec.depends_on if dep not in succeeded],
-                outstanding=outstanding,
-                reason=reason,
-            )
+
+        # Only a *declared* dependency can block -- a job that merely reads a table
+        # another job writes, without saying so, is a missing declaration rather
+        # than a silent pass. And a dependency blocks only if it has *both* no
+        # successful run and nothing to show for itself.
+        #
+        # The first draft blocked on the run history alone, and the live page
+        # showed why that is wrong: `news_rss` had stored 5,739 stories but had
+        # never once completed a run -- it takes forty minutes, and every deploy
+        # restarted it -- so `news_analysis` was reported blocked with 62 stories
+        # sitting there waiting to be appraised. The history was true and the
+        # conclusion was useless.
+        #
+        # The question that decides whether a job can do anything is whether its
+        # dependency has *produced* something, and the probe already answers that.
+        # History only distinguishes "owed but already delivered" from "owed and
+        # nothing there".
+        never_ran = [
+            dependency
+            for dependency in spec.depends_on
+            if dependency not in succeeded
+            and (built.get(dependency) is None or built[dependency].has_work)
+        ]
+
+        status = JobStatus(
+            id=spec.id,
+            description=spec.description,
+            depends_on=tuple(spec.depends_on),
+            never_ran=never_ran,
+            outstanding=outstanding,
+            reason=reason,
         )
+        built[spec.id] = status
+        statuses.append(status)
     return statuses
 
 
 def next_steps(statuses: list[JobStatus]) -> list[JobStatus]:
     """The jobs worth running now, in order.
 
-    A job is a next step when it has work the data shows is missing and none of
-    its declared dependencies has never run. Blocked jobs are excluded, not
+    A job is a next step when it has work the data shows is missing and nothing it
+    declares is waiting on an empty dependency. Blocked jobs are excluded, not
     ranked lower: running them first is the mistake this list exists to prevent.
     """
     return [status for status in statuses if status.runnable]

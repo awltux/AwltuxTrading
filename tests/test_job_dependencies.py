@@ -226,18 +226,52 @@ class TestCoverageCounts:
 
 
 class TestBlocking:
-    def test_a_dependency_that_never_succeeded_blocks(self, session, specs):
-        session.add(make_instrument("A_US_EQ", in_universe=True))
-        session.flush()
-
+    def test_a_dependency_with_no_successful_run_and_nothing_stored_blocks(self, session, specs):
+        """An empty database: universe_refresh has never completed and has
+        selected nothing, so price_eod has nothing to work with."""
         statuses = {status.id: status for status in job_statuses(session, specs)}
         assert statuses["price_eod"].never_ran == ["universe_refresh"]
         assert statuses["price_eod"].blocked is True
         assert statuses["price_eod"].runnable is False
-        # It still reports what it owes: the count is true either way.
-        assert statuses["price_eod"].outstanding == 1
 
-    def test_a_satisfied_dependency_does_not_block(self, session, specs):
+    def test_an_interrupted_dependency_that_has_produced_output_does_not_block(
+        self, session, specs
+    ):
+        """The correction the live page forced.
+
+        `news_rss` had stored thousands of stories but had never once completed a
+        run -- it takes forty minutes and every deploy restarted it -- so blocking
+        on the run history alone reported `news_analysis` blocked with 62 stories
+        sitting there unappraised. The history was true and the conclusion was
+        useless. What matters is whether the dependency produced anything.
+        """
+        session.add(make_instrument("A_US_EQ", in_universe=True))
+        session.add(
+            NewsItem(
+                source="t", url="https://x/1", url_hash="h1", title="one",
+                materiality="material", published_at=utcnow(),
+            )
+        )
+        session.flush()
+
+        statuses = {status.id: status for status in job_statuses(session, specs)}
+        # news_rss has never completed successfully...
+        assert "news_rss" not in jobs_that_have_ever_succeeded(session)
+        assert statuses["news_rss"].outstanding == 0, "but it has stored something"
+        # ...and that is enough.
+        assert statuses["news_analysis"].never_ran == []
+        assert statuses["news_analysis"].runnable is True
+
+    def test_a_dependency_with_nothing_stored_still_blocks_its_readers(self, session, specs):
+        """The other half of the same rule: no stories at all means there really is
+        nothing to appraise, and saying so is correct."""
+        session.add(make_instrument("A_US_EQ", in_universe=True))
+        session.flush()
+
+        statuses = {status.id: status for status in job_statuses(session, specs)}
+        assert statuses["news_analysis"].never_ran == ["news_rss"]
+
+    def test_a_dependency_that_ran_successfully_does_not_block(self, session, specs):
         session.add(make_instrument("A_US_EQ", in_universe=True))
         session.add(IngestRun(job="t212_instruments", ok=True))
         session.add(IngestRun(job="universe_refresh", ok=True))
