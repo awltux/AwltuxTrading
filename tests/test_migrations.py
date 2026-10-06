@@ -288,3 +288,99 @@ class TestMigrationPath:
         reset_engine()
         run_migrations(settings)
         assert get_engine(settings) is not None
+
+
+def _other_settings(temp_dir, config_file):
+    """A second, independent database beside the fixture's own."""
+    from awltux.config import EnvSettings, build_settings
+
+    other_dir = temp_dir / "other"
+    other_dir.mkdir(parents=True, exist_ok=True)
+    return build_settings(
+        EnvSettings(
+            _env_file=None,
+            data_dir=other_dir,
+            config_file=config_file,
+            log_level="WARNING",
+        )
+    )
+
+
+def _revision_recorded(db_path) -> str | None:
+    connection = sqlite3.connect(db_path)
+    try:
+        try:
+            rows = list(connection.execute("SELECT version_num FROM alembic_version"))
+        except sqlite3.Error:
+            return None
+        return rows[0][0] if rows else None
+    finally:
+        connection.close()
+
+
+class TestTheTargetDatabaseIsTheOneThatWasAskedFor:
+    """``run_migrations(settings)`` must migrate *that* database.
+
+    It did not. ``env.py`` re-resolved the URL from the process-wide
+    ``get_settings()`` singleton, so the argument was ignored whenever the two
+    disagreed. In the test suite they never disagree -- ``conftest`` patches every
+    module's ``get_settings`` -- which is exactly why it went unnoticed until a
+    rehearsal against a *copy* of a database migrated the original instead.
+    """
+
+    def test_the_argument_wins_over_the_ambient_settings(
+        self, settings: Settings, temp_dir, config_file
+    ):
+        other = _other_settings(temp_dir, config_file)
+
+        reset_engine()
+        revision = run_migrations(other)
+
+        assert revision == head_revision()
+        assert _revision_recorded(other.db_path) == head_revision(), (
+            "the database named by the argument must be the one migrated"
+        )
+        assert _revision_recorded(settings.db_path) is None, (
+            "the ambient database must be left alone"
+        )
+
+    def test_a_backup_is_taken_before_a_pending_migration(
+        self, settings: Settings, temp_dir, config_file
+    ):
+        """An out-of-date database is copied aside before it is rewritten."""
+        other = _other_settings(temp_dir, config_file)
+
+        # Build it, then rewind so there is genuinely something to upgrade.
+        reset_engine()
+        run_migrations(other)
+        strip_to_old_schema(other.db_path)
+
+        backups = other.db_path.parent / "backups"
+        before = sorted(backups.glob("*.db"))
+
+        reset_engine()
+        run_migrations(other)
+
+        after = sorted(backups.glob("*.db"))
+        assert len(after) == len(before) + 1, "a migration must leave a way back"
+        assert _revision_recorded(after[-1]) != head_revision(), (
+            "the backup must be the pre-migration state"
+        )
+
+    def test_a_no_op_run_does_not_accumulate_backups(
+        self, settings: Settings, temp_dir, config_file
+    ):
+        """Every container start migrates, and almost all of them have nothing to
+        do. A backup per start would bury the ones that matter."""
+        other = _other_settings(temp_dir, config_file)
+
+        reset_engine()
+        run_migrations(other)
+
+        backups = other.db_path.parent / "backups"
+        after_first = sorted(backups.glob("*.db"))
+
+        reset_engine()
+        run_migrations(other)
+
+        assert sorted(backups.glob("*.db")) == after_first

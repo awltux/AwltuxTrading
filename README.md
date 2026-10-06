@@ -400,6 +400,31 @@ this process only when nothing is listening — two processes writing one SQLite
 contend for the write lock, and a job that sleeps inside a rate-limit guard holds
 it longer than any sane timeout. Pass `--direct` to force a local run.
 
+### The database is never recreated
+
+`data/awltux.db` holds every fact this system has recorded: the instrument
+universe, price history, filings, news, decisions and their scored outcomes. It is
+not a cache, and it is never deleted or rebuilt to pick up a schema change. A
+fresh database is not an upgrade — it discards the only copy of the history.
+
+When a model changes, the schema moves forward in place:
+
+```bash
+alembic revision -m "what changed"   # write the migration
+awltux migrate                       # apply it to the existing file
+```
+
+Two rules make that safe. Migrations are **additive and inspection-guarded** —
+`0004` adds `news_item.event_type` only if the column is absent — so `upgrade head`
+is correct for a fresh database, an old one, and one already migrated. And
+`awltux migrate` **copies the database to `data/backups/` before it rewrites
+anything**, skipping the copy when there is nothing pending so that no-op runs on
+container start do not bury the backups that matter.
+
+The only things that destroy stored data are deleting the file and
+`awltux seed-demo --reset`, which removes the demo-marked rows and leaves provider
+data alone. Neither is part of an upgrade.
+
 ### Diagnosing a rejected key
 
 ```bash

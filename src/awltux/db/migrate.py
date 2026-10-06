@@ -82,9 +82,22 @@ def run_migrations(settings: Settings | None = None) -> str:
     config = Config(str(config_path))
     config.set_main_option("script_location", str(script_location))
     # Set explicitly so migration never depends on whatever alembic.ini happens
-    # to contain, and always targets the database the app actually uses.
+    # to contain, and always targets the database the app actually uses. The same
+    # value travels in ``attributes`` because ``env.py`` is executed by Alembic
+    # and would otherwise re-resolve it from the process-wide settings singleton,
+    # silently ignoring the ``settings`` argument this function was given.
     config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.attributes["awltux_database_url"] = settings.database_url
     config.attributes["configure_logger"] = False
+
+    if _has_pending_revisions(config):
+        # The database is about to be rewritten, and it holds every fact this
+        # system has recorded. Copy it first: SQLite makes that one cheap,
+        # self-contained file copy, so there is no reason to alter it without a
+        # way back.
+        backup = _backup_database(settings)
+        if backup is not None:
+            logger.info("backed the database up to %s before migrating", backup)
 
     logger.info("running database migrations against %s", settings.db_path)
     command.upgrade(config, "head")
@@ -92,6 +105,53 @@ def run_migrations(settings: Settings | None = None) -> str:
     revision = current_revision(config)
     logger.info("database is at revision %s", revision)
     return revision
+
+
+def _head_revision(config) -> str:
+    """The newest revision in the migration scripts."""
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
+def _has_pending_revisions(config) -> bool:
+    """Whether ``upgrade head`` would write anything.
+
+    Used to decide if a backup is worth taking. A no-op run is common -- every
+    container start performs one -- and a backup per no-op would bury the backups
+    that matter.
+    """
+    try:
+        return current_revision(config) != _head_revision(config)
+    except Exception as exc:  # pragma: no cover - unreadable database
+        logger.warning("could not compare revisions (%s); backing up anyway", exc)
+        return True
+
+
+def _backup_database(settings: Settings) -> Path | None:
+    """Copy the database alongside itself, returning the copy's path.
+
+    A failure here is logged and not raised. Refusing to migrate because the
+    backup could not be written would turn a read-only backup directory into an
+    application that will not start, which is a worse failure than the one the
+    backup exists to prevent.
+    """
+    import datetime as dt
+    import shutil
+
+    db_path = settings.db_path
+    if not db_path.exists():
+        return None
+
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
+    destination = db_path.parent / "backups" / f"{db_path.stem}-{stamp}.db"
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(db_path, destination)
+    except OSError as exc:
+        logger.warning("could not back up %s (%s); migrating anyway", db_path, exc)
+        return None
+    return destination
 
 
 def current_revision(config=None) -> str | None:
