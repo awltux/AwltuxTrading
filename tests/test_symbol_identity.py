@@ -307,8 +307,12 @@ class TestTheDecisionIsExplainable:
         assert first.symbol == second.symbol == "KDK"
 
 
-class TestTheJob:
-    """End to end, with the provider replaced by the captured candidates."""
+class _StuckInstrumentFixture:
+    """Shared setup for the job tests: one stuck instrument, one fake provider.
+
+    A plain base class rather than a base *test* class, so the tests it serves run
+    once each instead of once per subclass.
+    """
 
     def _stuck(self, session, ticker="AHAC_US_EQ", name="Humacyte", **overrides):
         from tests.helpers import make_instrument
@@ -335,6 +339,10 @@ class TestTheJob:
 
         monkeypatch.setattr(yahoo_module.YahooProvider, "search_symbols", search)
         return calls
+
+
+class TestTheJob(_StuckInstrumentFixture):
+    """End to end, with the provider replaced by the captured candidates."""
 
     def test_it_resolves_a_stuck_instrument_and_records_why(self, settings, monkeypatch):
         from awltux.db import Instrument, InstrumentAlias, session_scope
@@ -450,3 +458,115 @@ class TestTheJob:
         assert calls == []
         assert result.note is not None
         assert "no symbol left to resolve" in result.note
+
+
+#: Captured from the real provider: BRP's ISIN returns only its foreign listings,
+#: while its name returns the Nasdaq one. Reproduced here so the rule that recovers
+#: it is tested against what Yahoo actually answers rather than an invented shape.
+BRP_BY_ISIN = [
+    {"symbol": "DOO.TO", "name": "BRP Inc.", "exchange": "Toronto", "quote_type": "EQUITY"},
+    {
+        "symbol": "CA05577W2004.SG",
+        "name": "BRP Inc.",
+        "exchange": "Stuttgart",
+        "quote_type": "EQUITY",
+    },
+]
+BRP_BY_NAME = [
+    {"symbol": "DOO", "name": "BRP Inc.", "exchange": "NASDAQ", "quote_type": "EQUITY"},
+    {"symbol": "DOO.TO", "name": "BRP Inc.", "exchange": "Toronto", "quote_type": "EQUITY"},
+    {"symbol": "B15A.HM", "name": "BRP Inc", "exchange": "Hamburg", "quote_type": "EQUITY"},
+]
+
+
+class TestACrossListingIsRecoveredByTheNameLookup(_StuckInstrumentFixture):
+    """The ISIN identifies the company; only the venue identifies the listing.
+
+    Yahoo's ISIN search can return *only* the foreign listings of a company that is
+    also listed where the instrument actually trades. The venue penalty then refuses
+    them, correctly -- and the job stopped there, because it only ever fell back to a
+    name search when the ISIN search returned nothing at all. The right listing was
+    one request away and was never asked for.
+    """
+
+    def test_the_home_listing_is_applied_when_the_isin_only_finds_foreign_ones(
+        self, settings, monkeypatch
+    ):
+        from awltux.db import Instrument, InstrumentAlias, session_scope
+        from awltux.ingest.jobs import resolve_symbols
+
+        with session_scope() as session:
+            self._stuck(
+                session,
+                ticker="DOOO_US_EQ",
+                name="BRP Inc.",
+                isin="CA05577W2004",
+                yahoo_symbol="DOOO",
+                exchange_name="NASDAQ",
+            )
+        calls = self._provider(
+            monkeypatch, {"CA05577W2004": BRP_BY_ISIN, "BRP Inc.": BRP_BY_NAME}
+        )
+
+        result = resolve_symbols()
+
+        assert calls == ["CA05577W2004", "BRP Inc."], (
+            "a refused ISIN match must still be followed by the name lookup"
+        )
+        assert result.items_written == 1
+        with session_scope() as session:
+            instrument = session.get(Instrument, "DOOO_US_EQ")
+            assert instrument.yahoo_symbol == "DOO"
+            alias = session.query(InstrumentAlias).filter_by(
+                instrument_t212_ticker="DOOO_US_EQ", provider="yahoo"
+            ).one()
+            assert alias.symbol == "DOO"
+            assert alias.method == "name"
+            assert alias.confidence >= APPLY_FLOOR
+            assert "exchange agrees" in (alias.note or "")
+
+    def test_a_usable_isin_match_does_not_spend_a_second_request(self, settings, monkeypatch):
+        """The extra lookup is only for the case that needs it."""
+        from awltux.db import session_scope
+        from awltux.ingest.jobs import resolve_symbols
+
+        with session_scope() as session:
+            self._stuck(session)
+        calls = self._provider(monkeypatch, {"US44486Q1031": HUMACYTE, "Humacyte": []})
+
+        resolve_symbols()
+
+        assert calls == ["US44486Q1031"]
+
+    def test_a_foreign_only_match_is_still_recorded_as_evidence(self, settings, monkeypatch):
+        """When the name lookup adds nothing, the refused ISIN candidate must still
+        reach the alias -- a reviewer needs to see what was considered."""
+        from awltux.db import Instrument, InstrumentAlias, session_scope
+        from awltux.ingest.jobs import resolve_symbols
+
+        with session_scope() as session:
+            self._stuck(
+                session,
+                ticker="DOOO_US_EQ",
+                name="BRP Inc.",
+                isin="CA05577W2004",
+                yahoo_symbol="DOOO",
+                exchange_name="NASDAQ",
+            )
+        calls = self._provider(monkeypatch, {"CA05577W2004": BRP_BY_ISIN, "BRP Inc.": []})
+
+        result = resolve_symbols()
+
+        assert calls == ["CA05577W2004", "BRP Inc."]
+        assert result.items_written == 0
+        with session_scope() as session:
+            instrument = session.get(Instrument, "DOOO_US_EQ")
+            assert instrument.yahoo_symbol == "DOOO", "an unresolved symbol must be left alone"
+            alias = session.query(InstrumentAlias).filter_by(
+                instrument_t212_ticker="DOOO_US_EQ", provider="yahoo"
+            ).one()
+            assert alias.symbol in {"DOO.TO", "CA05577W2004.SG"}, (
+                "one of the refused foreign listings should be recorded"
+            )
+            assert "different market" in (alias.note or "")
+            assert "not applied" in (alias.note or "")

@@ -705,6 +705,25 @@ def assess_news_relevance() -> JobResult:
     )
 
 
+def _lookup_symbol(provider, query: str, instrument: Any, *, by_isin: bool):
+    """Score the candidates one provider search returns.
+
+    Split out because the job now makes this call twice per stuck instrument, and
+    the two calls have to be scored identically apart from where they were found.
+    """
+    from awltux.ingest.identity import choose_symbol
+
+    if not query:
+        return None
+    return choose_symbol(
+        provider.search_symbols(query),
+        instrument_name=instrument.name,
+        instrument_exchange=instrument.exchange_name,
+        instrument_type=instrument.instrument_type,
+        queried_by_isin=by_isin,
+    )
+
+
 def resolve_symbols() -> JobResult:
     """Look up the provider symbol for instruments a derived one cannot reach.
 
@@ -731,7 +750,7 @@ def resolve_symbols() -> JobResult:
     from awltux.config import get_settings
     from awltux.db import Instrument, InstrumentAlias, PriceBar, utcnow
     from awltux.db.session import release_write_lock
-    from awltux.ingest.identity import APPLY_FLOOR, choose_symbol, describe
+    from awltux.ingest.identity import APPLY_FLOOR, describe
     from awltux.providers.http import ProviderError
     from awltux.providers.yahoo import YahooProvider
 
@@ -770,26 +789,38 @@ def resolve_symbols() -> JobResult:
         with session_scope() as session:
             release_write_lock(session)
 
-        candidates: list[dict[str, Any]] = []
         by_isin = True
         try:
-            candidates = provider.search_symbols(instrument.isin or "")
-            if not candidates:
-                # A SPAC that has completed, or a company with no listing left.
-                # Falling back to the name is worth one more request.
+            # The ISIN goes first: it survives a rename, which is the whole reason
+            # this job exists.
+            resolution = _lookup_symbol(provider, instrument.isin or "", instrument, by_isin=True)
+            if resolution is None or not resolution.usable:
+                # Then the name, whenever the ISIN lookup did not produce something
+                # worth applying.
+                #
+                # This used to run only when the ISIN search returned *no*
+                # candidates, which is the rarer case. An ISIN identifies the
+                # *company*, and a company can be listed in several places, so
+                # Yahoo's ISIN search frequently returns only the foreign listings:
+                # BRP's ``CA05577W2004`` comes back as ``DOO.TO`` and
+                # ``CA05577W2004.SG``, never as the Nasdaq ``DOO``. The venue check
+                # then refuses them -- correctly, because a Toronto price is not the
+                # one we want -- and the instrument stayed stuck with its own
+                # venue's listing sitting one name search away, never asked for.
                 by_isin = False
-                candidates = provider.search_symbols(instrument.name)
+                by_name = _lookup_symbol(provider, instrument.name, instrument, by_isin=False)
+                if by_name is not None and (
+                    by_name.usable
+                    or resolution is None
+                    or by_name.confidence > resolution.confidence
+                ):
+                    # A usable name match wins outright; otherwise keep whichever of
+                    # the two carries more evidence, so the alias records the best
+                    # candidate found rather than merely the first.
+                    resolution = by_name
         except ProviderError as exc:
             errors.append(f"{instrument.t212_ticker}: {exc}")
             continue
-
-        resolution = choose_symbol(
-            candidates,
-            instrument_name=instrument.name,
-            instrument_exchange=instrument.exchange_name,
-            instrument_type=instrument.instrument_type,
-            queried_by_isin=by_isin,
-        )
 
         with session_scope() as session:
             row = session.get(Instrument, instrument.t212_ticker)

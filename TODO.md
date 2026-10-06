@@ -167,17 +167,37 @@ were found in the output rather than by design:
 - **One placeholder was refused.** `BIOK_US_EQ` resolved to `DUMY0001134`, Yahoo's
   stand-in for a company with no live listing.
 
-**What is left is honest, not a bug.** The 13 have no listing a search can find:
+**The 13 are honest, not a bug.** They have no listing a search can find:
 `AFAR_US_EQ` (a SPAC that appears to have completed), `BLVNl_EQ`, `HGENl_EQ`,
 `HMSGl_EQ`, `INXl_EQ`, `NGHTl_EQ`, `PODPl_EQ`, `PPCl_EQ`, `SAL_US_EQ`, `STAF_US_EQ`
 and the three others in the run detail. Most are suspended or delisted UK small-caps.
-They are recorded on their alias with the reason, so they are visible as needing
-review rather than silently retried.
+Checked against the live endpoint: `AFAR_US_EQ` and `BLVNl_EQ` return **zero**
+candidates by ISIN *and* by name. No rule can find a listing that does not exist.
+
+**The 5 cross-listings were a bug, and are fixed.** The venue penalty refused the
+foreign listing correctly, and then the job stopped: it fell back to a name search
+only when the ISIN search returned *nothing*, and an ISIN search for a company listed
+in several places returns the foreign ones rather than nothing. BRP's
+`CA05577W2004` comes back as `DOO.TO` and `CA05577W2004.SG`; the Nasdaq `DOO` is
+never in that list. The right listing sat one name search away, unasked. The
+fallback now runs whenever the ISIN match is not good enough to apply, and prefers a
+usable name match to a refused ISIN one. Verified live: `DOO` at 0.907, exchange
+agrees, applied -- while `AFAR_US_EQ` and `BLVNl_EQ` still resolve to nothing, so the
+rule does not manufacture matches.
+
+**Known gap: nothing shows these to a human, and they are retried for ever.** An
+earlier version of this note claimed the failures were "visible as needing review
+rather than silently retried". Neither is true. `stuck` is defined purely as "in the
+universe with no stored bar", so all 13 are looked up again every run, for ever,
+whatever their alias says -- 26 requests a day that cannot change the answer. And no
+page lists aliases needing review: the note and the `is_manual` flag exist and are
+honoured, but the only place either surfaces is the instrument page, one ticker at a
+time. A reviewer has no list to work from.
 
 **Next, if it matters:** the same lookup should be applied to `sec_cik` and
 `ch_company_number`, which are resolved by name matching today and have the same
-weakness. And the 5 cross-listings need a deliberate rule about which listing to
-price when an instrument is traded in more than one place.
+weakness. And the 13 need either a retry backoff -- stop re-asking a question whose
+answer cannot change -- or a review queue where a human can set the symbol by hand.
 
 ### The Fal embeddings route is refused by OpenRouter, not by us
 
