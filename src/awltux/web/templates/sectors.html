@@ -9,17 +9,31 @@
   fields for UK listings) rather than licensed ICB/GICS, so treat it as
   approximate.
 </p>
+<p class="muted small">
+  Click a sector to see the instruments in it on
+  <a href="/dashboard">Recommendations</a>, with the filter applied. The count is
+  how many instruments the analysed universe holds in that sector — many sectors
+  here name a single company, because this is the SEC's industry string and not a
+  licensed classification.
+</p>
 
 {% if sectors %}
 <table class="grid">
   <thead>
-    <tr><th>Sector</th><th class="num">Latest</th><th class="num">Articles</th><th>Trend</th><th>Series</th></tr>
+    <tr><th>Sector</th><th class="num">Latest</th><th class="num">Articles</th><th>Trend</th><th>Series</th><th class="num">Instruments</th></tr>
   </thead>
   <tbody>
   {% for name, series in sectors %}
     {% set last = latest[name] %}
+    {% set count = counts.get(name, 0) %}
     <tr>
-      <td><strong>{{ name }}</strong></td>
+      <td>
+        {# The drill-down. An empty sector still links: landing on a filtered
+           table that says "0 instruments" answers the question, whereas a
+           disabled link would leave the reader wondering whether it was empty or
+           broken. #}
+        <a href="/dashboard?sector={{ name | urlencode }}"><strong>{{ name }}</strong></a>
+      </td>
       <td class="num {% if last and last.score > 0 %}good{% elif last %}bad{% endif %}">
         {{ last.score | number(2) if last else '—' }}
       </td>
@@ -32,6 +46,7 @@
       <td class="small muted">
         {% for point in series[-14:] %}{{ point.score | number(2) }}{% if not loop.last %} · {% endif %}{% endfor %}
       </td>
+      <td class="num {% if not count %}muted{% endif %}">{{ count if count else '—' }}</td>
     </tr>
   {% endfor %}
   </tbody>

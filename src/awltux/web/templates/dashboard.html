@@ -1,30 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Recommendations — {{ app_name }}{% endblock %}
 
-{# Builds a querystring from the current view state, with per-link overrides.
+{# Every link and control on this page is built from `filters`, the FilterSet the
+   route parsed out of the query string (awltux/web/filters.py).
 
-   Jinja macros have no `**kwargs`, but a macro that *references* `kwargs` does
-   capture any extra keyword arguments it is called with -- which is what makes
-   `params(action=None)` able to clear a filter. #}
-{% macro params() %}
-  {%- set merged = {
-    'sort': sort, 'direction': direction, 'view': view, 'q': q,
-    'horizon': horizon, 'action': action, 'engine': engine,
-    'horizon_fit': horizon_fit, 'page': page
-  } -%}
-  {%- set _ = merged.update(kwargs) -%}
-  {%- set parts = [] -%}
-  {%- for key, value in merged.items() if value is not none and value != '' -%}
-    {%- set _ = parts.append(key ~ '=' ~ value) -%}
-  {%- endfor -%}
-  {{- ('?' ~ (parts | join('&'))) if parts else '' -}}
-{% endmacro %}
+   This replaced a `params()` macro that listed the query state by hand. That list
+   had to be edited whenever a filter was added, in step with the route, the query
+   call, the context and the form -- and when it drifted, the failure was silent:
+   a link would drop a filter the reader had just set.
+
+   `filters.query()` omits anything at its default, so a link carries only what the
+   reader changed, and `filters.href()` adds the path. #}
 
 {% macro sort_link(key, label, title=None) %}
-  {% set next_dir = 'asc' if (sort == key and direction == 'desc') else 'desc' %}
-  <a class="sort {% if sort == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
-     href="/dashboard{{ params(sort=key, direction=next_dir, page=None) }}">
-    {{ label }}{% if sort == key %}<span class="arrow">{{ '▲' if direction == 'asc' else '▼' }}</span>{% endif %}
+  {% set next_dir = 'asc' if (filters.value('sort') == key and filters.value('direction') == 'desc') else 'desc' %}
+  <a class="sort {% if filters.value('sort') == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
+     href="{{ filters.href('/dashboard', sort=key, direction=next_dir) }}">
+    {{ label }}{% if filters.value('sort') == key %}<span class="arrow">{{ '▲' if filters.value('direction') == 'asc' else '▼' }}</span>{% endif %}
   </a>
 {% endmacro %}
 
@@ -63,8 +55,8 @@
   <div class="horizon-picker">
     <span class="muted small">Actionable filter and action column follow:</span>
     {% for key, definition in horizons.items() %}
-      <a class="{% if horizon == key %}active{% endif %}"
-         href="/dashboard{{ params(horizon=key, action=None) }}"
+      <a class="{% if filters.value('horizon') == key %}active{% endif %}"
+         href="{{ filters.href('/dashboard', horizon=key, action=None) }}"
          title="{{ definition.description }}">
         {{ definition.label }} <span class="muted small">{{ definition.guidance }}</span>
       </a>
@@ -103,29 +95,101 @@
   </div>
 {% endif %}
 
+{# Computed once: `active()` walks every spec, and both the form's "Clear all" and
+   the chip row below need the same answer. #}
+{% set applied = filters.active() %}
+
 <section class="controls">
   <div class="views">
-    <a class="{% if view == 'all' %}active{% endif %}"
-       href="/dashboard{{ params(view='all', page=None) }}">All</a>
-    <a class="{% if view == 'suggestions' %}active{% endif %}"
-       href="/dashboard{{ params(view='suggestions', page=None) }}"
+    <a class="{% if filters.value('view') == 'all' %}active{% endif %}"
+       href="{{ filters.href('/dashboard', view='all') }}">All</a>
+    <a class="{% if filters.value('view') == 'suggestions' %}active{% endif %}"
+       href="{{ filters.href('/dashboard', view='suggestions') }}"
        title="Only calls the risk gate allowed on the selected horizon">Actionable only</a>
-    <a class="{% if view == 'held' %}active{% endif %}"
-       href="/dashboard{{ params(view='held', page=None) }}">My holdings</a>
-    <a class="{% if horizon_fit %}active{% endif %}"
-       href="/dashboard{{ params(horizon_fit='long_term' if horizon_fit != 'long_term' else None) }}">Suits long term</a>
-    <a class="{% if horizon_fit == 'short_term' %}active{% endif %}"
-       href="/dashboard{{ params(horizon_fit='short_term' if horizon_fit != 'short_term' else None) }}">Suits short term</a>
+    <a class="{% if filters.value('view') == 'held' %}active{% endif %}"
+       href="{{ filters.href('/dashboard', view='held') }}">My holdings</a>
+    <a class="{% if filters.value('horizon_fit') %}active{% endif %}"
+       href="{{ filters.href('/dashboard', horizon_fit='long_term' if filters.value('horizon_fit') != 'long_term' else None) }}">Suits long term</a>
+    <a class="{% if filters.value('horizon_fit') == 'short_term' %}active{% endif %}"
+       href="{{ filters.href('/dashboard', horizon_fit='short_term' if filters.value('horizon_fit') != 'short_term' else None) }}">Suits short term</a>
   </div>
-  <form method="get" action="/dashboard" class="search">
-    <input type="hidden" name="sort" value="{{ sort }}">
-    <input type="hidden" name="direction" value="{{ direction }}">
-    <input type="hidden" name="view" value="{{ view }}">
-    <input type="hidden" name="horizon" value="{{ horizon }}">
-    <input type="search" name="q" value="{{ q }}" placeholder="Filter by ticker or name…" aria-label="Filter">
-    <button type="submit">Filter</button>
+
+  {# One GET form for every dropdown filter. The controls are rendered from the
+     same declarations that validate them, so a filter cannot exist in the URL and
+     be missing here. `filters.hidden` carries the state the reader set elsewhere
+     (sort, horizon, view) so a submit does not silently reset it.
+
+     `class="filters"` is the shared filter-form style, not a new one: this is the
+     same control a reader already meets on the Operations page. #}
+  <form method="get" action="/dashboard" class="filters">
+    {% for spec in filters.hidden %}
+      <input type="hidden" name="{{ spec.name }}" value="{{ filters.value(spec.name) }}">
+    {% endfor %}
+    {% for spec in filters.controls %}
+      <label {% if spec.help %}title="{{ spec.help }}"{% endif %}>
+        {{ spec.label }}
+        {% if spec.kind == 'choice' %}
+          <select name="{{ spec.name }}" aria-label="{{ spec.label }}">
+            <option value="">Any</option>
+            {% for option in spec.options %}
+              <option value="{{ option.value }}"
+                      {% if filters.value(spec.name) == option.value %}selected{% endif %}>
+                {{ option.label }}{% if option.note %} · {{ option.note }}{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        {% else %}
+          <input type="search" name="{{ spec.name }}" value="{{ filters.value(spec.name) }}"
+                 placeholder="{{ spec.placeholder }}" aria-label="{{ spec.label }}">
+        {% endif %}
+      </label>
+    {% endfor %}
+    <button type="submit">Apply</button>
+    {% if applied %}
+      <a class="clear-all" href="{{ filters.clear_href('/dashboard') }}">Clear all</a>
+    {% endif %}
   </form>
 </section>
+
+{# A value the URL asked for that this page cannot honour. Reported rather than
+   ignored: the table below is not the one the address bar describes. #}
+{% if filters.ignored %}
+  <p class="notice warn">
+    <strong>Ignored {{ filters.ignored | length }} filter
+      value{{ '' if filters.ignored | length == 1 else 's' }}</strong>
+    the link did not recognise:
+    {% for bad in filters.ignored %}
+      <code>{{ bad.name }}={{ bad.value }}</code>{% if not loop.last %}, {% endif %}
+    {% endfor %}.
+    Showing the unfiltered table for {{ filters.ignored | map(attribute='label') | join(' and ') }}
+    rather than an empty one.
+  </p>
+{% endif %}
+
+{# What is currently applied, each removable on its own. Rendered from the filter
+   set, so a link that arrives carrying a sector -- the drill-down from the Sectors
+   page -- says so here instead of leaving the reader to read the URL. #}
+{% if applied %}
+  <div class="applied">
+    <span class="muted small">Filtered by</span>
+    {% for f in applied %}
+      <span class="chip">
+        <span class="muted">{{ f.label }}:</span> {{ f.shown }}
+        <a href="{{ '/dashboard' ~ f.clear_query }}" title="Remove this filter" aria-label="Remove {{ f.label }} filter">×</a>
+      </span>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% if filters.given('sector') %}
+  <h2 class="drilldown">
+    {{ filters.shown('sector') }}
+    <span class="muted small">
+      {{ total }} instrument{{ '' if total == 1 else 's' }}
+      {{ 'in the analysed universe' if total else 'in the analysed universe — none matched' }}
+    </span>
+  </h2>
+{% endif %}
 
 <div class="table-wrap">
 <table class="grid">
@@ -155,6 +219,20 @@
         <a href="/instrument/{{ row.ticker }}"><strong>{{ row.ticker }}</strong></a>
         <span class="muted small">{{ row.name[:34] }}</span>
         {% if row.is_held %}<span class="chip small held">held</span>{% endif %}
+        {# The reverse of the Sectors drill-down: pick a sector off a row and see
+           everything else in it. "unclassified" is shown rather than left blank
+           because an empty cell would read as a rendering fault, and 194 of the
+           500 instruments are in that state. #}
+        <br>
+        {% if row.sector %}
+          <a class="muted small sector-link"
+             href="{{ filters.href('/dashboard', sector=row.sector) }}"
+             title="Show every instrument in {{ row.sector }}">{{ row.sector }}</a>
+        {% else %}
+          <a class="muted small sector-link unclassified"
+             href="{{ filters.href('/dashboard', sector=unclassified_sector) }}"
+             title="Show every instrument with no sector on file">unclassified</a>
+        {% endif %}
       </td>
 
       <td>
@@ -247,11 +325,11 @@
 {% if pages > 1 %}
 <nav class="pager">
   {% if page > 1 %}
-    <a href="/dashboard{{ params(page=page - 1) }}">← Prev</a>
+    <a href="{{ filters.href('/dashboard', page=page - 1) }}">← Prev</a>
   {% endif %}
   <span>Page {{ page }} of {{ pages }} ({{ total }} instruments)</span>
   {% if page < pages %}
-    <a href="/dashboard{{ params(page=page + 1) }}">Next →</a>
+    <a href="{{ filters.href('/dashboard', page=page + 1) }}">Next →</a>
   {% endif %}
 </nav>
 {% endif %}

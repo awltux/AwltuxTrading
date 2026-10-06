@@ -18,56 +18,61 @@ from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
 from awltux.db import Filing, session_scope
 from awltux.ingest.universe import cached_t212_capabilities
-from awltux.web import queries
+from awltux.web import filters, queries
 from awltux.web.templating import templates
 
 router = APIRouter(tags=["dashboard"])
-
-SortKey = Literal[
-    "composite_score", "short_term_score", "margin_of_safety", "confidence",
-    "short_term_confidence", "action", "short_term_action", "name",
-    "change_pct", "sentiment", "freshness", "horizon_fit",
-]
 
 
 @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 def dashboard(
     request: Request,
-    sort: SortKey = "composite_score",
-    direction: Literal["asc", "desc"] = "desc",
-    action: str | None = None,
-    engine: str | None = None,
-    horizon: Literal["long_term", "short_term"] = "long_term",
-    horizon_fit: str | None = None,
-    view: Literal["all", "suggestions", "held"] = "all",
-    q: str | None = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(100, ge=10, le=500),
 ) -> HTMLResponse:
-    """The recommendations table.
+    """The recommendations table -- the site's Recommendations page.
 
-    ``horizon`` selects which verdict drives the *actionable* filter and the
-    action column; both are always shown, because the point of separating them is
-    that a reader can see them disagree.
+    The filters are read from the query string through
+    :mod:`awltux.web.filters`, which is also what builds every link on the page, so
+    a view is shareable and nothing is lost when the reader clicks a column header
+    or moves a page.
+
+    Only ``page`` and ``per_page`` are declared as typed parameters. They are the
+    two the reader never types, so a nonsensical value is a bug worth refusing;
+    the rest are validated against their own option lists and *reported* rather
+    than refused, because a stale bookmark or a hand-edited URL should show the
+    table and name what it ignored.
     """
+    with session_scope() as session:
+        sectors = filters.sector_options(queries.sector_counts(session))
+
+    allowed = filters.recommendation_specs(sectors=sectors)
+    spec = filters.FilterSet.parse(allowed, request.query_params)
+
+    sector, sector_unknown = filters.sector_filter(spec.opt("sector"))
+
     offset = (page - 1) * per_page
     with session_scope() as session:
         rows, total = queries.recommendations(
             session,
-            sort=sort,
-            direction=direction,
-            action=action,
-            engine=engine,
-            horizon=horizon,
-            horizon_fit=horizon_fit,
-            only_suggestions=(view == "suggestions"),
-            only_held=(view == "held"),
-            search=q,
+            # Both are narrowed above by the specs' own option lists; a checker
+            # cannot follow a runtime lookup back to a Literal, and the alternative
+            # is restating the vocabulary here, which is what the specs removed.
+            sort=spec.value("sort"),  # type: ignore[arg-type]
+            direction=spec.value("direction"),  # type: ignore[arg-type]
+            action=spec.opt("action"),
+            engine=spec.opt("engine"),
+            horizon=spec.value("horizon"),
+            horizon_fit=spec.opt("horizon_fit"),
+            sector=sector,
+            sector_unknown=sector_unknown,
+            only_suggestions=(spec.value("view") == "suggestions"),
+            only_held=(spec.value("view") == "held"),
+            search=spec.opt("q"),
             limit=per_page,
             offset=offset,
         )
         stats = queries.universe_stats(session)
-        sectors = queries.sector_sentiment(session, days=30)
         capabilities = cached_t212_capabilities(session) if get_settings().env.t212_configured else None
 
     pages = max((total + per_page - 1) // per_page, 1)
@@ -80,16 +85,8 @@ def dashboard(
             "page": page,
             "pages": pages,
             "per_page": per_page,
-            "sort": sort,
-            "direction": direction,
-            "action": action,
-            "engine": engine,
-            "horizon": horizon,
-            "horizon_fit": horizon_fit,
-            "view": view,
-            "q": q or "",
+            "filters": spec,
             "stats": stats,
-            "sectors": sectors,
             "capabilities": capabilities,
             "horizons": {
                 "long_term": get_settings().horizons.long_term,
@@ -214,11 +211,24 @@ def decisions_page(
 
 @router.get("/sectors", response_class=HTMLResponse, include_in_schema=False)
 def sectors_page(request: Request) -> HTMLResponse:
+    """Sector sentiment, and the way into the instruments behind each sector.
+
+    The drill-down is a link to the recommendations table with the sector filter
+    applied rather than a table of its own. A sector view would otherwise need its
+    own sorting, paging and filtering, and would be a second place for those rules
+    to disagree with the first -- so the sector is handed to the page that already
+    knows how to show instruments, and the link is just a querystring.
+
+    The instrument count is carried into the link text because "sector" here is the
+    SEC SIC industry string: the live universe has 144 of them for 500 instruments,
+    and a reader who cannot see that most name one company will click expecting a
+    list and find a single row.
+    """
     with session_scope() as session:
         sectors = queries.sector_sentiment(session, days=60)
-    latest = {
-        name: series[-1] if series else None for name, series in sectors.items()
-    }
+        counts = dict(queries.sector_counts(session))
+
+    latest = {name: series[-1] if series else None for name, series in sectors.items()}
     ordered = sorted(
         sectors.items(),
         key=lambda item: (latest[item[0]]["score"] if latest[item[0]] else -99),
@@ -227,7 +237,11 @@ def sectors_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "sectors.html",
-        {"sectors": ordered, "latest": latest},
+        {
+            "sectors": ordered,
+            "latest": latest,
+            "counts": counts,
+        },
     )
 
 

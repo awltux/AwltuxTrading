@@ -14,6 +14,7 @@ from typing import Any
 from fastapi.templating import Jinja2Templates
 
 from awltux.timezones import as_utc, current_zone_name, current_zone_note, format_moment, zone_label
+from awltux.web.filters import UNCLASSIFIED
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -259,6 +260,12 @@ def create_templates() -> Jinja2Templates:
             # `engine_label(engine, uncalibrated)` because it takes two arguments,
             # and a filter-style call would raise `'engine_label' is undefined`.
             "engine_label": engine_label,
+            # The URL value meaning "no sector". A global rather than page state
+            # because it is vocabulary, not data: a row links to it and the sector
+            # control offers it, and both must spell it the same way. Hard-coding
+            # the string in a template would let the two drift apart, and the
+            # failure would be a filter that matches nothing rather than an error.
+            "unclassified_sector": UNCLASSIFIED,
             # Which clock the times on this page are rendered in. A function, not a
             # value, so it is resolved at render time from the request's context
             # rather than fixed when the environment was built.

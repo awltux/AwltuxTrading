@@ -128,8 +128,9 @@ table.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
 .job-cell { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
 .job-cell code { color: var(--fg); }
 
-/* Run-history filters. The history grows without bound, so finding one ingest
-   among hundreds is a filter problem, not a scrolling problem. */
+/* Run-history filters, and the recommendations filter bar. The history grows
+   without bound, so finding one ingest among hundreds is a filter problem, not a
+   scrolling problem; the recommendations table is the same shape of problem. */
 .filters { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin: 12px 0 6px; }
 .filters label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
 .filters input, .filters select {
@@ -143,6 +144,20 @@ table.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
   padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer;
 }
 .filters button:hover { border-color: var(--muted); }
+/* Only shown while something is filtered, so it reads as an escape hatch rather
+   than a permanent control the reader has to work out the purpose of. */
+.clear-all { font-size: 12px; color: var(--muted); align-self: center; }
+
+/* What is currently applied. The drill-down from the Sectors page arrives with a
+   filter the reader did not set in this session, so the page has to say what it
+   is: a filtered table with no visible reason looks like missing data. */
+.applied { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 4px; }
+.applied .chip { margin-left: 0; padding: 2px 8px; }
+.applied .chip a { color: inherit; text-decoration: none; margin-left: 4px; font-weight: 700; }
+.applied .chip a:hover { color: var(--fg); }
+.drilldown { margin: 14px 0 6px; }
+.sector-link { text-decoration: none; border-bottom: 1px dotted var(--line); }
+.sector-link:hover { color: var(--fg); border-bottom-color: var(--muted); }
 table.grid.compact th, table.grid.compact td { padding: 5px 8px; font-size: 13px; }
 .empty { text-align: center; color: var(--muted); padding: 28px !important; }
 .sort { color: var(--muted); }

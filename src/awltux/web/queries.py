@@ -212,6 +212,8 @@ def recommendations(  # noqa: C901
     engine: str | None = None,
     horizon: str = "long_term",
     horizon_fit: str | None = None,
+    sector: str | None = None,
+    sector_unknown: bool = False,
     only_suggestions: bool = False,
     only_held: bool = False,
     search: str | None = None,
@@ -224,6 +226,12 @@ def recommendations(  # noqa: C901
     few hundred instruments the extra queries are negligible, and the result is
     far easier to reason about than a five-way outer join over correlated
     subqueries.
+
+    ``sector`` and ``sector_unknown`` are separate arguments because they are
+    separate questions. "In Pharmaceuticals" and "has no sector recorded" both
+    narrow the table, but the second is asked of a column that is *empty*, and on
+    the live database that is 194 of 500 instruments -- a filter that could only
+    name a sector would leave a third of the universe unreachable.
     """
     # --- 1. which instruments are in scope ---------------------------------
     instrument_query = (
@@ -233,6 +241,10 @@ def recommendations(  # noqa: C901
     )
     if only_held:
         instrument_query = instrument_query.where(Instrument.is_held.is_(True))
+    if sector_unknown:
+        instrument_query = instrument_query.where(Instrument.sector.is_(None))
+    elif sector:
+        instrument_query = instrument_query.where(Instrument.sector == sector)
     if search:
         pattern = f"%{search.lower()}%"
         instrument_query = instrument_query.where(
@@ -637,6 +649,26 @@ def sector_sentiment(session: Session, *, days: int = 30) -> dict[str, list[dict
             }
         )
     return out
+
+
+def sector_counts(session: Session) -> list[tuple[str | None, int]]:
+    """How many instruments in the universe sit in each sector.
+
+    ``None`` is a real key here, not a gap: it counts the instruments whose sector
+    has never been resolved. Returning it rather than dropping the row is what lets
+    the caller offer them as a choice -- filtering them out would make a third of
+    the universe unreachable by any sector control.
+
+    Returned as plain rows so this module keeps to SQL; turning them into dropdown
+    entries is a presentation decision (:func:`awltux.web.filters.sector_options`).
+    """
+    rows = session.execute(
+        select(Instrument.sector, func.count())
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .group_by(Instrument.sector)
+    ).all()
+    return [(sector, count) for sector, count in rows]
 
 
 def universe_stats(session: Session) -> dict[str, Any]:
