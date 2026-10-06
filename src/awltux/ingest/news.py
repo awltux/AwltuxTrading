@@ -41,6 +41,7 @@ from awltux.providers.news_rss import (
     RssNewsProvider,
     company_query,
 )
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,18 @@ class NewsIngestReport:
             "by_source": self.by_source,
             "errors": self.errors[:10],
         }
+
+
+#: Articles between progress lines. The poll runs for hours over a 500-instrument
+#: universe and, before this, wrote one INFO line at the start and nothing until it
+#: finished -- so a working job and a hung one looked identical for the whole run.
+PROGRESS_EVERY_ARTICLES = 10
+
+#: Instruments between progress lines, and it is a second throttle rather than the same
+#: one for a reason: a stretch of feeds that carry nothing new advances no article count
+#: at all, so an article-only line would go quiet in exactly the case that most looks
+#: like a hang. Counting instruments bounds that silence.
+PROGRESS_EVERY_INSTRUMENTS = 25
 
 
 class Prefilter:
@@ -204,6 +217,27 @@ def _apply_relevance(row: NewsItem, *, about: bool | None) -> None:
         row.relevance_reason = verdict.reason
 
 
+def _merge_duplicate(existing: NewsItem, item: RawNewsItem, report: NewsIngestReport) -> None:
+    """Fold a story we already hold into the row we hold it as.
+
+    The same story surfaces in more than one instrument's feed, and a story about two
+    companies is exactly the case the news page exists to show. This used to `continue`
+    without recording the second ticker, so a row's ticker list could never hold more
+    than the one feed that happened to win -- every stored item had exactly one, in a
+    database of five thousand.
+
+    The direction and materiality stay those of the first classification.
+    Per-instrument judgements would need a link table and a second classifier call per
+    instrument; until that exists, the page says the judgement is the story's rather
+    than the instrument's.
+
+    **No classifier call happens here**, which is what makes a story processed once: the
+    row's existence is the marker, and this is the branch that honours it.
+    """
+    _merge_target(existing, item)
+    report.duplicates += 1
+
+
 def persist_items(
     session: Session,
     items: Iterable[RawNewsItem],
@@ -217,6 +251,15 @@ def persist_items(
 
     for item in items:
         report.fetched += 1
+        # Every tenth article, and the count is the one that has just been reached --
+        # this is the only place it advances per article, because every new story costs
+        # a model call here.
+        if report.fetched % PROGRESS_EVERY_ARTICLES == 0:
+            progress.note(
+                f"{report.fetched} articles: {report.written} new, "
+                f"{report.classified} classified"
+                + (f" ({instrument.t212_ticker})" if instrument is not None else "")
+            )
         report.by_source[item.source] = report.by_source.get(item.source, 0) + 1
 
         url_hash = item.url_hash
@@ -224,19 +267,7 @@ def persist_items(
             select(NewsItem).where(NewsItem.url_hash == url_hash).limit(1)
         ).scalar_one_or_none()
         if existing is not None:
-            # The same story can surface in more than one instrument's feed, and a
-            # story about two companies is exactly the case the news page exists to
-            # show. This used to `continue` without recording the second ticker, so
-            # the row's ticker list could never hold more than the one feed that
-            # happened to win -- every stored item has exactly one, in a database
-            # of five thousand.
-            #
-            # The direction and materiality stay those of the first classification.
-            # Per-instrument judgements would need a link table and a second
-            # classifier call per instrument; until that exists, the page says the
-            # judgement is the story's rather than the instrument's.
-            _merge_target(existing, item)
-            report.duplicates += 1
+            _merge_duplicate(existing, item, report)
             continue
 
         row = NewsItem(
@@ -312,6 +343,44 @@ def persist_items(
     return report
 
 
+def _instruments_to_poll(
+    session: Session, *, tickers: list[str] | None, limit_instruments: int | None
+) -> list[Instrument]:
+    """Which instruments this run polls, and in what order.
+
+    **The order is the cursor.** Least recently polled first, never-polled ahead of
+    everything, which is what makes a run continue where the last one stopped and what
+    makes the sweep wrap without anything resetting a counter: once every row has been
+    stamped, the least recently polled is the one polled first last time.
+
+    ``nullsfirst`` matters more than it looks. A universe that has never been polled is
+    all nulls, and without it the order would be arbitrary on the very first run -- which
+    is the one where the whole list has to be covered.
+
+    ``Instrument.updated_at`` is the obvious column and the wrong one: nothing in this
+    job otherwise touches the instrument row, but plenty of other jobs do, so it would
+    order the poll by whatever ran last. ``sync_xbrl_fundamentals`` documents the same
+    trap for its own rotation.
+    """
+    statement = (
+        select(Instrument)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .order_by(Instrument.news_polled_at.asc().nullsfirst(), Instrument.t212_ticker.asc())
+    )
+    if tickers:
+        statement = statement.where(Instrument.t212_ticker.in_(tickers))
+    instruments = list(session.execute(statement).scalars().all())
+
+    if limit_instruments:
+        # Prioritise held names when the poll is rationed -- but a *stable* sort, so the
+        # rotation survives inside each group. The obvious `sort(key=(not held, ticker))`
+        # would put every rationed run back at the same instrument and the cursor would
+        # never advance, which is the bug this ordering exists to fix.
+        instruments = sorted(instruments, key=lambda row: not row.is_held)[:limit_instruments]
+    return instruments
+
+
 def ingest_rss_news(
     session: Session,
     *,
@@ -325,25 +394,25 @@ def ingest_rss_news(
     report = NewsIngestReport()
     prefilter = Prefilter(settings)
 
-    statement = (
-        select(Instrument)
-        .where(Instrument.in_universe.is_(True))
-        .where(Instrument.excluded.is_(False))
+    instruments = _instruments_to_poll(
+        session, tickers=tickers, limit_instruments=limit_instruments
     )
-    if tickers:
-        statement = statement.where(Instrument.t212_ticker.in_(tickers))
-    instruments = list(session.execute(statement).scalars().all())
-    if limit_instruments:
-        # Prioritise held names when the poll is rationed.
-        instruments.sort(key=lambda row: (not row.is_held, row.t212_ticker))
-        instruments = instruments[:limit_instruments]
 
     rss = RssNewsProvider(settings)
     finnhub = FinnhubNewsProvider(settings)
     marketaux = MarketauxNewsProvider(settings)
 
     try:
-        for instrument in instruments:
+        for position, instrument in enumerate(instruments, start=1):
+            # The instrument throttle. `gather_for_instrument` makes one to three
+            # requests and can come back with nothing, in which case no article count
+            # moves -- so without this the log goes silent for exactly as long as the
+            # feeds have no news, which is when a reader most wants to know it is alive.
+            if position % PROGRESS_EVERY_INSTRUMENTS == 0:
+                progress.note(
+                    f"{position} of {len(instruments)} instruments: "
+                    f"{report.fetched} articles, {report.written} new"
+                )
             try:
                 gathered = gather_for_instrument(
                     instrument,
@@ -375,6 +444,12 @@ def ingest_rss_news(
             # roughly a thousand HTTP requests for a 500-instrument universe, and
             # holding one transaction across all of them locked every other writer
             # out for minutes.
+            #
+            # Stamped before the release, so the cursor and the commit that makes the
+            # articles durable are the same transaction: a crash between them would
+            # either re-poll an instrument whose stories were saved (cheap) or skip one
+            # whose were not (a lost gap), and this order makes it the cheap one.
+            instrument.news_polled_at = utcnow()
             release_write_lock(session)
     finally:
         rss.close()

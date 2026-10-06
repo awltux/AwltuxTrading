@@ -162,6 +162,21 @@ class Instrument(Base, TimestampMixin):
     annual_reports: Mapped[int] = mapped_column(Integer, default=0)
     #: When the count was last refreshed, so a zero can be dated.
     reports_synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When this instrument's news feeds were last polled, which is the news poll's
+    #: cursor rather than a fact about the instrument.
+    #:
+    #: The poll walks the whole universe and takes hours, and it used to start at the
+    #: first row every time -- so a run that was interrupted re-fetched every feed it
+    #: had already fetched, and the instruments at the end of the list were reached only
+    #: if a run happened to get that far. Ordering on this column makes each run continue
+    #: where the last one stopped, and makes the sweep wrap: once every row has been
+    #: stamped, the least recently polled is the first one polled, so the next run
+    #: begins again at the beginning without anything having to reset a counter.
+    #:
+    #: `Instrument.updated_at` is the obvious column and the wrong one -- nothing else
+    #: in this job touches the instrument row, but plenty of other jobs do, so it would
+    #: order the poll by whatever ran last.
+    news_polled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     exchange_ref: Mapped[Exchange | None] = relationship(back_populates="instruments")
     aliases: Mapped[list[InstrumentAlias]] = relationship(
