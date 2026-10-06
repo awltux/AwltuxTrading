@@ -483,6 +483,38 @@ a note. This is the longest of them and the only one that does not.
 on the loop, the shape the other seven use. It cannot be verified without a live run
 of an hour or more, so it is worth doing alongside whatever bounds this job.
 
+### The universe news poll needs hours and never finishes
+
+`ingest_rss_news` (`ingest/news.py:346`) walks every instrument in the universe, up to
+`news.max_items_per_feed_poll` (**50**) headlines each — 500 instruments, so a
+**25,000-item** ceiling — and there is no per-run cap and no rotation. Measured
+2026-10-06, `news_rss` run #220: **3,033 headlines classified in 97 minutes at a flat
+31/minute**, with no decline in the 15-minute buckets from start to finish (273, 451,
+488, 500, 428, 472, 421). At that rate the ceiling is about **13 hours**.
+
+`news_rss` has **0 successful runs in 7 attempts**, and this is why: a run is a working
+session long, so every session ends with it still going.
+
+**Interrupting it is cheap, and that was worth checking rather than assuming.**
+`release_write_lock` (`db/session.py:161`) *commits*, and this loop calls it after every
+instrument (`news.py:378`); the model client commits at every network boundary too. So
+the 3,033 rows were already durable — confirmed by reading them from a *second*
+connection while the run was still going, which is only possible for committed data. A
+kill loses at most the instrument in flight, and the next run skips everything already
+stored (`url_hash` dedup in `persist_items`). The backlog drains across runs rather than
+being redone.
+
+So this is not the usual "killed mid-batch is lost work" case. It is worse in one way
+and better in another: nothing is lost, but nothing completes either, so the job never
+reports success, never enters the catch-up history (`AGENTS.md` §1) and never gets the
+restart resilience every other job now has.
+
+**Next:** the shape `fundamentals` already uses — a per-run item budget with a
+least-recently-polled rotation over the universe. A poll that stops at, say, 300
+headlines and records where it got to finishes *and reports success*, which is what
+makes it eligible for catch-up. The loop also needs the `progress.note` above it before
+either can be observed.
+
 ### Every page is only tested against seeded data
 
 The `engine_label` failure and the empty-universe failure were both invisible to a
