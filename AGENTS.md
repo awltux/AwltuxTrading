@@ -150,6 +150,12 @@ calls providers and writes. Render the template directly.
 A registered job needs a `PROBES` entry (`scheduler/dependencies.py`) and a
 `SUMMARISERS` entry (`scheduler/outcomes.py`). Tests enforce both.
 
+**Seed a page test with `commit`, not `flush`.** A request is served on its own session
+in another thread, so a row that has been flushed but not committed is invisible to the
+page — however many times it is flushed, and whichever parent rows exist. The symptom is
+a 404, or an empty table, for a row the test itself can see, which reads as a broken
+route rather than a broken fixture. `TestClient` is not a call into the same thread.
+
 ## 4. Code standards
 
 Six properties, each with a live example.
