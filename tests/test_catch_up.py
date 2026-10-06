@@ -483,26 +483,58 @@ class TestOnStart:
 
         assert recorder == []
 
-    def test_the_status_says_which_jobs_are_overdue(self, session, recorder):
+    def test_the_status_says_which_jobs_are_behind(self, session, recorder):
         """Shown rather than left as a timestamp the reader must compare to a clock.
 
-        A catch-up waits behind the single worker, so it sits overdue for as long as
-        the job in front of it runs; that is a queue, not a fault, and the page has to
-        be able to say so. Asserted by driving the due time, in the same way the
-        one-worker test does, rather than by racing a real run.
+        Derived from the run history, and that is the fix for a bug this test would
+        otherwise have passed straight through. The first version compared `next_run`
+        against the clock, which is wrong because **APScheduler advances `next_run_time`
+        when a job is handed to the executor, not when it starts**. Measured on the
+        first live catch-up: ten jobs were queued behind the single worker, all had a
+        `next_run` in the future, and `news_relevance` was 183 minutes past a one-hour
+        interval -- so the badge that existed to explain the queue never appeared once.
         """
-        service = SchedulerService([_spec(id="late")])
+        from awltux.db import IngestRun
+
+        behind_at = dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)
+        current_at = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=5)
+        session.add(IngestRun(job="behind", started_at=behind_at, finished_at=behind_at, ok=True))
+        session.add(IngestRun(job="current", started_at=current_at, finished_at=current_at, ok=True))
+        session.commit()
+
+        service = SchedulerService(
+            [_spec(id="behind"), _spec(id="current"), _spec(id="fresh")]
+        )
+        service.start()
+        try:
+            rows = {row["id"]: row for row in service.status()}
+
+            assert rows["behind"]["overdue"] is True
+            assert rows["current"]["overdue"] is False
+            # Never succeeded, so nothing was missed -- the same rule the scheduler
+            # applies, not a second one invented for the page.
+            assert rows["fresh"]["overdue"] is False
+
+            # The defect this replaces: the badge must not depend on the clock.
+            assert dt.datetime.fromisoformat(rows["behind"]["next_run"]) > dt.datetime.now(
+                dt.UTC
+            ), "the queued job's next_run is in the future, which is why it was missed"
+        finally:
+            service.shutdown(wait=False)
+
+    def test_a_hidden_failure_to_read_the_history_does_not_break_the_page(self, monkeypatch):
+        """An unreadable run table is a missing badge, not a 500 on /jobs."""
+        import awltux.scheduler.service as service_module
+
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("the run table is unreadable")
+
+        monkeypatch.setattr(service_module, "last_successful_runs", explode)
+
+        service = SchedulerService([_spec(id="x")])
         service.start()
         try:
             assert service.status()[0]["overdue"] is False
-
-            service._scheduler.modify_job(
-                "late", next_run_time=dt.datetime.now(dt.UTC) - dt.timedelta(hours=2)
-            )
-
-            row = service.status()[0]
-            assert row["overdue"] is True
-            assert dt.datetime.fromisoformat(row["next_run"]) < dt.datetime.now(dt.UTC)
         finally:
             service.shutdown(wait=False)
 

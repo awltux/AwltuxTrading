@@ -399,6 +399,7 @@ class SchedulerService:
         """Job status for the dashboard's health panel."""
         jobs = {job.id: job for job in self._scheduler.get_jobs()}
         now = dt.datetime.now(dt.UTC)
+        behind = self._behind_by_job(now)
         out: list[dict[str, object]] = []
         for spec in self._specs.values():
             job = jobs.get(spec.id)
@@ -414,12 +415,36 @@ class SchedulerService:
                     # to read the registry to know what must run first.
                     "needs": list(spec.depends_on),
                     "next_run": next_run.isoformat() if next_run else None,
-                    # A due time that has already passed. Normally this is a catch-up
-                    # waiting its turn behind the single worker -- a run is not
-                    # "missed" while it is only queued -- so it is worth showing
-                    # rather than hiding behind a timestamp the reader has to compare
-                    # against a clock.
-                    "overdue": bool(next_run and next_run < now),
+                    # Derived from the *history*, not from `next_run`, and that is the
+                    # whole point of the field. APScheduler advances `next_run_time`
+                    # when a job is handed to the executor, not when it starts, so a
+                    # catch-up queued behind the single worker already has a next run
+                    # in the future while its data is hours stale. Measured on the
+                    # first live catch-up: ten jobs were queued, `news_relevance` was
+                    # 183 minutes past a one-hour interval, and every one of them read
+                    # `next_run` in the future. Asking the same question the scheduler
+                    # asks (`catchup.catch_up_for`) is what keeps the page and the
+                    # scheduler from disagreeing.
+                    "overdue": spec.id in behind,
                 }
             )
         return out
+
+    def _behind_by_job(self, now: dt.datetime) -> set[str]:
+        """Jobs whose last successful run is more than an interval old.
+
+        A failure to read the history reports nothing as behind: an unreadable run
+        table is a missing badge, not a reason for the Operations page to fail.
+        """
+        from awltux.db import session_scope
+
+        try:
+            with session_scope() as session:
+                last_successes = last_successful_runs(session)
+        except Exception:  # pragma: no cover - an unreadable DB must not break a page
+            logger.exception("could not read the run history for the overdue badge")
+            return set()
+        return {
+            catch_up.job_id
+            for catch_up in catch_ups(self._specs.values(), last_successes, now)
+        }
