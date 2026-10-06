@@ -526,6 +526,36 @@ headlines and records where it got to finishes *and reports success*, which is w
 makes it eligible for catch-up. The loop also needs the `progress.note` above it before
 either can be observed.
 
+### The accounting equation does not hold for several stored periods
+
+Found by the trial balance on the accounts page (`analysis/ledger.py`) the first time it
+was run over the live data, on 2026-10-06. Of the 22 instruments with a computable
+equation, **14 agree and 4 are out**; the rest cannot be attempted because the filing
+does not state one of the three totals.
+
+The equation is a fact about the filing -- a published balance sheet balances by
+construction -- so a residual here is **our extraction, not the company**. Measured:
+
+| ticker | period | out by | share of assets |
+|---|---|---|---|
+| DFPH_US_EQ | 2020-12-31 | 219,756,050 | **+95.0%** |
+| AMBQ_US_EQ | 2024-12-31 | 378,150,000 | **+362.6%** |
+| AMWL_US_EQ | 2024-12-31 | 11,472,000 | +2.6% |
+| ACM_US_EQ | 2020-09-30 | 120,986,000 | +0.9% |
+| AREC_US_EQ | 2024-12-31 | -1,561,666 | -0.8% |
+
+DFPH and AMBQ are gross: DFPH reports 231m of assets against 11.6m of liabilities and
+equity, and AMBQ reports -292m of equity against 104m of assets. Both look like a
+figure taken from the wrong XBRL concept or the wrong period rather than a rounding
+difference. ACM, AMWL and AREC are under 3% and are more likely a missing component
+(AMWL's intangibles are 101m of 436m of assets, so a concept landing in the wrong year
+would explain it).
+
+**Next:** the four gross cases are worth tracing to the `xbrl_companyfacts` tag that
+produced them, because a wrong `total_equity` is not only a broken equation -- `roe`,
+`debt_to_equity` and the Altman Z'' input all divide by it. The check is the tool for
+finding them; this is the list to work through.
+
 ### Every page is only tested against seeded data
 
 The `engine_label` failure and the empty-universe failure were both invisible to a
