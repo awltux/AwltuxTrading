@@ -15,6 +15,8 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import desc, select
 
 from awltux import __version__, version
+from awltux.analysis import ledger
+from awltux.analysis.fundamental import build_snapshot
 from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
@@ -145,6 +147,72 @@ def instrument_page(
                 "long_term": get_settings().horizons.long_term,
                 "short_term": get_settings().horizons.short_term,
             },
+        },
+    )
+
+
+@router.get("/accounts/{period_id}", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/accounts/{period_id}/{statement}", response_class=HTMLResponse, include_in_schema=False)
+def accounts_page(
+    request: Request,
+    period_id: int,
+    statement: str = ledger.DEFAULT_STATEMENT,
+) -> HTMLResponse:
+    """One period's accounts, as a ledger, one statement per URL.
+
+    A path segment rather than a query parameter so each statement is a real address:
+    it can be linked to, bookmarked and reloaded, and the page works with JavaScript
+    off like every other page here. A tab strip that only moved the highlight would
+    make "send me the balance sheet" impossible to answer.
+
+    An unknown statement is a 404 rather than a silent fallback to the first tab,
+    because quietly showing profit and loss to someone who asked for the cash flow is
+    how a reader ends up reading the wrong statement.
+    """
+    if statement not in ledger.TAB_NAMES:
+        raise HTTPException(status_code=404, detail=f"no statement {statement!r}")
+
+    with session_scope() as session:
+        detail = queries.accounts_detail(session, period_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+
+    period = detail["period"]
+    previous = detail["previous"]
+    metrics = period.metrics or {}
+    # The same snapshot the instrument page reads, over the periods up to this one, so
+    # the markers and red flags here cannot disagree with the ones shown there.
+    snapshot = build_snapshot(detail["series"])
+
+    return templates.TemplateResponse(
+        request,
+        "accounts.html",
+        {
+            "period": period,
+            "previous": previous,
+            "instrument": detail["instrument"],
+            "statement": statement,
+            "tabs": [
+                {
+                    "name": name,
+                    "label": label,
+                    "url": f"/accounts/{period_id}/{name}",
+                    "active": name == statement,
+                }
+                for name, label in ledger.TABS
+            ],
+            "built": (
+                ledger.statement(period, statement)
+                if statement in ledger.STATEMENT_KINDS
+                else None
+            ),
+            "health": ledger.checks(period, previous),
+            "snapshot": snapshot,
+            "empty": not metrics,
+            "currency": period.currency or "",
+            "period_type": period.period_type,
+            "source": period.source,
+            "metric_sources": (period.metric_sources or {}),
         },
     )
 

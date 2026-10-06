@@ -612,6 +612,54 @@ def instrument_detail(
     }
 
 
+def accounts_detail(session: Session, period_id: int) -> dict[str, Any] | None:
+    """One stored period, the comparable one before it, and its instrument.
+
+    **The predecessor is matched on period type and source, not on date alone.** The
+    articulation checks compare closing figures against opening ones, and comparing an
+    annual XBRL period with the interim snapshot an extractor produced three months
+    later would produce a retained-earnings roll-forward that measures the gap between
+    two taxonomies rather than the movement in the business. Same type, same source, so
+    the two periods are the same kind of statement.
+
+    ``None`` for a period that does not exist, which the route turns into a 404 rather
+    than an empty page: an accounts page with no accounts is not a useful answer.
+    """
+    period = session.get(FundamentalPeriod, period_id)
+    if period is None:
+        return None
+
+    previous = session.execute(
+        select(FundamentalPeriod)
+        .where(FundamentalPeriod.instrument_t212_ticker == period.instrument_t212_ticker)
+        .where(FundamentalPeriod.period_type == period.period_type)
+        .where(FundamentalPeriod.source == period.source)
+        .where(FundamentalPeriod.period_end < period.period_end)
+        .order_by(desc(FundamentalPeriod.period_end))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    # Everything up to and including the period on screen, oldest first. The health
+    # tab runs the same analysis the instrument page does, and truncating the series
+    # is what stops it reporting on a later year than the accounts being read -- a
+    # page showing 2022 figures next to 2024 verdicts is worse than no verdicts.
+    series = list(
+        session.execute(
+            select(FundamentalPeriod)
+            .where(FundamentalPeriod.instrument_t212_ticker == period.instrument_t212_ticker)
+            .where(FundamentalPeriod.period_end <= period.period_end)
+            .order_by(FundamentalPeriod.period_end)
+        ).scalars().all()
+    )
+
+    return {
+        "period": period,
+        "previous": previous,
+        "instrument": session.get(Instrument, period.instrument_t212_ticker),
+        "series": series,
+    }
+
+
 def recent_news(
     session: Session,
     *,

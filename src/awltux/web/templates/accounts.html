@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}{{ instrument.name if instrument else period.instrument_t212_ticker }} accounts {{ period.period_end }} — {{ app_name }}{% endblock %}
+
+{#
+  One period's accounts, as a ledger rather than as three lists of numbers.
+
+  The tabs are real links, each with its own URL, so a statement can be sent to
+  somebody and the page works with JavaScript off. The same is true of every page here,
+  but it matters more for accounts: "look at the cash flow for 2023" is a sentence
+  people say to each other.
+
+  Nothing on this page is a verdict. The checks say whether the figures *add up*, the
+  markers say what was measured, and both carry their inputs -- the failure mode of
+  every accounting-quality tool is a number that reads as an opinion.
+#}
+
+{% block content %}
+<p class="muted small">
+  {% if instrument %}<a href="/instrument/{{ period.instrument_t212_ticker }}">&larr; {{ period.instrument_t212_ticker }}</a>
+  {% else %}&larr; Accounts{% endif %}
+</p>
+
+<h1>
+  {{ instrument.name if instrument else period.instrument_t212_ticker }}
+  <span class="muted small">accounts to {{ period.period_end }}</span>
+</h1>
+
+<section class="kv">
+  <div><dt>Period end</dt><dd>{{ period.period_end }}</dd></div>
+  <div><dt>Basis</dt><dd>{{ period_type }}{% if currency %} · {{ currency }}{% endif %}</dd></div>
+  <div><dt>Source</dt><dd>{{ source }}</dd></div>
+  {% if previous %}
+    <div><dt>Comparable</dt><dd>{{ previous.period_end }} ({{ previous.period_type }}, {{ previous.source }})</dd></div>
+  {% else %}
+    <div><dt>Comparable</dt><dd class="muted">none stored on the same basis</dd></div>
+  {% endif %}
+</section>
+
+{% if empty %}
+  <p class="notice warn">
+    This period is stored but holds no figures, so there is nothing to lay out. The
+    document was filed and linked, but nothing was parsed out of it.
+  </p>
+{% endif %}
+
+{# -------------------------------------------------------------------- tabs #}
+<nav class="tabs">
+  {% for tab in tabs %}
+    <a href="{{ tab.url }}"{% if tab.active %} class="active" aria-current="page"{% endif %}>{{ tab.label }}</a>
+  {% endfor %}
+</nav>
+
+{% if built %}
+  {% for section in built.sections %}
+    <h2>{{ section.title }}</h2>
+    <table class="grid compact ledger">
+      <thead>
+        <tr>
+          <th>Line</th>
+          <th class="num">{{ currency or 'Amount' }}</th>
+          <th class="num">Stated</th>
+          <th class="num">Computed</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for line in section.lines %}
+        <tr class="{% if line.role == 'subtotal' %}subtotal{% endif %}">
+          <td>
+            {% if line.role == 'memo' %}<span class="muted">{{ line.label }}</span>
+            {% else %}{{ line.label }}{% endif %}
+          </td>
+          <td class="num">
+            {% if line.amount is not none %}{{ line.amount | number(0) }}{% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          {# Stated and computed are columns of their own rather than a footnote: the
+             residual between them is the size of the lines this project does not
+             extract, and a reader who cannot see it cannot tell an extraction gap from
+             a business with unusual economics. #}
+          <td class="num small muted">
+            {% if line.stated is not none %}{{ line.stated | number(0) }}{% else %}—{% endif %}
+          </td>
+          <td class="num small">
+            {% if line.computed is none %}<span class="muted">—</span>
+            {% elif line.agrees is false %}
+              <span class="warn">{{ line.computed | number(0) }}</span>
+              <span class="muted small">out by {{ line.residual | number(0) }}</span>
+            {% else %}<span class="muted">{{ line.computed | number(0) }}</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endfor %}
+
+  {% if built.trial_balance %}
+    <h2>The trial balance</h2>
+    <p class="muted small">
+      The stated totals, posted to their sides. This is what makes the page a ledger
+      rather than a list: the sides have to agree, and the difference below is reported
+      rather than absorbed into a balancing figure. The <em>components</em> are checked
+      separately on the health tab — posting them here instead would make every filer
+      look insolvent by exactly the amount of the accounts this project does not collect.
+    </p>
+    <table class="grid compact ledger">
+      <thead><tr><th>Side</th><th>Account</th><th class="num">{{ currency or 'Amount' }}</th></tr></thead>
+      <tbody>
+      {% for posting in built.trial_balance.postings %}
+        <tr>
+          <td>{{ posting.account.side }}</td>
+          <td>{{ posting.account.label }}</td>
+          <td class="num">{{ posting.amount | number(0) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr><td>debit</td><td>Total debits</td><td class="num">{{ built.trial_balance.debits | number(0) }}</td></tr>
+        <tr><td>credit</td><td>Total credits</td><td class="num">{{ built.trial_balance.credits | number(0) }}</td></tr>
+        <tr class="subtotal">
+          <td colspan="2">Out by</td>
+          <td class="num {% if built.trial_balance.balanced %}good{% else %}bad{% endif %}">
+            {{ built.trial_balance.difference | number(0) }}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  {% endif %}
+
+  {% if built.gaps %}
+    <p class="muted small">
+      Nothing was extracted for: {{ built.gaps | join(', ') }}. Those lines are absent
+      rather than zero, which is why the arithmetic beside them may be blank.
+    </p>
+  {% endif %}
+
+  {% for note in built.notes %}
+    <p class="muted small">{{ note }}</p>
+  {% endfor %}
+
+{% else %}
+  {# ----------------------------------------------------------- health tab #}
+  <h2>Do the figures add up?</h2>
+  <p class="muted small">
+    Seven checks, and each either agrees, disagrees, or says it could not be attempted.
+    An imbalance is never plugged. The accounting equation is a fact about the filing,
+    so a residual there means <em>this project</em> extracted it wrongly; a composition
+    residual is simply the size of the accounts the taxonomy does not carry.
+  </p>
+  <table class="grid compact">
+    <thead><tr><th>Check</th><th>Result</th><th class="num">Out by</th><th>What it compared</th></tr></thead>
+    <tbody>
+    {% for check in health %}
+      <tr>
+        <td>{{ check.label }}</td>
+        <td>
+          {% if check.status == 'ok' %}<span class="good">agrees</span>
+          {% elif check.status == 'imbalance' %}<span class="warn">out</span>
+          {% else %}<span class="muted">not computable</span>{% endif %}
+        </td>
+        <td class="num">
+          {% if check.residual is not none %}{{ check.residual | number(0) }}{% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="small muted">{{ check.detail }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>What the markers measured</h2>
+  {% if snapshot.periods_used %}
+    <p class="muted small">
+      The same analysis the instrument page uses, over
+      {{ snapshot.periods_used }} period{{ '' if snapshot.periods_used == 1 else 's' }}
+      ending {{ snapshot.as_of or '—' }} — which is not the period on screen unless that
+      is the latest one stored. A verdict about 2022 shown beside 2019 accounts would be
+      worse than no verdict at all.
+    </p>
+  {% endif %}
+
+  {% if snapshot.red_flags %}
+    <h3>Flags</h3>
+    <ul>
+      {% for flag in snapshot.red_flags %}<li><span class="warn">{{ flag }}</span></li>{% endfor %}
+    </ul>
+  {% endif %}
+  {% if snapshot.positives %}
+    <h3>In its favour</h3>
+    <ul>
+      {% for good in snapshot.positives %}<li><span class="good">{{ good }}</span></li>{% endfor %}
+    </ul>
+  {% endif %}
+
+  {% for marker in snapshot.markers %}
+    <h3>{{ marker.label }} <span class="muted small">tier {{ marker.tier }}</span></h3>
+    <p>{{ marker.reading }}</p>
+    {% if marker.caveat %}<p class="muted small">{{ marker.caveat }}</p>{% endif %}
+    {# Closed by default: the reading is what a person should look at, and the inputs
+       are there for when the number is doubted. #}
+    <details>
+      <summary class="muted small">Inputs</summary>
+      <table class="grid compact">
+        <tbody>
+        {% for key, value in marker.inputs.items() %}
+          <tr>
+            <td class="small">{{ key }}</td>
+            <td class="small"><code>{{ value }}</code></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  {% else %}
+    <p class="muted">No marker could be computed from the stored periods.</p>
+  {% endfor %}
+{% endif %}
+{% endblock %}

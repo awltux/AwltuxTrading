@@ -408,12 +408,20 @@
 {# ------------------------------------------------------------- fundamentals #}
 <h2>Accounts</h2>
 {% if fundamentals %}
+  <p class="muted small">
+    Open a period to see it as a set of accounts — profit &amp; loss, balance sheet and
+    cash flow, laid out as a double-entry ledger, with the checks that say whether the
+    figures add up.
+  </p>
   <table class="grid compact">
     <thead><tr><th>Period end</th><th>Type</th><th>Source</th><th class="num">Revenue</th><th class="num">Net income</th><th class="num">ROE</th><th class="num">Net margin</th><th class="num">Confidence</th></tr></thead>
     <tbody>
     {% for period in fundamentals %}
       <tr>
-        <td>{{ period.period_end }}</td>
+        {# The date is the way in. It carries the period's id rather than its date
+           because the unique key is (instrument, period end, type, source), so a date
+           alone can name more than one stored period. #}
+        <td><a href="/accounts/{{ period.id }}">{{ period.period_end }}</a></td>
         <td>{{ period.period_type }}</td>
         <td>{{ period.source }}</td>
         <td class="num">{{ period.metrics.get('revenue') | number(0) }}</td>

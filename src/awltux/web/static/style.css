@@ -313,3 +313,26 @@ footer {
   max-width: 1600px; margin: 0 auto;
 }
 .disclaimer { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+
+/* The statement tabs on an accounts page. Links, not buttons: each tab is its own
+   URL so a statement can be linked to and the page works with JavaScript off. */
+.tabs {
+  display: flex; flex-wrap: wrap; gap: 2px; margin: 18px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+.tabs a {
+  padding: 7px 14px; color: var(--muted); font-size: 13px;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 7px 7px 0 0; margin-bottom: -1px;
+}
+.tabs a:hover { color: inherit; background: var(--panel); }
+.tabs a.active {
+  color: inherit; background: var(--panel);
+  border-color: var(--line); border-bottom: 1px solid var(--panel);
+}
+
+/* A ledger: stated and computed side by side, so the residual is visible rather than
+   folded into the printed figure. The subtotal row is the one a reader scans for. */
+.ledger tr.subtotal td { border-top: 1px solid var(--line); font-weight: 600; }
+.ledger tfoot td { border-top: 1px solid var(--line); font-weight: 600; padding-top: 6px; }
+.ledger td code, .ledger th { white-space: nowrap; }
