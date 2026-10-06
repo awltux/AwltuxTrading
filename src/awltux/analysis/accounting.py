@@ -708,6 +708,151 @@ def beneish_inputs_marker(series: list[FundamentalPeriod]) -> Marker | None:
     )
 
 
+#: Altman's Z'' coefficients, and where they come from.
+#:
+#: Verified against Altman's own 2000 restatement rather than a secondary source --
+#: the research note withdrew its earlier "Wikipedia only" caveat once the leading
+#: 6.56 was confirmed from the paper. That verification is the whole reason a
+#: composite is shown here at all, and it is the difference from
+#: :func:`beneish_inputs_marker`, whose five-variable coefficients are *not* in this
+#: project's evidence base and are therefore not computed.
+#:
+#: **Z'' and not the original Z.** The note gives two independent reasons: Z'' drops
+#: X5 (sales/assets) and takes X4 as **book** equity over total liabilities rather
+#: than market value, so it is buildable from the accounts alone and needs no share
+#: price; and Altman's own argument for it is that it tolerates *un*-capitalised
+#: leases, which is what makes it usable on pre-2019 and cross-border data.
+ALTMAN_Z_DOUBLE_PRIME: tuple[tuple[str, float], ...] = (
+    ("working capital to total assets", 6.56),
+    ("retained earnings to total assets", 3.26),
+    ("EBIT to total assets", 6.72),
+    ("book equity to total liabilities", 1.05),
+)
+
+
+def _altman_ratios(period: FundamentalPeriod) -> dict[str, float | None]:
+    """The four Z'' inputs from one period, each ``None`` when it cannot be built.
+
+    X1 is the one that is usually missing, and for a structural reason the note
+    records: current assets and current liabilities are simply absent for a large
+    minority of filers (~21% of US filers in the study it cites), and legally absent
+    for UK small and micro filers. X4 is book equity over total liabilities, so a
+    negative-equity year produces a negative input -- a real reading, kept rather
+    than suppressed.
+    """
+    assets = value_of(period.metrics, "total_assets")
+    current_assets = value_of(period.metrics, "current_assets")
+    current_liabilities = value_of(period.metrics, "current_liabilities")
+    working_capital = (
+        current_assets - current_liabilities
+        if current_assets is not None and current_liabilities is not None
+        else None
+    )
+    return {
+        "working capital to total assets": _safe_ratio(working_capital, assets),
+        "retained earnings to total assets": _safe_ratio(
+            value_of(period.metrics, "retained_earnings"), assets
+        ),
+        "EBIT to total assets": _safe_ratio(value_of(period.metrics, "ebit"), assets),
+        "book equity to total liabilities": _safe_ratio(
+            value_of(period.metrics, "total_equity"),
+            value_of(period.metrics, "total_liabilities"),
+        ),
+    }
+
+
+#: The demotion, in the words the marker has to carry with it.
+#:
+#: Kept as a named constant rather than inlined because it is the *reason* this
+#: marker exists in the shape it does, and the numbers in it are the measurement a
+#: later reader would otherwise have to go and find again. Source: the note's
+#: ordered list, which demotes Altman from the ranking slot for exactly these figures.
+ALTMAN_DEMOTION_CAVEAT = (
+    "The score is not for ranking and its zones are deliberately not applied. Three "
+    "of the five original inputs are statistically insignificant on modern "
+    "populations, its out-of-sample pseudo-R-squared was 0.07, and it places 47% of "
+    "listed firms below the cut-off while missing 19% of the failures -- it "
+    "over-flags healthy firms. It was fitted to US manufacturers over 1946-1965, and "
+    "FRS 102 and IFRS differ on leases, development costs and goodwill, so it must not "
+    "be ported to UK accounts unmodified. A flag means 'read this', never 'this is "
+    "distress'."
+)
+
+
+def _altman_score(ratios: dict[str, float | None]) -> float | None:
+    """Z'' when every input is present, and ``None`` otherwise.
+
+    Withholding a partial composite is the point: three of four inputs summed is a
+    number that looks like the score and is not, and the input that goes missing is
+    the same one for a whole class of filers, so it would be wrong for all of them
+    at once rather than randomly.
+    """
+    if any(value is None for value in ratios.values()):
+        return None
+    return sum(
+        coefficient * (ratios[name] or 0.0)
+        for name, coefficient in ALTMAN_Z_DOUBLE_PRIME
+    )
+
+
+def altman_inputs_marker(series: list[FundamentalPeriod]) -> Marker | None:
+    """The Altman Z'' inputs, with the score shown and **no cut-off applied**.
+
+    The note demotes this marker, and the demotion is why it is shaped like this:
+    *three of its five inputs are statistically insignificant on a modern population
+    and it flags 47% of listed firms while missing 19% of failures, so its inputs
+    belong on the page and its score does not belong in a ranking.* On 78,100
+    firm-years the Z-score's pseudo-R² was **0.07**, and its failure mode is
+    over-flagging healthy firms rather than missing collapses -- the safer error for
+    a research tool to make, and still an error.
+
+    So the four ratios are the marker, and the composite is arithmetic shown beside
+    them: computed only when all four are present, never compared to a zone, and
+    never ranked. **The zone table is deliberately absent.** "Below 1.1 is distress"
+    is exactly the threshold verdict this module's second rule forbids, and the 47%
+    figure in :data:`ALTMAN_DEMOTION_CAVEAT` is the measurement that says why.
+
+    A partial set is reported rather than withheld. X1 is the input that is usually
+    missing, and saying which one could not be built is more useful than declining to
+    say anything at all.
+    """
+    if not series:
+        return None
+
+    latest = series[-1]
+    ratios = _altman_ratios(latest)
+    missing = [name for name, value in ratios.items() if value is None]
+    if len(missing) == len(ratios):
+        return None
+
+    label = _period_label(latest)
+    return Marker(
+        name="altman_inputs",
+        label="Altman Z'' inputs (score shown, no cut-off applied)",
+        tier="B",
+        unit="ratio",
+        # No headline value, for the same reason `beneish_inputs_marker` has none: the
+        # inputs are the marker, and a `value` is the field a later reader would rank.
+        value=None,
+        inputs={
+            "ratios": ratios,
+            "years": [label],
+            "z_double_prime": _altman_score(ratios),
+            "missing": missing,
+        },
+        reading=(
+            f"Z'' inputs for {label}: working capital, retained earnings and EBIT each "
+            f"against total assets, and book equity against total liabilities"
+            + (
+                f"; {len(missing)} of 4 could not be built ({', '.join(missing)})"
+                if missing
+                else ", all four computable"
+            )
+        ),
+        caveat=ALTMAN_DEMOTION_CAVEAT,
+    )
+
+
 def _index(late: float | None, early: float | None) -> float | None:
     """A period-over-period index, guarded against a non-positive base.
 
@@ -781,5 +926,6 @@ def analyse(series: list[FundamentalPeriod]) -> list[Marker]:
         inventory_drift_marker(series),
         goodwill_intensity_marker(series),
         beneish_inputs_marker(series),
+        altman_inputs_marker(series),
     )
     return [marker for marker in candidates if marker is not None]

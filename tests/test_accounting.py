@@ -20,6 +20,7 @@ import pytest
 from awltux.analysis.accounting import (
     Marker,
     accrual_marker,
+    altman_inputs_marker,
     analyse,
     beneish_inputs_marker,
     cash_conversion_marker,
@@ -567,3 +568,163 @@ class TestBeneishInputs:
         names = {marker.name for marker in analyse(_series(_healthy(), _healthy()))}
 
         assert "beneish_m" not in names
+
+
+def _altman_year(assets: float = 1_000.0, **extra: float) -> dict[str, float]:
+    """A period carrying all four Z'' inputs, at values with a hand-checkable score."""
+    metrics = {
+        "total_assets": assets,
+        "current_assets": 500.0,
+        "current_liabilities": 250.0,
+        "retained_earnings": 300.0,
+        "ebit": 150.0,
+        "total_equity": 600.0,
+        "total_liabilities": 400.0,
+    }
+    metrics.update(extra)
+    return metrics
+
+
+class TestAltmanInputs:
+    def test_the_coefficients_are_the_ones_the_note_verifies(self):
+        """Pinned, because the evidence base is what licenses computing a score here.
+
+        The note records that the leading 6.56 was confirmed from Altman's own 2000
+        text and that its earlier "Wikipedia only" caveat was withdrawn. A quiet edit
+        to any of these would produce a number that still looks like a Z'' score and
+        is not one, which is the failure a reader could not detect.
+        """
+        from awltux.analysis.accounting import ALTMAN_Z_DOUBLE_PRIME
+
+        assert dict(ALTMAN_Z_DOUBLE_PRIME) == {
+            "working capital to total assets": 6.56,
+            "retained earnings to total assets": 3.26,
+            "EBIT to total assets": 6.72,
+            "book equity to total liabilities": 1.05,
+        }
+
+    def test_the_inputs_are_the_four_ratios_the_note_defines(self):
+        """X1..X4 of Z'', including X4 as **book** equity rather than market value."""
+        marker = altman_inputs_marker(_series(_altman_year()))
+
+        assert marker is not None
+        ratios = marker.inputs["ratios"]
+        assert ratios["working capital to total assets"] == pytest.approx(0.25)
+        assert ratios["retained earnings to total assets"] == pytest.approx(0.30)
+        assert ratios["EBIT to total assets"] == pytest.approx(0.15)
+        assert ratios["book equity to total liabilities"] == pytest.approx(1.50)
+
+    def test_the_composite_is_the_z_double_prime_arithmetic(self):
+        """6.56·X1 + 3.26·X2 + 6.72·X3 + 1.05·X4, worked through by hand.
+
+        6.56(0.25) + 3.26(0.30) + 6.72(0.15) + 1.05(1.50)
+        = 1.640 + 0.978 + 1.008 + 1.575 = 5.201
+        """
+        marker = altman_inputs_marker(_series(_altman_year()))
+
+        assert marker.inputs["z_double_prime"] == pytest.approx(5.201)
+
+    def test_the_headline_value_is_absent_so_nothing_can_rank_on_it(self):
+        """The note's demotion, enforced in the shape of the marker.
+
+        "Its inputs belong on the page and its score does not belong in a ranking."
+        `value` is the field a ranking would read, so it stays empty and the score
+        lives in the audit trail beside the ratios that produced it.
+        """
+        marker = altman_inputs_marker(_series(_altman_year()))
+
+        assert marker.value is None
+        assert marker.inputs["z_double_prime"] is not None
+
+    def test_the_zone_is_never_applied(self):
+        """No cut-off verdict, which is this module's second rule.
+
+        The zones exist in the literature and are deliberately not used: the same
+        evidence that demotes the score says 47% of listed firms sit below the
+        distress cut-off while 19% of the failures sat above it. Asserted on the
+        cut-offs themselves rather than on the word "distress", which the caveat
+        legitimately uses when it forbids exactly this reading.
+        """
+        marker = altman_inputs_marker(_series(_altman_year()))
+
+        assert "zones are deliberately not applied" in marker.caveat
+        for cutoff in ("1.1", "1.81", "2.6", "2.99"):
+            assert cutoff not in marker.reading, f"{cutoff} restated as a threshold"
+            assert cutoff not in marker.caveat, f"{cutoff} restated as a threshold"
+
+    def test_a_missing_input_withholds_the_composite(self):
+        """Three of four inputs summed is a number that looks like the score and is
+        not, and the missing input is the same one for a whole class of filers."""
+        without_equity = _altman_year()
+        del without_equity["total_equity"]
+
+        marker = altman_inputs_marker(_series(without_equity))
+
+        assert marker.inputs["z_double_prime"] is None
+        assert marker.inputs["missing"] == ["book equity to total liabilities"]
+
+    def test_it_names_what_could_not_be_built(self):
+        """X1 is the input that is usually absent -- current assets and liabilities
+        are missing for a large minority of filers, and legally absent for UK small
+        and micro filers -- so the marker says so rather than going quiet.
+
+        Dropping both liquidity figures costs exactly one of the four ratios, because
+        only X1 is built from them; the count is asserted so a widened dependency
+        would have to be a deliberate change rather than an accident.
+        """
+        without_liquidity = _altman_year()
+        del without_liquidity["current_assets"]
+        del without_liquidity["current_liabilities"]
+
+        marker = altman_inputs_marker(_series(without_liquidity))
+
+        assert marker is not None
+        assert marker.inputs["ratios"]["working capital to total assets"] is None
+        assert marker.inputs["missing"] == ["working capital to total assets"]
+        assert "1 of 4 could not be built" in marker.reading
+        assert "working capital to total assets" in marker.reading
+
+    def test_a_negative_equity_year_keeps_a_negative_input(self):
+        """Insolvency is exactly the case this marker is looked at for, so the
+        reading is kept rather than suppressed for being below zero."""
+        marker = altman_inputs_marker(
+            _series(_altman_year(total_equity=-200.0, total_liabilities=1_200.0))
+        )
+
+        assert marker.inputs["ratios"]["book equity to total liabilities"] == pytest.approx(
+            -0.1667, abs=1e-4
+        )
+
+    def test_a_period_with_none_of_the_inputs_produces_no_marker(self):
+        """Rule three: a marker that needs a figure the accounts do not contain is
+        absent, not estimated."""
+        assert altman_inputs_marker(_series(_year())) is None
+
+    def test_no_periods_means_no_marker(self):
+        assert altman_inputs_marker([]) is None
+
+    def test_it_appears_in_analyse_once_the_inputs_exist(self):
+        names = {marker.name for marker in analyse(_series(_altman_year(), _altman_year()))}
+
+        assert "altman_inputs" in names
+
+    def test_the_caveat_carries_the_us_calibration_warning(self):
+        """The note calls this "required, not optional": Beneish and Altman were
+        fitted to US GAAP data, and FRS 102 and IFRS differ on leases, development
+        costs and goodwill."""
+        marker = altman_inputs_marker(_series(_altman_year()))
+
+        assert "must not be ported" in marker.caveat
+        assert "0.07" in marker.caveat
+        assert "read this" in marker.caveat
+
+    def test_there_is_no_marker_called_altman_z(self):
+        """The name a reader would expect, and the one that must not exist.
+
+        A marker named for the score is a marker that gets ranked and thresholded,
+        which is the demotion the note asks for.
+        """
+        names = {marker.name for marker in analyse(_series(_altman_year(), _altman_year()))}
+
+        assert "altman_z" not in names
+        assert "altman_z_double_prime" not in names
