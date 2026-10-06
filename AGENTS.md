@@ -39,6 +39,12 @@ Two ways it silently lies:
 - **Not rebuilt at all.** Then the container is simply older than the checkout, and
   nothing on the page says so.
 
+`.gitattributes` is load-bearing here. The check runs `git status` **inside the
+container**, where Git for Windows' system `core.autocrlf=true` does not exist, so
+without a repository-level `text=auto` every CRLF working-tree file compares as
+modified and *every* image is branded dirty. That is a false alarm that reads
+exactly like a real one, which is why it must not be allowed back.
+
 Either way the symptom is the same: **the Info page hash does not match
 `git rev-parse HEAD`.** That is a real defect, not cosmetic — every result the
 dashboard shows becomes untraceable to the code that produced it.
@@ -107,3 +113,107 @@ is the point of the file.
 When a bug is found in the behaviour rather than the code — a wrong threshold, a
 mistaken rule — write down what was measured. `TODO.md` holds the open ones and the
 resolved ones that would otherwise be re-litigated.
+
+---
+
+## 5. What "good code" means here
+
+Six properties. Each rule below is already followed somewhere in this tree, and the
+example is named so the standard is a thing you can go and read rather than an
+adjective.
+
+### Clean — say what the thing is, and never guess
+
+- **Names describe the domain, not the type.** `load_price_targets`,
+  `price_history_waiting_note`, `APPLY_FLOOR` — not `get_data`, `handle`, `THRESH`.
+- **An unknown value is rendered as visible, never as a plausible number.** A
+  missing figure shows `—`; it never becomes `0`, because `0` is a real value and a
+  reader cannot tell the two apart. `templating.py` exists to be the one place that
+  rule lives.
+- **A wrong answer is worse than a visible gap.** Where a match is uncertain — a
+  symbol, a company, a venue — the code refuses to apply it and records why, rather
+  than picking the best of a bad set. See `APPLY_FLOOR` and the venue penalty in
+  `ingest/identity.py`.
+- **Nothing is inferred silently.** Configuration is explicit; a missing credential
+  is reported as missing rather than producing an unauthenticated request that
+  fails somewhere else entirely.
+
+### Efficient — the network and the write lock are the expensive things
+
+- **Never hold SQLite's write lock across a network call.** Release it first
+  (`release_write_lock`), as every provider-touching job does.
+- **Alternate network and database phases per batch** rather than wrapping a whole
+  run in one transaction. `refresh_prices_eod` chunks at 40 for exactly this
+  reason: one transaction across hundreds of provider calls locks the dashboard out
+  for its duration.
+- **Bound every bulk operation.** `INSTRUMENT_FLUSH_EVERY`,
+  `RELEVANCE_BACKFILL_ROWS`, `RELEVANCE_FLUSH_EVERY` exist so a large import cannot
+  balloon memory or the lock.
+- **Respect the provider's budget.** `BudgetGuard` is acquired before every paid or
+  rate-limited call; do not add a call that bypasses it.
+- **Do work only where it is needed.** The symbol lookup considers only instruments
+  with no stored bar, and the universe refresh rations itself across the day. A job
+  that re-does settled work every run is a bug even when it is correct.
+
+### Modular — separate what decides from what fetches
+
+- **A decision is a pure function.** `ingest/identity.py` takes candidates and an
+  instrument and returns a scored result, so the scoring rules can be tested against
+  real provider output with no network. Its docstring states the split: *this module
+  decides; the provider only proposes.* Prefer that shape for any new judgement.
+- **The provider's output is untrusted data, returned as-is.** Adapters parse and
+  stop. They do not decide, and they do not silently drop a candidate the caller
+  might need to explain a refusal.
+- **One concern per module.** SQL lives in `web/queries.py` so the templates never
+  build their own; formatting lives in `web/templating.py`; timezone handling lives
+  in `timezones.py`. If you are about to write SQL or a format string in a template,
+  the function you actually want belongs in one of those.
+- **No circular convenience.** A module may import the layers beneath it, not its
+  siblings' internals.
+
+### Secure — this dashboard shows holdings and has no login
+
+- **Secrets never enter the repository or the image.** `.env` is gitignored *and*
+  `.dockerignore`d; `.dockerignore` keeps it out even though no `COPY` would have
+  taken it. Never print a credential: `redacted_dump` reports presence, and `doctor`
+  reports length and character class.
+- **The service is bound to loopback and is not authenticated.** `docker-compose.yml`
+  binds `127.0.0.1` deliberately. Do not move it onto a network interface, and do
+  not add an endpoint that assumes a trusted caller.
+- **Trading stays gated.** `allow_live_orders` must remain false by default and must
+  be checked at the point of action, not only in configuration.
+- **Validate anything that becomes a path or a query.** `parse_zone` checks a cookie
+  value against the real tz database before it reaches `ZoneInfo`, because zone keys
+  are filesystem paths. Use bound parameters, never string-built SQL, and treat
+  every provider string as untrusted input.
+- **Fail closed on access, and say so.** A refusal is reported as a refusal; it is
+  never softened into an empty success.
+
+### Testable — offline, deterministic, and about the property that broke
+
+- **The suite is offline and must stay that way** (section 3). If a behaviour needs
+  a real provider, capture its response as a fixture and assert against that — the
+  captured candidates in `tests/test_symbol_identity.py` are verbatim provider
+  output, which is why the rule they test is trustworthy.
+- **Test the property, not the implementation.** `test_the_chart_attributes_are_parseable_json`
+  parses the attribute as the browser would; it does not grep for a string that
+  happens to be there today.
+- **A regression test names the failure it prevents,** in its docstring, with the
+  measurement. A test whose reason is lost gets deleted by the next person who finds
+  it inconvenient.
+- **Assertions must be things that can fail.** No `assert True`, no asserting a
+  helper you just wrote returns what you just made it return.
+
+### Maintainable — leave the reasoning where the next person will find it
+
+- **Migrations are additive and inspection-guarded** (section 2), so `upgrade head`
+  is correct for a fresh database, an old one and one already migrated.
+- **Comments carry the *why*, including what was tried and rejected** (section 4).
+  This is the single highest-value habit in this repository: the reasoning is not
+  recoverable from the code, and without it someone re-litigates the same decision.
+- **Open questions have a home.** `TODO.md` records what is unresolved *and the
+  evidence*, so the next session starts from measurement rather than from scratch.
+- **Correct the record when it turns out to be wrong.** A claim in a document that
+  is no longer true is a bug; fix it in the same change that invalidates it.
+- **The build can always name itself** (section 1). Code that cannot say which
+  revision is running cannot have its results trusted or reproduced.
