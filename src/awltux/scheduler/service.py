@@ -46,12 +46,41 @@ FIRST_RUN_SPREAD_SECONDS = 3_600
 POLL_SECONDS = 0.5
 
 
+#: How many jobs may run at once.
+#:
+#: **One, and the default is the finding.** APScheduler's own default is a pool of
+#: ten, and `max_instances=1` only stops *one job* overlapping itself -- nothing
+#: stops ten different jobs starting together. With the scheduler fixed so that
+#: jobs actually fire, that is what happened: five heavy jobs ran concurrently and
+#: the dashboard stopped loading.
+#:
+#: Measured on the live container: the process held **1,826 of its 2,212 CPU
+#: seconds in a single thread (82.6%)**, and `/dashboard` took **164 seconds**
+#: where it takes 0.95s with nothing running. `/jobs` did not return at all inside
+#: a 180-second timeout.
+#:
+#: **More CPU does not fix this.** The container was using 1.1 of 8 available cores
+#: with no quota set, because CPython's GIL lets one thread run Python at a time.
+#: Concurrency here buys I/O overlap and costs the responsiveness of everything
+#: else in the same process -- including the web UI, which is the only way to see
+#: what is happening.
+#:
+#: Serialising is affordable: this is a long-horizon advisory tool at hourly
+#: resolution, `coalesce` already collapses missed runs into one, and a job that
+#: waits its turn is a job that has not lost anything. The cost is real and is
+#: recorded in ``TODO.md``: a two-hour job delays everything behind it.
+MAX_CONCURRENT_JOBS = 1
+
+
 class SchedulerService:
     """Thin wrapper over APScheduler with a job registry and manual triggers."""
 
     def __init__(self, specs: list[JobSpec] | None = None) -> None:
         self._scheduler = BackgroundScheduler(
             timezone="UTC",
+            # One worker. See MAX_CONCURRENT_JOBS: the pool is the thing that was
+            # unbounded, and an unbounded pool starves the web UI it reports to.
+            executors={"default": {"type": "threadpool", "max_workers": MAX_CONCURRENT_JOBS}},
             job_defaults={
                 "coalesce": True,  # a missed run runs once, not N times
                 "max_instances": 1,

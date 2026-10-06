@@ -678,6 +678,66 @@ class TestTheElapsedLabel:
         assert cli._elapsed(2351) == "39m11s"
 
 
+class TestOnlyOneJobRunsAtATime:
+    """The pool is bounded, because an unbounded one starves the dashboard.
+
+    APScheduler's default pool is ten workers, and `max_instances=1` only stops one
+    job overlapping *itself* -- nothing stopped ten different jobs starting together.
+    With the scheduler fixed so jobs actually fire, five heavy jobs ran at once and
+    the web UI stopped loading.
+
+    Measured on the live container: one thread held **1,826 of the process's 2,212
+    CPU seconds (82.6%)**, `/dashboard` took **164 seconds** where it takes 0.95s
+    with nothing running, and `/jobs` did not return inside a 180-second timeout.
+    The container was using 1.1 of 8 cores with no quota, so this is CPython's GIL
+    and not a shortage of CPU -- adding cores would not have helped.
+    """
+
+    def test_the_pool_runs_one_job_at_a_time(self, monkeypatch):
+        """Asserted by running jobs through the scheduler, not by reading a private
+        attribute: the executor is APScheduler's, wrapped, and the attribute holding
+        the worker count has changed name between versions. What matters is how many
+        jobs run together, so that is what is measured.
+        """
+        import threading
+        import time
+
+        import awltux.scheduler.service as service_module
+        from awltux.scheduler.service import MAX_CONCURRENT_JOBS
+
+        lock = threading.Lock()
+        state = {"running": 0, "peak": 0}
+
+        def probe(_spec) -> None:
+            with lock:
+                state["running"] += 1
+                state["peak"] = max(state["peak"], state["running"])
+            time.sleep(0.15)
+            with lock:
+                state["running"] -= 1
+
+        monkeypatch.setattr(service_module, "execute_job", probe)
+
+        specs = [
+            JobSpec(id=f"j{index}", func=_noop, interval_seconds=3600) for index in range(4)
+        ]
+        service = SchedulerService(specs)
+        service.start()
+        try:
+            due = dt.datetime.now(dt.UTC)
+            for spec in specs:
+                service._scheduler.modify_job(spec.id, next_run_time=due)
+            time.sleep(1.5)
+        finally:
+            service.shutdown(wait=False)
+
+        assert state["peak"] == 1, (
+            f"{state['peak']} jobs ran at once; five at once was the measured failure "
+            "and it took the dashboard down with it"
+        )
+        assert MAX_CONCURRENT_JOBS == 1
+
+
 class TestTheOperationsPage:
     def test_it_does_not_round_a_schedule_into_a_lie(self, client):
         """Every interval the page prints must be the interval the job has.

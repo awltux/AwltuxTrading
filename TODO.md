@@ -339,6 +339,32 @@ interruption quiet exists to prevent. The 60-second `stop_grace_period` and the
 Lowering `max_deep_per_run` is not a fix: 40 stories is already a rationed batch,
 and cutting it further only means the backlog grows instead.
 
+### `run_on_start` jobs redo their whole work on every restart
+
+Measured while auditing the run history for repeated work, after it was noticed that
+several jobs leave a trail of identical rows.
+
+`t212_instruments` has **57 runs against a daily interval** — 2.04 an hour — and
+`macro_rates` 20 against six hours. Neither is the scheduler mis-firing. Both are
+`run_on_start`, so every process start schedules them immediately whatever their
+interval says, and one afternoon of rebuilding produced seven restarts. Each
+`t212_instruments` run pulls and rewrites **18,480 instruments**.
+
+So most of the duplicated history is restart-driven rather than scheduler-driven.
+The other apparent offenders are not the scheduler either: `xbrl_statements` shows
+4.55 runs an hour against an hourly interval, but those are manual
+`awltux job ... --direct` invocations made while testing it.
+
+Bootstrapping on a *first* start is right — a fresh database needs the universe. On
+the seventh restart of an afternoon it is a full upstream sync to rewrite rows that
+have not changed.
+
+**Next:** make the run-at-start decision interval-aware — fire immediately only when
+the job has not succeeded within its own interval, and otherwise leave it to the
+normal schedule. The machinery exists: `job_statuses` already knows when each job
+last succeeded, and the guard in `scheduler/jobs.py` is where a "ran recently"
+reason belongs.
+
 ### Every page is only tested against seeded data
 
 The `engine_label` failure and the empty-universe failure were both invisible to a
@@ -355,7 +381,7 @@ stops covering that path, and a modified file in it will not be reported. The
 Dockerfile says so in a comment, which is not a test.
 
 ---
-## Education Videos on Value Investment
+## Ingest Education Videos on Value Investment
 
 Use the youtube-transcript skill to download the transcripts of all videos in the following list.
 Remember to use rate limiting as you have locked my ip address in the past.

@@ -573,9 +573,22 @@ def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
 #: it is deliberately different from ``yahoo_statements`` for the same reason.
 SOURCE = "xbrl_companyfacts"
 
-#: How many years back to keep. Six covers a five-year comparison with the current
-#: year, which is what the research note asks a trend to be judged on.
-KEEP_YEARS = 6
+#: How many years back to keep.
+#:
+#: **Two, by request.** This was six, on the reasoning that a five-year comparison
+#: is what a trend needs. That reasoning was wrong about the cost and the benefit:
+#: the companyfacts payload is fetched in full either way, so six years buys nothing
+#: but storage, and every extra year is another ``FundamentalPeriod`` row rewritten
+#: on every visit. Measured on the live container, six years is 12 rows per run for
+#: 2 filers; with 312 filers still to do that is roughly 1,900 rows of history.
+#:
+#: **What two years costs.** ``MIN_PERIODS_FOR_TREND`` is 3, so no marker will claim
+#: a *trend*: the readings that describe direction -- accrual and cash-conversion
+#: trend, DSO "rising", margin direction -- will say "not yet a trend". The
+#: year-over-year markers are unaffected: Piotroski's six change tests, the Beneish
+#: indices and every "this year against last" comparison still work, because they
+#: need exactly two periods and that is what two years is.
+KEEP_YEARS = 2
 
 #: Confidence recorded for an extracted period. Not 1.0: the figures are the
 #: company's own, but the *mapping* from taxonomy tag to our vocabulary is ours, so
