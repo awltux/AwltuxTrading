@@ -15,6 +15,7 @@ theatre:
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 
 from awltux.scheduler import progress
@@ -277,6 +278,36 @@ class TestThePage:
 
         assert response.status_code == 200
         assert "No log yet" in response.text
+
+    def test_the_log_page_opens_for_a_run_that_is_still_going(self, client, session):
+        """The live failure, reported from the browser: the panel 500s for exactly the
+        job you want to watch.
+
+        `dashboard.py` subtracted `run.started_at`, which SQLite returns naive, from an
+        aware `now`, and the global handler turned the page into
+        ``{"ok": false, "error": "TypeError"}``. It only fires while a job is running --
+        then `finished_at` is None, so the aware half of the `finished or now` branch is
+        taken. Every finished-run test passed, which is why this one exists.
+        """
+        from awltux.db import IngestRun
+
+        session.add(
+            IngestRun(
+                job="probe",
+                started_at=dt.datetime.now(dt.UTC) - dt.timedelta(seconds=20),
+                finished_at=None,
+                ok=None,
+            )
+        )
+        session.commit()
+
+        response = client.get("/jobs/probe/log")
+
+        assert response.status_code == 200, response.text[:200]
+        assert "running" in response.text
+        # The elapsed stat only has a value on this branch, so its presence is the
+        # assertion that the subtraction actually ran rather than being skipped.
+        assert "stat-value" in response.text
 
     def test_the_job_name_on_the_operations_page_links_to_its_log(self, client, session):
         """The entry point. A panel nobody can reach is not a feature."""

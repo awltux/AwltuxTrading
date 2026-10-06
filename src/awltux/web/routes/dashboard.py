@@ -20,6 +20,7 @@ from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
 from awltux.db import Filing, IngestRun, session_scope
 from awltux.ingest.universe import cached_t212_capabilities
+from awltux.timezones import as_utc
 from awltux.web import filters, queries
 from awltux.web.templating import templates
 
@@ -281,10 +282,17 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
         ).scalar_one_or_none()
 
     text, offset, _size = progress.read(job_id, 0)
-    finished = run.finished_at if run else None
+    # Normalised, because SQLite returns these naive however the column was declared
+    # and the "still running" branch below subtracts them from an aware `now`. That
+    # raised "can't subtract offset-naive and offset-aware datetimes", which main.py's
+    # global handler turned into {"ok": false, "error": "TypeError"} -- so the panel
+    # that exists to watch a job in flight was the one thing it refused to show. Every
+    # finished run passed, because then both sides come back naive and agree.
+    started = as_utc(run.started_at) if run else None
+    finished = as_utc(run.finished_at) if run else None
     elapsed = None
-    if run is not None and run.started_at is not None:
-        elapsed = ((finished or dt.datetime.now(dt.UTC)) - run.started_at).total_seconds()
+    if started is not None:
+        elapsed = ((finished or dt.datetime.now(dt.UTC)) - started).total_seconds()
 
     detail = (run.detail or {}) if run and run.detail else {}
     return templates.TemplateResponse(

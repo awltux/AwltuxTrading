@@ -522,6 +522,38 @@ class TestOnStart:
         finally:
             service.shutdown(wait=False)
 
+    def test_the_operations_page_shows_a_job_that_is_behind(self, client, session, recorder):
+        """The template branch itself, not only the flag behind it.
+
+        The live page could not exercise this: by the time the fix was deployed, the
+        catch-up wave had already brought every job current, so the badge was correctly
+        absent. A branch that only renders on a bad day is one nobody has seen work.
+
+        The scheduler has to be started for the row to have a `next_run` at all -- the
+        client fixture leaves it stopped, which is why the first version of this test
+        failed with every row rendering `—`. `recorder` replaces the job bodies, so
+        starting it reaches no provider.
+        """
+        from awltux.db import IngestRun
+
+        stale = dt.datetime.now(dt.UTC) - dt.timedelta(hours=5)
+        session.add(
+            IngestRun(job="news_embeddings", started_at=stale, finished_at=stale, ok=True)
+        )
+        session.commit()
+
+        scheduler = client.app.state.scheduler
+        scheduler.start()
+        try:
+            body = client.get("/jobs").text
+        finally:
+            scheduler.shutdown(wait=False)
+
+        assert "behind —" in body, "a job five hours past a one-hour interval is behind"
+        assert body.count("behind —") == 1, (
+            "only the stale job is behind; the rest ran recently or never ran"
+        )
+
     def test_a_hidden_failure_to_read_the_history_does_not_break_the_page(self, monkeypatch):
         """An unreadable run table is a missing badge, not a 500 on /jobs."""
         import awltux.scheduler.service as service_module
