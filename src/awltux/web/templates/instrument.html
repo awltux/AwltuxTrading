@@ -35,6 +35,16 @@
       {% endif %}
       {% if decision.conflict_flag %}<span class="chip warn">an action conflicts with its own composite</span>{% endif %}
       <span class="muted small">decided {{ decision.created_at | datetime }}</span>
+      {% set macro_context = (decision.evidence or {}).get('macro') %}
+      {% if macro_context %}
+        {#- The rate environment the verdict was reached in, beside the verdict
+            rather than buried in the evidence JSON: a "buy" whose discount rate
+            has since moved is a different claim from one that still holds. -#}
+        <span class="muted small">
+          · at {{ macro_context.value | pct(2, false) }} risk-free
+          ({{ 'market' if macro_context.source == 'market' else 'configured' }})
+        </span>
+      {% endif %}
     </div>
 
     {% if decision.uncalibrated %}

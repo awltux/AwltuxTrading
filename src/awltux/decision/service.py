@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from awltux.analysis import macro
 from awltux.analysis.fundamental import build_snapshot
 from awltux.analysis.state import build_state
 from awltux.analysis.technical import analyse
@@ -435,6 +436,23 @@ def decide_instrument(
             "state_truncation": state.dropped,
             "filing_id": filing.id if filing else None,
             "news_ids": [item.id for item in news],
+            # The rate environment this verdict was reached in.
+            #
+            # The discount rate is the one input the model takes from the market
+            # rather than from the filings, and a decision read a year later needs
+            # to know what the market was charging at the time. Without it a "buy"
+            # reads as a judgement about the company when part of it may have been
+            # a judgement about the rate -- and the two call for opposite responses
+            # when the verdict turns out badly.
+            #
+            # Recorded in `evidence` rather than in `state` on purpose: `state` is
+            # hashed to make the decision reproducible, and adding a market
+            # observation to it would change the hash of a decision that is, in
+            # every respect this system cares about, the same decision.
+            "macro": {
+                **macro.resolve_risk_free_rate(session, settings).as_dict(),
+                "recorded_at": utcnow().isoformat(),
+            },
         },
         # --- long term (primary) ---
         composite=long_composite.as_dict(),

@@ -209,6 +209,50 @@ class TestTemplatesRenderWithData:
         # rather than presenting a constant as though it were a market price.
         assert "configured constant" in text
 
+    def test_a_decision_records_the_rate_environment_it_was_made_in(
+        self, client, populated, session
+    ):
+        """A verdict the market has moved away from is a different claim.
+
+        The discount rate is the one input the model takes from the market rather
+        than from the filings. Without it recorded, a "buy" that turns out badly
+        cannot be told apart from one that was simply made when money was cheap.
+        """
+        from sqlalchemy import select
+
+        from awltux.db import DecisionRun
+
+        run = session.execute(
+            select(DecisionRun).order_by(DecisionRun.id.desc())
+        ).scalars().first()
+        assert run is not None
+        assert run.evidence is not None
+
+        recorded = run.evidence["macro"]
+        assert 0 < recorded["value"] < 0.25
+        assert recorded["source"] in {"market", "config"}
+        assert recorded["recorded_at"]
+
+        # And it is shown beside the verdict, not only in the evidence blob.
+        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+        assert "risk-free" in text
+        assert "(configured)" in text
+
+    def test_the_rate_is_not_stored_in_the_hashed_state(self, populated, session):
+        """`state` is hashed to make a decision reproducible.
+
+        Adding a market observation to it would change the hash of a decision that
+        is, in every respect this system cares about, the same decision -- and the
+        hash is the thing that lets one be replayed.
+        """
+        from sqlalchemy import select
+
+        from awltux.db import DecisionRun
+
+        run = session.execute(select(DecisionRun)).scalars().first()
+        assert run is not None
+        assert "macro" not in (run.state or {}), "the rate must not enter the state hash"
+
     def test_the_operations_page_renders_run_history(self, client, populated):
         assert client.get("/jobs").status_code == 200
 
