@@ -495,7 +495,11 @@ class HttpClient:
         self.close()
 
     # ------------------------------------------------------------------ core
-    def request(
+    # One request pipeline, in the order the steps must happen: cache lookup, budget,
+    # conditional validators, retry loop, archive. Each step consumes the previous
+    # one's state, so helpers would pass six values between them and read *less*
+    # clearly than the sequence they were cut out of.
+    def request(  # noqa: C901
         self,
         method: str,
         url: str,

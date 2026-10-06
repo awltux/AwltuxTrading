@@ -470,8 +470,16 @@ python -m venv .venv && . .venv/bin/activate    # or activate per your shell
 pip install -e ".[dev]"
 pytest -q
 ruff check .
+python tools/refactor_report.py --diff           # what in your change is hardest to change
 alembic upgrade head
 ```
+
+`ruff` enforces a complexity ceiling (`C90`, 15 paths through a function), and
+`tools/refactor_report.py` shows where the rest of the debt sits: the longest
+functions, the most branchy, and the small ledger of functions excused from the
+ceiling by name with the reason recorded against each. The convention is that the
+ledger only shrinks — a `noqa` is a decision to be argued, not a way past the check.
+See *Refactor before you commit* in `AGENTS.md`.
 
 The test suite runs **entirely offline** — no network, no API keys — and covers
 the currency normalisation, symbol resolution, valuation methods, sentiment,

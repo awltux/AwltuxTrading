@@ -199,7 +199,11 @@ def _answer_value(answers: dict[str, Any], question: str, field: str) -> float |
         return None
 
 
-def recommendations(
+# A paged query assembled as four labelled phases. The branches are the filter set,
+# and the filter set *is* the specification of this table -- one `if` per option the
+# page offers. Extracting them would put the readable list of what can be filtered
+# somewhere other than the query it filters.
+def recommendations(  # noqa: C901
     session: Session,
     *,
     sort: SortKey = "composite_score",

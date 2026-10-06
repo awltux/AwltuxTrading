@@ -92,5 +92,18 @@ src = ["src", "tests"]
 extend-exclude = [".pip-tmp", ".tests-tmp", ".venv", "data"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+# C90 is the one debt rule with a number attached, and the number is the point: a
+# rule that lives only in a prose standard is followed until the first deadline.
+# Complexity -- not line count -- is what makes a function hard to change, because
+# every branch is a case someone has to hold in their head at once.
+select = ["E", "F", "I", "UP", "B", "SIM", "C90"]
 ignore = ["E501"]
+
+[tool.ruff.lint.mccabe]
+# Fifteen paths through one function. Most of this tree is far under it. The five
+# functions above it carry a `# noqa: C901` naming why the flat form is the clearer
+# one -- a decision table read top to bottom, where extracting the branches into
+# helpers would scatter one policy across five functions and hide the ordering
+# that *is* the rule. That list is a ledger: it only shrinks, and adding to it is
+# a decision rather than an accident.
+max-complexity = 15

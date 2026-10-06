@@ -166,7 +166,10 @@ def _confidence_basis(engine: str) -> str:
     return "uncalibrated, self-reported"
 
 
-def evaluate(
+# The ordered checks below *are* the policy: the first failure binds, so extracting
+# them into helpers would scatter one rule across five functions and hide the order
+# that carries the meaning. Complexity is the price of the sequence staying legible.
+def evaluate(  # noqa: C901
     response: DecisionResponse,
     composite: CompositeResult,
     context: GateContext,

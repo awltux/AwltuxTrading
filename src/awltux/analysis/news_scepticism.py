@@ -211,7 +211,10 @@ def resolve_primary_source(category: str | None) -> tuple[str | None, str | None
     return entry
 
 
-def grade(
+# A flat list of independent observations, each appending its own sentence and flag.
+# The order is the order a reader checks them in, and every block is self-contained;
+# the branches are a decision table, which is shorter read whole than in five parts.
+def grade(  # noqa: C901
     *,
     publisher: Publisher,
     rhetoric: RhetoricReport | None = None,

@@ -191,20 +191,45 @@ def derive_metrics(metrics: dict[str, float]) -> dict[str, float]:
 
     Derived values are recomputed here rather than trusted from a provider, so
     the sign conventions are ours and are applied consistently across taxonomies.
+
+    Four families rather than one long sequence. Each ``_..._ratios`` helper names
+    what it measures, guards its own preconditions, and returns only what it could
+    compute -- so a provider that publishes revenue but no balance sheet yields
+    margins and nothing else, without a branch in a caller.
     """
     derived: dict[str, float] = {}
+    for compute in (
+        _margin_ratios,
+        _leverage_ratios,
+        _return_ratios,
+        _per_share_ratios,
+        _cash_flow_ratios,
+    ):
+        derived.update(compute(metrics))
+    return derived
 
+
+def _margin_ratios(metrics: dict[str, float]) -> dict[str, float]:
+    """Profit as a share of revenue. Silent when revenue is absent or non-positive."""
     revenue = metrics.get("revenue")
-    if revenue and revenue > 0:
+    if not revenue or revenue <= 0:
+        return {}
+
+    return {
+        key: value / revenue
         for key, source in (
             ("gross_margin", "gross_profit"),
             ("operating_margin", "operating_income"),
             ("net_margin", "net_income"),
             ("ebitda_margin", "ebitda"),
-        ):
-            value = metrics.get(source)
-            if value is not None:
-                derived[key] = value / revenue
+        )
+        if (value := metrics.get(source)) is not None
+    }
+
+
+def _leverage_ratios(metrics: dict[str, float]) -> dict[str, float]:
+    """How the capital is financed, and whether the interest on it is covered."""
+    derived: dict[str, float] = {}
 
     debt = metrics.get("total_debt")
     if debt is not None:
@@ -212,53 +237,78 @@ def derive_metrics(metrics: dict[str, float]) -> dict[str, float]:
         derived["net_debt"] = debt - cash
 
     equity = metrics.get("total_equity")
-    if equity and equity > 0:
-        net_income = metrics.get("net_income")
-        if net_income is not None:
-            derived["roe"] = net_income / equity
-        if "total_liabilities" in metrics:
-            derived["debt_to_equity"] = metrics["total_liabilities"] / equity
-        elif debt is not None:
-            derived["debt_to_equity"] = debt / equity
-
-    if metrics.get("total_assets") and metrics.get("net_income") is not None:
-        derived["roa"] = metrics["net_income"] / metrics["total_assets"]  # type: ignore[operator]
-
-    # ROCE uses operating profit over capital employed -- the measure that
-    # survives differences in how a company is financed.
-    capital_employed = None
-    if equity is not None and debt is not None:
-        capital_employed = equity + debt
-    elif metrics.get("total_assets") is not None:
-        current_liabilities = metrics.get("current_liabilities")
-        capital_employed = (
-            metrics["total_assets"] - current_liabilities
-            if current_liabilities is not None
-            else metrics["total_assets"]
-        )
-    if capital_employed and capital_employed > 0 and metrics.get("operating_income") is not None:
-        derived["roce"] = metrics["operating_income"] / capital_employed
+    if equity and equity > 0 and "total_liabilities" in metrics:
+        derived["debt_to_equity"] = metrics["total_liabilities"] / equity
+    elif equity and equity > 0 and debt is not None:
+        derived["debt_to_equity"] = debt / equity
 
     interest = metrics.get("interest_expense")
     operating = metrics.get("operating_income")
     if interest and interest > 0 and operating is not None:
         derived["interest_cover"] = operating / interest
 
-    eps = metrics.get("eps_diluted")
-    if eps and eps > 0 and metrics.get("dividend_per_share") is not None:
-        derived["payout_ratio"] = metrics["dividend_per_share"] / eps
+    return derived
 
-    # Free cash flow is an identity, not a disclosure: providers publish it for
-    # large caps and omit it for most others, and where they omit it we can still
-    # state it from two figures they do publish. Only filled when absent, so a
-    # provider's own definition is never overwritten by ours.
-    if metrics.get("free_cash_flow") is None:
-        operating = metrics.get("operating_cash_flow")
-        capex = metrics.get("capex")
-        if operating is not None and capex is not None:
-            derived["free_cash_flow"] = operating - capex
+
+def _return_ratios(metrics: dict[str, float]) -> dict[str, float]:
+    """What the capital earned, against the three bases a reader might compare."""
+    derived: dict[str, float] = {}
+
+    equity = metrics.get("total_equity")
+    net_income = metrics.get("net_income")
+
+    if equity and equity > 0 and net_income is not None:
+        derived["roe"] = net_income / equity
+
+    total_assets = metrics.get("total_assets")
+    if total_assets and net_income is not None:
+        derived["roa"] = net_income / total_assets
+
+    # ROCE uses operating profit over capital employed -- the measure that
+    # survives differences in how a company is financed.
+    debt = metrics.get("total_debt")
+    capital_employed = None
+    if equity is not None and debt is not None:
+        capital_employed = equity + debt
+    elif total_assets is not None:
+        current_liabilities = metrics.get("current_liabilities")
+        capital_employed = (
+            total_assets - current_liabilities
+            if current_liabilities is not None
+            else total_assets
+        )
+
+    operating = metrics.get("operating_income")
+    if capital_employed and capital_employed > 0 and operating is not None:
+        derived["roce"] = operating / capital_employed
 
     return derived
+
+
+def _per_share_ratios(metrics: dict[str, float]) -> dict[str, float]:
+    """The share of earnings paid out, which only exists against a positive EPS."""
+    eps = metrics.get("eps_diluted")
+    dividend = metrics.get("dividend_per_share")
+    if eps and eps > 0 and dividend is not None:
+        return {"payout_ratio": dividend / eps}
+    return {}
+
+
+def _cash_flow_ratios(metrics: dict[str, float]) -> dict[str, float]:
+    """Free cash flow is an identity, not a disclosure.
+
+    Providers publish it for large caps and omit it for most others, and where they
+    omit it we can still state it from two figures they do publish. Only filled when
+    absent, so a provider's own definition is never overwritten by ours.
+    """
+    if metrics.get("free_cash_flow") is not None:
+        return {}
+
+    operating_cash = metrics.get("operating_cash_flow")
+    capex = metrics.get("capex")
+    if operating_cash is not None and capex is not None:
+        return {"free_cash_flow": operating_cash - capex}
+    return {}
 
 
 def sync_fundamentals(

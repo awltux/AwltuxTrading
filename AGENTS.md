@@ -7,6 +7,8 @@ without it.
 
 ```bash
 pytest -q && ruff check src tests
+# refactor pass over your own diff -- step 5, then prove it changed nothing:
+pytest -q && ruff check src tests
 git add -A && git commit
 docker compose exec awltux awltux quiet --timeout 1800   # let in-flight jobs finish
 docker compose build && docker compose up -d
@@ -126,7 +128,65 @@ Both have caused silent bugs.
   **single-quoted** — otherwise the attribute ends at the first inner quote and
   `JSON.parse` throws.
 
-## 5. Clean up
+## 5. Refactor before you commit
+
+The last step of a stage, after the change works and before `git commit`. It is not
+optional and it is not a rewrite: **it is a pass over your own diff.**
+
+```bash
+python tools/refactor_report.py --diff   # the worst thing your diff touched
+ruff check src tests                     # the gate, C901
+```
+
+**Behaviour does not change.** Tests green before the pass, green after it. If the
+pass changes what the code does, it is a feature — commit that on its own first, then
+refactor on top. A move mixed with a change is unreviewable, and `git blame` cannot
+tell them apart afterwards either.
+
+**Scope is the diff.** The functions you changed, and the ones you had to read to
+change them. The 55 functions over 70 lines are not this pass's business; touching
+them is a separate commit with its own reason. Debt is created in the diff and paid
+off in the diff.
+
+What the pass looks for, in this codebase's idiom:
+
+| Smell | The move |
+|---|---|
+| A function that grew a branch | Extract the *named* step — `_leverage_ratios`, not `_part_2` |
+| The same query, date window or retry shape twice | One helper beside its siblings (`web/queries.py`, `providers/http.py`) |
+| A rule decided inline in a route, job or provider | A pure function: candidates in, verdict out (`ingest/identity.py`) |
+| A literal carrying a reason | A named constant beside what it constrains (`MIN_INTERVAL_SECONDS`, `APPLY_FLOOR`) |
+| A second source of truth for a derivable value | Delete it and derive (`fmt_duration`, `outcome_for`) |
+| Formatting in a template, SQL in a router, date maths outside `timezones.py` | Move it to the module that owns the concern |
+| An `except Exception` that swallows the cause | Narrow it, or log the exception *and* the stated fallback (`scheduler/jobs.py`) |
+| A branch reachable only in production | A test that fails without the fix; name the measurement in its docstring |
+
+**Length is not the measure.** `decision/gate.py::evaluate` is 241 lines and is the
+clearest form it has: an ordered list of checks where the order *is* the policy, and
+the first failure binds. `analysis/news_scepticism.py::grade` is a flat table of
+independent observations. Both are excused by name in `pyproject.toml`. A 40-line
+function interleaving three concerns is worse than either — complexity, not line
+count, is what makes a function hard to change, because every branch is a case the
+reader must hold at once.
+
+**Enforced, not remembered.** `pyproject.toml` selects `C90` at
+`max-complexity = 15`, so a new function past that fails the build. Four are above it
+and carry `# noqa: C901` with the reason above them:
+
+```bash
+python tools/refactor_report.py    # ends with the ledger and each reason
+```
+
+That ledger **only shrinks**. Adding an entry is a decision to be argued, not a
+workaround — and the reason is the whole value of it: a bare `noqa` says *I gave up*,
+a reason says which rule was weighed and why the plain form won, which is the part a
+later reader cannot reconstruct. `fundamentals.py::derive_metrics` was the fifth and
+was split into five named families rather than excused; that is the pass working.
+
+Debt that cannot be paid in this commit goes in `TODO.md` with its evidence, never
+in a lowered standard.
+
+## 6. Clean up
 
 `git status` clean ≠ workspace clean: ignored scratch accumulates invisibly. When
 pytest cannot write `.pytest_cache` it falls back to `pytest-cache-files-*` in the
