@@ -43,6 +43,7 @@ from awltux.db import (
     ValuationRun,
     utcnow,
 )
+from awltux.db.news import news_for_ticker
 from awltux.db.session import release_write_lock
 from awltux.decision.composite import compute_both
 from awltux.decision.engine import (
@@ -190,15 +191,20 @@ def _latest_sentiment(session: Session, scope_type: str, scope_id: str) -> float
 
 
 def _recent_news(session: Session, ticker: str, limit: int = 12) -> list[NewsItem]:
+    """The newest stories naming this instrument, inside the decision window.
+
+    Filtered in SQL. The first version fetched the newest 400 rows *across the whole
+    universe* and filtered them here, so the engine's view of an instrument's news
+    depended on how much news every other instrument had. Measured against 1,470
+    in-window items: 47 of 135 tickers reached the engine as having no news at all,
+    and most of the rest saw a fraction of theirs -- MSFT 30 of 63, ATTL 0 of 27.
+
+    That fed ``news_materiality`` and the sentiment answer, so this was not a display
+    problem: it silently changed decisions, in the direction of "no news here".
+    """
     cutoff = utcnow() - dt.timedelta(days=NEWS_WINDOW_DAYS)
-    rows = session.execute(
-        select(NewsItem)
-        .where(NewsItem.published_at >= cutoff)
-        .order_by(desc(NewsItem.published_at))
-        .limit(400)
-    ).scalars().all()
-    matched = [row for row in rows if ticker in (row.tickers or [])]
-    return matched[:limit]
+    rows, _ = news_for_ticker(session, ticker, since=cutoff, limit=limit)
+    return rows
 
 
 def _last_filing(session: Session, ticker: str) -> Filing | None:

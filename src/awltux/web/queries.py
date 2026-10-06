@@ -24,13 +24,13 @@ from awltux.db import (
     IngestRun,
     Instrument,
     InstrumentAlias,
-    NewsAnalysis,
     NewsItem,
     PriceBar,
     Quote,
     SentimentSeries,
     ValuationRun,
 )
+from awltux.db.news import appraisals_for, news_for_ticker
 from awltux.timezones import format_moment, utc_today
 
 SortKey = Literal[
@@ -528,7 +528,13 @@ def decision_history(
     return rows, total
 
 
-def instrument_detail(session: Session, ticker: str) -> dict[str, Any] | None:
+def instrument_detail(
+    session: Session,
+    ticker: str,
+    *,
+    news_page: int = 1,
+    news_per_page: int = 25,
+) -> dict[str, Any] | None:
     instrument = session.get(Instrument, ticker)
     if instrument is None:
         return None
@@ -568,25 +574,14 @@ def instrument_detail(session: Session, ticker: str) -> dict[str, Any] | None:
         .limit(40)
     ).scalars().all()
 
-    news = session.execute(
-        select(NewsItem)
-        .order_by(desc(NewsItem.published_at))
-        .limit(40)
-    ).scalars().all()
-    # Filter in Python: the tickers column is JSON, and the portable SQL for
-    # membership differs between SQLite and Postgres.
-    related_news = [n for n in news if ticker in (n.tickers or [])][:25]
-
-    # The sceptical appraisals for exactly those stories, keyed by item id so the
-    # template can pair them without a second lookup.
-    appraisals: dict[int, NewsAnalysis] = {}
-    if related_news:
-        rows = session.execute(
-            select(NewsAnalysis).where(
-                NewsAnalysis.news_item_id.in_([n.id for n in related_news])
-            )
-        ).scalars().all()
-        appraisals = {row.news_item_id: row for row in rows}
+    # Paged, and filtered in SQL. The first version took the newest 40 items across
+    # the whole universe and filtered them by ticker afterwards, so the window was
+    # global: measured on 6,555 stored items, 131 of the 153 instruments that had
+    # news showed none. See `awltux/db/news.py`.
+    related_news, news_total = news_for_ticker(
+        session, ticker, limit=news_per_page, offset=(news_page - 1) * news_per_page
+    )
+    appraisals = appraisals_for(session, related_news)
 
     outcomes = []
     if decision is not None:
@@ -609,6 +604,10 @@ def instrument_detail(session: Session, ticker: str) -> dict[str, Any] | None:
         "fundamentals": fundamentals,
         "news": related_news,
         "news_analysis": appraisals,
+        "news_total": news_total,
+        "news_page": news_page,
+        "news_per_page": news_per_page,
+        "news_pages": max(1, -(-news_total // news_per_page)),
         "outcomes": outcomes,
     }
 
@@ -620,13 +619,23 @@ def recent_news(
     min_materiality: str | None = None,
     ticker: str | None = None,
 ) -> list[NewsItem]:
+    """The latest news, optionally for one instrument.
+
+    When a ticker is given the filter happens in SQL. It used to fetch ``limit * 4``
+    rows globally and filter them in Python, which is the same defect the instrument
+    page had: the multiplier was a guess at how far down the global ordering you
+    would have to look, and it is wrong in the direction that empties as news grows.
+    """
+    if ticker:
+        items, _ = news_for_ticker(session, ticker, limit=limit)
+        if min_materiality:
+            items = [item for item in items if item.materiality == min_materiality]
+        return items
+
     statement = select(NewsItem).order_by(desc(NewsItem.published_at), desc(NewsItem.id))
     if min_materiality:
         statement = statement.where(NewsItem.materiality == min_materiality)
-    items = session.execute(statement.limit(limit * 4 if ticker else limit)).scalars().all()
-    if ticker:
-        items = [item for item in items if ticker in (item.tickers or [])][:limit]
-    return list(items)
+    return list(session.execute(statement.limit(limit)).scalars().all())
 
 
 def sector_sentiment(session: Session, *, days: int = 30) -> dict[str, list[dict[str, Any]]]:

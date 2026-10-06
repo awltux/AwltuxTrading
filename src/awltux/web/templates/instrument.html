@@ -430,7 +430,16 @@
 {% endif %}
 
 {# ---------------------------------------------------------------------- news #}
-<h2>News</h2>
+{# Paged, because news accumulates without bound and an instrument page is read
+   often. The count comes from the same filtered query as the page it labels, so the
+   two cannot disagree -- and it is the honest answer to "is there more", which a
+   bare list cannot give. #}
+<h2>
+  News
+  {% if news_total %}
+    <span class="muted small">{{ news_total }} stor{{ 'y' if news_total == 1 else 'ies' }}</span>
+  {% endif %}
+</h2>
 <p class="muted small">
   Every headline is a claim by an interested party, so each one is appraised
   before it is allowed to move anything: who published it and what they stand to
@@ -594,7 +603,27 @@
       </li>
     {% endfor %}
   </ul>
+
+  {% if news_pages > 1 %}
+    <nav class="pager">
+      {% if news_page > 1 %}
+        <a href="/instrument/{{ ticker }}?news_page={{ news_page - 1 }}">&larr; newer</a>
+      {% else %}<span class="muted">&larr; newer</span>{% endif %}
+      <span class="muted small">
+        page {{ news_page }} of {{ news_pages }} ({{ news_total }} stor{{ 'y' if news_total == 1 else 'ies' }})
+      </span>
+      {% if news_page < news_pages %}
+        <a href="/instrument/{{ ticker }}?news_page={{ news_page + 1 }}">older &rarr;</a>
+      {% else %}<span class="muted">older &rarr;</span>{% endif %}
+    </nav>
+  {% endif %}
 {% else %}
-  <p class="muted">No headlines matched this instrument.</p>
+  <p class="muted">
+    No headlines naming this instrument are stored.
+    {% if news_page > 1 %}
+      That is page {{ news_page }} of a list with fewer pages —
+      <a href="/instrument/{{ ticker }}">start again from the newest</a>.
+    {% endif %}
+  </p>
 {% endif %}
 {% endblock %}

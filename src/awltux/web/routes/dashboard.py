@@ -97,9 +97,13 @@ def dashboard(
 
 
 @router.get("/instrument/{ticker}", response_class=HTMLResponse, include_in_schema=False)
-def instrument_page(request: Request, ticker: str) -> HTMLResponse:
+def instrument_page(
+    request: Request,
+    ticker: str,
+    news_page: int = Query(1, ge=1),
+) -> HTMLResponse:
     with session_scope() as session:
-        detail = queries.instrument_detail(session, ticker)
+        detail = queries.instrument_detail(session, ticker, news_page=news_page)
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown instrument {ticker}")
         history = queries.price_history(session, ticker, limit=400)
@@ -127,6 +131,9 @@ def instrument_page(request: Request, ticker: str) -> HTMLResponse:
             "fundamentals": detail["fundamentals"],
             "news": detail["news"],
             "news_analysis": detail["news_analysis"],
+            "news_total": detail["news_total"],
+            "news_page": detail["news_page"],
+            "news_pages": detail["news_pages"],
             "outcomes": detail["outcomes"],
             "predictions": predictions,
             "prediction_count": prediction_count,
