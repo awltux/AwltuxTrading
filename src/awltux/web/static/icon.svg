@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"
+     role="img" aria-label="AwltuxTrading">
+  <!--
+    The application mark: three ascending bars on the dashboard's own panel colour.
+
+    Square, and drawn on a 512 grid, so every raster size in `static/` is a
+    downscale of this one file rather than a separate drawing. `render_icons.py`
+    produces them; editing a PNG by hand would put the sizes out of step.
+
+    Why bars, and why this palette. The product's whole output is a comparison of a
+    price against a value, rendered in green and red on a near-black panel, and the
+    mark is built from the same colours as the UI: the panel gradient, the divider
+    grey, and the two greens the price sparkline uses. It is deliberately not a
+    candlestick or a ticker tape, because those belong to trading terminals and
+    this is an advisory tool that never places an order.
+
+    Three bars, not a chart. A favicon is usually seen at 16px, where a polyline
+    and its gradient vanish into a smudge. Bold shapes survive; detail does not.
+    The rounded ends and the stepped gradient are what make it read as a mark
+    rather than a bar chart at the larger sizes.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e242c"/>
+      <stop offset="1" stop-color="#0f1216"/>
+    </linearGradient>
+    <linearGradient id="tallest" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#3fb950"/>
+      <stop offset="1" stop-color="#56d364"/>
+    </linearGradient>
+  </defs>
+
+  <!-- The tile. `rx` is about 22% of the side, which sits inside the range browsers
+       assume for a maskable icon: any larger and a circular mask crops the bars. -->
+  <rect width="512" height="512" rx="112" fill="url(#tile)"/>
+  <rect x="6" y="6" width="500" height="500" rx="106"
+        fill="none" stroke="#2a323c" stroke-width="12"/>
+
+  <!-- The baseline the bars stand on, in the UI's own divider colour. -->
+  <rect x="72" y="404" width="368" height="14" rx="7" fill="#2a323c"/>
+
+  <!-- Ascending, left to right and dark to bright: the same reading order as the
+       price sparkline, where the eye follows the line up and to the right. -->
+  <rect x="96" y="300" width="76" height="104" rx="22" fill="#2e7d3a"/>
+  <rect x="218" y="224" width="76" height="180" rx="22" fill="#3fb950"/>
+  <rect x="340" y="140" width="76" height="264" rx="22" fill="url(#tallest)"/>
+</svg>
