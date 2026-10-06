@@ -169,11 +169,24 @@ def _missing(session: Session, column) -> set[str]:
 
 
 def _note(missing: int, total: int, what: str) -> str:
+    """One sentence saying how much of the universe is still uncovered.
+
+    The wording is load-bearing, and it was inverted. The ``missing`` branch used
+    to read "N of M in the universe have {what}", which says the opposite of what
+    the number means. On a deployment with no accounts at all it printed
+    **"500 of 500 in the universe have accounts stored"** -- the reassuring answer,
+    from the one column whose entire job is to tell you whether the pipeline is
+    working, while every valuation on the site failed with "share count
+    unavailable".
+
+    A page that reports progress it does not have is worse than a blank one, so
+    the tests below assert the direction of this sentence and not just its shape.
+    """
     if total == 0:
         return "no universe to cover"
     if missing == 0:
         return f"all {total:,} in the universe have {what}"
-    return f"{missing:,} of {total:,} in the universe have {what}"
+    return f"{missing:,} of {total:,} in the universe still need {what}"
 
 
 def _count(session: Session, model) -> int:
@@ -218,7 +231,7 @@ def _probe_fundamentals(session: Session) -> Coverage:
     missing = len(
         {row.t212_ticker for row in rows} - _covered(session, FundamentalPeriod.instrument_t212_ticker)
     )
-    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "accounts stored"))
+    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "stored accounts"))
 
 
 def _probe_filings_edgar(session: Session) -> Coverage:
@@ -355,11 +368,31 @@ def _probe_sentiment(session: Session) -> Coverage:
 
 
 def _probe_valuation(session: Session) -> Coverage:
+    """Universe instruments without a *usable* valuation on record.
+
+    "On record" used to mean "has a run row", and a run row is written even when
+    the run failed: `value_instrument` returns early with ``insufficient_data``, and
+    `run_valuations` stores that row anyway. So a universe in which **every**
+    valuation failed reported as fully covered -- on the live database, 1,298 runs
+    and not one fair value, described as "all 500 in the universe have a valuation
+    on record".
+
+    A valuation that produced no fair value is not coverage; it is the absence of it
+    with a receipt. The row is still the right thing to store, which is why the fix
+    is here rather than in the writer.
+    """
     rows = _universe_rows(session)
-    missing = len(
-        {row.t212_ticker for row in rows} - _covered(session, ValuationRun.instrument_t212_ticker)
-    )
-    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "a valuation on record"))
+    priced = {
+        value
+        for (value,) in session.execute(
+            select(ValuationRun.instrument_t212_ticker)
+            .where(ValuationRun.fair_value_base.is_not(None))
+            .distinct()
+        ).all()
+        if value
+    }
+    missing = len({row.t212_ticker for row in rows} - priced)
+    return Coverage.counted(missing, len(rows), _note(missing, len(rows), "a usable valuation"))
 
 
 def _probe_decision(session: Session) -> Coverage:

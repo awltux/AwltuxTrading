@@ -359,7 +359,10 @@ class TestTheEndToEndShape:
         for bar in make_bars("A_US_EQ", [1.0]):
             session.add(bar)
         session.add(make_period("A_US_EQ", dt.date(2024, 12, 31), {"revenue": 1.0}))
-        session.add(ValuationRun(instrument_t212_ticker="A_US_EQ"))
+        # A valuation that actually produced a fair value. A bare run row is what a
+        # *failed* valuation leaves behind, and it used to count as coverage here --
+        # which is how a universe of nothing but failures reported as complete.
+        session.add(ValuationRun(instrument_t212_ticker="A_US_EQ", fair_value_base=10.0))
         session.add(_decision("A_US_EQ"))
         session.add(
             SentimentSeries(
