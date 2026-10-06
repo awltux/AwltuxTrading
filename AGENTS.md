@@ -306,3 +306,19 @@ ls -d pytest-cache-files-* 2>/dev/null
 
 Own scratch goes in `.tmp/` or `.tests-tmp/`. Anything a later step needs belongs in
 the commit — if it is in `.tmp/`, it does not exist.
+
+### Do not rewrite text through a shell
+
+**Edit text with a tool that writes UTF-8. Never round-trip a file through a shell that
+guesses the codec.** On Windows, `Get-Content` reads as the ANSI code page, so piping it
+into `Set-Content -Encoding utf8` re-encodes every non-ASCII character: `—` became three
+characters, `▲` became `†`, and a `U+0090` control character appeared where a byte could
+not round-trip. Two templates and `TODO.md` were damaged this way in one session, and
+two of them were committed *and deployed* before anyone saw it — the running dashboard
+rendered the damage, and no transform could put the files back, so they had to be
+rebuilt from the last clean revision.
+
+It is invisible to `git status`, survives review, and is found only by a person noticing
+that a page looks wrong. `tests/test_repo_hygiene.py` now fails on the sequences, on a
+file that is not valid UTF-8, and on a UTF-8 BOM. A `grep`/`ls` for scratch is a
+convenience; this one is a guard, because the failure mode is silent and permanent.
