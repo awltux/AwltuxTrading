@@ -339,6 +339,45 @@ interruption quiet exists to prevent. The 60-second `stop_grace_period` and the
 Lowering `max_deep_per_run` is not a fix: 40 stories is already a rationed batch,
 and cutting it further only means the backlog grows instead.
 
+### A CPU-bound job still starves the web UI, and one worker only halves it
+
+Capping the job pool at one worker (`MAX_CONCURRENT_JOBS`) stopped five jobs running
+together and took `/dashboard` from 164 seconds to 14. **It is a mitigation, not a
+cure**, and the dose-response is clear enough to say why.
+
+Measured on the live container by loading the same pages at each level:
+
+| jobs running | `/dashboard` | `/jobs` | process CPU |
+|---|---|---|---|
+| none | 0.95s | 0.20s | 0.16% |
+| one (`news_analysis`) | **14.1s** | **31.2s** | 110% |
+| five | **164s** | timed out at 180s | 112% |
+
+One job is enough to hold the process at a full core and take the interface from
+instant to unusable-for-refresh. The container is not short of CPU — 1.1 of 8 cores
+used, no quota set — so this is CPython's GIL: one thread runs Python at a time, and
+the web request thread waits its turn behind a job that does not yield it.
+
+That also answers the obvious guess. **Giving the container more CPU cannot fix
+this**, because the limit is a single interpreter lock, not the number of cores. The
+five-job freeze was the same mechanism with more queueing in front of it.
+
+Two things follow, and they are different sizes of change:
+
+1. **Cheap, and worth doing first:** the heavy jobs are pure-Python loops over a few
+   thousand rows (`valuation`, `price_eod`, `universe_refresh`). Yielding the GIL at
+   a batch boundary — `time.sleep(0)` every N rows — costs nothing and hands the
+   interpreter back often enough for a web request to be served.
+2. **The real fix:** run the web server and the scheduler in separate processes.
+   They have no reason to share an interpreter, and nothing in the API calls into the
+   scheduler's threads. Until that happens, "the dashboard is slow" and "a job is
+   running" are the same statement.
+
+**Until then:** check `/api/quiet` before concluding the interface has broken. It
+answers in under 0.2s even with a job running, which distinguishes "the app is down"
+from "the app is busy" — the distinction missing when this was first reported as a
+freeze.
+
 ### `run_on_start` jobs redo their whole work on every restart
 
 Measured while auditing the run history for repeated work, after it was noticed that
