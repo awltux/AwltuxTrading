@@ -318,12 +318,32 @@ one was killed by a redeploy. Two of them were killed by deployments for this ve
 objective, after `awltux quiet --timeout 300` returned exit 3 and the rebuild went
 ahead anyway.
 
+Re-measured 2026-10-06 18:1x, and the pattern is now total rather than occasional:
+**`decision` has 6 runs and 0 successes, `news_analysis` 5 and 0, `news_rss` 7 and 0.**
+Every attempt at all three has failed, and the failures are interruptions rather than
+logic errors. Two consequences worth stating, because both were inferred wrongly before
+this was measured:
+
+- The 184 decisions in the ledger were written by runs that never reported success.
+  `decision` writes incrementally, so a killed run is a partial run and not an empty
+  one -- which is also why "0 successes" is not evidence that nothing works.
+- Catch-up (`AGENTS.md` §1) keys on the last **successful** run, so these three read as
+  "never succeeded" and are deliberately not caught up at start. They keep the ordinary
+  randomised first run, which lands within the hour. That is adequate, but it means the
+  job that most needs restart resilience is the one job the restart rule does not
+  cover -- if a restart ever lands inside the hour, one interval is lost.
+
 The consequence is the same for both and it is not that the jobs are slow: **`awltux
 quiet` can never report *idle* while either is running.** The step introduced for
 exactly this purpose returns "waiting for decision" or "waiting for news_analysis",
 and the operator chooses between holding a deploy for half an hour and accepting the
 interruption quiet exists to prevent. The 60-second `stop_grace_period` and the
 20-second drain budget are two orders of magnitude short of either job.
+
+What catch-up changed: an interrupted run is no longer *lost work*, because an
+unsuccessful run does not count and the job is repeated at the next start. What it
+costs is the provider and model budget of doing the work twice, which for these two is
+the expensive part.
 
 **Next:** two changes, in order of how much they help.
 
@@ -399,11 +419,12 @@ join. Do it when a page crosses ~100ms or the table crosses ~100k rows, not befo
 Measured while auditing the run history for repeated work, after it was noticed that
 several jobs leave a trail of identical rows.
 
-`t212_instruments` has **57 runs against a daily interval** — 2.04 an hour — and
-`macro_rates` 20 against six hours. Neither is the scheduler mis-firing. Both are
-`run_on_start`, so every process start schedules them immediately whatever their
+`t212_instruments` has **62 runs against a daily interval** — 2.08 an hour — and
+`macro_rates` 25 against six hours (3.41/h). Neither is the scheduler mis-firing. Both
+are `run_on_start`, so every process start schedules them immediately whatever their
 interval says, and one afternoon of rebuilding produced seven restarts. Each
-`t212_instruments` run pulls and rewrites **18,480 instruments**.
+`t212_instruments` run pulls and rewrites **18,480 instruments**. `universe_refresh` is
+the third, at 22 runs against a daily interval.
 
 So most of the duplicated history is restart-driven rather than scheduler-driven.
 The other apparent offenders are not the scheduler either: `xbrl_statements` shows
@@ -414,11 +435,18 @@ Bootstrapping on a *first* start is right — a fresh database needs the univers
 the seventh restart of an afternoon it is a full upstream sync to rewrite rows that
 have not changed.
 
-**Next:** make the run-at-start decision interval-aware — fire immediately only when
-the job has not succeeded within its own interval, and otherwise leave it to the
-normal schedule. The machinery exists: `job_statuses` already knows when each job
-last succeeded, and the guard in `scheduler/jobs.py` is where a "ran recently"
-reason belongs.
+**Next:** the interval-aware machinery now exists, so this is a registry decision
+rather than new code. Catch-up (`AGENTS.md` §1, `scheduler/catchup.py`) gives any job
+whose last *successful* run is past its interval an immediate run at start, which is
+exactly what `run_on_start` was approximating. All three `run_on_start` jobs are the
+genuine bootstrap set, though, and catch-up deliberately does not fire a job that has
+never succeeded — so on a fresh database it would not populate the universe.
+
+The open question is therefore only about the *repeat* starts: whether
+`t212_instruments` should bootstrap on "no instruments stored" rather than on "process
+started", which would keep the first-start behaviour and drop the other 61 runs. The
+guard in `scheduler/jobs.py` is where a "ran recently" reason would go, and
+`job_statuses` already knows when each job last succeeded.
 
 ### Every page is only tested against seeded data
 

@@ -61,6 +61,39 @@ docker compose config --quiet && echo "compose can read .env"
 Read the build's exit status and output. "The command returned" is not "the image
 was rebuilt".
 
+### A restart picks up what it missed
+
+The scheduler's triggers are `IntervalTrigger`s anchored to process start and its job
+store is in memory, so **nothing about a schedule survives a restart**. That turns a
+trigger that came due while the process was down from *late* into *never*: on the next
+start the interval is recomputed from *now*, so a daily job is next due a day after the
+machine came back. This machine is switched off every night, so the daily jobs simply
+never ran.
+
+`awltux/scheduler/catchup.py` answers it at `start()`: for every job whose last
+**successful** run is more than one interval old, the job is scheduled *at its first
+missed trigger* with `misfire_grace_time=None`, and APScheduler's `coalesce` collapses
+the backlog into **one** run.
+
+- **Collated, not replayed.** However many triggers were missed, one run. Replaying an
+  hourly job ten times spends ten times the provider budget for the same end state.
+- **Successful, not merely attempted.** A run that failed, or that a restart killed
+  mid-write, produced nothing, so the job is still behind and is picked up next start.
+  Anchoring on the last *attempt* would count an interrupted run as work done — and
+  deploys interrupt runs routinely here.
+- **The run table is the source**, not a persisted APScheduler job store. `ingest_run`
+  already survives the process; a second record could disagree with the schedule the
+  Operations page prints from the registry.
+- **It does not bootstrap.** A job that has never succeeded has missed nothing, so it
+  keeps the randomised first run, and `run_on_start` stays how a fresh container
+  declares which jobs must populate their dependencies immediately.
+- **Overdue is shown, not hidden.** A catch-up waits behind the single worker, so the
+  Operations page marks a past due time as *overdue* rather than printing a timestamp
+  the reader has to compare against a clock.
+
+Measured when this was added: `news_rss` has an hourly interval and had gone 23.7 hours
+without a run, and 8 of 21 registered jobs were past their interval at that instant.
+
 ### What bumps the version
 
 `INTERFACE_BREAKING_COUNT.RELEASE_COUNT.BUILD_COUNT_FOR_RELEASE`, derived from a git

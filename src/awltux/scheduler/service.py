@@ -17,7 +17,9 @@ from typing import Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from awltux.scheduler.jobs import JobSpec, execute_job
+from awltux.scheduler.catchup import CatchUp, catch_ups, next_run_time_for
+from awltux.scheduler.jobs import JobSpec, execute_job, last_successful_runs
+from awltux.timezones import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,23 @@ POLL_SECONDS = 0.5
 MAX_CONCURRENT_JOBS = 1
 
 
+def _warn_if_below_the_floor(spec: JobSpec) -> None:
+    """Say so when a job is scheduled faster than this system is built to poll.
+
+    A warning and not a refusal, because the floor is a judgement about provider
+    budgets rather than a hard limit -- but a warning in a log nobody reads is not a
+    guard, which is why ``test_scheduler`` fails on the registry too.
+    """
+    if spec.interval_seconds < MIN_INTERVAL_SECONDS:
+        logger.warning(
+            "job %s is scheduled every %ss, below the %ss floor; raise it in "
+            "config.yaml unless this is deliberate",
+            spec.id,
+            spec.interval_seconds,
+            MIN_INTERVAL_SECONDS,
+        )
+
+
 class SchedulerService:
     """Thin wrapper over APScheduler with a job registry and manual triggers."""
 
@@ -116,15 +135,49 @@ class SchedulerService:
     def start(self) -> None:
         if self._scheduler.running:
             return
+        # Read once, before anything is scheduled: the answer is a fact about how long
+        # the process was away, and a job that fires during this loop would otherwise
+        # change the history the remaining jobs are judged against.
+        owed = self.pending_catch_ups()
+        owed_by_job = {catch_up.job_id: catch_up for catch_up in owed}
         for spec in self._specs.values():
             if spec.enabled:
-                self._schedule(spec)
+                self._schedule(spec, owed_by_job.get(spec.id))
         self._scheduler.start(paused=self._paused)
         logger.info(
             "scheduler started with %d jobs (%s)",
             sum(1 for s in self._specs.values() if s.enabled),
             ", ".join(sorted(s.id for s in self._specs.values() if s.enabled)) or "none",
         )
+        if owed:
+            # Named in one line, because this is the sentence that says the night off
+            # cost nothing: without it the morning just looks busy for no stated reason.
+            logger.info(
+                "catching up %d job(s) whose trigger came due while nothing was "
+                "running: %s",
+                len(owed),
+                ", ".join(
+                    f"{catch_up.job_id} ({catch_up.missed} missed)" for catch_up in owed
+                ),
+            )
+
+    def pending_catch_ups(self, now: dt.datetime | None = None) -> list[CatchUp]:
+        """What is owed to each job after the process was not running.
+
+        A failure to read the history means nothing is caught up rather than that
+        startup fails: an unreadable run table is a reason to run the normal schedule,
+        not a reason to refuse to start. It is logged for the same reason the drain
+        logs its own -- a silent empty list is indistinguishable from being up to date.
+        """
+        from awltux.db import session_scope
+
+        try:
+            with session_scope() as session:
+                last_successes = last_successful_runs(session)
+        except Exception:  # pragma: no cover - an unreadable DB must not stop startup
+            logger.exception("could not read the run history; catching nothing up")
+            return []
+        return catch_ups(self._specs.values(), last_successes, now or dt.datetime.now(dt.UTC))
 
     def shutdown(self, wait: bool = False) -> None:
         if self._scheduler.running:
@@ -154,7 +207,9 @@ class SchedulerService:
         bounded: a job can legitimately run for minutes, and the container is going
         to be stopped whether or not it has finished. So the drain turns a long job
         into a *killed* job -- its run row is left open mid-batch, and the next start
-        closes it as interrupted. Honest, but still lost work.
+        closes it as interrupted. Since catch-up landed that is no longer lost work:
+        an unsuccessful run does not count, so the next start repeats the job. It is
+        still worth avoiding, because the repeat spends the provider budget twice.
 
         Quieting moves that decision earlier and out of the shutdown path. The
         scheduler stops handing out runs, the in-flight ones finish in their own
@@ -239,7 +294,8 @@ class SchedulerService:
         it does nothing about the job already halfway through writing. Those are the
         ones that matter when a container is about to be replaced, because a job
         killed mid-batch leaves its run open and its work half-done -- the next start
-        closes the run as interrupted, which is honest but is still lost work.
+        closes the run as interrupted, and catch-up then repeats the job, so what is
+        spent is the provider budget rather than the outcome.
 
         Bounded on purpose. A job here can legitimately run for many minutes and the
         container is going to be stopped whether this returns or not, so waiting
@@ -253,7 +309,7 @@ class SchedulerService:
         return self.wait_for_idle(timeout)
 
     # -------------------------------------------------------------- internals
-    def _schedule(self, spec: JobSpec) -> None:
+    def _schedule(self, spec: JobSpec, owed: CatchUp | None = None) -> None:
         """Add a job to the scheduler, or pause it, according to the spec.
 
         **`next_run_time` must be omitted, never set to None.** APScheduler reads an
@@ -262,10 +318,9 @@ class SchedulerService:
         did, and it meant every job without ``run_on_start`` -- sixteen of nineteen --
         was silently paused from the moment the scheduler was written: no runs in the
         history, and no next run on the Operations page. The two symptoms are the
-        same bug seen from two directions.
-
-        Leaving the argument out lets the interval trigger compute the first fire
-        time, which is what "every 45 seconds" is supposed to mean.
+        same bug seen from two directions. Leaving the argument out is what lets the
+        interval trigger compute the first fire time, which is what "every 45
+        seconds" is supposed to mean; :meth:`_first_run` says which case applies.
 
         The first run of everything that is not run-on-start is randomised across the
         hour, so nineteen jobs sharing an hourly interval do not fire on the same
@@ -274,17 +329,9 @@ class SchedulerService:
         let an hourly job land anywhere between thirty and ninety minutes after the
         last run, and the Operations page prints a schedule that would then be untrue.
         """
+        _warn_if_below_the_floor(spec)
         now = dt.datetime.now(dt.UTC)
         window = min(spec.interval_seconds, FIRST_RUN_SPREAD_SECONDS)
-
-        if spec.interval_seconds < MIN_INTERVAL_SECONDS:
-            logger.warning(
-                "job %s is scheduled every %ss, below the %ss floor; raise it in "
-                "config.yaml unless this is deliberate",
-                spec.id,
-                spec.interval_seconds,
-                MIN_INTERVAL_SECONDS,
-            )
 
         trigger = IntervalTrigger(
             seconds=spec.interval_seconds,
@@ -292,23 +339,50 @@ class SchedulerService:
             timezone="UTC",
         )
 
-        options: dict[str, Any] = {}
-        if spec.run_on_start:
-            # Deliberately *first*, ahead of the interval: a fresh container should
-            # populate its dependencies now rather than one interval from now. The
-            # spread does not apply -- this is the bootstrap path.
-            options["next_run_time"] = now + dt.timedelta(seconds=spec.start_delay_seconds)
-
         self._scheduler.add_job(
             execute_job,
             trigger=trigger,
-            args=[spec],
+            args=self._job_args(spec, owed),
             id=spec.id,
             name=spec.description or spec.id,
             replace_existing=True,
             max_instances=spec.max_instances,
-            **options,
+            **self._first_run(spec, owed, now),
         )
+
+    @staticmethod
+    def _first_run(spec: JobSpec, owed: CatchUp | None, now: dt.datetime) -> dict[str, Any]:
+        """When this job first fires, as APScheduler options. Empty means "let it decide".
+
+        Three cases, in the order they take precedence:
+
+        * **Owed a catch-up.** Scheduled *at* the first missed trigger, with
+          ``misfire_grace_time`` disabled. Both are load-bearing. The first-missed
+          trigger is monotone with how long the job has gone unrun, so the catch-ups
+          run stalest-first, and it keeps the job on the phase it already had rather
+          than re-anchoring it to the restart; APScheduler's ``coalesce`` then
+          collapses the backlog it enumerates into one run and advances the next fire
+          time from the last of them. ``misfire_grace_time=None`` is what makes a
+          *past* due time run at all -- the 300-second default is measured in the
+          executor (``apscheduler/executors/base.py``), and it would discard exactly
+          the catch-up this exists to make, because an hourly job that missed a day is
+          twenty-three hours past due, not five minutes.
+        * **``run_on_start``.** Deliberately ahead of the interval: a fresh container
+          should populate its dependencies now rather than one interval from now. The
+          spread does not apply -- this is the bootstrap path.
+        * **Neither.** Nothing is passed, so the trigger's own start date decides, and
+          the job gets its spread first run.
+        """
+        if owed is not None:
+            return {"next_run_time": next_run_time_for(owed), "misfire_grace_time": None}
+        if spec.run_on_start:
+            return {"next_run_time": now + dt.timedelta(seconds=spec.start_delay_seconds)}
+        return {}
+
+    @staticmethod
+    def _job_args(spec: JobSpec, owed: CatchUp | None) -> list[Any]:
+        """What ``execute_job`` is called with: the spec, and why it fired when it did."""
+        return [spec] if owed is None else [spec, owed.cause]
 
     # --------------------------------------------------------------- manual
     def run_now(self, job_id: str, *, wait: bool = True):
@@ -324,9 +398,11 @@ class SchedulerService:
     def status(self) -> list[dict[str, object]]:
         """Job status for the dashboard's health panel."""
         jobs = {job.id: job for job in self._scheduler.get_jobs()}
+        now = dt.datetime.now(dt.UTC)
         out: list[dict[str, object]] = []
         for spec in self._specs.values():
             job = jobs.get(spec.id)
+            next_run = as_utc(job.next_run_time) if job and job.next_run_time else None
             out.append(
                 {
                     "id": spec.id,
@@ -337,7 +413,13 @@ class SchedulerService:
                     # The declared pipeline order, so an API consumer does not have
                     # to read the registry to know what must run first.
                     "needs": list(spec.depends_on),
-                    "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
+                    "next_run": next_run.isoformat() if next_run else None,
+                    # A due time that has already passed. Normally this is a catch-up
+                    # waiting its turn behind the single worker -- a run is not
+                    # "missed" while it is only queued -- so it is worth showing
+                    # rather than hiding behind a timestamp the reader has to compare
+                    # against a clock.
+                    "overdue": bool(next_run and next_run < now),
                 }
             )
         return out

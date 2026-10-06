@@ -118,7 +118,17 @@
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
       <td class="num">{{ job.interval_seconds | interval }}</td>
-      <td class="small muted">{{ job.next_run | datetime if job.next_run else '—' }}</td>
+      {# An overdue time is not a broken schedule, it is a job waiting for the single
+         worker -- usually a catch-up after the machine was off. Said in words because
+         a timestamp in the past is something the reader has to notice and then work
+         out, and the whole point of the column is to answer that at a glance. #}
+      <td class="small muted">
+        {%- if not job.next_run -%}—
+        {%- elif job.overdue -%}
+          <span class="warn" title="Due already; waiting its turn behind the running job">overdue — {{ job.next_run | datetime }}</span>
+        {%- else -%}{{ job.next_run | datetime }}
+        {%- endif -%}
+      </td>
       <td>
         {% if not job.enabled %}<span class="muted">disabled (missing credential)</span>
         {% elif job.paused %}<span class="muted">paused</span>

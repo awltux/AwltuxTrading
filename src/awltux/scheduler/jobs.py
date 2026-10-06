@@ -11,6 +11,7 @@ from typing import Any
 from awltux.db.models import IngestRun, utcnow
 from awltux.db.session import session_scope
 from awltux.scheduler import progress
+from awltux.timezones import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,45 @@ def running_jobs(session) -> set[str]:
         ).all()
         if job
     }
+
+
+def last_successful_runs(session) -> dict[str, dt.datetime]:
+    """When each job last did something that counted, from the run history.
+
+    **Successful, not merely attempted.** A run that raised, or that a restart killed
+    mid-write, produced nothing; its job is still behind, and the next start should
+    pick it up. Anchoring on the last attempt instead would make an interrupted run
+    look like work done -- and this process is restarted by every deploy, on a machine
+    that is switched off every night, so that is the common case rather than the rare
+    one. ``close_orphaned_runs`` has already marked such a run failed by the time this
+    is read (``main.py`` calls it before the scheduler starts).
+
+    A run the guard *skipped* counts: it fired, and it correctly found nothing to do.
+    Re-running it every start would be a job polling a coverage probe that just told
+    it there was nothing left.
+
+    The value is the run's **start**, so a job that is running right now is not treated
+    as behind -- queueing a second copy behind the first is the one thing
+    ``max_instances`` would then have to catch.
+
+    SQLite hands back naive datetimes however the column was declared, and these are
+    compared against an aware "now", so they are normalised here rather than at every
+    use. See :mod:`awltux.scheduler.catchup` for what the answer is used for.
+    """
+    from sqlalchemy import func, select
+
+    rows = session.execute(
+        select(IngestRun.job, func.max(IngestRun.started_at))
+        .where(IngestRun.ok.is_(True))
+        .group_by(IngestRun.job)
+    ).all()
+
+    latest_by_job: dict[str, dt.datetime] = {}
+    for job, latest in rows:
+        aware = as_utc(latest)
+        if job and aware is not None:
+            latest_by_job[job] = aware
+    return latest_by_job
 
 
 def close_orphaned_runs() -> int:
@@ -264,11 +304,17 @@ def guard_reason(spec: JobSpec) -> str | None:
     return skip_reason(spec, statuses.get(spec.id))
 
 
-def execute_job(spec: JobSpec) -> JobResult | None:
+def execute_job(spec: JobSpec, cause: str | None = None) -> JobResult | None:
     """Run a job with timing, error capture and run logging.
 
     Errors are swallowed *after* being recorded: one failing provider must not
     take down the scheduler or stop the other jobs.
+
+    ``cause`` is why this run happened when it did, and is written into the progress
+    log as its first line. It exists for the catch-up path (see
+    :mod:`awltux.scheduler.catchup`): a run that answers a missed trigger looks
+    exactly like a scheduled one afterwards, and the one moment you want to know the
+    difference is the morning the machine was off.
 
     The whole run is wrapped in a progress capture, so everything the job logs --
     and everything it says through ``progress.note`` -- lands in one file that
@@ -278,7 +324,7 @@ def execute_job(spec: JobSpec) -> JobResult | None:
     run_id = start_run(spec.id, started)
 
     with progress.capture(spec.id, run_id, started) as run_log:
-        return _execute_captured(spec, started, run_id, run_log)
+        return _execute_captured(spec, started, run_id, run_log, cause)
 
 
 def _execute_captured(
@@ -286,8 +332,16 @@ def _execute_captured(
     started: dt.datetime,
     run_id: int | None,
     run_log: progress.RunLog,
+    cause: str | None = None,
 ) -> JobResult | None:
     """The body of a run, with its progress log already open."""
+    if cause:
+        # Before the guard, so a catch-up that declines to work still says why it
+        # fired. Written to the file directly rather than through the logger: the
+        # level can hide INFO, and this is the line that explains the run.
+        logger.info("job %s: %s", spec.id, cause)
+        progress.note(cause)
+
     watched = guard_reason(spec)
     if watched is not None:
         # Recorded, not silent. A job that fires, finds nothing to do and says so is
