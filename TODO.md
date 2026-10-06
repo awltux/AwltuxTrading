@@ -378,6 +378,22 @@ answers in under 0.2s even with a job running, which distinguishes "the app is d
 from "the app is busy" — the distinction missing when this was first reported as a
 freeze.
 
+### `json_each` cannot use an index, so per-instrument news is a table scan
+
+The tickers on a news item are a JSON array column, so "stories naming this
+instrument" is `json_each` on SQLite — which no index can serve. Every
+per-instrument news read is therefore a scan of `news_item`.
+
+Measured: 6,555 rows, 0.02–0.06s per instrument page. Fine now, and the fix that made
+it correct (see `awltux/db/news.py`) is worth far more than the scan costs. It is
+recorded because the shape of the growth is known: news is the fastest-growing table
+in the schema, and the decision engine calls this per instrument per run.
+
+**Next:** a `news_item_ticker` join table, written on ingest alongside the JSON
+column, with an index on `(ticker, published_at)`. The column stays — it is what the
+extractor returns and what the paid feeds are matched against — but reads move to the
+join. Do it when a page crosses ~100ms or the table crosses ~100k rows, not before.
+
 ### `run_on_start` jobs redo their whole work on every restart
 
 Measured while auditing the run history for repeated work, after it was noticed that
