@@ -81,6 +81,34 @@ Read the build's exit status and its output. "The command returned" is not the s
 as "the image was rebuilt" — check the image's creation time or its baked
 provenance, which is the thing the page reports anyway.
 
+### Clean up after yourself before you finish
+
+**`git status` being clean is not the same as the workspace being clean.** Scratch
+that an ignore pattern covers is invisible to `git status` and accumulates anyway.
+
+The specific offender, because it is silent and it compounds: when pytest cannot
+write its cache directory it falls back to creating `pytest-cache-files-XXXXXXXX`
+in the current directory, and those are gitignored, so nothing ever reports them.
+108 of them had piled up at the repository root before anyone noticed. If you see
+the warning below, that is this happening:
+
+    PytestCacheWarning: could not create cache path .../.pytest_cache/v/cache/nodeids
+
+Check for them, and for anything else you left, before declaring a stage done:
+
+```bash
+git status --short                              # tracked work only
+ls -d pytest-cache-files-* 2>/dev/null           # pytest's fallback temp dirs
+```
+
+Put your own scratch in `.tmp/` or `.tests-tmp/`, both of which are gitignored and
+both of which are meant to be disposable. Do not invent a new scratch directory at
+the repository root — that is how `wtmp/`, `_tmp/` and the rest arrived.
+
+Anything a later step genuinely needs — a regenerated asset, a migration — belongs
+in the commit, not in scratch. If it is in `.tmp/`, it does not exist as far as the
+next session is concerned.
+
 ---
 
 ## 2. Never delete the database. Migrate it.
