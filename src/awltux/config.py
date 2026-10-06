@@ -50,6 +50,14 @@ class EnvSettings(BaseSettings):
     #: over IPv6. IPv6 privacy extensions also rotate the address, making an IPv6
     #: allowlist fragile. Pinning to IPv4 makes the address a key sees predictable.
     force_ipv4: bool = False
+    #: Whether the background scheduler runs in this process.
+    #:
+    #: On by default, and it must stay on in every deployment. It exists so a test
+    #: client can build the real application without also starting a job runner
+    #: against the test database: a background job writes `ingest_run` rows, which
+    #: made page-count assertions depend on whether a job happened to have fired.
+    #: Explicitly off in the test fixture rather than inferred from the environment.
+    scheduler_enabled: bool = True
 
     # Trading 212
     t212_api_key: SecretStr | None = None
@@ -185,6 +193,9 @@ class ScheduleConfig(BaseModel):
     news_relevance: int = 900
     news_embeddings: int = 1_800
     symbol_resolution: int = 86_400
+    #: The Treasury publishes once per business day, so anything under a few hours
+    #: is only useful for picking up a corrected publication.
+    macro_rates: int = 21_600
     sentiment_aggregate: int = 3_600
     valuation: int = 86_400
     decision: int = 86_400
@@ -198,6 +209,18 @@ class BudgetRule(BaseModel):
 
 
 class ValuationConfig(BaseModel):
+    #: Where the risk-free rate comes from.
+    #:
+    #: ``market`` reads the US Treasury's published par yield curve. ``config``
+    #: keeps the constant below and is the escape hatch for an offline deployment.
+    #: The constant is the fallback either way: a failed observation must not stop
+    #: the universe being valued.
+    risk_free_rate_source: Literal["market", "config"] = "market"
+    #: Which point on the curve anchors the discount rate.
+    risk_free_rate_tenor: str = "10 Yr"
+    #: Fallback only, when no market rate has been observed. It anchors the CAPM
+    #: cost of equity, so it decides every discounted fair value -- a stale value
+    #: here is silently repriced across the whole universe.
     risk_free_rate: float = 0.042
     equity_risk_premium: float = 0.055
     default_beta: float = 1.0

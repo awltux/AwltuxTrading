@@ -39,6 +39,29 @@ class TestHealth:
         assert t212["orders_allowed"] is True  # demo is permitted
 
 
+class TestTheSchedulerToggle:
+    """The dashboard is the real application under test; its timers are not.
+
+    The scheduler used to start inside every `client` fixture. That was invisible
+    until a `run_on_start` job was enabled by default -- then a background thread
+    began writing `ingest_run` rows while tests were asserting on how many rows
+    existed, and outlived the temporary database it was writing to.
+    """
+
+    def test_the_test_fixture_runs_no_jobs(self, settings):
+        assert settings.env.scheduler_enabled is False, (
+            "removing this makes page-count assertions depend on whether a "
+            "background job happened to have fired"
+        )
+
+    def test_the_scheduler_is_on_by_default(self):
+        """The toggle must not be off in a deployment, which is the only place it
+        matters."""
+        from awltux.config import EnvSettings
+
+        assert EnvSettings(_env_file=None).scheduler_enabled is True
+
+
 class TestDashboard:
     def test_root_redirects_to_the_dashboard(self, client):
         response = client.get("/", follow_redirects=False)

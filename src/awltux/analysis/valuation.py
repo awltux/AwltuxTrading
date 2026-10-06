@@ -36,6 +36,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from awltux.analysis import macro
 from awltux.analysis.fundamental import FundamentalSnapshot, build_snapshot
 from awltux.analysis.technical import TechnicalSnapshot, analyse
 from awltux.config import Settings, get_settings
@@ -152,13 +153,22 @@ class ValuationResult:
 # --------------------------------------------------------------------------- #
 
 
-def cost_of_equity(beta: float | None, settings: Settings) -> float:
-    """CAPM cost of equity: risk-free rate plus a beta-scaled equity premium."""
+def cost_of_equity(
+    beta: float | None, settings: Settings, *, risk_free_rate: float | None = None
+) -> float:
+    """CAPM cost of equity: risk-free rate plus a beta-scaled equity premium.
+
+    ``risk_free_rate`` overrides the configured constant. It is passed in rather
+    than read from ``settings`` here so the *resolved* rate is visible at the call
+    site; :mod:`awltux.analysis.macro` is the only place that decides between the
+    observed market rate and the configured fallback.
+    """
     config = settings.valuation
+    rate = config.risk_free_rate if risk_free_rate is None else risk_free_rate
     effective_beta = beta if beta and beta > 0 else config.default_beta
     # Clamp beta: providers occasionally report absurd values for thin listings.
     effective_beta = min(max(effective_beta, 0.3), 3.0)
-    return config.risk_free_rate + effective_beta * config.equity_risk_premium
+    return rate + effective_beta * config.equity_risk_premium
 
 
 def wacc(
@@ -250,6 +260,7 @@ def dcf_fcff(
     beta: float | None,
     net_debt: float | None,
     settings: Settings,
+    risk_free_rate: float | None = None,
 ) -> MethodResult:
     """Discounted free cash flow to the firm, per share."""
     inputs: dict[str, Any] = {}
@@ -264,7 +275,7 @@ def dcf_fcff(
         return MethodResult("dcf", None, False, "share count unavailable", inputs)
 
     config = settings.valuation
-    ke = cost_of_equity(beta, settings)
+    ke = cost_of_equity(beta, settings, risk_free_rate=risk_free_rate)
     discount_rate, wacc_inputs = wacc(
         cost_of_equity_value=ke,
         market_cap=market_cap,
@@ -340,6 +351,7 @@ def earnings_power_value(
     beta: float | None,
     net_debt: float | None,
     settings: Settings,
+    risk_free_rate: float | None = None,
 ) -> MethodResult:
     """Greenwald EPV: capitalise maintainable earnings, adjust for cash and debt."""
     inputs: dict[str, Any] = {}
@@ -370,7 +382,7 @@ def earnings_power_value(
             "maintainable earnings are not positive, so EPV does not apply", inputs,
         )
 
-    ke = cost_of_equity(beta, settings)
+    ke = cost_of_equity(beta, settings, risk_free_rate=risk_free_rate)
     inputs["cost_of_equity"] = ke
     value = normalised / ke
 
@@ -391,6 +403,7 @@ def residual_income(
     beta: float | None,
     book_value: float | None,
     settings: Settings,
+    risk_free_rate: float | None = None,
 ) -> MethodResult:
     """Book value plus the present value of returns above the cost of equity."""
     inputs: dict[str, Any] = {}
@@ -406,7 +419,7 @@ def residual_income(
     if roe is None:
         return MethodResult("residual_income", None, False, "no return on equity available", inputs)
 
-    ke = cost_of_equity(beta, settings)
+    ke = cost_of_equity(beta, settings, risk_free_rate=risk_free_rate)
     inputs.update(
         {
             "book_value": book_value,
@@ -502,6 +515,7 @@ def dividend_discount(
     snapshot: FundamentalSnapshot,
     beta: float | None,
     settings: Settings,
+    risk_free_rate: float | None = None,
 ) -> MethodResult:
     """Gordon growth, restricted to genuinely stable dividend payers.
 
@@ -528,7 +542,7 @@ def dividend_discount(
         )
 
     config = settings.valuation
-    ke = cost_of_equity(beta, settings)
+    ke = cost_of_equity(beta, settings, risk_free_rate=risk_free_rate)
     growth = min(
         config.terminal_growth_cap,
         max(snapshot.revenue_cagr or 0.0, 0.0),
@@ -743,8 +757,17 @@ def value_instrument(
     peers: PeerMultiples,
     settings: Settings,
     extra_inputs: dict[str, Any] | None = None,
+    risk_free_rate: float | None = None,
+    risk_free_rate_note: str | None = None,
 ) -> ValuationResult:
-    """Run every method and blend them. Pure function of its inputs."""
+    """Run every method and blend them. Pure function of its inputs.
+
+    ``risk_free_rate`` is the rate resolved by :mod:`awltux.analysis.macro` -- the
+    observed market yield when there is one, otherwise the configured constant. It
+    is passed in rather than read here so the model stays a function of its
+    arguments, and it is *recorded* below with its provenance, because a fair value
+    whose discount rate cannot be traced is not reproducible.
+    """
     snapshot = build_snapshot(periods)
     result = ValuationResult(price=price, currency=currency)
 
@@ -785,7 +808,16 @@ def value_instrument(
         "assumptions": {
             "tax_rate": DEFAULT_TAX_RATE,
             "default_cost_of_debt": DEFAULT_COST_OF_DEBT,
-            "risk_free_rate": settings.valuation.risk_free_rate,
+            "risk_free_rate": (
+                settings.valuation.risk_free_rate
+                if risk_free_rate is None
+                else risk_free_rate
+            ),
+            "risk_free_rate_source": (
+                "config" if risk_free_rate is None else "resolved"
+            ),
+            "risk_free_rate_note": risk_free_rate_note,
+            "risk_free_rate_fallback": settings.valuation.risk_free_rate,
             "equity_risk_premium": settings.valuation.equity_risk_premium,
         },
         **(extra_inputs or {}),
@@ -800,6 +832,7 @@ def value_instrument(
             beta=beta,
             net_debt=net_debt,
             settings=settings,
+            risk_free_rate=risk_free_rate,
         ),
         earnings_power_value(
             snapshot=snapshot,
@@ -808,6 +841,7 @@ def value_instrument(
             beta=beta,
             net_debt=net_debt,
             settings=settings,
+            risk_free_rate=risk_free_rate,
         ),
         residual_income(
             snapshot=snapshot,
@@ -815,6 +849,7 @@ def value_instrument(
             beta=beta,
             book_value=book_value,
             settings=settings,
+            risk_free_rate=risk_free_rate,
         ),
         relative_multiples(
             snapshot=snapshot_with_ebitda,
@@ -825,7 +860,12 @@ def value_instrument(
             peers=peers,
             settings=settings,
         ),
-        dividend_discount(snapshot=snapshot, beta=beta, settings=settings),
+        dividend_discount(
+            snapshot=snapshot,
+            beta=beta,
+            settings=settings,
+            risk_free_rate=risk_free_rate,
+        ),
         graham_number(snapshot=snapshot, book_value=book_value, shares=shares),
     ]
     result.methods = methods
@@ -886,7 +926,20 @@ def run_valuations(
 
     peers_by_sector = sector_multiples(session)
 
-    stats = {"attempted": 0, "valued": 0, "insufficient_data": 0, "no_peers": 0}
+    # Resolved once for the whole sweep. Every instrument is discounted at the same
+    # risk-free rate, so resolving it per name would be both wasteful and -- if the
+    # observation changed mid-run -- inconsistent between names in one sweep.
+    risk_free = macro.resolve_risk_free_rate(session, settings)
+
+    stats = {
+        "attempted": 0,
+        "valued": 0,
+        "insufficient_data": 0,
+        "no_peers": 0,
+        "risk_free_rate": risk_free.value,
+        "risk_free_rate_source": risk_free.source,
+        "risk_free_rate_note": risk_free.note,
+    }
     for instrument in instruments:
         stats["attempted"] += 1
 
@@ -924,6 +977,8 @@ def run_valuations(
             beta=None,  # beta is currently only available from the profile payload
             peers=peers,
             settings=settings,
+            risk_free_rate=risk_free.value,
+            risk_free_rate_note=risk_free.note,
         )
 
         session.add(

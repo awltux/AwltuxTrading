@@ -395,7 +395,34 @@ def _probe_retention(session: Session) -> Coverage:
 #: One probe per job id. Kept separate from the registry so the scheduler package
 #: still imports without touching the database, and asserted complete by a test so
 #: adding a job without saying what it produces fails loudly.
+def _probe_macro_rates(session: Session) -> Coverage:
+    """Whether the valuation model has a market risk-free rate to discount with.
+
+    The job produces exactly one number, so the coverage is all-or-nothing rather
+    than per-instrument: either a rate has been observed, or every discounted fair
+    value in the database is anchored to the configured constant instead. Saying
+    which one is the entire point, because both states produce a page full of
+    plausible numbers.
+    """
+    from awltux.analysis import macro
+
+    observation = macro.read_observation(session)
+    if observation is None:
+        return Coverage.all_or_nothing(
+            1,
+            "no market risk-free rate observed, so valuations are discounting at "
+            "the configured constant",
+        )
+    as_of = f", observed {observation.as_of}" if observation.as_of else ""
+    return Coverage.all_or_nothing(
+        0,
+        f"discounting at {observation.value:.2%} from the {observation.tenor or 'market'}"
+        f" Treasury yield{as_of}",
+    )
+
+
 PROBES = {
+    "macro_rates": _probe_macro_rates,
     "t212_instruments": _probe_t212_instruments,
     "universe_refresh": _probe_universe_refresh,
     "price_eod": _probe_price_eod,

@@ -434,7 +434,17 @@ def _retention(detail: dict[str, Any]) -> str:
     return f"{_n(removed)} rows pruned" if removed else "nothing had aged past its retention window"
 
 
+def _macro_rates(detail: dict[str, Any]) -> str:
+    rate = _get(detail, "risk_free_rate")
+    if not rate:
+        return "no risk-free rate was observed this run"
+    tenor = detail.get("tenor") or "the configured tenor"
+    as_of = detail.get("as_of") or "an unknown date"
+    return f"risk-free rate {rate:.2%} from the {tenor} Treasury yield published {as_of}"
+
+
 SUMMARISERS: dict[str, Summariser] = {
+    "macro_rates": _macro_rates,
     "t212_instruments": _t212_instruments,
     "universe_refresh": _universe_refresh,
     "price_eod": _price_eod,

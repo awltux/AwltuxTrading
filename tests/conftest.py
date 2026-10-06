@@ -102,6 +102,11 @@ def settings(temp_dir: Path, config_file: Path, monkeypatch: pytest.MonkeyPatch)
         falai_key=None,
         t212_env="demo",
         allow_live_orders=False,
+        # No job runner in the test process. A background job writes `ingest_run`
+        # rows, which made page-count assertions depend on whether one had fired,
+        # and the scheduler thread outlived the temporary database it was writing
+        # to. The dashboard is still the real application; only the timers are off.
+        scheduler_enabled=False,
     )
     resolved = build_settings(env)
 

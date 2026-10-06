@@ -58,12 +58,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     close_orphaned_runs()
 
-    try:
-        scheduler.start()
-    except Exception:
-        # A scheduler problem must not stop the dashboard from coming up: the
-        # UI is how the failure gets diagnosed.
-        logger.exception("scheduler failed to start; dashboard remains available")
+    if settings.env.scheduler_enabled:
+        try:
+            scheduler.start()
+        except Exception:
+            # A scheduler problem must not stop the dashboard from coming up: the
+            # UI is how the failure gets diagnosed.
+            logger.exception("scheduler failed to start; dashboard remains available")
+    else:
+        logger.info("scheduler disabled by configuration; no jobs will run")
 
     try:
         yield

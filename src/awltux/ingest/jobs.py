@@ -724,6 +724,59 @@ def _lookup_symbol(provider, query: str, instrument: Any, *, by_isin: bool):
     )
 
 
+def refresh_macro_rates() -> JobResult:
+    """Observe the risk-free rate from the Treasury's published yield curve.
+
+    One number, and it decides every discounted fair value in the database: the
+    rate anchors the CAPM cost of equity, which anchors the discount rate. It used
+    to be a constant in ``config.yaml``, which is correct on the day it is typed and
+    silently wrong afterwards -- on 2026-10-05 the ten-year yielded 5.31% against a
+    configured 4.2%.
+
+    The observation is *stored* rather than read at import so that a valuation can
+    be reproduced against the rate actually in force when it was computed, and so a
+    failed fetch degrades to the configured constant instead of failing the sweep.
+    """
+    from awltux.analysis import macro
+    from awltux.providers.http import ProviderError
+    from awltux.providers.treasury import TreasuryProvider
+
+    settings = get_settings()
+    tenor = settings.valuation.risk_free_rate_tenor
+    provider = TreasuryProvider(settings)
+    try:
+        # No session is open across this call, so nothing holds the write lock.
+        curve = provider.yield_curve()
+    except ProviderError as exc:
+        return JobResult(note=f"could not read the Treasury yield curve: {exc}")
+    finally:
+        provider.close()
+
+    with session_scope() as session:
+        observation = macro.store_observation(session, curve, tenor=tenor)
+
+    if observation is None:
+        return JobResult(
+            note=(
+                f"the {tenor} point was missing or implausible in the curve "
+                f"published {curve.as_of.isoformat()}, so nothing was stored"
+            ),
+            detail={"as_of": curve.as_of.isoformat(), "tenors": sorted(curve.rates)},
+        )
+
+    return JobResult(
+        items_seen=len(curve.rates),
+        items_written=1,
+        detail={
+            "as_of": curve.as_of.isoformat(),
+            "tenor": tenor,
+            "risk_free_rate": observation.value,
+            "source": observation.source,
+            "yield_curve": curve.as_dict(),
+        },
+    )
+
+
 def resolve_symbols() -> JobResult:
     """Look up the provider symbol for instruments a derived one cannot reach.
 

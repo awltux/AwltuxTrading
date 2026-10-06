@@ -43,6 +43,7 @@ schedule:
   decision: 86400
   calibration: 86400
   retention: 604800
+  macro_rates: 21600             # Treasury publishes once a business day
 
 # --- provider rate-limit budgets (requests per window) ------------------------
 # Scopes mirror each provider's own per-endpoint limits, because a single shared
@@ -57,6 +58,9 @@ budgets:
   t212_history:     { requests: 18, window_seconds: 60 }
   yahoo:        { requests: 1800, window_seconds: 3600 }
   stooq:        { requests: 60,   window_seconds: 3600 }
+  # One CSV per day changes; the budget only exists so a retry loop cannot hammer
+  # the Treasury's site.
+  treasury:     { requests: 12,   window_seconds: 3600 }
   edgar:        { requests: 5,    window_seconds: 1 }     # SEC allows 10/s; use half
   companies_house: { requests: 500, window_seconds: 300 } # CH allows 600/5min
   finnhub:      { requests: 55,   window_seconds: 60 }
@@ -98,7 +102,16 @@ horizons:
 # --- deterministic valuation model --------------------------------------------
 valuation:
   # Discount rate build-up, used when a DCF is applicable.
-  risk_free_rate: 0.042
+  #
+  # The risk-free rate is observed from the US Treasury's published par yield curve
+  # rather than trusted to this file. It anchors the CAPM cost of equity, so it
+  # decides every discounted fair value, and a constant here is honest only on the
+  # day it is typed. Set `risk_free_rate_source: config` to disable the lookup and
+  # pin the constant -- the value below is the fallback either way, and a run that
+  # falls back to it records that it did.
+  risk_free_rate_source: market      # market | config
+  risk_free_rate_tenor: "10 Yr"      # which point on the curve anchors the rate
+  risk_free_rate: 0.042              # fallback only; see above
   equity_risk_premium: 0.055
   default_beta: 1.0
   # Terminal growth is capped -- nothing grows faster than the economy forever.

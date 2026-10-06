@@ -30,6 +30,21 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
     specs: list[JobSpec] = [
         # --- reference data --------------------------------------------------
         JobSpec(
+            id="macro_rates",
+            func=ingest_jobs.refresh_macro_rates,
+            interval_seconds=schedule.macro_rates,
+            description=(
+                "Observe the risk-free rate from the US Treasury par yield curve, "
+                "which anchors every discount rate"
+            ),
+            # Needs nothing else, and everything downstream of the valuation model
+            # is wrong without it: run it before the first sweep rather than a day
+            # after it.
+            run_on_start=True,
+            jitter_seconds=60,
+            enabled=True,
+        ),
+        JobSpec(
             id="t212_instruments",
             func=ingest_jobs.sync_instruments,
             interval_seconds=schedule.t212_instruments,
