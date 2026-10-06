@@ -28,10 +28,10 @@ import csv
 import datetime as dt
 import io
 import logging
-from dataclasses import dataclass
 
 from awltux.config import Settings, get_settings
 from awltux.providers.http import HttpClient, ProviderError
+from awltux.providers.yields import DEFAULT_TENOR, YieldCurve  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -40,41 +40,11 @@ SOURCE = "treasury"
 #: One CSV per year, covering every business day of it.
 BASE_URL = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates"
 
-#: The tenor used for the risk-free rate unless configured otherwise. Ten years is
-#: the conventional anchor for a DCF: long enough to span a business cycle, short
-#: enough that its price is not dominated by term-premium noise.
-DEFAULT_TENOR = "10 Yr"
-
 #: Tenors the publication carries, for validation and display.
 TENORS = (
     "1 Mo", "1.5 Month", "2 Mo", "3 Mo", "4 Mo", "6 Mo",
     "1 Yr", "2 Yr", "3 Yr", "5 Yr", "7 Yr", "10 Yr", "20 Yr", "30 Yr",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class YieldCurve:
-    """One day's published par yields, as percentages."""
-
-    as_of: dt.date
-    rates: dict[str, float]
-
-    def percent(self, tenor: str) -> float | None:
-        return self.rates.get(tenor)
-
-    def fraction(self, tenor: str) -> float | None:
-        """The tenor as a decimal fraction, which is what the model wants.
-
-        Kept as a named method rather than left to the caller: ``5.31`` and
-        ``0.0531`` are the same rate and different numbers, and a discount rate
-        that is 100x too large or too small produces a valuation that looks
-        entirely plausible.
-        """
-        value = self.rates.get(tenor)
-        return None if value is None else value / 100.0
-
-    def as_dict(self) -> dict[str, float]:
-        return dict(self.rates)
 
 
 def _csv_url(year: int) -> str:

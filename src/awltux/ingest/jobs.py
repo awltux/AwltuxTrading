@@ -725,56 +725,90 @@ def _lookup_symbol(provider, query: str, instrument: Any, *, by_isin: bool):
 
 
 def refresh_macro_rates() -> JobResult:
-    """Observe the risk-free rate from the Treasury's published yield curve.
+    """Observe the risk-free rate for every currency the model discounts in.
 
-    One number, and it decides every discounted fair value in the database: the
-    rate anchors the CAPM cost of equity, which anchors the discount rate. It used
-    to be a constant in ``config.yaml``, which is correct on the day it is typed and
-    silently wrong afterwards -- on 2026-10-05 the ten-year yielded 5.31% against a
-    configured 4.2%.
+    One number per currency, and it decides every discounted fair value in the
+    database: the rate anchors the CAPM cost of equity, which anchors the discount
+    rate. It used to be a constant in ``config.yaml``, which is correct on the day it
+    is typed and silently wrong afterwards -- on 2026-10-05 the ten-year Treasury
+    yielded 5.31% against a configured 4.2%.
+
+    **Per currency, because a discount rate must match the cash flows.** Roughly a
+    quarter of this universe is sterling, and discounting sterling cash flows at a
+    dollar rate embeds a cross-currency view the model does not hold. Each currency
+    reads its own sovereign's curve; a currency with none wired up is left to the
+    configured constant rather than quietly given someone else's rate.
 
     The observation is *stored* rather than read at import so that a valuation can
     be reproduced against the rate actually in force when it was computed, and so a
     failed fetch degrades to the configured constant instead of failing the sweep.
+    One currency failing does not stop the others being recorded.
     """
     from awltux.analysis import macro
+    from awltux.providers.gilt import GiltProvider
     from awltux.providers.http import ProviderError
     from awltux.providers.treasury import TreasuryProvider
 
     settings = get_settings()
     tenor = settings.valuation.risk_free_rate_tenor
-    provider = TreasuryProvider(settings)
-    try:
-        # No session is open across this call, so nothing holds the write lock.
-        curve = provider.yield_curve()
-    except ProviderError as exc:
-        return JobResult(note=f"could not read the Treasury yield curve: {exc}")
-    finally:
-        provider.close()
+    builders = {"treasury": TreasuryProvider, "gilt": GiltProvider}
 
-    with session_scope() as session:
-        observation = macro.store_observation(session, curve, tenor=tenor)
+    written = 0
+    seen = 0
+    errors: list[str] = []
+    detail: dict[str, Any] = {"tenor": tenor, "currencies": {}}
 
-    if observation is None:
-        return JobResult(
-            note=(
-                f"the {tenor} point was missing or implausible in the curve "
-                f"published {curve.as_of.isoformat()}, so nothing was stored"
-            ),
-            detail={"as_of": curve.as_of.isoformat(), "tenors": sorted(curve.rates)},
+    # One fetch per *source*, not per currency: both currencies a source serves come
+    # from the same published curve, and the Treasury's is the whole curve at once.
+    for source in sorted(set(macro.CURRENCY_CURVES.values())):
+        provider = builders[source](settings)
+        try:
+            # No session is open across this call, so nothing holds the write lock.
+            curve = provider.yield_curve()
+        except ProviderError as exc:
+            errors.append(f"{source}: {exc}")
+            continue
+        finally:
+            provider.close()
+
+        currencies = [
+            code for code, name in macro.CURRENCY_CURVES.items() if name == source
+        ]
+        for currency in currencies:
+            seen += len(curve.rates)
+            with session_scope() as session:
+                observation = macro.store_observation(
+                    session, curve, currency=currency, tenor=tenor
+                )
+            if observation is None:
+                errors.append(
+                    f"{currency}: the {tenor} point was missing or implausible in the "
+                    f"curve published {curve.as_of.isoformat()}"
+                )
+                continue
+            written += 1
+            detail["currencies"][currency] = {
+                "as_of": curve.as_of.isoformat(),
+                "risk_free_rate": observation.value,
+                "source": source,
+                "yield_curve": curve.as_dict(),
+            }
+
+    if not written:
+        note = (
+            "; ".join(errors)
+            if errors
+            else "no currency has a sovereign curve wired up, so nothing was observed"
         )
+        return JobResult(note=f"no risk-free rate was stored: {note}", detail=detail)
 
-    return JobResult(
-        items_seen=len(curve.rates),
-        items_written=1,
-        detail={
-            "as_of": curve.as_of.isoformat(),
-            "tenor": tenor,
-            "risk_free_rate": observation.value,
-            "source": observation.source,
-            "yield_curve": curve.as_dict(),
-        },
-    )
+    if errors:
+        # Reported, not swallowed: one currency falling back to the configured
+        # constant while another is priced off the market is a state a reader needs
+        # to be able to see.
+        detail["errors"] = errors
+
+    return JobResult(items_seen=seen, items_written=written, detail=detail)
 
 
 def resolve_symbols() -> JobResult:

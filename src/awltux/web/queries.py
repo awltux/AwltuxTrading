@@ -835,65 +835,107 @@ def price_history_waiting_note(session: Session, ticker: str, *, bars: int) -> s
 
 
 
-#: The tenors worth showing. Two ends and two middles: enough to see the shape of
-#: the curve without turning the page into a data dump.
-CURVE_TENORS = ("3 Mo", "2 Yr", "10 Yr", "30 Yr")
+#: Which tenors to show, in the order a curve is read. A subset rather than
+#: everything: the Treasury publishes fourteen pillars and a table cell with
+#: fourteen numbers in it is a data dump, not a shape. Whichever of these a given
+#: curve actually has is shown, so the US curve shows six points and the gilt curve
+#: three without either being special-cased.
+CURVE_TENORS = ("3 Mo", "2 Yr", "5 Yr", "10 Yr", "20 Yr", "30 Yr")
 
 #: The condition under which the "long end is under pressure" reading is wrong.
 #:
-#: Stated as a number, and stated at all, because a claim with no falsifier is not
-#: a reading -- it is a mood, and it cannot be shown to be wrong. From the source
-#: material this comes from: if the 30-year settles below this and stays there for
-#: a full quarter, buyers came back on their own and most of the reading does not
+#: Stated as a number, and stated at all, because a claim with no falsifier is not a
+#: reading -- it is a mood, and it cannot be shown to be wrong. From the source
+#: material this comes from: if the **US** 30-year settles below this and stays there
+#: for a full quarter, buyers came back on their own and most of the reading does not
 #: happen.
 #:
-#: **The duration is not tracked.** One observation is stored, not a quarter of
-#: them, so this reports today's level against the threshold and says plainly that
+#: It is deliberately tied to the US curve and not generalised. The claim is about
+#: the US 30-year, and the Bank of England's published curve has no 30-year pillar at
+#: all -- so applying the same threshold to the gilt curve would be inventing a
+#: condition nobody stated. Where there is no such pillar, the page says so.
+#:
+#: **The duration is not tracked either.** One observation is stored, not a quarter
+#: of them, so this reports today's level against the threshold and says plainly that
 #: the "for a quarter" half is not being measured. Claiming the falsifier had been
 #: evaluated would be the same class of error as the coverage column that reported
 #: missing work as done.
 FALSIFIER_TENOR = "30 Yr"
+FALSIFIER_CURRENCY = "USD"
 FALSIFIER_LEVEL = 0.045
 
 
-def rate_environment(session: Session) -> dict[str, Any] | None:
-    """The observed yield curve and the condition that would falsify its reading.
-
-    Reports, never predicts. It says what the Treasury published, what the long end
-    is doing relative to the short end, and what number would show the reading to be
-    wrong -- which is the only part of a macro view that can be checked.
-    """
-    observation = macro.read_observation(session)
+def _curve_summary(session: Session, currency: str) -> dict[str, Any] | None:
+    """One currency's observed curve, as a shape rather than a single number."""
+    observation = macro.read_observation(session, currency)
     if observation is None:
         return None
 
-    curve = macro.stored_curve(session)
+    curve = macro.stored_curve(session, currency)
     shown = {tenor: curve[tenor] for tenor in CURVE_TENORS if tenor in curve}
 
-    long_end = curve.get(FALSIFIER_TENOR)
-    short_end = curve.get("10 Yr")
-    # A positive spread means the market charges more to lend for longer, which is
-    # the normal shape. The reading is about the long end being repriced, so the
-    # number that matters is how far it has moved from the ten-year.
-    spread = None if long_end is None or short_end is None else long_end - short_end
-
-    falsified = None if long_end is None else (long_end / 100.0) < FALSIFIER_LEVEL
+    # The longest tenor this curve publishes, which is what a term-premium reading
+    # is about. The US curve's longest is 30 years and the gilt curve's is 20, so
+    # the label travels with the number instead of being hardcoded to "10s30s".
+    long_tenor = max(shown, key=list(CURVE_TENORS).index) if shown else None
+    long_end = curve.get(long_tenor) if long_tenor else None
+    ten_year = curve.get("10 Yr")
+    spread = None if long_end is None or ten_year is None else long_end - ten_year
 
     return {
+        "currency": currency,
         "as_of": observation.as_of,
         "tenor": observation.tenor,
         "value": observation.value,
         "source": observation.source,
+        "note": observation.note,
         "curve": shown,
-        "spread_10s30s": spread,
+        "long_tenor": long_tenor,
+        "spread": spread,
+    }
+
+
+def rate_environment(session: Session) -> dict[str, Any] | None:
+    """Every observed yield curve, and the condition that would falsify the reading.
+
+    Reports, never predicts. It says what each country published, what the long end
+    is doing relative to the ten-year, and what number would show the reading to be
+    wrong -- which is the only part of a macro view that can be checked.
+
+    Per currency, because the model discounts in the currency of the cash flows: a
+    page showing one curve would be showing one of the two the sweep actually used.
+    """
+    currencies = [
+        summary
+        for code in sorted(macro.CURRENCY_CURVES)
+        if (summary := _curve_summary(session, code)) is not None
+    ]
+    if not currencies:
+        return None
+
+    usd = next((summary for summary in currencies if summary["currency"] == FALSIFIER_CURRENCY), None)
+    if usd is None:
+        falsified = None
+        falsifier_note = (
+            f"no {FALSIFIER_CURRENCY} curve has been observed, so the condition on its "
+            f"{FALSIFIER_TENOR} cannot be checked"
+        )
+    else:
+        level = usd["curve"].get(FALSIFIER_TENOR)
+        falsified = None if level is None else (level / 100.0) < FALSIFIER_LEVEL
+        falsifier_note = (
+            f"the reading is falsified if the {FALSIFIER_CURRENCY} {FALSIFIER_TENOR} "
+            f"settles below {FALSIFIER_LEVEL:.2%} for a full quarter; the level is "
+            "checked here, the duration is not"
+        )
+
+    return {
+        "currencies": currencies,
+        "falsifier_currency": FALSIFIER_CURRENCY,
         "falsifier_tenor": FALSIFIER_TENOR,
         "falsifier_level": FALSIFIER_LEVEL,
         "falsifier_met": falsified,
-        "falsifier_note": (
-            f"the reading is falsified if the {FALSIFIER_TENOR} settles below "
-            f"{FALSIFIER_LEVEL:.2%} for a full quarter; the level is checked here, "
-            "the duration is not"
-        ),
+        "falsifier_note": falsifier_note,
     }
 
 

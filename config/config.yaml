@@ -61,6 +61,9 @@ budgets:
   # One CSV per day changes; the budget only exists so a retry loop cannot hammer
   # the Treasury's site.
   treasury:     { requests: 12,   window_seconds: 3600 }
+  # One request returns all three gilt pillars. Same reasoning as the Treasury:
+  # the budget exists so a retry loop cannot hammer the BoE's site.
+  gilt:         { requests: 12,   window_seconds: 3600 }
   edgar:        { requests: 5,    window_seconds: 1 }     # SEC allows 10/s; use half
   companies_house: { requests: 500, window_seconds: 300 } # CH allows 600/5min
   finnhub:      { requests: 55,   window_seconds: 60 }

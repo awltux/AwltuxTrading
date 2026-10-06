@@ -980,19 +980,24 @@ def run_valuations(
 
     peers_by_sector = sector_multiples(session)
 
-    # Resolved once for the whole sweep. Every instrument is discounted at the same
-    # risk-free rate, so resolving it per name would be both wasteful and -- if the
-    # observation changed mid-run -- inconsistent between names in one sweep.
-    risk_free = macro.resolve_risk_free_rate(session, settings)
+    # Resolved per currency, and cached, because a discount rate has to match the
+    # currency of the cash flows it discounts. This universe is roughly three
+    # quarters dollars and one quarter sterling -- the LSE alone is 118 of the 500 --
+    # and one rate cannot serve both without embedding a cross-currency view.
+    rates: dict[str, macro.RiskFreeRate] = {}
+
+    def rate_for(currency: str | None) -> macro.RiskFreeRate:
+        code = macro.normalise_currency(currency)
+        if code not in rates:
+            rates[code] = macro.resolve_risk_free_rate(session, settings, code)
+        return rates[code]
 
     stats = {
         "attempted": 0,
         "valued": 0,
         "insufficient_data": 0,
         "no_peers": 0,
-        "risk_free_rate": risk_free.value,
-        "risk_free_rate_source": risk_free.source,
-        "risk_free_rate_note": risk_free.note,
+        "risk_free_rates": {},
     }
     for instrument in instruments:
         stats["attempted"] += 1
@@ -1021,9 +1026,14 @@ def run_valuations(
         closes = [bar.close for bar in bars if bar.close]
         volumes = [bar.volume or 0.0 for bar in bars]
 
+        # The currency the cash flows and the price are both in, which is the
+        # currency the discount rate has to be quoted in.
+        currency = bar_currency(session, instrument.t212_ticker)
+        risk_free = rate_for(currency)
+
         result = value_instrument(
             price=closes[-1] if closes else None,
-            currency=bar_currency(session, instrument.t212_ticker),
+            currency=currency,
             periods=periods,
             closes=closes,
             volumes=volumes,
@@ -1066,6 +1076,19 @@ def run_valuations(
         release_write_lock(session)
 
     session.flush()
+    # Which rate applied to which currency, so a sweep can be read back without
+    # inferring it. A run that silently priced sterling off a dollar curve would look
+    # identical in every other counter here.
+    stats["risk_free_rates"] = {
+        code: {
+            "value": rate.value,
+            "source": rate.source,
+            "as_of": rate.as_of,
+            "tenor": rate.tenor,
+            "note": rate.note,
+        }
+        for code, rate in sorted(rates.items())
+    }
     logger.info("valuation run: %s", stats)
     return stats
 
