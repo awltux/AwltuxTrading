@@ -131,6 +131,20 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="shareholder_reports",
+            func=ingest_jobs.sync_shareholder_reports,
+            interval_seconds=schedule.edgar_submissions,
+            description=(
+                "Download the annual reports: this year and the previous one, with "
+                "the bytes kept"
+            ),
+            # After the filing history exists: this job's input is the annual-form
+            # rows that job writes.
+            depends_on=("filings_edgar",),
+            jitter_seconds=180,
+            enabled=True,
+        ),
+        JobSpec(
             id="edgar_events",
             func=ingest_jobs.ingest_edgar_events,
             interval_seconds=schedule.edgar_atom_events,

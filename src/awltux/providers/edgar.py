@@ -18,8 +18,11 @@ CIKs are zero-padded to ten digits everywhere. ``company_tickers.json`` returns
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
+from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from awltux.config import Settings, get_settings
@@ -42,6 +45,104 @@ INTERESTING_FORMS = {
     "S-1": "registration",
     "DEF 14A": "proxy",
 }
+
+#: The forms that *are* the shareholders' report: the annual filing containing the
+#: audited primary statements. 10-K is the domestic form; 20-F and 40-F are the
+#: foreign-private-issuer equivalents, and a company files one or the other rather
+#: than both.
+ANNUAL_FORMS = ("10-K", "20-F", "40-F")
+
+
+#: Content types a filing's primary document is allowed to be.
+DOCUMENT_CONTENT_TYPES = (
+    "text/html",
+    "text/plain",
+    "application/xhtml",
+    "application/xml",
+    "text/xml",
+)
+
+#: Markers of an SEC refusal served as a successful response.
+#:
+#: **The content type cannot tell these apart from a real filing**, which is the
+#: whole problem: a 10-K is served as ``text/html`` and so is "Access Denied". The
+#: first version of this check looked only at the content type and cheerfully stored
+#: 1.5 megabytes of refusal as a fetched annual report -- the exact failure the check
+#: existed to prevent, found by running it against the live endpoint rather than by
+#: reading it. The body is the only evidence that distinguishes them.
+_REFUSAL_MARKERS = (
+    b"access denied",
+    b"your request has been rate-limited",
+    b"undeclared automated tool",
+    b"request rate threshold",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Document:
+    """A fetched filing document, and whether it is one."""
+
+    url: str
+    status: int
+    content_type: str | None
+    body: bytes
+
+    @property
+    def refusal(self) -> str | None:
+        """Why this is not the document, or ``None`` if it looks like one."""
+        if self.status >= 400:
+            return f"HTTP {self.status}"
+        if not self.body:
+            return "empty response"
+        kind = (self.content_type or "").lower()
+        if not any(allowed in kind for allowed in DOCUMENT_CONTENT_TYPES):
+            return f"unexpected content type {self.content_type!r}"
+
+        # Only the head is inspected: a real filing can mention any of these phrases
+        # in its risk factors, but a refusal page leads with one.
+        head = self.body[:4096].lower()
+        for marker in _REFUSAL_MARKERS:
+            if marker in head:
+                return f"the provider refused the request ({marker.decode()})"
+        return None
+
+    @property
+    def is_document(self) -> bool:
+        return self.refusal is None
+
+
+def _parse_iso_date(value: str | None) -> dt.date | None:
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def _rows_from_page(page: dict[str, Any]) -> Iterator[tuple[str, str, str, str, str | None]]:
+    """One submissions page's parallel arrays, as rows.
+
+    EDGAR returns ``form``/``filingDate``/``accessionNumber`` as parallel lists
+    rather than a list of objects, and the arrays can disagree in length, so every
+    index is bounds-checked rather than zipped into a silent truncation.
+    """
+    forms = page.get("form") or []
+    dates = page.get("filingDate") or []
+    accessions = page.get("accessionNumber") or []
+    documents = page.get("primaryDocument") or []
+    descriptions = page.get("primaryDocDescription") or []
+
+    for index, form in enumerate(forms):
+        if index >= len(dates) or index >= len(accessions):
+            break
+        yield (
+            form,
+            dates[index],
+            accessions[index],
+            documents[index] if index < len(documents) else "",
+            descriptions[index] if index < len(descriptions) else None,
+        )
 
 _CIK_RE = re.compile(r"^\d{1,10}$")
 
@@ -151,6 +252,118 @@ class EdgarProvider:
         bare = accession.replace("-", "")
         base = f"{WWW_BASE}/Archives/edgar/data/{int(padded)}/{bare}"
         return f"{base}/{accession}-index.htm" if not primary_document else f"{base}/{primary_document}"
+
+    def get_annual_filings(
+        self,
+        cik: str | int,
+        *,
+        since: dt.date,
+        limit: int = 12,
+        cache_ttl: float = 86_400.0,
+    ) -> list[dict[str, Any]]:
+        """Annual reports filed on or after ``since``, newest first.
+
+        Separate from :meth:`get_recent_filings` for two reasons, both of which
+        would silently truncate a six-year request:
+
+        * that method caps the *interesting* forms it returns, so a company filing
+          many 8-Ks would have its older 10-Ks cut off by the limit rather than by
+          the date;
+        * EDGAR keeps roughly the last thousand filings in ``filings.recent`` and
+          moves everything older into additional ``filings.files`` pages, whose
+          contents look nothing like the recent window. A company filing 200
+          documents a year exhausts the recent window before six years are up, so
+          the older pages have to be followed rather than assumed empty.
+        """
+        padded = self._require_cik(cik)
+
+        annual: list[dict[str, Any]] = []
+        for form, date, accession, primary, description in self._filing_rows(cik, cache_ttl=cache_ttl):
+            if form not in ANNUAL_FORMS:
+                continue
+            filed = _parse_iso_date(date)
+            if filed is None or filed < since:
+                continue
+            annual.append(
+                {
+                    "form": form,
+                    "category": INTERESTING_FORMS[form],
+                    "filing_date": date,
+                    "filed_on": filed,
+                    "accession_number": accession,
+                    "primary_document": primary,
+                    "description": description,
+                    "url": self.document_url(padded, accession, primary),
+                }
+            )
+
+        annual.sort(key=lambda entry: entry["filed_on"], reverse=True)
+        return annual[:limit]
+
+    def _filing_rows(
+        self, cik: str | int, *, cache_ttl: float
+    ) -> Iterator[tuple[str, str, str, str, str | None]]:
+        """Every stored filing as ``(form, date, accession, primary, description)``.
+
+        Walks the recent window and then any older pages, newest page first, so a
+        caller filtering by date can stop as soon as it is looking at filings older
+        than it wants. Nothing is sorted here: EDGAR already returns each page in
+        reverse-chronological order.
+        """
+        payload = self.get_submissions(cik, cache_ttl=cache_ttl)
+        yield from _rows_from_page(((payload.get("filings") or {}).get("recent")) or {})
+
+        for page in (payload.get("filings") or {}).get("files") or []:
+            name = page.get("name")
+            if not name:
+                continue
+            try:
+                older = self._client.request(
+                    "GET",
+                    f"{WWW_BASE}/Archives/edgar/data/{int(self._require_cik(cik))}/{name}",
+                    cache_ttl=cache_ttl,
+                ).json()
+            except (ProviderError, ValueError) as exc:
+                # A missing older page costs history, not the run: the recent window
+                # has already been yielded, so the caller still gets what it can.
+                logger.warning("could not read the older submissions page %s: %s", name, exc)
+                continue
+            yield from _rows_from_page(older)
+
+    def fetch_document(self, url: str, *, cache_ttl: float = 604_800.0) -> Document:
+        """Download a filing's primary document.
+
+        Cached for a week: a filed document is immutable, and re-parsing one should
+        never mean re-requesting it. The SEC's rate limit makes that worth more here
+        than elsewhere.
+        """
+        # The SEC answers an archive request whose User-Agent declares no contact
+        # with HTTP 403, and it does so for every request rather than once. Checking
+        # here turns a silent backlog of 4,500 refusals into one sentence naming the
+        # setting -- the deployed `.env` carries a contact, but the code default does
+        # not, so a fresh install would otherwise fail with no explanation.
+        agent = self.settings.env.sec_user_agent or ""
+        if "@" not in agent:
+            raise ProviderError(
+                SOURCE,
+                "the SEC refuses archive requests whose User-Agent declares no contact. "
+                "Set AWLTUX_SEC_USER_AGENT to 'App/version (you@example.com)'.",
+            )
+
+        try:
+            result = self._client.request(
+                "GET", url, cache_ttl=cache_ttl, expect_json=False
+            )
+        except ProviderError as exc:
+            raise ProviderError(SOURCE, f"could not fetch {url}: {exc}") from exc
+
+        return Document(
+            url=url,
+            status=result.status,
+            content_type=result.content_type,
+            body=result.body,
+        )
+
 
     # ------------------------------------------------------------ XBRL facts
     def get_company_facts(self, cik: str | int, *, cache_ttl: float = 86400.0) -> dict[str, Any]:

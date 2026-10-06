@@ -25,7 +25,7 @@ import logging
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -429,6 +429,14 @@ class FetchResult:
     from_cache: bool
     revalidated: bool
     url: str
+    #: Selected response headers. Carried because the content type is the only way
+    #: to tell a filing document from an error page served with HTTP 200, and a
+    #: caller that cannot see it has to guess from the URL extension.
+    headers: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def content_type(self) -> str | None:
+        return self.headers.get("content-type")
 
     def json(self) -> Any:
         return json.loads(self.body.decode("utf-8"))
@@ -519,6 +527,7 @@ class HttpClient:
                 from_cache=True,
                 revalidated=False,
                 url=full_url,
+                headers=cached.headers,
             )
 
         request_headers = dict(headers or {})
@@ -574,6 +583,7 @@ class HttpClient:
                     from_cache=True,
                     revalidated=True,
                     url=full_url,
+                    headers=cached.headers,
                 )
 
             if response.status_code in RETRY_STATUS:
@@ -633,6 +643,7 @@ class HttpClient:
                 from_cache=False,
                 revalidated=False,
                 url=full_url,
+                headers=_selected_headers(response.headers),
             )
 
         raise ProviderError(

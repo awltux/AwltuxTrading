@@ -140,6 +140,23 @@ valuation:
   max_method_dispersion: 0.60
   peer_group_min_size: 4
 
+# --- shareholders' reports -----------------------------------------------------
+# The annual report is the primary evidence about a business, so the bytes are kept
+# rather than just a link to them (see `ingest/documents.py`).
+reports:
+  # Fiscal years of annual reports to hold per instrument.
+  #
+  # TWO FOR NOW. Most accounting markers are about persistence -- accruals that stay
+  # high, cash conversion that keeps deteriorating -- and the marker code needs three
+  # periods before it will call something a trend. Two gives year-on-year and no
+  # more, and the markers say so. Raising this is the change to make when the
+  # acquisition path has proved itself; the request was for six.
+  years: 2
+  # Documents downloaded per run. A 10-K can be several megabytes and the SEC asks
+  # for at most ten requests a second, so a backlog drains over several runs rather
+  # than in one burst.
+  per_run: 60
+
 # --- DeepSeek -----------------------------------------------------------------
 llm:
   # Cheap + fast for high-volume classification and summarisation.

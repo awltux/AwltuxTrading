@@ -454,7 +454,48 @@ def _probe_macro_rates(session: Session) -> Coverage:
     )
 
 
+def _probe_shareholder_reports(session: Session) -> Coverage:
+    """Filers whose annual-report documents have not been downloaded.
+
+    Counts *instruments*, not filings: the question a reader has is "whose accounts
+    can I not open", and an instrument with one of its two years missing is a
+    different state from one with neither -- which is why an instrument drops out of
+    the missing set only once every annual report on file is actually held.
+    """
+    from awltux.providers.edgar import ANNUAL_FORMS
+
+    on_file = {
+        ticker
+        for (ticker,) in session.execute(
+            select(Filing.instrument_t212_ticker)
+            .where(Filing.filing_type.in_(ANNUAL_FORMS))
+            .distinct()
+        ).all()
+        if ticker
+    }
+    if not on_file:
+        return Coverage.counted(0, 0, "no annual report has been discovered yet")
+
+    pending = {
+        ticker
+        for (ticker,) in session.execute(
+            select(Filing.instrument_t212_ticker)
+            .where(Filing.filing_type.in_(ANNUAL_FORMS))
+            .where(Filing.status != "fetched")
+            .distinct()
+        ).all()
+        if ticker
+    }
+    missing = len(on_file & pending)
+    return Coverage.counted(
+        missing,
+        len(on_file),
+        _note(missing, len(on_file), "their annual-report documents stored"),
+    )
+
+
 PROBES = {
+    "shareholder_reports": _probe_shareholder_reports,
     "macro_rates": _probe_macro_rates,
     "t212_instruments": _probe_t212_instruments,
     "universe_refresh": _probe_universe_refresh,

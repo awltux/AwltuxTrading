@@ -443,7 +443,34 @@ def _macro_rates(detail: dict[str, Any]) -> str:
     return f"risk-free rate {rate:.2%} from the {tenor} Treasury yield published {as_of}"
 
 
+def _shareholder_reports(detail: dict[str, Any]) -> str:
+    downloaded = _get(detail, "downloaded")
+    discovered = _get(detail, "discovered")
+    failed = _get(detail, "failed")
+    if not downloaded:
+        if not discovered:
+            return "no annual report needed fetching"
+        return _nothing(
+            discovered,
+            "annual reports found",
+            f"{_n(failed)} could not be downloaded"
+            if failed
+            else "none had a document to fetch",
+        )
+
+    line = f"{_n(downloaded)} annual report documents downloaded"
+    if discovered and discovered > downloaded:
+        line += f" of {_n(discovered)} found"
+    covered = _get(detail, "instruments_covered")
+    if covered:
+        line += f", for {_n(covered)} companies"
+    if failed:
+        line += f"; {_n(failed)} failed"
+    return line
+
+
 SUMMARISERS: dict[str, Summariser] = {
+    "shareholder_reports": _shareholder_reports,
     "macro_rates": _macro_rates,
     "t212_instruments": _t212_instruments,
     "universe_refresh": _universe_refresh,

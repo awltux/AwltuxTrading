@@ -811,6 +811,60 @@ def refresh_macro_rates() -> JobResult:
     return JobResult(items_seen=seen, items_written=written, detail=detail)
 
 
+def sync_shareholder_reports() -> JobResult:
+    """Find and download the annual reports: this year and the previous one.
+
+    The annual report is the primary evidence about a business, and until now this
+    system held only a pointer to one. The ``filing`` table carried 4,529 rows and
+    not a single document -- ``raw_path``, ``doc_hash`` and ``parsed`` were columns
+    on the model that nothing ever wrote -- so every filing sat at ``pending`` for
+    ever and the reports could not be read, quoted or checked.
+
+    Two phases, and they are reported separately because they fail differently. The
+    first asks EDGAR for the annual forms by date, which is what a multi-year window
+    needs and what the general filing sync cannot give: that takes the fifteen most
+    recent *interesting* filings, so a company that files a lot of 8-Ks had its
+    older 10-Ks cut off by a limit rather than by a date. The second downloads the
+    documents behind those rows.
+    """
+    from awltux.ingest.documents import deepen_annual_history, fetch_annual_reports
+
+    settings = get_settings()
+    years = settings.reports.years
+    per_run = settings.reports.per_run
+
+    with session_scope() as session:
+        discovery = deepen_annual_history(session, years=years, settings=settings)
+
+    with session_scope() as session:
+        download = fetch_annual_reports(session, limit=per_run, settings=settings)
+
+    detail = {
+        "years": years,
+        "discovered": discovery.discovered,
+        "downloaded": download.fetched,
+        "failed": download.failed,
+        "bytes_written": download.bytes_written,
+        "instruments_covered": len(download.instruments),
+        "discovery_errors": discovery.errors[:5],
+        "download_errors": download.errors[:5],
+    }
+
+    if not discovery.discovered and not download.fetched:
+        return JobResult(
+            note=(
+                "no annual report needed fetching: either every filer already has "
+                "its reports stored or none has a resolved CIK"
+            ),
+            detail=detail,
+        )
+    return JobResult(
+        items_seen=discovery.discovered,
+        items_written=download.fetched,
+        detail=detail,
+    )
+
+
 def resolve_symbols() -> JobResult:
     """Look up the provider symbol for instruments a derived one cannot reach.
 

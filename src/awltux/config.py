@@ -514,6 +514,29 @@ class NewsConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
 
 
+class ReportsConfig(BaseModel):
+    """How much of the shareholders'-report history to keep.
+
+    Separate from the rest of the filing configuration because it is the one place
+    where "how far back" is a deliberate cost decision rather than a correctness
+    one: each year is a document per filer, and the SEC's rate limit is what bounds
+    a run.
+    """
+
+    #: Fiscal years of annual reports to hold per instrument.
+    #:
+    #: **Two for now, and it is a limitation rather than a target.** The accounting
+    #: markers worth the most are about persistence, and
+    #: :data:`awltux.analysis.accounting.MIN_PERIODS_FOR_TREND` needs three periods
+    #: before it will call something a trend. Two buys a year-on-year comparison and
+    #: nothing more. The request was for six; raising this is a config change and the
+    #: markers already say when they have too few periods to make a claim.
+    years: int = 2
+    #: Documents downloaded per run. A document can be several megabytes and the SEC
+    #: asks for no more than ten requests a second, so a backlog drains over runs.
+    per_run: int = 60
+
+
 class RetentionConfig(BaseModel):
     quote_days: int = 30
     news_days: int = 730
@@ -533,6 +556,7 @@ class YamlConfig(BaseModel):
     composite: CompositeConfig = Field(default_factory=CompositeConfig)
     gate: GateConfig = Field(default_factory=GateConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
+    reports: ReportsConfig = Field(default_factory=ReportsConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 
@@ -593,6 +617,10 @@ class Settings(BaseModel):
     @property
     def news(self) -> NewsConfig:
         return self.yaml.news
+
+    @property
+    def reports(self) -> ReportsConfig:
+        return self.yaml.reports
 
     @property
     def retention(self) -> RetentionConfig:
