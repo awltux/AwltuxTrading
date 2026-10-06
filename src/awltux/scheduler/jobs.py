@@ -10,6 +10,7 @@ from typing import Any
 
 from awltux.db.models import IngestRun, utcnow
 from awltux.db.session import session_scope
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -268,10 +269,25 @@ def execute_job(spec: JobSpec) -> JobResult | None:
 
     Errors are swallowed *after* being recorded: one failing provider must not
     take down the scheduler or stop the other jobs.
+
+    The whole run is wrapped in a progress capture, so everything the job logs --
+    and everything it says through ``progress.note`` -- lands in one file that
+    replaces the previous run's. See :mod:`awltux.scheduler.progress`.
     """
     started = dt.datetime.now(dt.UTC)
     run_id = start_run(spec.id, started)
 
+    with progress.capture(spec.id, run_id, started) as run_log:
+        return _execute_captured(spec, started, run_id, run_log)
+
+
+def _execute_captured(
+    spec: JobSpec,
+    started: dt.datetime,
+    run_id: int | None,
+    run_log: progress.RunLog,
+) -> JobResult | None:
+    """The body of a run, with its progress log already open."""
     watched = guard_reason(spec)
     if watched is not None:
         # Recorded, not silent. A job that fires, finds nothing to do and says so is
@@ -285,8 +301,10 @@ def execute_job(spec: JobSpec) -> JobResult | None:
         # note is what the Operations page reads back, and a skip whose reason is
         # not stored is indistinguishable from a job that did nothing.
         skipped.detail["note"] = skipped.note
+        progress.note(f"skipped: {watched}")
         finish_run(run_id, spec.id, started, skipped, None)
         logger.info("job %s: skipped (%s)", spec.id, watched)
+        _close(run_log, started, "skipped", skipped.note)
         return skipped
 
     logger.info("job %s: start", spec.id)
@@ -319,4 +337,17 @@ def execute_job(spec: JobSpec) -> JobResult | None:
         f" note={result.note}" if result and result.note else "",
         f" error={error}" if error else "",
     )
+    _close(run_log, started, "failed" if error else "ok", error or (result.note if result else None))
     return result
+
+
+def _close(run_log: progress.RunLog, started: dt.datetime, outcome: str, detail: str | None) -> None:
+    """Write the closing line, after the capture handler is removed.
+
+    Written directly rather than through the logger, because the point of the footer
+    is to be the last line of the file and a handler that has just been detached
+    cannot guarantee that.
+    """
+    elapsed = (dt.datetime.now(dt.UTC) - started).total_seconds()
+    tail = f" -- {detail}" if detail else ""
+    run_log.add(f"=== {outcome} in {elapsed:.1f}s{tail} ===")

@@ -55,6 +55,7 @@ from awltux.decision.engine import (
 )
 from awltux.decision.gate import build_context, evaluate
 from awltux.decision.questions import build_questions, question_metadata
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -643,9 +644,16 @@ def decide_universe(
     # Build the engines once: constructing a client per instrument would create
     # an HTTP connection pool per decision.
     engines = build_engines(settings)
+    total = len(instruments)
     try:
         for instrument in instruments:
             stats.attempted += 1
+            # This is the two-hour sweep. Without a line per instrument the progress
+            # panel would show a start and then nothing for two hours, which is
+            # indistinguishable from a job that has hung.
+            progress.note(
+                f"{stats.attempted} of {total}: {instrument.t212_ticker}"
+            )
             try:
                 decision = decide_instrument(
                     session, instrument, settings=settings, engines=engines

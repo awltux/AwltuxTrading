@@ -7,16 +7,18 @@ updates (the news ticker) are the only thing that requires JS.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
+from sqlalchemy import desc, select
 
 from awltux import __version__, version
 from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
-from awltux.db import Filing, session_scope
+from awltux.db import Filing, IngestRun, session_scope
 from awltux.ingest.universe import cached_t212_capabilities
 from awltux.web import filters, queries
 from awltux.web.templating import templates
@@ -248,6 +250,55 @@ def sectors_page(request: Request) -> HTMLResponse:
             "sectors": ordered,
             "latest": latest,
             "counts": counts,
+        },
+    )
+
+
+@router.get("/jobs/{job_id}/log", response_class=HTMLResponse, include_in_schema=False)
+def job_log_page(request: Request, job_id: str) -> HTMLResponse:
+    """One job's most recent progress log, following it while it runs.
+
+    Rendered server-side with the log already in it, so the page is useful with
+    JavaScript off -- it simply stops following. That matters more here than
+    elsewhere: this page exists to be read when a job is misbehaving, which is
+    exactly when a script is the most likely thing to be broken.
+
+    An unknown job id is not a 404. "That job has no log" is a true and useful
+    answer, and a panel that refuses to open is worse than one that says there is
+    nothing to show yet.
+    """
+    from awltux.scheduler import progress
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    spec = scheduler.get(job_id) if scheduler else None
+
+    with session_scope() as session:
+        run = session.execute(
+            select(IngestRun)
+            .where(IngestRun.job == job_id)
+            .order_by(desc(IngestRun.id))
+            .limit(1)
+        ).scalar_one_or_none()
+
+    text, offset, _size = progress.read(job_id, 0)
+    finished = run.finished_at if run else None
+    elapsed = None
+    if run is not None and run.started_at is not None:
+        elapsed = ((finished or dt.datetime.now(dt.UTC)) - run.started_at).total_seconds()
+
+    detail = (run.detail or {}) if run and run.detail else {}
+    return templates.TemplateResponse(
+        request,
+        "job_log.html",
+        {
+            "job_id": job_id,
+            "spec": spec,
+            "run": run,
+            "log_text": text,
+            "offset": offset,
+            "running": run is not None and finished is None,
+            "elapsed": elapsed,
+            "note": detail.get("note") or (run.error if run else None),
         },
     )
 

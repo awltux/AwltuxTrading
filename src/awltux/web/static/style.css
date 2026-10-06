@@ -222,6 +222,22 @@ table.grid.compact th, table.grid.compact td { padding: 5px 8px; font-size: 13px
 table.grid td.primary { background: rgba(108,182,255,.06); }
 .chip.ok { color: var(--good); border-color: rgba(63,185,80,.4); }
 
+/* --------------------------------------------------------------- progress log */
+/* One job's live log. Monospace and scrollable, with a fixed height so the page
+   does not grow without bound as the job writes, and `pre-wrap` so a long traceback
+   line wraps rather than forcing the whole page sideways. */
+.joblog {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; margin: 10px 0;
+  font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.5;
+  max-height: 60vh; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* The job name is a link into its log, in every table that lists jobs. */
+.job-link { text-decoration: none; }
+.job-link:hover code { color: var(--fg); border-bottom: 1px dotted var(--muted); }
+
 /* ------------------------------------------------------------------- meter */
 .meter {
   display: inline-block; width: 52px; height: 6px; background: var(--panel-2);

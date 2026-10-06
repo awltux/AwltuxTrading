@@ -666,8 +666,17 @@ class Settings(BaseModel):
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
 
+    @property
+    def joblog_dir(self) -> Path:
+        """Where the most recent progress log of each job is kept.
+
+        One file per job, truncated at the start of every run, so this directory is
+        bounded by the registry rather than by time and needs no pruning.
+        """
+        return self.data_dir / "joblogs"
+
     def ensure_dirs(self) -> None:
-        for path in (self.data_dir, self.raw_dir, self.cache_dir):
+        for path in (self.data_dir, self.raw_dir, self.cache_dir, self.joblog_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 

@@ -17,6 +17,7 @@ from typing import Any
 
 from awltux.config import get_settings
 from awltux.db import session_scope
+from awltux.scheduler import progress
 from awltux.scheduler.jobs import JobResult
 
 logger = logging.getLogger(__name__)
@@ -934,7 +935,10 @@ def resolve_symbols() -> JobResult:
     unresolved: list[str] = []
     errors: list[str] = []
 
-    for instrument in stuck:
+    for position, instrument in enumerate(stuck, start=1):
+        # Two provider searches per instrument, each rate-limited, so this run is
+        # minutes long and silent without a counted line.
+        progress.note(f"{position} of {len(stuck)}: {instrument.t212_ticker}")
         # Release before the search, like every other network call in this codebase.
         with session_scope() as session:
             release_write_lock(session)

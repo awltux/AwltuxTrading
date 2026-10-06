@@ -27,6 +27,7 @@ from awltux.db import Instrument, PriceBar, Quote, utcnow
 from awltux.db.session import release_write_lock
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import BarSeries, YahooProvider
+from awltux.scheduler import progress
 from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
@@ -344,7 +345,11 @@ def refresh_prices(
         return report
 
     symbols = list(by_symbol)
-    for batch in chunks(symbols, BATCH_SIZE):
+    batches = chunks(symbols, BATCH_SIZE)
+    for position, batch in enumerate(batches, start=1):
+        # Batches alternate network and database, so the count is the only visible
+        # sign of progress on a run that prices the whole universe.
+        progress.note(f"batch {position} of {len(batches)} ({len(batch)} symbols)")
         try:
             series_map = provider.get_history_batch(batch, period=period)
         except ProviderError as exc:

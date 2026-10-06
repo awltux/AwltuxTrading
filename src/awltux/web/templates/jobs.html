@@ -1,6 +1,21 @@
 {% extends "base.html" %}
 {% block title %}Operations — {{ app_name }}{% endblock %}
 
+{# The job name is the way into its progress log, in every table that lists jobs.
+
+   A macro rather than three copies of the same `<a>`: the name appears in the
+   queue, in the schedule and in the run history, and a link that existed in only
+   two of them would be worse than none -- a reader would conclude the third job
+   had no log. #}
+{% macro job_name(job_id) %}
+  {%- if job_id -%}
+    <a class="job-link" href="/jobs/{{ job_id }}/log"
+       title="Open the live progress log for this job"><code>{{ job_id }}</code></a>
+  {%- else -%}
+    <span class="muted">—</span>
+  {%- endif -%}
+{% endmacro %}
+
 {% block content %}
 <h1>Operations</h1>
 
@@ -42,7 +57,7 @@
          not from the browser, so a reload mid-run shows the truth. #}
       <td>
         <div class="job-cell">
-          <code>{{ status.id }}</code>
+          {{ job_name(status.id) }}
           {% if status.id in in_flight %}
             <button class="run-job" data-job="{{ status.id }}" disabled
                     title="A run is in progress">Running…</button>
@@ -81,7 +96,7 @@
          a button that has to be matched to a name by counting columns invites it. #}
       <td>
         <div class="job-cell">
-          <code>{{ job.id }}</code>
+          {{ job_name(job.id) }}
           {% if job.id in in_flight %}
             <button class="run-job" data-job="{{ job.id }}" disabled
                     title="A run is in progress">Running…</button>
@@ -128,7 +143,7 @@
   <tbody>
   {% for status in statuses %}
     <tr>
-      <td><code>{{ status.id }}</code></td>
+      <td>{{ job_name(status.id) }}</td>
       <td class="small">
         {% if status.depends_on %}{{ status.depends_on | join(', ') }}{% else %}<span class="muted">—</span>{% endif %}
       </td>
@@ -197,7 +212,7 @@
   <tbody>
   {% for run in runs %}
     <tr>
-      <td><code>{{ run.job }}</code></td>
+      <td>{{ job_name(run.job) }}</td>
       <td class="small">{{ run.started_at | datetime }}</td>
       <td class="num small">{{ run.started_at | duration(run.finished_at) }}</td>
       <td class="num">{{ run.items_seen }}</td>

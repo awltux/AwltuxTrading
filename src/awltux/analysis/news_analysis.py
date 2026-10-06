@@ -44,6 +44,7 @@ from awltux.analysis.sources import domain_of, lookup
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsAnalysis, NewsItem, utcnow
 from awltux.db.session import release_write_lock
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -341,8 +342,12 @@ def analyse_universe(
     held = _held_tickers(session)
     pool = _recent_coverage(session, days=days)
 
+    total = len(items)
     for item in items:
         report.examined += 1
+        # One model call per selected story, so this run is measured in tens of
+        # minutes. The counted line is what turns "running" into "at 24 of 40".
+        progress.note(f"{report.examined} of {total} examined, {report.selected} selected")
         if not item.tickers:
             # Untagged news cannot be attributed to a name, so it cannot inform one.
             report.skipped_not_interesting += 1

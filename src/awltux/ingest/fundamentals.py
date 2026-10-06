@@ -32,6 +32,7 @@ from awltux.metrics import CANONICAL_METRICS  # noqa: F401  (re-exported: the vo
 from awltux.providers.companies_house import CompaniesHouseProvider, normalise_company_number
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import YahooProvider
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -344,8 +345,10 @@ def sync_fundamentals(
 
     instruments = session.execute(statement).scalars().all()
 
-    for instrument in instruments:
+    total = len(instruments)
+    for position, instrument in enumerate(instruments, start=1):
         report.tickers_attempted += 1
+        progress.note(f"{position} of {total}: {instrument.t212_ticker}")
         symbol = instrument.yahoo_symbol
         assert symbol is not None
 
@@ -598,7 +601,8 @@ def resolve_uk_companies(
     ]
 
     summary = {"attempted": len(instruments), "matched": 0, "confident": 0, "unmatched": 0}
-    for instrument in instruments:
+    for position, instrument in enumerate(instruments, start=1):
+        progress.note(f"{position} of {len(instruments)}: {instrument.t212_ticker}")
         try:
             candidates = provider.search_companies(instrument.name)
         except ProviderError as exc:

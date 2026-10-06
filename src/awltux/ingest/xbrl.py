@@ -37,6 +37,7 @@ from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument
 from awltux.db.session import release_write_lock
 from awltux.providers.edgar import EdgarProvider, ProviderError
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -668,7 +669,9 @@ def sync_xbrl_fundamentals(
     if limit:
         statement = statement.limit(limit)
 
-    for instrument in session.execute(statement).scalars().all():
+    filers = list(session.execute(statement).scalars().all())
+    for position, instrument in enumerate(filers, start=1):
+        progress.note(f"{position} of {len(filers)}: {instrument.t212_ticker}")
         _sync_one(session, instrument, provider, report)
 
     logger.info("xbrl fundamentals: %s", report.as_dict())

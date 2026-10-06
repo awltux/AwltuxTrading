@@ -16,9 +16,10 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
+from sqlalchemy import desc, select
 
 from awltux.config import get_settings, redacted_dump
-from awltux.db import DecisionRun, Instrument, session_scope
+from awltux.db import DecisionRun, IngestRun, Instrument, session_scope
 from awltux.web import queries
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -398,6 +399,55 @@ def run_job(job_id: str, request: Request) -> dict[str, Any]:
         "items_seen": result.items_seen if result else 0,
         "items_written": result.items_written if result else 0,
         "detail": result.detail if result else {},
+    }
+
+
+@router.get("/jobs/{job_id}/log", summary="Tail a job's most recent progress log")
+def job_log(
+    job_id: str,
+    offset: int = Query(0, ge=0, description="Byte offset to read from"),
+) -> dict[str, Any]:
+    """The live tail of a job's progress log.
+
+    Byte-offset rather than line-numbered because the file is truncated at the start
+    of every run: a client that kept a line count would silently skip the beginning
+    of the next run. The ``run_id`` is returned for the same reason -- it is what
+    tells the panel its offset belongs to a run that is over.
+    """
+    from awltux.db import session_scope
+    from awltux.scheduler import progress
+
+    with session_scope() as session:
+        run = session.execute(
+            select(IngestRun)
+            .where(IngestRun.job == job_id)
+            .order_by(desc(IngestRun.id))
+            .limit(1)
+        ).scalar_one_or_none()
+        latest: dict[str, Any] = {}
+        if run is not None:
+            finished = run.finished_at
+            latest = {
+                "run_id": run.id,
+                "started_at": run.started_at.isoformat() if run.started_at else None,
+                "finished_at": finished.isoformat() if finished else None,
+                # A run with no finish time is the definition of "still going", and it
+                # is read from the table rather than from any in-process flag so a
+                # panel opened after a restart still answers correctly.
+                "running": finished is None,
+                "ok": run.ok,
+                "error": run.error,
+                "note": (run.detail or {}).get("note") or run.error,
+            }
+
+    text, new_offset, size = progress.read(job_id, offset)
+    return {
+        "job": job_id,
+        "offset": new_offset,
+        "size": size,
+        "text": text,
+        "exists": size > 0,
+        **latest,
     }
 
 

@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}{{ job_id }} — progress — {{ app_name }}{% endblock %}
+
+{# The progress log of one job, following it while it runs.
+
+   Rendered with the log already in it, so the page is useful with JavaScript off --
+   it simply stops following. That matters more here than elsewhere: the page exists
+   to be read when a job is misbehaving, which is exactly when a script is the most
+   likely thing to be broken.
+
+   Only the most recent run is kept, by design: the file is truncated when the next
+   run starts, so there is nothing here that can be mistaken for the current run. #}
+
+{% block content %}
+<p class="muted small"><a href="/jobs">&larr; Operations</a></p>
+
+<h1>
+  <code>{{ job_id }}</code>
+  {% if running %}
+    <span class="badge warn" id="job-state">running</span>
+  {% elif run and run.ok %}
+    <span class="badge ok" id="job-state">finished</span>
+  {% elif run %}
+    <span class="badge bad" id="job-state">failed</span>
+  {% else %}
+    <span class="badge" id="job-state">never run</span>
+  {% endif %}
+</h1>
+
+{% if spec %}
+  <p class="muted small">{{ spec.description }}</p>
+{% endif %}
+
+<section class="summary">
+  <div class="stat">
+    <span class="stat-value" id="job-elapsed">
+      {%- if elapsed is not none -%}
+        {%- if elapsed < 90 -%}{{ elapsed | round(0) | int }}s
+        {%- elif elapsed < 5400 -%}{{ (elapsed / 60) | round(0) | int }}m
+        {%- else -%}{{ (elapsed / 3600) | round(1) }}h{%- endif -%}
+      {%- else -%}—{%- endif -%}
+    </span>
+    <span class="stat-label">{% if running %}elapsed{% else %}took{% endif %}</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value" id="job-offset">{{ offset }}</span>
+    <span class="stat-label">bytes of log</span>
+  </div>
+  {% if run %}
+    <div class="stat">
+      <span class="stat-value">{{ run.started_at | datetime('%H:%M:%S') }}</span>
+      <span class="stat-label">started ({{ display_zone() }})</span>
+    </div>
+  {% endif %}
+</section>
+
+{% if note %}
+  <p class="notice {% if run and not run.ok %}warn{% endif %}">
+    <strong>{% if run and not run.ok %}Failed{% else %}Result{% endif %}:</strong>
+    {{ note }}
+  </p>
+{% endif %}
+
+{% if spec and not spec.enabled %}
+  <p class="notice warn">
+    This job is <strong>disabled</strong> -- it needs a credential that is not in
+    <code>.env</code>. It will not run on its schedule.
+  </p>
+{% endif %}
+
+{# `data-log-url` is the contract with the script below, in the same style as the
+   ticker in base.html: the markup states where to read from, the script does not
+   build the URL from parts. #}
+<pre id="job-log"
+     class="joblog"
+     data-log-url="/api/jobs/{{ job_id }}/log"
+     data-offset="{{ offset }}"
+     data-running="{{ 'true' if running else 'false' }}"
+     data-run-id="{{ run.id if run else '' }}">{% if log_text %}{{ log_text }}{% else %}<span class="muted">No log yet. It appears when the job next runs.</span>{% endif %}</pre>
+
+<p class="muted small">
+  One log per job, replaced every run. Lines marked <code>PROGRESS</code> are the job
+  reporting how far through it is; the rest is the same output the container log
+  receives. A long run is capped at 2&nbsp;MiB, and says so if it is.
+</p>
+
+<script>
+(function () {
+  var panel = document.getElementById("job-log");
+  if (!panel) return;
+
+  var offset = parseInt(panel.dataset.offset, 10) || 0;
+  var runId = panel.dataset.runId;
+  var running = panel.dataset.running === "true";
+  var atBottom = true;
+  var failures = 0;
+
+  // Following the tail is only helpful while the reader is already at the bottom;
+  // yanking the viewport back down while they scroll through an earlier failure
+  // makes the panel unusable at exactly the moment it is needed.
+  panel.addEventListener("scroll", function () {
+    atBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 40;
+  });
+
+  function poll() {
+    fetch(panel.dataset.logUrl + "?offset=" + offset)
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (!data) { throw new Error("bad response"); }
+        failures = 0;
+
+        // A different run means this is a new log and the old offset is meaningless.
+        if (String(data.run_id || "") !== String(runId || "")) {
+          runId = data.run_id;
+          offset = 0;
+          panel.textContent = "";
+          window.location.reload();
+          return;
+        }
+
+        if (data.text) {
+          panel.appendChild(document.createTextNode(data.text));
+          offset = data.offset;
+          if (atBottom) { panel.scrollTop = panel.scrollHeight; }
+        }
+
+        var state = document.getElementById("job-state");
+        if (state) {
+          state.textContent = data.running ? "running" : (data.ok ? "finished" : "failed");
+          state.className = "badge " + (data.running ? "warn" : (data.ok ? "ok" : "bad"));
+        }
+        running = data.running;
+      })
+      .catch(function () {
+        failures += 1;
+        // Give up after a few misses rather than hammering, and say so, because a
+        // panel that has quietly stopped following is worse than one that admits it.
+        if (failures >= 5) {
+          panel.appendChild(document.createTextNode(
+            "\n[stopped following: the server did not answer. Reload to resume.]\n"));
+          running = false;
+        }
+      })
+      .then(function () {
+        if (running) { setTimeout(poll, 1500); }
+      });
+  }
+
+  if (running) {
+    panel.scrollTop = panel.scrollHeight;
+    setTimeout(poll, 1000);
+  }
+})();
+</script>
+{% endblock %}
