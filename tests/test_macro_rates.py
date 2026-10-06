@@ -407,3 +407,112 @@ class TestTheJob:
         assert result.items_written == 0
         assert result.note is not None
         assert "could not read" in result.note
+
+
+class TestTheRateEnvironment:
+    """The curve as a shape, and the condition that would show it to be wrong.
+
+    Reported, never predicted. A macro claim with no falsifier cannot be shown to be
+    wrong, and one that is not checked is decoration -- so the page states the
+    number that would falsify it and says plainly which half of the condition is
+    actually being measured.
+    """
+
+    def _store(self, session, *, thirty_year: float):
+        curve = YieldCurve(
+            as_of=dt.date(2026, 10, 5),
+            rates={
+                "3 Mo": 4.22,
+                "2 Yr": 4.84,
+                "10 Yr": 5.31,
+                "30 Yr": thirty_year,
+            },
+        )
+        macro.store_observation(session, curve, tenor="10 Yr")
+        return curve
+
+    def test_nothing_observed_means_nothing_to_report(self, settings):
+        from awltux.web import queries
+
+        with session_scope() as session:
+            assert queries.rate_environment(session) is None
+
+    def test_the_curve_is_reported_as_a_shape(self, settings):
+        from awltux.web import queries
+
+        with session_scope() as session:
+            self._store(session, thirty_year=5.66)
+            environment = queries.rate_environment(session)
+
+        assert environment is not None
+        assert environment["as_of"] == "2026-10-05"
+        assert environment["curve"]["10 Yr"] == pytest.approx(5.31)
+        assert environment["curve"]["30 Yr"] == pytest.approx(5.66)
+        # The long end minus the ten-year: the number that shows a repricing.
+        assert environment["spread_10s30s"] == pytest.approx(0.35)
+
+    def test_a_high_long_end_does_not_falsify_the_reading(self, settings):
+        from awltux.web import queries
+
+        with session_scope() as session:
+            self._store(session, thirty_year=5.66)
+            environment = queries.rate_environment(session)
+
+        assert environment is not None
+        assert environment["falsifier_met"] is False
+
+    def test_a_long_end_below_the_threshold_is_reported_as_met(self, settings):
+        """The falsifier has to be able to fire, or it is not a falsifier."""
+        from awltux.web import queries
+
+        with session_scope() as session:
+            self._store(session, thirty_year=4.20)
+            environment = queries.rate_environment(session)
+
+        assert environment is not None
+        assert environment["falsifier_met"] is True
+
+    def test_it_does_not_claim_to_have_measured_the_duration(self, settings):
+        """One observation is stored, not a quarter of them."""
+        from awltux.web import queries
+
+        with session_scope() as session:
+            self._store(session, thirty_year=5.66)
+            environment = queries.rate_environment(session)
+
+        assert environment is not None
+        note = environment["falsifier_note"]
+        assert "quarter" in note
+        assert "the duration is not" in note, (
+            "claiming the duration was evaluated would be reporting a check that "
+            "never ran"
+        )
+
+
+class TestTheInfoPage:
+    """The rate environment is what the model is valuing against, so it belongs on
+    the page that says what this install is running."""
+
+    def test_before_anything_is_observed_it_says_how_to_fix_it(self, client):
+        text = " ".join(client.get("/info").text.split())
+
+        assert "Rate environment" in text
+        assert "macro_rates" in text, "the page should name the job that fills this"
+        assert "configured constant" in text
+
+    def test_it_reports_the_observed_curve_and_the_falsifier(self, client, session):
+        curve = YieldCurve(
+            as_of=dt.date(2026, 10, 5),
+            rates={"3 Mo": 4.22, "2 Yr": 4.84, "10 Yr": 5.31, "30 Yr": 5.66},
+        )
+        with session_scope() as scope:
+            macro.store_observation(scope, curve, tenor="10 Yr")
+        session.commit()
+
+        text = " ".join(client.get("/info").text.split())
+
+        assert "Rate environment" in text
+        assert "5.31%" in text, "the rate the model is using"
+        assert "5.66" in text, "the long end"
+        assert "0.35 points" in text, "the 10s30s spread"
+        assert "not met" in text, "the falsifier has to be shown as checkable"

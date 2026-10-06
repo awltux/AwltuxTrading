@@ -15,6 +15,7 @@ from typing import Any, Literal
 from sqlalchemy import Select, desc, func, select
 from sqlalchemy.orm import Session
 
+from awltux.analysis import macro
 from awltux.db import (
     DecisionOutcome,
     DecisionRun,
@@ -832,6 +833,68 @@ def price_history_waiting_note(session: Session, ticker: str, *, bars: int) -> s
         f"first, so the next run should fill it.{recorded}"
     )
 
+
+
+#: The tenors worth showing. Two ends and two middles: enough to see the shape of
+#: the curve without turning the page into a data dump.
+CURVE_TENORS = ("3 Mo", "2 Yr", "10 Yr", "30 Yr")
+
+#: The condition under which the "long end is under pressure" reading is wrong.
+#:
+#: Stated as a number, and stated at all, because a claim with no falsifier is not
+#: a reading -- it is a mood, and it cannot be shown to be wrong. From the source
+#: material this comes from: if the 30-year settles below this and stays there for
+#: a full quarter, buyers came back on their own and most of the reading does not
+#: happen.
+#:
+#: **The duration is not tracked.** One observation is stored, not a quarter of
+#: them, so this reports today's level against the threshold and says plainly that
+#: the "for a quarter" half is not being measured. Claiming the falsifier had been
+#: evaluated would be the same class of error as the coverage column that reported
+#: missing work as done.
+FALSIFIER_TENOR = "30 Yr"
+FALSIFIER_LEVEL = 0.045
+
+
+def rate_environment(session: Session) -> dict[str, Any] | None:
+    """The observed yield curve and the condition that would falsify its reading.
+
+    Reports, never predicts. It says what the Treasury published, what the long end
+    is doing relative to the short end, and what number would show the reading to be
+    wrong -- which is the only part of a macro view that can be checked.
+    """
+    observation = macro.read_observation(session)
+    if observation is None:
+        return None
+
+    curve = macro.stored_curve(session)
+    shown = {tenor: curve[tenor] for tenor in CURVE_TENORS if tenor in curve}
+
+    long_end = curve.get(FALSIFIER_TENOR)
+    short_end = curve.get("10 Yr")
+    # A positive spread means the market charges more to lend for longer, which is
+    # the normal shape. The reading is about the long end being repriced, so the
+    # number that matters is how far it has moved from the ten-year.
+    spread = None if long_end is None or short_end is None else long_end - short_end
+
+    falsified = None if long_end is None else (long_end / 100.0) < FALSIFIER_LEVEL
+
+    return {
+        "as_of": observation.as_of,
+        "tenor": observation.tenor,
+        "value": observation.value,
+        "source": observation.source,
+        "curve": shown,
+        "spread_10s30s": spread,
+        "falsifier_tenor": FALSIFIER_TENOR,
+        "falsifier_level": FALSIFIER_LEVEL,
+        "falsifier_met": falsified,
+        "falsifier_note": (
+            f"the reading is falsified if the {FALSIFIER_TENOR} settles below "
+            f"{FALSIFIER_LEVEL:.2%} for a full quarter; the level is checked here, "
+            "the duration is not"
+        ),
+    }
 
 
 def latest_quotes(session: Session, tickers: list[str]) -> dict[str, Quote]:

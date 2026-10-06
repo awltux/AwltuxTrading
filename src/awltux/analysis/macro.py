@@ -168,6 +168,30 @@ def read_observation(session: Session) -> RiskFreeRate | None:
     )
 
 
+def stored_curve(session: Session) -> dict[str, float]:
+    """Every tenor from the last observation, as percentages.
+
+    The whole curve is stored with each observation, not just the anchoring tenor,
+    so a reader can see the *shape* of the market rather than one point on it: a
+    long end that has moved away from the short end is the thing worth noticing,
+    and a single rate cannot show it.
+    """
+    row = session.get(AppSetting, SETTING_KEY)
+    if row is None or not isinstance(row.value, dict):
+        return {}
+    raw = row.value.get("curve")
+    if not isinstance(raw, dict):
+        return {}
+
+    curve: dict[str, float] = {}
+    for tenor, value in raw.items():
+        try:
+            curve[str(tenor)] = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    return curve
+
+
 def resolve_risk_free_rate(session: Session, settings: Settings) -> RiskFreeRate:
     """The rate to value with: the market's if we have one, otherwise the constant.
 

@@ -66,6 +66,82 @@
   </tbody>
 </table>
 
+{#
+  The rate environment, reported rather than predicted.
+
+  The discount rate is the only input the model takes from the market, so what the
+  market is charging belongs on the page that says what this install is running.
+  The curve is shown as a shape, not a single number: a long end that has moved away
+  from the short end is the thing worth noticing and one point cannot show it.
+
+  The falsifier is stated as a number because a claim without one cannot be shown to
+  be wrong -- and the page says plainly that only the level is checked, not the
+  duration, because one observation is stored rather than a quarter of them.
+#}
+<h2>Rate environment</h2>
+{% if environment %}
+  <table class="grid compact">
+    <tbody>
+      <tr>
+        <th>Risk-free rate used</th>
+        <td>
+          {{ environment.value | pct(2, false) }}
+          <span class="muted small">
+            {{ environment.tenor }} US Treasury par yield, published
+            {{ environment.as_of or 'an unrecorded date' }}
+          </span>
+        </td>
+      </tr>
+      <tr>
+        <th>Curve</th>
+        <td class="small">
+          {% for tenor, rate in environment.curve.items() %}
+            <code>{{ tenor }}</code> {{ rate | number(2) }}%{% if not loop.last %} · {% endif %}
+          {% else %}
+            <span class="muted">no curve stored with this observation</span>
+          {% endfor %}
+        </td>
+      </tr>
+      <tr>
+        <th>10s30s</th>
+        <td>
+          {% if environment.spread_10s30s is not none %}
+            {{ environment.spread_10s30s | number(2) }} points
+            <span class="muted small">
+              — how much more the market charges to lend for 30 years than for 10;
+              a widening means the long end is being repriced
+            </span>
+          {% else %}
+            <span class="muted">not computable from the stored curve</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <th>Falsifier</th>
+        <td>
+          {% if environment.falsifier_met is none %}
+            <span class="muted">no {{ environment.falsifier_tenor }} level to compare</span>
+          {% elif environment.falsifier_met %}
+            <span class="good">met</span>
+            <span class="muted small">
+              — the {{ environment.falsifier_tenor }} is below
+              {{ environment.falsifier_level | pct(2, false) }}
+            </span>
+          {% else %}
+            <span class="muted">not met</span>
+          {% endif %}
+          <br><span class="muted small">{{ environment.falsifier_note }}</span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+{% else %}
+  <p class="muted">
+    No market rate has been observed yet, so the model is discounting at the
+    configured constant. Run the <code>macro_rates</code> job.
+  </p>
+{% endif %}
+
 <h2>Last {{ info.commits | length }} commits</h2>
 <table class="grid compact">
   <thead>

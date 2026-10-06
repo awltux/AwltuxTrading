@@ -426,6 +426,10 @@ def _provenance_note(info) -> str:
 def info_page(request: Request) -> HTMLResponse:
     """What this process is running, and which commit that was."""
     info = load_build_info(DEFAULT_COMMIT_COUNT)
+    with session_scope() as session:
+        # The rate environment belongs on this page: it is what the model is
+        # valuing against, in the same way the commit is what it is running.
+        environment = queries.rate_environment(session)
     return templates.TemplateResponse(
         request,
         "info.html",
@@ -434,5 +438,6 @@ def info_page(request: Request) -> HTMLResponse:
             "version": __version__,
             "revision": _schema_revision(),
             "provenance": _provenance_note(info),
+            "environment": environment,
         },
     )
