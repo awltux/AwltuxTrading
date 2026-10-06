@@ -1129,6 +1129,33 @@ def sync_fundamentals_job() -> JobResult:
     )
 
 
+def sync_xbrl_statements_job() -> JobResult:
+    """Annual statements from XBRL company facts, for US filers.
+
+    Separate from ``fundamentals`` because the two answer different questions and
+    fail in different ways. ``fundamentals`` asks a market-data provider for a
+    normalised snapshot; this reads the issuer's own tagging of its own statements
+    out of EDGAR, which is slower per name and far better per figure. Keeping them
+    apart means a rate-limited Yahoo run does not also stop the filings being read.
+    """
+    settings = get_settings()
+    from awltux.ingest.xbrl import sync_xbrl_fundamentals
+
+    per_run = max(1, settings.schedule.fundamentals_rotation_per_day // 24)
+    with session_scope() as session:
+        note = empty_universe_note(session)
+        if note:
+            logger.info("xbrl statements skipped: %s", note)
+            return JobResult(note=note)
+        report = sync_xbrl_fundamentals(session, settings=settings, limit=per_run)
+
+    return JobResult(
+        items_seen=report.tickers_attempted,
+        items_written=report.periods_written,
+        detail={**report.as_dict(), "per_run_limit": per_run},
+    )
+
+
 def resolve_uk_companies_job() -> JobResult:
     """Attach Companies House numbers to UK-listed instruments."""
     from awltux.ingest.fundamentals import resolve_uk_companies

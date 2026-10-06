@@ -125,6 +125,21 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="xbrl_statements",
+            func=ingest_jobs.sync_xbrl_statements_job,
+            # The same cadence as the filing history it depends on: EDGAR
+            # publishes a company's facts once per annual report, so asking more
+            # often than the filings change buys nothing.
+            interval_seconds=schedule.edgar_submissions,
+            description="Extract annual statements from XBRL company facts",
+            depends_on=("universe_refresh", "filings_edgar"),
+            # Only has work while its coverage probe reports a gap. For a filer
+            # already stored, a companyfacts request is megabytes to rewrite
+            # figures that have not changed.
+            backfill=True,
+            enabled=True,
+        ),
+        JobSpec(
             id="shareholder_reports",
             # Only has work while its coverage probe reports a gap.
             backfill=True,

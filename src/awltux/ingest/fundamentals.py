@@ -447,6 +447,7 @@ def _upsert_period(
     metrics: dict[str, float],
     source: str,
     confidence: float,
+    metric_sources: dict[str, Any] | None = None,
 ) -> FundamentalPeriod | None:
     if period_end is None:
         return None
@@ -480,6 +481,8 @@ def _upsert_period(
     row.currency = instrument.currency_code
     row.confidence = confidence
     row.as_of = utcnow()
+    if metric_sources is not None:
+        row.metric_sources = metric_sources
     return row
 
 

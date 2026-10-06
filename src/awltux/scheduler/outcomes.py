@@ -206,6 +206,26 @@ def _fundamentals(detail: dict[str, Any]) -> str:
     return line
 
 
+def _xbrl_statements(detail: dict[str, Any]) -> str:
+    attempted = _get(detail, "attempted")
+    periods = _get(detail, "periods_written")
+    failures = detail.get("failures") or []
+    if not periods:
+        # A filer with no XBRL and a filer whose payload we could not parse both
+        # land here, so the sentence names the failures rather than guessing which.
+        return _nothing(
+            attempted,
+            "filers attempted",
+            f"no statements extracted -- {_first_names(failures)}"
+            if failures
+            else "EDGAR returned no annual figures for any of them",
+        )
+    line = f"{_n(periods)} annual periods written from XBRL for {_n(attempted)} filers"
+    if failures:
+        line += f"; {_n(len(failures))} failed ({_first_names(failures)})"
+    return line
+
+
 def _filings_edgar(detail: dict[str, Any]) -> str:
     seen = _get(detail, "filings_seen")
     written = _get(detail, "filings_written")
@@ -477,6 +497,7 @@ SUMMARISERS: dict[str, Summariser] = {
     "price_eod": _price_eod,
     "price_intraday": _price_intraday,
     "fundamentals": _fundamentals,
+    "xbrl_statements": _xbrl_statements,
     "filings_edgar": _filings_edgar,
     "edgar_events": _edgar_events,
     "uk_companies": _uk_companies,

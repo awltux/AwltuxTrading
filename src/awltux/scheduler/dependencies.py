@@ -234,6 +234,29 @@ def _probe_fundamentals(session: Session) -> Coverage:
     return Coverage.counted(missing, len(rows), _note(missing, len(rows), "stored accounts"))
 
 
+def _probe_xbrl_statements(session: Session) -> Coverage:
+    """US filers whose annual statements have not been read out of XBRL yet.
+
+    Counted against filers that *have* a CIK, not against the whole universe: an
+    instrument EDGAR has no CIK for is not a gap this job can close, and counting
+    it would leave the coverage figure permanently short with no way to reach it.
+    """
+    rows = [row for row in _universe_rows(session) if row.sec_cik]
+    covered = {
+        ticker
+        for (ticker,) in session.execute(
+            select(FundamentalPeriod.instrument_t212_ticker)
+            .where(FundamentalPeriod.source == "xbrl_companyfacts")
+            .distinct()
+        ).all()
+        if ticker
+    }
+    missing = len({row.t212_ticker for row in rows} - covered)
+    return Coverage.counted(
+        missing, len(rows), _note(missing, len(rows), "XBRL statements stored")
+    )
+
+
 def _probe_filings_edgar(session: Session) -> Coverage:
     rows = _universe_rows(session)
     us = [row for row in rows if not is_uk_listing(row.exchange_name, row.yahoo_symbol)]
@@ -502,6 +525,7 @@ PROBES = {
     "price_eod": _probe_price_eod,
     "price_intraday": _probe_price_intraday,
     "fundamentals": _probe_fundamentals,
+    "xbrl_statements": _probe_xbrl_statements,
     "filings_edgar": _probe_filings_edgar,
     "edgar_events": _probe_edgar_events,
     "uk_companies": _probe_uk_companies,
