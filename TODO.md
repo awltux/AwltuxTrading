@@ -296,27 +296,48 @@ column.
 
 ## Operations
 
-### `decision` has no batch limit, so no upgrade can ever be quiet
+### The longest jobs outlast any deploy window, so no upgrade is ever quiet
 
-Measured on the live container: run #127 started 12:37:47, wrote **52 decisions in
-12.8 minutes** — 4.1 per minute against a universe of 500, so roughly **110 minutes
-remaining**. The container's stop grace period is 60 seconds.
+Two jobs, one conclusion, and the second was found by being blocked twice in a row.
 
-Every other expensive job here is bounded, and for the same reason: `fundamentals`
-rotates `fundamentals_rotation_per_day`, `symbol_resolution` takes
-`symbol_resolution_per_run`, shareholder reports take `reports.per_run`,
-`refresh_prices_eod` chunks at 40. `decision` sweeps the whole universe in one call.
+**`decision` has no batch limit at all.** Measured on the live container: run #127
+started 12:37:47, wrote **52 decisions in 12.8 minutes** — 4.1 per minute against a
+universe of 500, so roughly **110 minutes remaining**. Every other expensive job
+here is bounded for the same reason: `fundamentals` rotates
+`fundamentals_rotation_per_day`, `symbol_resolution` takes `symbol_resolution_per_run`,
+shareholder reports take `reports.per_run`, `refresh_prices_eod` chunks at 40.
+`decision` sweeps the whole universe in one call.
 
-The consequence is not that the job is slow — it is that `awltux quiet` cannot ever
-report *idle* for it. The quiet step introduced for exactly this purpose returns
-"waiting for decision", and the operator is left with two bad options: hold the
-deploy for two hours, or accept the interruption the quiet was meant to prevent.
-This item was found by running quiet, which is the tool doing its job.
+**`news_analysis` is bounded and still far too long.** It appraises at most
+`news.scepticism.max_deep_per_run`, which is **40** — and at a model call per story
+that is **14 to 39 minutes**: the three runs on record took 826s, 1831s and 2351s.
 
-**Next:** give the job a per-run limit and a least-recently-decided rotation, the
-same shape as `fundamentals`, so a run is bounded by design rather than by the
-universe happening to be small. A bounded run also makes the daily cadence honest:
-at 4.1/min, 500 instruments cannot complete inside one interval.
+All three of those are recorded `ok=False` with *"interrupted: the process restarted
+while this run was in progress"*, and that is the evidence, not a coincidence. Each
+one was killed by a redeploy. Two of them were killed by deployments for this very
+objective, after `awltux quiet --timeout 300` returned exit 3 and the rebuild went
+ahead anyway.
+
+The consequence is the same for both and it is not that the jobs are slow: **`awltux
+quiet` can never report *idle* while either is running.** The step introduced for
+exactly this purpose returns "waiting for decision" or "waiting for news_analysis",
+and the operator chooses between holding a deploy for half an hour and accepting the
+interruption quiet exists to prevent. The 60-second `stop_grace_period` and the
+20-second drain budget are two orders of magnitude short of either job.
+
+**Next:** two changes, in order of how much they help.
+
+1. **Make a run respect the drain budget.** A job should be able to see that the
+   process is shutting down and stop at a batch boundary, rather than being killed
+   mid-call. That converts a 39-minute interrupt into a clean partial run, and it
+   helps every long job at once instead of one.
+2. **Then bound `decision`** with a per-run limit and a least-recently-decided
+   rotation, the shape `fundamentals` already uses. At 4.1/min, 500 instruments
+   cannot complete inside one daily interval, so the daily cadence is not honest
+   either.
+
+Lowering `max_deep_per_run` is not a fix: 40 stories is already a rationed batch,
+and cutting it further only means the backlog grows instead.
 
 ### Every page is only tested against seeded data
 
