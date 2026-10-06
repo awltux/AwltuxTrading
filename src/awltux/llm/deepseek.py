@@ -37,6 +37,31 @@ logger = logging.getLogger(__name__)
 
 SOURCE = "deepseek"
 
+#: What every request sends for DeepSeek's `thinking` toggle. **Off, for every call.**
+#:
+#: Thinking mode is enabled by default at `high` effort, and its chain of thought shares
+#: `max_tokens` with the answer. That is what made a headline classification spend its
+#: entire 2,000-token budget deliberating and return no content at all -- measured at
+#: one to six minutes for the affected headline against 1-2 seconds for the rest of the
+#: run, and the reason `news_rss` accumulated seven failed runs without finishing once.
+#:
+#: Measured head to head on this endpoint with a real headline: **thinking on, 3.7 s and
+#: 649 output tokens for a 268-character answer, of which 2,419 characters were
+#: reasoning; thinking off, 0.8 s and 59 tokens for the same answer.** That is 4.6x the
+#: latency and 11x the output tokens, on a $25 monthly ceiling, for deliberation this
+#: workload does not need: the answers here are short, schema-shaped, and checked
+#: downstream rather than trusted because a model thought hard about them.
+#:
+#: It also **gives `temperature` back**. The API ignores that parameter in thinking mode
+#: without reporting anything, so a caller setting `temperature=0.0` for reproducibility
+#: was not getting it -- which matters for a stored decision that claims to be
+#: replayable.
+#:
+#: A future caller that genuinely wants the deliberation should add the parameter back
+#: deliberately, with a measurement, rather than by flipping a default: the cost here is
+#: paid on every call in the pipeline.
+THINKING: dict[str, str] = {"type": "disabled"}
+
 
 class DeepSeekError(RuntimeError):
     """A DeepSeek call failed."""
@@ -97,16 +122,22 @@ class Completion:
                     # Measured, the tokens went somewhere the caller never sees: over
                     # 2,474 classification calls the mean *output* was 235 tokens
                     # while the returned content was about 120, and the calls that
-                    # produced nothing had burned their entire budget. So the message
-                    # names the likely cause rather than only the symptom -- the
-                    # budget was spent on reasoning, and sizing it to the answer is
-                    # sizing it to the wrong thing.
+                    # produced nothing had burned their entire budget.
+                    #
+                    # The cause is no longer a guess. DeepSeek's thinking mode is on by
+                    # default at `high` effort and its chain of thought shares
+                    # `max_tokens` with the answer; on this endpoint a headline that
+                    # tripped it produced 2,419 characters of reasoning for a 268
+                    # character answer. So the advice used to be wrong -- raising the cap
+                    # pays for more deliberation, not for an answer -- and the fix is
+                    # to turn thinking off for work that does not need it.
                     raise TruncatedResponse(
                         f"the model returned no content at all before reaching the "
-                        f"{self.output_tokens or '?'}-token output limit. The budget was "
-                        "spent before the answer began, which usually means reasoning "
-                        "the API does not return in `content`: raise max_tokens well "
-                        "above the length of the answer, or ask for a shorter one"
+                        f"{self.output_tokens or '?'}-token output limit. Its chain of "
+                        "thought shares this budget, so the spend went to reasoning the "
+                        "API returns separately in `reasoning_content`: pass "
+                        "`thinking=False` for a short structured answer, or raise "
+                        "max_tokens to cover the deliberation as well as the answer"
                     ) from exc
                 raise TruncatedResponse(
                     f"response was cut off at the {self.output_tokens or '?'}-token output "
@@ -238,7 +269,14 @@ class DeepSeekClient:
         temperature: float | None = None,
         prompt_hash: str | None = None,
     ) -> Completion:
-        """Run one chat completion, recording tokens and cost either way."""
+        """Run one chat completion, recording tokens and cost either way.
+
+        DeepSeek's thinking mode is switched **off**, and that is not a tuning
+        preference: see :data:`THINKING` for the measurement. Its chain of thought
+        shares ``max_tokens`` with the answer, so leaving it on is what produced
+        truncated classifications that returned nothing, and it silently disables
+        ``temperature``.
+        """
         settings = self.settings
         chosen_model = model or settings.llm.model_bulk
 
@@ -257,6 +295,7 @@ class DeepSeekClient:
             ),
             "max_tokens": max_tokens or settings.llm.max_output_tokens,
             "stream": False,
+            "thinking": THINKING,
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}

@@ -73,6 +73,77 @@ class TestJsonObject:
         assert issubclass(TruncatedResponse, DeepSeekError)
 
 
+class TestTheThinkingToggle:
+    """Every request turns DeepSeek's thinking mode off, and this pins it.
+
+    Thinking mode is on by default at `high` effort and its chain of thought shares
+    `max_tokens` with the answer. That is what produced classifications which spent the
+    whole budget deliberating and returned no content -- measured at one to six minutes
+    per affected headline against 1-2 seconds for the rest, and the reason `news_rss`
+    went seven runs without finishing.
+
+    Measured head to head on this endpoint with a real headline: thinking on, 3.7 s and
+    649 output tokens for a 268-character answer, of which 2,419 characters were hidden
+    reasoning; thinking off, 0.8 s and 59 tokens for the same answer.
+
+    Asserted on the request body rather than on a constant, because the failure this
+    guards is the body losing the field -- which a test of `THINKING` itself would miss.
+    """
+
+    @staticmethod
+    def _recording_client(monkeypatch, settings):
+        from awltux.llm import deepseek as module
+
+        bodies: list[dict] = []
+
+        class _Response:
+            def json(self):
+                return {
+                    "choices": [
+                        {"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}
+                    ],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 5},
+                }
+
+        class _Http:
+            def post(self, path, *, json_body, retries):
+                bodies.append(json_body)
+                return _Response()
+
+        monkeypatch.setattr(module.DeepSeekClient, "client", lambda self: _Http())
+        return module.DeepSeekClient(settings), bodies
+
+    def test_the_request_turns_thinking_off(self, monkeypatch, settings):
+        client, bodies = self._recording_client(monkeypatch, settings)
+
+        client.complete(purpose="test", messages=[{"role": "user", "content": "hi"}])
+
+        assert bodies[0]["thinking"] == {"type": "disabled"}
+
+    def test_it_is_sent_explicitly_rather_than_left_to_the_provider(self, monkeypatch, settings):
+        """The provider's default is *on*, so omitting the field is the bug.
+
+        A request that simply does not mention thinking looks correct in the source and
+        is the exact configuration that returned empty answers.
+        """
+        client, bodies = self._recording_client(monkeypatch, settings)
+
+        client.complete(purpose="test", messages=[{"role": "user", "content": "hi"}])
+
+        assert "thinking" in bodies[0], "omitting it would inherit the provider default"
+
+    def test_temperature_survives_the_toggle(self, monkeypatch, settings):
+        """It is ignored in thinking mode, so turning that off is what makes a
+        `temperature=0.0` request reproducible rather than merely nominally so."""
+        client, bodies = self._recording_client(monkeypatch, settings)
+
+        client.complete(
+            purpose="test", messages=[{"role": "user", "content": "hi"}], temperature=0.0
+        )
+
+        assert bodies[0]["temperature"] == 0.0
+
+
 class _FakeCompletions:
     """Returns a truncated response once, then a good one."""
 
