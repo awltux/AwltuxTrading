@@ -466,6 +466,23 @@ started", which would keep the first-start behaviour and drop the other 61 runs.
 guard in `scheduler/jobs.py` is where a "ran recently" reason would go, and
 `job_statuses` already knows when each job last succeeded.
 
+### The universe news poll is the longest run and reports no progress
+
+`ingest_rss_news` (`ingest/news.py:346`) loops over every instrument in the universe
+with no `progress.note`, so the progress panel for it contains only what the logger
+happens to emit. Observed 2026-10-06 during `news_rss` run #220: **55 minutes in,
+~1,750 classification calls at a steady 30 per minute**, and the panel showed five
+truncated-classification warnings and nothing else. The run looked stalled; it was
+working normally the whole time.
+
+Every comparable loop already reports its position — the decision sweep, news
+appraisal, XBRL statements, fundamentals, price batches and symbol resolution all got
+a note. This is the longest of them and the only one that does not.
+
+**Next:** a `progress.note(f"{position} of {len(instruments)}: {instrument.t212_ticker}")`
+on the loop, the shape the other seven use. It cannot be verified without a live run
+of an hour or more, so it is worth doing alongside whatever bounds this job.
+
 ### Every page is only tested against seeded data
 
 The `engine_label` failure and the empty-universe failure were both invisible to a
