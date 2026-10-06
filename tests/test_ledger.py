@@ -53,6 +53,11 @@ def _balanced(**extra) -> dict:
         "short_term_debt": 40.0,
         "current_liabilities": 130.0,
         "long_term_debt": 200.0,
+        # `other_noncurrent_liabilities` is the residual caption and is what the
+        # components are checked against. The lease is a *memorandum* because that
+        # caption may already contain it -- see the account's definition in the chart --
+        # so it is carried here without being added a second time.
+        "other_noncurrent_liabilities": 30.0,
         "lease_liabilities": 30.0,
         "total_liabilities": 360.0,
         "total_equity": 490.0,
@@ -309,6 +314,71 @@ class TestTheNonOperatingLines:
         stored and then never printed."""
         assert ledger.BY_KEY["interest_income"].statement == "profit_and_loss"
         assert ledger.BY_KEY["other_nonoperating_income"].statement == "profit_and_loss"
+
+
+class TestTheLiabilityComponents:
+    """The liability side of the same filing, reported the same way.
+
+    `AIT_US_EQ` FY2026-06-30 again. Its current-liability residual was exactly two
+    captions -- compensation and benefits, and other current liabilities -- and its
+    non-current residual was one, the residual caption itself. All figures are the
+    filing's own.
+    """
+
+    AIT = {
+        "payables": 341_094_000.0,
+        "compensation_and_benefits": 109_060_000.0,
+        "other_current_liabilities": 162_257_000.0,
+        "current_liabilities": 612_411_000.0,
+        "long_term_debt": 262_300_000.0,
+        "other_noncurrent_liabilities": 273_513_000.0,
+        "total_liabilities": 1_148_224_000.0,
+    }
+
+    def test_both_sides_of_the_liability_composition_now_reconcile(self):
+        checks = {c.key: c for c in ledger.composition(_year(**self.AIT))}
+
+        assert checks["liabilities_composition"].status == ledger.OK
+        assert checks["liabilities_composition"].residual == pytest.approx(0.0)
+
+    def test_each_reported_caption_is_carried(self):
+        """Current: 341,094,000 + 109,060,000 + 162,257,000 = 612,411,000.
+        Non-current: 262,300,000 + 273,513,000 = 535,813,000."""
+        statement = ledger.balance_sheet(_year(**self.AIT))
+        amounts = {line.key: line.amount for line in statement.lines}
+
+        assert amounts["compensation_and_benefits"] == 109_060_000.0
+        assert amounts["other_current_liabilities"] == 162_257_000.0
+        assert amounts["other_noncurrent_liabilities"] == 273_513_000.0
+
+    def test_the_lease_is_not_added_to_a_caption_that_already_contains_it(self):
+        """The trap on this side of the balance sheet.
+
+        `OperatingLeaseLiabilityNoncurrent` is 168,231,000, and
+        `OtherLiabilitiesNoncurrent` is 273,513,000 -- the lease is *inside* it, which is
+        what "other" means. Summing both would overstate liabilities by 168,231,000 and
+        replace an honest gap with a wrong total.
+        """
+        metrics = {**self.AIT, "lease_liabilities": 168_231_000.0}
+
+        check = next(
+            c for c in ledger.composition(_year(**metrics))
+            if c.key == "liabilities_composition"
+        )
+
+        assert check.status == ledger.OK, "the lease was counted twice"
+        assert check.residual == pytest.approx(0.0)
+
+    def test_the_lease_is_still_shown(self):
+        """Memorandum means not summed, not hidden -- it is the counterpart to
+        `operating_lease_assets` and the IFRS 16 adjustment the note asks for."""
+        statement = ledger.balance_sheet(
+            _year(**self.AIT, lease_liabilities=168_231_000.0)
+        )
+        lease = next(line for line in statement.lines if line.key == "lease_liabilities")
+
+        assert lease.amount == 168_231_000.0
+        assert lease.role == "memo"
 
 
 class TestRetainedEarnings:

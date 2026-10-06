@@ -135,22 +135,55 @@ CHART: tuple[Account, ...] = (
     Account("cash_and_equivalents", "Cash and equivalents", "balance_sheet", "Current assets", DEBIT),
     Account("receivables", "Trade receivables", "balance_sheet", "Current assets", DEBIT),
     Account("inventory", "Inventory", "balance_sheet", "Current assets", DEBIT),
+    Account(
+        "other_current_assets", "Other current assets", "balance_sheet",
+        "Current assets", DEBIT,
+    ),
     Account("current_assets", "Total current assets", "balance_sheet", "Current assets", DEBIT, role="subtotal"),
     Account("net_ppe", "Property, plant and equipment", "balance_sheet", "Non-current assets", DEBIT),
+    Account(
+        "operating_lease_assets", "Operating lease assets", "balance_sheet",
+        "Non-current assets", DEBIT,
+    ),
     Account("goodwill", "Goodwill", "balance_sheet", "Non-current assets", DEBIT, signed=True),
     Account("intangible_assets", "Other intangibles", "balance_sheet", "Non-current assets", DEBIT),
+    Account(
+        "other_noncurrent_assets", "Other non-current assets", "balance_sheet",
+        "Non-current assets", DEBIT,
+    ),
     Account(
         "total_assets", "Total assets", "balance_sheet", "Non-current assets", DEBIT,
         role="subtotal",
     ),
     Account("payables", "Trade payables", "balance_sheet", "Current liabilities", CREDIT),
+    Account(
+        "compensation_and_benefits", "Compensation and related benefits",
+        "balance_sheet", "Current liabilities", CREDIT,
+    ),
+    Account(
+        "other_current_liabilities", "Other current liabilities", "balance_sheet",
+        "Current liabilities", CREDIT,
+    ),
     Account("short_term_debt", "Short-term borrowings", "balance_sheet", "Current liabilities", CREDIT),
     Account(
         "current_liabilities", "Total current liabilities", "balance_sheet",
         "Current liabilities", CREDIT, role="subtotal",
     ),
     Account("long_term_debt", "Long-term borrowings", "balance_sheet", "Non-current liabilities", CREDIT),
-    Account("lease_liabilities", "Lease liabilities", "balance_sheet", "Non-current liabilities", CREDIT),
+    # A memorandum, not a component, and the reason is the caption it would sit beside.
+    # `OtherLiabilitiesNoncurrent` is a *residual* caption -- by construction it holds
+    # whatever the filer did not present as its own line -- and on `AIT_US_EQ` that
+    # includes the operating lease liability: `OperatingLeaseLiabilityNoncurrent` is
+    # 168,231,000 of the 273,513,000 reported as other non-current liabilities, so
+    # posting both would count that 168,231,000 twice. Whether the lease is a separate
+    # line is the filer's own presentation, which `companyfacts` does not carry (see
+    # `TODO.md`: the calculation and presentation linkbases are the fix), so the safe
+    # reading is to show the lease without adding it again.
+    Account("lease_liabilities", "Lease liabilities", "balance_sheet", "Memorandum", CREDIT, role="memo"),
+    Account(
+        "other_noncurrent_liabilities", "Other non-current liabilities", "balance_sheet",
+        "Non-current liabilities", CREDIT,
+    ),
     Account(
         "total_liabilities", "Total liabilities", "balance_sheet",
         "Non-current liabilities", CREDIT, role="subtotal",
@@ -394,6 +427,24 @@ def _section(title: str, lines: Sequence[Line]) -> Section:
     return Section(title=title, lines=tuple(lines))
 
 
+#: The figures each statement shows beside its arithmetic and never sums. Kept as
+#: named tuples so the two statements build their memorandum the same way, and so the
+#: list is somewhere a reader can find it rather than inline in a builder.
+INCOME_MEMORANDA: tuple[str, ...] = ("ebit", "ebitda", "eps_diluted", "dividend_per_share")
+BALANCE_MEMORANDA: tuple[str, ...] = (
+    "lease_liabilities",
+    "retained_earnings",
+    "total_debt",
+    "shares_outstanding",
+    "stock_based_compensation",
+)
+
+
+def _memoranda(metrics: dict[str, Any], keys: Sequence[str]) -> Section:
+    """The closing section: what belongs on the page and not in the total."""
+    return _section("Memorandum", [_line(metrics, key) for key in keys])
+
+
 def _line(metrics: dict[str, Any], key: str, computed: float | None = None) -> Line:
     """One printed line, pulling its label, side and role from the chart.
 
@@ -487,10 +538,27 @@ class _Composition:
 
 #: Which component accounts sit on each side of the balance sheet. Declared once so the
 #: statement and the check that audits it cannot disagree about what was included.
-CURRENT_ASSET_KEYS = ("cash_and_equivalents", "receivables", "inventory")
-NON_CURRENT_ASSET_KEYS = ("net_ppe", "goodwill", "intangible_assets")
-CURRENT_LIABILITY_KEYS = ("payables", "short_term_debt")
-NON_CURRENT_LIABILITY_KEYS = ("long_term_debt", "lease_liabilities")
+#:
+#: `other_current_assets`, `operating_lease_assets` and `other_noncurrent_assets` are
+#: here because leaving them out is what made the totals look wrong: measured on
+#: `AIT_US_EQ` FY2026-06-30, the two residuals this check reported were exactly those
+#: lines -- 238,506,000 of current assets (cash plus other current) and 282,079,000 of
+#: non-current (operating leases plus other). With them the balance sheet reconciles to
+#: the dollar, which is what a component list that is actually complete looks like.
+CURRENT_ASSET_KEYS = (
+    "cash_and_equivalents", "receivables", "inventory", "other_current_assets",
+)
+NON_CURRENT_ASSET_KEYS = (
+    "net_ppe", "operating_lease_assets", "goodwill", "intangible_assets",
+    "other_noncurrent_assets",
+)
+CURRENT_LIABILITY_KEYS = (
+    "payables", "compensation_and_benefits", "other_current_liabilities", "short_term_debt",
+)
+#: `lease_liabilities` is deliberately absent: it is a memorandum, because the caption
+#: it would be added to (`other_noncurrent_liabilities`) may already contain it. See the
+#: account's definition in :data:`CHART`.
+NON_CURRENT_LIABILITY_KEYS = ("long_term_debt", "other_noncurrent_liabilities")
 
 
 def _composition(metrics: dict[str, Any]) -> _Composition:
@@ -550,15 +618,7 @@ def profit_and_loss(period: FundamentalPeriod) -> Statement:
                 _line(metrics, "net_income", cascade["net_income"]),
             ],
         ),
-        _section(
-            "Memorandum",
-            [
-                _line(metrics, "ebit"),
-                _line(metrics, "ebitda"),
-                _line(metrics, "eps_diluted"),
-                _line(metrics, "dividend_per_share"),
-            ],
-        ),
+        _memoranda(metrics, INCOME_MEMORANDA),
     )
     return Statement(
         which="profit_and_loss",
@@ -588,6 +648,7 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
                 _line(metrics, "cash_and_equivalents"),
                 _line(metrics, "receivables"),
                 _line(metrics, "inventory"),
+                _line(metrics, "other_current_assets"),
                 _line(metrics, "current_assets", held.current_assets),
             ],
         ),
@@ -595,8 +656,10 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
             "Non-current assets",
             [
                 _line(metrics, "net_ppe"),
+                _line(metrics, "operating_lease_assets"),
                 _line(metrics, "goodwill"),
                 _line(metrics, "intangible_assets"),
+                _line(metrics, "other_noncurrent_assets"),
                 _line(metrics, "total_assets", held.assets),
             ],
         ),
@@ -604,6 +667,8 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
             "Current liabilities",
             [
                 _line(metrics, "payables"),
+                _line(metrics, "compensation_and_benefits"),
+                _line(metrics, "other_current_liabilities"),
                 _line(metrics, "short_term_debt"),
                 _line(metrics, "current_liabilities", held.current_liabilities),
             ],
@@ -612,20 +677,12 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
             "Non-current liabilities and equity",
             [
                 _line(metrics, "long_term_debt"),
-                _line(metrics, "lease_liabilities"),
+                _line(metrics, "other_noncurrent_liabilities"),
                 _line(metrics, "total_liabilities", held.liabilities),
                 _line(metrics, "total_equity"),
             ],
         ),
-        _section(
-            "Memorandum",
-            [
-                _line(metrics, "retained_earnings"),
-                _line(metrics, "total_debt"),
-                _line(metrics, "shares_outstanding"),
-                _line(metrics, "stock_based_compensation"),
-            ],
-        ),
+        _memoranda(metrics, BALANCE_MEMORANDA),
     )
     return Statement(
         which="balance_sheet",

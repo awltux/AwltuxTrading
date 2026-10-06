@@ -53,23 +53,36 @@ INCOME_METRICS: tuple[str, ...] = (
     "dividend_per_share",
 )
 
-#: Balance-sheet figures.
+#: Balance-sheet figures, in the order a balance sheet reads: what is owned, then what
+#: is owed, then the equity that balances it. The order reaches the extraction prompt,
+#: so it is also the order a model is least likely to skip a section of.
 BALANCE_METRICS: tuple[str, ...] = (
+    # current assets
     "cash_and_equivalents",
     "receivables",
     "inventory",
+    "other_current_assets",
     "current_assets",
+    # non-current assets
     "net_ppe",
+    "operating_lease_assets",
     "goodwill",
     "intangible_assets",
+    "other_noncurrent_assets",
     "total_assets",
+    # current liabilities
     "payables",
+    "compensation_and_benefits",
+    "other_current_liabilities",
     "short_term_debt",
     "current_liabilities",
+    # non-current liabilities
     "long_term_debt",
     "lease_liabilities",
-    "total_debt",
+    "other_noncurrent_liabilities",
     "total_liabilities",
+    # memorandum and equity
+    "total_debt",
     "retained_earnings",
     "total_equity",
     "shares_outstanding",
@@ -137,15 +150,39 @@ METRIC_NOTES: dict[str, str] = {
     "inventory": "inventory drift against revenue; accruals",
     "current_assets": "working capital, current ratio, Piotroski liquidity",
     "net_ppe": "Beneish AQI; the operating definition of invested capital",
+    "operating_lease_assets": (
+        "the right-of-use asset IFRS 16 and ASC 842 put on the balance sheet; the "
+        "counterpart to `lease_liabilities`, and absent from any pre-2019 filing"
+    ),
+    "other_noncurrent_assets": (
+        "the non-current assets that are not PP&E, goodwill or intangibles -- "
+        "deferred tax, pensions, long-term investments"
+    ),
+    "other_current_assets": (
+        "the current assets that are not cash, receivables or inventory -- prepayments, "
+        "held-for-sale, short-term investments"
+    ),
     "goodwill": "equity softness and the serial-acquirer flag",
     "intangible_assets": "equity softness; capitalisation drift",
     "total_assets": "every ratio's denominator, accrual ratio, gross profitability",
     "payables": "accruals (balance-sheet method)",
+    "compensation_and_benefits": (
+        "accrued payroll, bonuses and benefits -- the caption a US filer reports as "
+        "'Compensation and related benefits' and most others as accrued liabilities"
+    ),
+    "other_current_liabilities": (
+        "the current liabilities that are not payables, accruals or borrowings -- "
+        "deferred revenue, taxes, the current portion of lease liabilities"
+    ),
+    "other_noncurrent_liabilities": (
+        "the residual non-current liability caption; by construction it contains "
+        "whatever the filer did not present as its own line, which for many filers "
+        "includes the operating lease liability -- see `lease_liabilities`"
+    ),
     "short_term_debt": "accruals; the debt maturity wall",
     "current_liabilities": "working capital, current ratio, Piotroski liquidity",
     "long_term_debt": "Piotroski's leverage test; the debt maturity wall",
-    "lease_liabilities": "the IFRS 16 adjustment that makes cross-border debt comparable",
-    "total_debt": "net debt, WACC weights, invested capital",
+    "lease_liabilities": "the IFRS 16 adjustment that makes cross-border debt comparable",    "total_debt": "net debt, WACC weights, invested capital",
     "total_liabilities": "Altman Z''; liabilities-to-equity",
     "retained_earnings": "Altman Z'' -- an input the score needs and the accounts state",
     "total_equity": "ROE, book value, invested capital",

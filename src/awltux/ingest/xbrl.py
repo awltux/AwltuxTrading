@@ -146,10 +146,28 @@ TAG_MAP: tuple[MetricTag, ...] = (
     MetricTag("inventory", MONETARY, ("InventoryNet",)),
     MetricTag("current_assets", MONETARY, ("AssetsCurrent",)),
     MetricTag("net_ppe", MONETARY, ("PropertyPlantAndEquipmentNet",)),
+    # The right-of-use asset ASC 842 and IFRS 16 put on the balance sheet. It is the
+    # counterpart to `lease_liabilities`, which the liability side has carried all
+    # along, so a filer with operating leases had one side of the entry and not the
+    # other. `AIT_US_EQ` FY2026-06-30: 213,199,000, and `NoncurrentAssets` is exactly
+    # this plus PP&E, which is what identified it.
+    MetricTag("operating_lease_assets", MONETARY, (
+        "OperatingLeaseRightOfUseAsset",
+        "OperatingLeaseRightOfUseAssetNet",
+        "OperatingLeaseRightOfUseAssetAfterAccumulatedAmortization",
+    )),
     MetricTag("goodwill", MONETARY, ("Goodwill",)),
     MetricTag("intangible_assets", MONETARY, (
         "FiniteLivedIntangibleAssetsNet",
         "IntangibleAssetsNetExcludingGoodwill",
+    )),
+    MetricTag("other_noncurrent_assets", MONETARY, (
+        "OtherAssetsNoncurrent",
+        "OtherAssetsNoncurrentNonoperating",
+    )),
+    MetricTag("other_current_assets", MONETARY, (
+        "OtherAssetsCurrent",
+        "PrepaidExpenseAndOtherAssetsCurrent",
     )),
     MetricTag("total_assets", MONETARY, ("Assets",)),
     MetricTag("payables", MONETARY, (
@@ -161,9 +179,22 @@ TAG_MAP: tuple[MetricTag, ...] = (
         "DebtCurrent",
         "ShortTermBorrowings",
     )),
+    # The current-liability components. Measured on `AIT_US_EQ` FY2026-06-30, the
+    # current-liability residual was exactly these two and nothing else: payables
+    # 341,094,000 plus compensation 109,060,000 plus other current 162,257,000 equals
+    # the stated `LiabilitiesCurrent` of 612,411,000 to the dollar.
+    MetricTag("compensation_and_benefits", MONETARY, (
+        "EmployeeRelatedLiabilitiesCurrent",
+    )),
+    MetricTag("other_current_liabilities", MONETARY, (
+        "OtherLiabilitiesCurrent",
+    )),
     MetricTag("current_liabilities", MONETARY, ("LiabilitiesCurrent",)),
     MetricTag("long_term_debt", MONETARY, ("LongTermDebtNoncurrent", "LongTermDebt")),
     MetricTag("lease_liabilities", MONETARY, ("OperatingLeaseLiabilityNoncurrent",)),
+    MetricTag("other_noncurrent_liabilities", MONETARY, (
+        "OtherLiabilitiesNoncurrent",
+    )),
     MetricTag("total_liabilities", MONETARY, ("Liabilities",)),
     MetricTag("retained_earnings", MONETARY, ("RetainedEarningsAccumulatedDeficit",)),
     MetricTag("total_equity", MONETARY, (
@@ -222,14 +253,20 @@ INSTANT_METRICS: frozenset[str] = frozenset({
     "inventory",
     "current_assets",
     "net_ppe",
+    "operating_lease_assets",
     "goodwill",
     "intangible_assets",
+    "other_noncurrent_assets",
+    "other_current_assets",
     "total_assets",
     "payables",
+    "compensation_and_benefits",
+    "other_current_liabilities",
     "short_term_debt",
     "current_liabilities",
     "long_term_debt",
     "lease_liabilities",
+    "other_noncurrent_liabilities",
     "total_liabilities",
     "retained_earnings",
     "total_equity",
@@ -413,21 +450,42 @@ def _pick_per_period(candidates: list[dict[str, Any]]) -> dict[dt.date, dict[str
 def _first_tag(
     facts: dict[str, Any], spec: MetricTag, *, instant: bool
 ) -> tuple[dict[dt.date, dict[str, Any]], str | None]:
-    """The best available tag for a metric.
+    """The tag that describes this metric most recently, ties going to the declared order.
 
-    Preference is by tag, not by period: a company that reports revenue under the
-    newer tag for two years and the older one before that would otherwise produce
-    a series that changes definition halfway. Where the first tag exists at all it
-    supplies every period it has.
+    **Preference is by tag, not by period.** A company that reports revenue under the
+    newer tag for two years and the older one before that must not produce a series that
+    changes definition halfway, so one tag supplies the whole series and the others are
+    not consulted -- ``test_the_preferred_tag_supplies_every_period_it_has`` pins that.
+
+    But *declaration* order alone drops a metric entirely when a filer stops using the
+    tag we prefer. Measured on ``AIT_US_EQ``: the first cash tag,
+    ``CashAndCashEquivalentsAtCarryingValue``, has no annual fact after 2021-06-30,
+    while ``CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents`` covers
+    2023-2026. So it was chosen, contributed nothing to any period on file, and cash was
+    absent from **every balance sheet from 2022 onward** -- the current-asset total out
+    by 127,130,000 with nothing on the page to say why.
+
+    So the tag whose coverage reaches the most recent year wins, and the declared order
+    breaks ties. One tag still supplies the whole series, which is what keeps the
+    anti-mixing property; what changes is only *which* tag that is, and it is now the
+    one the company is actually using.
     """
+    best: tuple[dt.date, dict[dt.date, dict[str, Any]], str] | None = None
     for taxonomy in TAXONOMY_ORDER:
         for tag in spec.tags:
             chosen = _pick_per_period(
                 _select(facts, tag, taxonomy, instant=instant, kind=spec.kind)
             )
-            if chosen:
-                return chosen, f"{taxonomy}:{tag}"
-    return {}, None
+            if not chosen:
+                continue
+            # `>` and not `>=`: the first tag in preference order keeps a tie, so a
+            # filer whose tags cover the same years is read exactly as before.
+            latest = max(chosen)
+            if best is None or latest > best[0]:
+                best = (latest, chosen, f"{taxonomy}:{tag}")
+    if best is None:
+        return {}, None
+    return best[1], best[2]
 
 
 # --------------------------------------------------------------------------- #
