@@ -532,6 +532,152 @@ class TestQuieting:
         assert detail["idle"] is False
 
 
+class TestQuietWaitsForTheJob:
+    """`awltux quiet` has no deadline by default, and that is the whole point.
+
+    The first version defaulted to fifteen minutes. The first real job it met was
+    `news_analysis`, which is bounded at forty model calls and still runs 14 to 39
+    minutes; quiet returned exit 3, the rebuild went ahead, and the run was killed
+    and closed as interrupted. That is the outcome the command exists to prevent,
+    so a default shorter than the jobs it waits for is not a safety valve -- it is
+    the failure, on a timer.
+    """
+
+    @staticmethod
+    def _args(timeout: float = 0.0, poll: float = 0.0):
+        import argparse
+
+        return argparse.Namespace(timeout=timeout, poll=poll)
+
+    def _server(self, monkeypatch, states):
+        """A server that reports each state in turn, then repeats the last."""
+        import awltux.cli as cli
+
+        calls: list[str] = []
+        remaining = list(states)
+
+        def fake(_settings, method, path):
+            calls.append(f"{method} {path}")
+            return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+        monkeypatch.setattr(cli, "_ask_server", fake)
+        monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+        return calls
+
+    def test_the_default_is_to_wait_rather_than_to_give_up(self):
+        import awltux.cli as cli
+
+        parser = cli.build_parser()
+        quiet = parser._subparsers._group_actions[0].choices["quiet"]
+        timeout = next(
+            action for action in quiet._actions if action.dest == "timeout"
+        )
+        assert timeout.default == 0.0, (
+            "a finite default shorter than the jobs being waited for fails exactly "
+            "when it is needed"
+        )
+
+    def test_it_keeps_waiting_until_nothing_is_running(self, monkeypatch):
+        import awltux.cli as cli
+
+        # The POST consumes the first state, so three "running" replies are needed
+        # before the loop sees an idle one: the point is that it keeps asking.
+        calls = self._server(
+            monkeypatch,
+            [
+                {"quiet": True, "idle": False, "running": ["news_analysis"]},
+                {"quiet": True, "idle": False, "running": ["news_analysis"]},
+                {"quiet": True, "idle": False, "running": ["news_analysis"]},
+                {"quiet": True, "idle": True, "running": []},
+            ],
+        )
+
+        assert cli.cmd_quiet(self._args()) == 0
+        assert calls.count("GET /api/quiet") == 3, "it kept asking rather than giving up"
+
+    def test_a_finite_timeout_still_gives_up_and_says_so(self, monkeypatch, capsys):
+        import awltux.cli as cli
+
+        self._server(
+            monkeypatch, [{"quiet": True, "idle": False, "running": ["decision"]}]
+        )
+        # A clock that jumps past the deadline on the second read.
+        ticks = iter([0.0, 0.0, 999.0, 999.0])
+
+        monkeypatch.setattr(cli.time, "monotonic", lambda: next(ticks))
+
+        assert cli.cmd_quiet(self._args(timeout=5.0)) == 3
+        assert "waiting for decision" in capsys.readouterr().err
+
+    def test_a_failed_quiet_does_not_claim_success(self, monkeypatch, capsys):
+        """Exit 3 is the only signal a deploying script can read."""
+        import awltux.cli as cli
+
+        self._server(monkeypatch, [{"quiet": True, "idle": False, "running": ["x"]}])
+        ticks = iter([0.0, 0.0, 999.0, 999.0])
+        monkeypatch.setattr(cli.time, "monotonic", lambda: next(ticks))
+
+        assert cli.cmd_quiet(self._args(timeout=1.0)) == 3
+        assert "Safe to rebuild" not in capsys.readouterr().out
+
+    def test_a_server_that_goes_away_ends_the_wait(self, monkeypatch, capsys):
+        """The one way an unbounded wait can hang for ever.
+
+        Waiting with no deadline means the only thing that ends it is an answer.
+        A gone server is not a job still running, and holding the last answer it
+        gave would wait for ever on a process that no longer exists.
+        """
+        import awltux.cli as cli
+
+        replies = iter(
+            [
+                {"quiet": True, "idle": False, "running": ["decision"]},  # the POST
+                None,
+                None,
+                None,
+            ]
+        )
+        monkeypatch.setattr(cli, "_ask_server", lambda *a, **k: next(replies, None))
+        monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+        assert cli.cmd_quiet(self._args()) == 2
+        assert "stopped answering" in capsys.readouterr().err
+
+    def test_a_single_dropped_poll_is_ridden_out(self, monkeypatch):
+        """One missed request is not a dead server."""
+        import awltux.cli as cli
+
+        replies = iter(
+            [
+                {"quiet": True, "idle": False, "running": ["decision"]},
+                None,
+                {"quiet": True, "idle": True, "running": []},
+            ]
+        )
+        monkeypatch.setattr(cli, "_ask_server", lambda *a, **k: next(replies, None))
+        monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+        assert cli.cmd_quiet(self._args()) == 0
+
+
+class TestTheElapsedLabel:
+    def test_it_reads_the_way_a_person_says_it(self):
+        import awltux.cli as cli
+
+        assert cli._elapsed(8) == "8s"
+        assert cli._elapsed(59) == "59s"
+        assert cli._elapsed(60) == "1m00s"
+        assert cli._elapsed(130) == "2m10s"
+        assert cli._elapsed(826) == "13m46s"
+        assert cli._elapsed(3900) == "1h05m"
+
+    def test_the_label_covers_the_job_that_broke_the_timeout(self):
+        """news_analysis measured 14 to 39 minutes; the label must not read `1m`."""
+        import awltux.cli as cli
+
+        assert cli._elapsed(2351) == "39m11s"
+
+
 class TestTheOperationsPage:
     def test_it_does_not_round_a_schedule_into_a_lie(self, client):
         """Every interval the page prints must be the interval the job has.

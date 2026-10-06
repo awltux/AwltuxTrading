@@ -355,6 +355,23 @@ stops covering that path, and a modified file in it will not be reported. The
 Dockerfile says so in a comment, which is not a test.
 
 ---
+## Education Videos on Value Investment
+
+Use the youtube-transcript skill to download the transcripts of all videos in the following list.
+Remember to use rate limiting as you have locked my ip address in the past.
+Identify the key concepts from each transcript that would be useful for the investment rating app.
+After analysing each transcript combine it with the others in FINDINGS.md, idenitfying common concepts and ideas and merging them where appropriate. This is a long term background task. 
+
+### YouTube channel homepages that are good references to learn value investing
+
+1. https://www.youtube.com/@Value-Investing
+2. https://www.youtube.com/@ThePlainBagel
+3. https://www.youtube.com/@BenFelixCSI
+4. https://www.youtube.com/@AswathDamodaranonValuation
+5. https://www.youtube.com/@CstewartCFA
+6. https://www.youtube.com/@PBoyle
+
+---
 
 ## Deliberately not doing
 

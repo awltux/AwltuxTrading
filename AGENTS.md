@@ -11,15 +11,22 @@ pytest -q && ruff check src tests
 pytest -q && ruff check src tests
 # queue what you found and did not fix; delete what you fixed -- step 6:
 git add -A && git commit
-docker compose exec awltux awltux quiet --timeout 1800   # let in-flight jobs finish
+docker compose exec awltux awltux quiet    # waits until nothing is running
 docker compose build && docker compose up -d
 ```
 
-**Quiet before you rebuild.** `up -d` sends SIGTERM and the lifespan drains, but that
-drain is bounded (it must be, the container is going regardless), so a long job gets
-killed mid-batch and its run closes as *interrupted* next boot. `awltux quiet` pauses
-scheduling first and waits for as long as it takes; exit 3 means a job outran the
-timeout and it is **not** safe to rebuild yet. `awltux unquiet` undoes it.
+**Quiet before you rebuild, and let it wait.** `up -d` sends SIGTERM and the
+lifespan drains, but that drain is *bounded* (it must be — the container is going
+regardless), so a long job is killed mid-batch and its run closes as *interrupted*
+next boot. `awltux quiet` pauses scheduling and waits, with **no timeout by default**.
+Do not pass one: a deadline shorter than the job you are waiting for is not a safety
+valve, it is the failure on a timer. `news_analysis` is bounded at 40 model calls and
+still runs 14–39 minutes; `decision` runs about two hours.
+
+Exit 3 means you passed `--timeout` and it expired. **That is not permission to
+rebuild** — it is the tool telling you a job is still writing. Re-run without the
+timeout and wait, or accept in writing that the run will be interrupted.
+`awltux unquiet` undoes the pause if the upgrade is called off.
 
 Green tests are not a deployment. Verify it landed:
 

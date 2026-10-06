@@ -274,6 +274,26 @@ def cmd_job(args: argparse.Namespace) -> int:
     return 0
 
 
+#: How many consecutive unanswered polls before `quiet` gives up waiting.
+#:
+#: `quiet` waits without a deadline, and the one way an unbounded wait hangs for
+#: ever is a server that has gone away -- the last answer it gave would be waited
+#: on indefinitely. Three consecutive misses is about ten seconds at the default
+#: poll interval, which is long enough to ride out a single dropped request and
+#: short enough not to look like the tool has hung.
+MISSES_BEFORE_GIVING_UP = 3
+
+
+def _elapsed(seconds: float) -> str:
+    """A duration a person reads at a glance: ``8s``, ``2m10s``, ``1h04m``."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total // 3600}h{(total % 3600) // 60:02d}m"
+
+
 def cmd_quiet(args: argparse.Namespace) -> int:
     """Ask the running server to stop starting work, and wait for what is running.
 
@@ -282,6 +302,19 @@ def cmd_quiet(args: argparse.Namespace) -> int:
     killed mid-write; the run row is closed as interrupted on the next boot, which
     is honest but is still work lost. Asking before the rebuild costs nothing and
     leaves nothing to interrupt.
+
+    **There is no timeout by default, and that is the point.** The jobs this exists
+    to wait for are longer than any deadline an operator would guess: `news_analysis`
+    is bounded at forty model calls and still runs 14 to 39 minutes, and `decision`
+    runs about two hours. A default of fifteen minutes failed on the first real job
+    it met, twice, and both times the rebuild went ahead and the run was killed --
+    which is the outcome the command exists to prevent.
+
+    Bounding the *shutdown* drain is a different question with a different answer:
+    that one runs inside the SIGTERM handler, and the container is stopped at
+    `stop_grace_period` whether the wait has finished or not, so an unbounded wait
+    there buys a SIGKILL mid-write instead of a clean stop. Quiet runs before the
+    rebuild, while the container is healthy and nothing is forcing it to end.
     """
     from awltux.config import get_settings
 
@@ -297,24 +330,52 @@ def cmd_quiet(args: argparse.Namespace) -> int:
 
     print(f"quieted at {status.get('quiet_since') or 'now'}")
 
-    deadline = time.monotonic() + float(args.timeout)
-    while not status.get("idle") and time.monotonic() < deadline:
+    started = time.monotonic()
+    deadline = started + float(args.timeout) if args.timeout > 0 else None
+    missed = 0
+
+    while not status.get("idle"):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         running = ", ".join(status.get("running") or []) or "?"
-        print(f"  waiting for {running}", file=sys.stderr)
+        print(
+            f"  waiting for {running} ({_elapsed(time.monotonic() - started)})",
+            file=sys.stderr,
+        )
         time.sleep(args.poll)
-        status = _ask_server(settings, "GET", "/api/quiet") or status
+        fresh = _ask_server(settings, "GET", "/api/quiet")
+        if fresh is None:
+            # The one way an unbounded wait can hang for ever. A server that has
+            # gone is not a job that is still running, and waiting on the last
+            # answer it gave would never end.
+            missed += 1
+            if missed >= MISSES_BEFORE_GIVING_UP:
+                print(
+                    f"the server stopped answering after {_elapsed(time.monotonic() - started)}. "
+                    "It has probably been stopped or restarted, in which case any job "
+                    "it was running has already been interrupted.",
+                    file=sys.stderr,
+                )
+                return 2
+            continue
+        missed = 0
+        status = fresh
 
     if not status.get("idle"):
         running = ", ".join(status.get("running") or [])
         print(
             f"still running after {args.timeout:.0f}s: {running}\n"
-            "Not safe to rebuild yet. Either wait, or accept that the job will be "
-            "interrupted and closed as such on the next start.",
+            "Not safe to rebuild yet. Re-run without --timeout to wait for it, or "
+            "accept that the job will be interrupted and closed as such on the "
+            "next start.",
             file=sys.stderr,
         )
         return 3
 
-    print("idle: no jobs running. Safe to rebuild and redeploy.")
+    print(
+        f"idle after {_elapsed(time.monotonic() - started)}: no jobs running. "
+        "Safe to rebuild and redeploy."
+    )
     return 0
 
 
@@ -457,8 +518,13 @@ def build_parser() -> argparse.ArgumentParser:
     quiet.add_argument(
         "--timeout",
         type=float,
-        default=900.0,
-        help="seconds to wait for in-flight jobs before giving up (default 900)",
+        default=0.0,
+        help=(
+            "give up after this many seconds and exit 3. The default is 0: wait "
+            "until nothing is running, however long that takes. A timeout shorter "
+            "than the job being waited for defeats the purpose -- re-deciding is "
+            "always faster than re-running a two-hour job."
+        ),
     )
     quiet.add_argument("--poll", type=float, default=3.0, help="seconds between checks")
     quiet.set_defaults(func=cmd_quiet)
