@@ -304,6 +304,78 @@ def _as_utc(value: dt.datetime | None) -> dt.datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=dt.UTC)
 
 
+def _coverage_index(pool: list[NewsItem]) -> dict[str, list[NewsItem]]:
+    """The corroboration pool indexed by the tickers each row names."""
+    index: dict[str, list[NewsItem]] = {}
+    for row in pool:
+        for ticker in row.tickers or []:
+            index.setdefault(ticker, []).append(row)
+    return index
+
+
+def coverage_of(item: NewsItem, index: dict[str, list[NewsItem]]) -> list[NewsItem]:
+    """The pool items carrying this story, deduplicated.
+
+    The pool used to be handed to :func:`~awltux.analysis.corroboration.assess` whole,
+    which was a defect with two consequences and a cost.
+
+    `assess` counts the candidates it is given and collapses the near-identical ones
+    into origins, so measuring a story against everything published that fortnight gave
+    every story the same answer -- on the live database, a headline about Apple and one
+    about an unrelated micro-cap both returned `carrier_count=400, independent_count=7`.
+    That meant `is_interesting`'s single-source condition (`carrier_count <= 1`) could
+    never fire, so coverage from a press release or an aggregator was never selected;
+    and every appraisal was told the story was carried by seven independent origins,
+    which is what the credibility weighting reads.
+
+    The cost was the same mistake seen from the other side: `assess` groups its
+    candidates pairwise, so 400 candidates is about 80,000 title comparisons per story.
+    Measured over the live pool, a story's own coverage is a median of 8 rows, and the
+    per-story work falls from 5.8 seconds to 14 milliseconds.
+
+    Ticker and window, because that is the signal available for "the same story".
+    Narrowing to near-identical headlines instead would report every story as
+    single-source -- `tests/test_news_scepticism.py` is explicit that coverage worded
+    differently is separate reporting, not a copy.
+    """
+    found: dict[int, NewsItem] = {}
+    for ticker in item.tickers or []:
+        for row in index.get(ticker, ()):
+            found[row.id] = row
+    # A story the pool does not reach still has itself as one carrier, which reads as
+    # single-source -- the honest answer when there is nothing to compare it to.
+    return list(found.values()) or [item]
+
+
+#: The appraisal columns copied onto an existing row. Every field a fresh appraisal
+#: produces and nothing else: the news item's own columns, and the row's identity,
+#: belong to whoever wrote them.
+APPRAISAL_COLUMNS: tuple[str, ...] = (
+    "source_domain", "source_name", "source_kind", "source_reliability",
+    "source_independence", "source_biases", "source_basis", "source_assessed",
+    "rhetoric_score", "rhetoric", "techniques", "carrier_count",
+    "independent_sources", "corroboration", "claims", "omissions",
+    "headline_matches_body", "headline_overstates", "who_benefits",
+    "agenda_basis", "base_rate", "what_would_change_my_mind",
+    "primary_source", "scepticism_summary", "injection_suspected",
+    "credibility", "evidence_grade", "flags", "warnings", "caveats",
+    "factors", "engine", "analysed_at",
+)
+
+
+def _carry_forward(prior: NewsAnalysis, fresh: NewsAnalysis) -> None:
+    """Copy a fresh appraisal onto the row already stored for that story.
+
+    Re-appraising a story updates it in place rather than inserting a second row, so a
+    reader sees one assessment per story and its history is the `analysed_at` moving.
+    The columns are named rather than taken from the model, because the alternative --
+    `for column in fresh.__table__.columns` -- would also copy the primary key and the
+    foreign key back onto the stored row.
+    """
+    for column in APPRAISAL_COLUMNS:
+        setattr(prior, column, getattr(fresh, column))
+
+
 def analyse_universe(
     session: Session,
     *,
@@ -341,6 +413,7 @@ def analyse_universe(
 
     held = _held_tickers(session)
     pool = _recent_coverage(session, days=days)
+    index = _coverage_index(pool)
 
     total = len(items)
     for item in items:
@@ -356,7 +429,9 @@ def analyse_universe(
         publisher = lookup(item.url) if item.url else lookup(None)
         rhetoric = analyse_text(item.summary or item.title, headline=item.title)
         corroboration = assess(
-            item.title, pool, window_hours=settings.news.scepticism.corroboration_window_hours
+            item.title,
+            coverage_of(item, index),
+            window_hours=settings.news.scepticism.corroboration_window_hours,
         )
         is_held = bool(set(item.tickers or []) & held)
 
@@ -410,18 +485,7 @@ def analyse_universe(
             report.deep_analysed += 1
 
         if prior is not None:
-            for column in (
-                "source_domain", "source_name", "source_kind", "source_reliability",
-                "source_independence", "source_biases", "source_basis", "source_assessed",
-                "rhetoric_score", "rhetoric", "techniques", "carrier_count",
-                "independent_sources", "corroboration", "claims", "omissions",
-                "headline_matches_body", "headline_overstates", "who_benefits",
-                "agenda_basis", "base_rate", "what_would_change_my_mind",
-                "primary_source", "scepticism_summary", "injection_suspected",
-                "credibility", "evidence_grade", "flags", "warnings", "caveats",
-                "factors", "engine", "analysed_at",
-            ):
-                setattr(prior, column, getattr(row, column))
+            _carry_forward(prior, row)
             session.add(prior)
         else:
             session.add(row)

@@ -21,71 +21,11 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
-### `news_analysis` corroborates every story before rejecting it, so a run takes 4.3 hours
-
-Measured 2026-10-06, from the live job log the reader pasted:
-
-```
-PROGRESS 1 of 2659 examined, 0 selected
-PROGRESS 2 of 2659 examined, 0 selected      (6 seconds later)
-```
-
-The six seconds are `analysis/corroboration.py::assess`, called at
-`analysis/news_analysis.py:358`. Timed directly against the live database:
-
-| step | time |
-|---|---|
-| `analyse_text` (rhetoric) | 0.001 s |
-| **`assess` (corroboration)** | **5.7–5.9 s** |
-| items in the 14-day window | **2,668** |
-| implied run | **~4.3 hours** |
-
-`assess` builds a `Carrier` for **every** candidate in the pool and then
-`_group_by_similarity` compares them **pairwise** — about 80,000 title-similarity
-comparisons — for each story, whether or not any of those headlines resemble it. The
-pool is capped at 400 (`_recent_coverage(..., limit=400)`, the default), so this is
-2,668 × 400² / 2 ≈ 213 million comparisons to appraise at most `limit=40` stories.
-
-**And the ordering throws almost all of it away.** `is_interesting` is evaluated at
-line 363, *after* the corroboration, and its first condition rejects nearly everything:
-
-```
-none      1456
-mild       857
-moderate   212
-material   119   <- the gate's first condition
-critical    19   <-
-```
-
-138 of 2,668 can pass on materiality at all, which is why `0 selected` is correct and
-enormously expensive to arrive at. That is also why the job has **0 successful runs in
-7 attempts**: it has never once finished.
-
-**Next:** three changes, in order of payoff.
-
-1. **Corroborate lazily.** Conditions 1–3 of `is_interesting` (materiality, rhetoric,
-   held) need no corroboration. Condition 4 needs `carrier_count` — but only when
-   `publisher_kind in _NEEDS_CHECKING`, and `lookup()` is an in-memory registry, so
-   that test is free. Evaluating the cheap predicates first and computing corroboration
-   only when it can change the answer is equivalent — same decisions, same reasons, same
-   order — and takes the corroborations from 2,668 to roughly 140.
-2. **Skip already-appraised stories before the scan.** `NewsAnalysis.analysed_at` is
-   consulted at line 376, after the gate, and only suppresses the *model call*. The scan
-   takes every story in `days=14` every run. 24 rows exist, all inside
-   `refresh_after_days=7`.
-3. **Prefilter the pool before the O(n²) grouping.** Only titles near the subject can be
-   near-duplicates of it, so the 80,000 comparisons per story are avoidable.
-
-(1) and (2) together turn a 4.3-hour run into a couple of minutes. It also decides
-whether the job can ever enter the catch-up history, which keys on a *successful* run.
-
-### The last eight
-
-The eight before this one — `serve` not migrating, silent DeepSeek truncation, the
-`universe_refresh` startup race, CLI/server write-lock contention, the unhelpful blank
-dashboard, a stale container being indistinguishable from a code bug, SQLite's write
-lock being held across model calls, and a rate-limit counter failing the job it was
-counting — are in the commit log.
+None open. The eight before this one — `serve` not migrating, silent DeepSeek
+truncation, the `universe_refresh` startup race, CLI/server write-lock contention, the
+unhelpful blank dashboard, a stale container being indistinguishable from a code bug,
+SQLite's write lock being held across model calls, and a rate-limit counter failing the
+job it was counting — are in the commit log.
 
 Two of them were not a bug at all, and are worth remembering. The missing Info
 menu item and the `engine_label` template error were both the running container

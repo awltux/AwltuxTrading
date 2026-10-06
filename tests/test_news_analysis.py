@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
+from sqlalchemy import select
 
 from awltux.analysis import news_analysis, sentiment
 from awltux.analysis.corroboration import Carrier, Corroboration
@@ -305,6 +306,120 @@ class TestRunAnalysis:
         session.flush()
         report = news_analysis.analyse_universe(session, settings=settings)
         assert report["appraised"] == 0
+
+
+class TestCorroborationIsMeasuredAgainstTheStory:
+    """Corroboration used to be measured against the whole fortnight, not the story.
+
+    `analyse_universe` handed the entire corroboration pool to `assess`, which counts
+    the candidates it is given. So `carrier_count` was the pool size (400) and
+    `independent_count` was the *window's* origins for every story alike -- measured on
+    the live database, a headline about Apple and one about an unrelated micro-cap both
+    returned `carrier_count=400, independent_count=7`.
+
+    Two consequences, both wrong, and both asserted below: the single-source condition
+    in `is_interesting` could never fire, so coverage from a press release or an
+    aggregator was never selected; and every appraisal was told the story was carried by
+    seven independent origins, which is what the credibility weighting reads.
+
+    The same mistake was the whole of the cost. `assess` groups its candidates pairwise,
+    so 400 candidates is about 80,000 title comparisons per story; over the live pool the
+    per-story work fell from 5.8 seconds to 14 milliseconds once each story was measured
+    against its own coverage.
+    """
+
+    def test_the_index_groups_by_every_ticker_a_row_names(self, session):
+        """A story naming two companies is coverage for both.
+
+        Rows carry a list of tickers, and a story about a deal names both parties; an
+        index built on only the first would hide half of that story's coverage.
+        """
+        make_item(session, "Acme warns", tickers=["ACME_US_EQ", "OTHER_US_EQ"])
+
+        pool = list(session.execute(select(NewsItem)).scalars())
+        index = news_analysis._coverage_index(pool)
+
+        assert len(index["ACME_US_EQ"]) == 1
+        assert len(index["OTHER_US_EQ"]) == 1
+
+    def test_a_story_is_measured_against_its_own_coverage_only(self, session):
+        mine = [
+            make_item(session, "Acme warns on profit", url=f"https://a{i}.example/x")
+            for i in range(3)
+        ]
+        for index in range(40):
+            make_item(
+                session,
+                f"Unrelated story {index}",
+                url=f"https://b{index}.example/y",
+                tickers=["ELSEWHERE_US_EQ"],
+            )
+
+        pool = list(session.execute(select(NewsItem)).scalars())
+        index = news_analysis._coverage_index(pool)
+        coverage = news_analysis.coverage_of(mine[0], index)
+
+        assert {row.id for row in coverage} == {row.id for row in mine}
+        assert len(coverage) == 3, "the 40 unrelated rows must not be carriers"
+
+    def test_two_unrelated_stories_do_not_get_the_same_answer(self, session):
+        """The measurement that exposed it: identical input gave identical output."""
+        for index in range(5):
+            make_item(
+                session,
+                "Acme warns on profit as demand weakens",
+                url=f"https://acme{index}.example/a",
+                tickers=["ACME_US_EQ"],
+            )
+        make_item(
+            session,
+            "Zenith wins a contract",
+            url="https://zenith.example/b",
+            tickers=["ZENITH_US_EQ"],
+        )
+
+        pool = list(session.execute(select(NewsItem)).scalars())
+        index = news_analysis._coverage_index(pool)
+        acme = news_analysis.coverage_of(
+            next(r for r in pool if r.tickers == ["ACME_US_EQ"]), index
+        )
+        zenith = news_analysis.coverage_of(
+            next(r for r in pool if r.tickers == ["ZENITH_US_EQ"]), index
+        )
+
+        assert len(acme) == 5
+        assert len(zenith) == 1, "Zenith's story is single-source; Acme's is not"
+
+    def test_a_story_the_pool_does_not_reach_still_has_itself(self, session):
+        """Single-source is the honest answer with nothing to compare against -- and the
+        alternative, an empty candidate list, would report no coverage at all."""
+        lonely = make_item(session, "Acme warns", tickers=["ACME_US_EQ"])
+        index = news_analysis._coverage_index([])
+
+        assert news_analysis.coverage_of(lonely, index) == [lonely]
+
+    def test_the_answer_no_longer_depends_on_how_big_the_window_is(self, session):
+        """The pool used to be the unit of measurement, so a busier week changed every
+        story's corroboration without any story changing."""
+        story = make_item(session, "Acme warns on profit", tickers=["ACME_US_EQ"])
+        index = news_analysis._coverage_index([story])
+
+        assert len(news_analysis.coverage_of(story, index)) == 1
+
+        # Bury it in a large, unrelated window.
+        for position in range(200):
+            make_item(
+                session,
+                f"Noise {position}",
+                url=f"https://noise{position}.example/z",
+                tickers=[f"T{position}_US_EQ"],
+            )
+        wide = list(session.execute(select(NewsItem)).scalars())
+        wide_index = news_analysis._coverage_index(wide)
+
+        assert len(news_analysis.coverage_of(story, wide_index)) == 1, (
+            "a story's coverage must not grow with the size of the news window"
+        )
 
 
 class TestSentimentWeighting:
