@@ -1,0 +1,19 @@
+{# A hover-and-keyboard tooltip for a field name.
+
+   `title` attributes were the obvious choice and the wrong one: they wait about a
+   second, cannot wrap a sentence, truncate on some platforms, and never appear at all
+   on touch. This is an inline element carrying the text in a `data-` attribute, shown
+   by CSS on hover *and* on focus, so it needs no JavaScript and stays reachable by
+   keyboard (`tabindex="0"`).
+
+   The text comes from `awltux.web.glossary`, exposed as the `explain` global, so a
+   field is explained once rather than once per page.
+
+   Nothing is rendered when the key is unknown. An empty tooltip is better than one
+   reading "no description", and an unknown key means a template is naming a field the
+   glossary has not been told about. #}
+
+{% macro help(key) -%}
+  {%- set body = explain(key) -%}
+  {%- if body %}<span class="help" data-help="{{ body }}" tabindex="0">?</span>{% endif -%}
+{%- endmacro %}

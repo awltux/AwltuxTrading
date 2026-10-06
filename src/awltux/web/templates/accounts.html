@@ -15,6 +15,7 @@
 #}
 
 {% block content %}
+{% from "partials/_help.html" import help %}
 <p class="muted small">
   {% if instrument %}<a href="/instrument/{{ period.instrument_t212_ticker }}">&larr; {{ period.instrument_t212_ticker }}</a>
   {% else %}&larr; Accounts{% endif %}
@@ -58,8 +59,8 @@
         <tr>
           <th>Line</th>
           <th class="num">{{ currency or 'Amount' }}</th>
-          <th class="num">Stated</th>
-          <th class="num">Computed</th>
+          <th class="num">Stated{{ help('stated') }}</th>
+          <th class="num">Computed{{ help('computed') }}</th>
         </tr>
       </thead>
       <tbody>

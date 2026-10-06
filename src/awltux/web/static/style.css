@@ -336,3 +336,30 @@ footer {
 .ledger tr.subtotal td { border-top: 1px solid var(--line); font-weight: 600; }
 .ledger tfoot td { border-top: 1px solid var(--line); font-weight: 600; padding-top: 6px; }
 .ledger td code, .ledger th { white-space: nowrap; }
+
+/* What a field is, on hover or on keyboard focus.
+   See `partials/_help.html`: the text rides in `data-help`, so this needs no script.
+   `cursor: help` and the dotted underline are the affordance -- a bare "?" would be
+   easy to mistake for a footnote marker. */
+.help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 4px; border-radius: 50%;
+  border: 1px solid var(--line); color: var(--muted);
+  font-size: 10px; font-weight: 600; cursor: help;
+  vertical-align: middle; position: relative;
+}
+.help:hover, .help:focus-visible {
+  color: inherit; border-color: var(--muted); background: var(--panel-2); outline: none;
+}
+.help::after {
+  content: attr(data-help);
+  position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
+  z-index: 30; width: max-content; max-width: 320px;
+  padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--fg); box-shadow: 0 6px 22px rgba(0,0,0,.45);
+  font-size: 12px; font-weight: 400; line-height: 1.45; text-align: left;
+  white-space: normal;
+  opacity: 0; visibility: hidden; transition: opacity .12s ease;
+  pointer-events: none;
+}
+.help:hover::after, .help:focus-visible::after { opacity: 1; visibility: visible; }

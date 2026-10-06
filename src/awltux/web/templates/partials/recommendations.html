@@ -7,12 +7,18 @@
    The wrapper carries the endpoint as an attribute rather than the script
    constructing it, in the same style as `base.html`: the markup states where to
    read from, the script does not build the URL from parts. #}
-{% macro sort_link(key, label, title=None) %}
+{% from "partials/_help.html" import help %}
+
+{# `explain_key` is separate from `key` because the two vocabularies differ: the sort
+   key for the long-term verdict is `action`, while the glossary calls it
+   `long_term_action`. Defaulting to `key` keeps the common case -- a column whose name
+   is the same in both -- to one argument. #}
+{% macro sort_link(key, label, title=None, explain_key=None) %}
   {% set next_dir = 'asc' if (filters.value('sort') == key and filters.value('direction') == 'desc') else 'desc' %}
   <a class="sort {% if filters.value('sort') == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
      href="{{ filters.href('/dashboard', sort=key, direction=next_dir) }}">
     {{ label }}{% if filters.value('sort') == key %}<span class="arrow">{{ '▲' if filters.value('direction') == 'asc' else '▼' }}</span>{% endif %}
-  </a>
+  </a>{{ help(explain_key or key) }}
 {% endmacro %}
 
 <div id="recommendations" data-partial="/partials/recommendations">
@@ -31,18 +37,18 @@
   <thead>
     <tr>
       <th>{{ sort_link('name', 'Instrument') }}</th>
-      <th>{{ sort_link('horizon_fit', 'Suits', 'Which horizon the evidence actually supports') }}</th>
+      <th>{{ sort_link('horizon_fit', 'Suits') }}</th>
       <th class="num">{{ sort_link('margin_of_safety', 'Margin of safety') }}</th>
-      <th class="num">Price</th>
-      <th>{{ sort_link('action', 'Long term', '12-36 months') }}</th>
+      <th class="num">Price{{ help('price') }}</th>
+      <th>{{ sort_link('action', 'Long term', explain_key='long_term_action') }}</th>
       <th class="num">{{ sort_link('composite_score', 'L score') }}</th>
       <th class="num">{{ sort_link('confidence', 'L conf.') }}</th>
-      <th>{{ sort_link('short_term_action', 'Short term', '5-20 trading days') }}</th>
+      <th>{{ sort_link('short_term_action', 'Short term') }}</th>
       <th class="num">{{ sort_link('short_term_score', 'S score') }}</th>
       <th class="num">{{ sort_link('short_term_confidence', 'S conf.') }}</th>
-      <th>Setup / risk</th>
+      <th>Setup / risk{{ help('setup') }}</th>
       <th>{{ sort_link('sentiment', 'Sentiment') }}</th>
-      <th>Engine</th>
+      <th>Engine{{ help('engine') }}</th>
       <th>{{ sort_link('freshness', 'Updated') }}</th>
     </tr>
   </thead>
@@ -139,7 +145,7 @@
     </tr>
   {% else %}
     <tr><td colspan="14" class="empty">
-      {% if stats.universe_size == 0 %}
+      {% if universe_size == 0 %}
         Nothing is being analysed yet: the analysed universe is <strong>empty</strong>,
         which is why this table is blank rather than showing cheap or expensive
         names. Run <code>t212_instruments</code>, then <code>universe_refresh</code>
@@ -147,7 +153,7 @@
         <code>valuation</code> and <code>decision</code> — all from
         <a href="/jobs">Operations</a>.
       {% else %}
-        No decisions yet for the {{ stats.universe_size }} instruments in the
+        No decisions yet for the {{ universe_size }} instruments in the
         universe. Run <code>price_eod</code>, then <code>valuation</code> and
         <code>decision</code> from <a href="/jobs">Operations</a>.
       {% endif %}

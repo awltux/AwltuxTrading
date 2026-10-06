@@ -802,46 +802,6 @@ disk spends ~30 requests against an endpoint that has just banned this address.
 
 ---
 
-## Requested, not started
-
-Work a reader has asked for by name and that has not been built. Kept apart from the
-bug and operations sections because the trigger is a request rather than a measurement,
-but it is still the queue: an item here is owed, not aspirational.
-
-### Hover help on the valuation figures and the other fields
-
-Asked for directly: *"I don't understand what they represent and how to read them."*
-That is a comprehension failure on the numbers this system exists to produce, and it is
-the highest-value item in this file for that reason.
-
-The fields that need it, from the pages as they stand:
-
-- **`/dashboard`** — the table columns: *Suits*, *Margin of safety*, *Long term*,
-  *L score*, *L conf.*, *Short term*, *S score*, *S conf.*, *Setup / risk*,
-  *Sentiment*, *Engine*, *Updated*; and the summary strip, which is currently a row of
-  bare counters with no labels.
-- **`/instrument/{ticker}`** — the valuation block (fair value range, method, margin of
-  safety) and the accounting summary.
-- **`/accounts/{id}`** — the ledger's *Stated* and *Computed* columns, and the seven
-  health checks, which say *agrees* / *out* / *not computable* without saying what was
-  compared in terms a reader can act on.
-
-**How, so it is not done four different ways.** One glossary in Python — key, label,
-what it is, how to read it, and the direction that is good, which is the part people
-actually trip on — exposed to templates as a helper. The text must not be written into
-the templates, because the same field appears on more than one page and two copies
-drift. Note that `web/templating.py` already owns formatting for exactly this reason.
-
-The affordance should be a styled, keyboard-reachable tooltip rather than only a `title`
-attribute: `title` waits a second, truncates, cannot wrap a sentence, and does not
-appear at all on touch. A CSS `::after { content: attr(data-help) }` on a focusable span
-needs no JavaScript, which keeps the page working without `app.js` like everything else.
-
-There is also an argument for a **legend page** listing every field in one place — the
-hover answers "what is this one", and a reader who does not know the vocabulary yet
-wants to read the whole set once. Cheap once the glossary exists; worth deciding at the
-same time rather than after.
-
 ## Deliberately not doing
 
 ### Day trading / intraday horizon

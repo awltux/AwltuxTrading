@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 
 from awltux.timezones import as_utc, current_zone_name, current_zone_note, format_moment, zone_label
 from awltux.web.filters import UNCLASSIFIED
+from awltux.web.glossary import explanation
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -272,6 +273,10 @@ def create_templates() -> Jinja2Templates:
             "display_zone": current_zone_name,
             "display_zone_note": current_zone_note,
             "zone_label": zone_label,
+            # What a field is and how to read it, so the explanation lives in one
+            # place: the same figure appears on the dashboard and on an instrument
+            # page, and two copies of an explanation drift like any other duplicate.
+            "explain": explanation,
             "disclaimer": (
                 "Advisory tooling for personal research only. Not financial advice. "
                 "Free-tier market data is unofficial and may be delayed or wrong."

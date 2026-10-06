@@ -14,10 +14,11 @@
 
 
 {% block content %}
+{% from "partials/_help.html" import help %}
 <section class="summary">
-  <div class="stat"><span class="stat-value">{{ stats.universe_size }}</span><span class="stat-label">in universe</span></div>
-  <div class="stat"><span class="stat-value">{{ stats.mapped }}</span><span class="stat-label">price-mapped</span></div>
-  <div class="stat"><span class="stat-value">{{ stats.decided }}</span><span class="stat-label">decided</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.universe_size }}</span><span class="stat-label">in universe{{ help('universe_size') }}</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.mapped }}</span><span class="stat-label">price-mapped{{ help('mapped') }}</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.decided }}</span><span class="stat-label">decided{{ help('decided') }}</span></div>
   {% for fit, count in stats.horizon_fit_counts.items() %}
     {% if fit != 'unknown' %}
       <div class="stat"><span class="stat-value">{{ count }}</span><span class="stat-label">suits {{ fit | replace('_', ' ') }}</span></div>

@@ -2,6 +2,7 @@
 {% block title %}{{ ticker }} — {{ app_name }}{% endblock %}
 
 {% block content %}
+{% from "partials/_help.html" import help %}
 <h1>
   {{ ticker }}
   <span class="muted">{{ instrument.name }}</span>
@@ -267,9 +268,9 @@
   {% set sensitivity = (valuation.inputs or {}).get('rate_sensitivity') %}
   <dl class="kv">
     <div><dt>Price used</dt><dd>{{ valuation.price | money(valuation.currency) }}</dd></div>
-    <div><dt>Fair value (base)</dt><dd>{{ valuation.fair_value_base | money(valuation.currency) }}</dd></div>
-    <div><dt>Range</dt><dd>{{ valuation.fair_value_low | number(2) }} – {{ valuation.fair_value_high | number(2) }}</dd></div>
-    <div><dt>Margin of safety</dt><dd>{{ valuation.margin_of_safety | pct(1, false) }}</dd></div>
+    <div><dt>Fair value (base){{ help('fair_value_base') }}</dt><dd>{{ valuation.fair_value_base | money(valuation.currency) }}</dd></div>
+    <div><dt>Range{{ help('fair_value_range') }}</dt><dd>{{ valuation.fair_value_low | number(2) }} – {{ valuation.fair_value_high | number(2) }}</dd></div>
+    <div><dt>Margin of safety{{ help('margin_of_safety') }}</dt><dd>{{ valuation.margin_of_safety | pct(1, false) }}</dd></div>
     <div><dt>Valuation confidence</dt><dd>{{ valuation.valuation_confidence | pct0 }}</dd></div>
     {% if assumptions.risk_free_rate %}
       {#
@@ -311,7 +312,7 @@
         </dd>
       </div>
     {% endif %}
-    <div><dt>Methods applied</dt><dd>{{ valuation.methods_applied | join(', ') or '—' }}</dd></div>
+    <div><dt>Methods applied{{ help('methods_applied') }}</dt><dd>{{ valuation.methods_applied | join(', ') or '—' }}</dd></div>
     <div><dt>Status</dt><dd>{{ valuation.status }}{% if valuation.notes %} — {{ valuation.notes }}{% endif %}</dd></div>
     <div><dt>As of</dt><dd>{{ valuation.as_of | datetime }}</dd></div>
   </dl>
