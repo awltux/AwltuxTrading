@@ -70,32 +70,43 @@ currently treat a `None` result as "nothing to do".
 
 ### Build the accounting-quality markers from `docs/investment-markers.md`
 
-**Partly done.** The data prerequisite is closed and the first two markers are in:
-`awltux/metrics.py` is now the single vocabulary (the extractor gate, the provider
-mapping and the extraction prompt were three lists that had drifted — the prompt
-omitted three names the gate accepted), and `analysis/accounting.py` computes the
-accrual ratio and multi-year cash conversion with their inputs attached.
+**Mostly done.** Re-measured 2026-10-06: this entry still listed Piotroski, the
+Beneish indices, the receivables and inventory drift and goodwill intensity as "still
+to build", and all of them had been built. `analyse()` returns nine markers.
+
+In place: `awltux/metrics.py` is the single vocabulary; `analysis/accounting.py`
+computes the accrual ratio, multi-year cash conversion, Piotroski's nine named checks,
+gross profitability, receivables drift, inventory drift, goodwill intensity, the
+Beneish indices (no composite -- its five-variable coefficients are not in this
+project's evidence base) and the Altman Z'' inputs. `ingest/fundamentals.py` bridges
+`ebit`, which no provider states: 0 of 88 stored periods had it, and 74 do once the
+bridge is applied.
 
 Still to build, in the order the note argues for:
 
-1. Piotroski's nine tests, displayed as nine named checks rather than a score;
-2. Altman Z'' inputs and a 5-variable Beneish M, as within-sector **rankings with
-   their inputs shown** — never as a verdict, and never colour-coded;
-3. receivables and inventory drift relative to revenue;
-4. filing events: auditor change, restatement, going-concern, accounting-policy
-   change — the extraction fields and prompt are in place, but `extract_filing`
-   is **not called from anywhere**, so none of it runs;
-5. ROIC against an explicitly stated WACC — the economic question the system
-   currently cannot answer;
-6. goodwill/intangibles intensity and a serial-acquirer flag;
-7. Loughran-McDonald `litigious` and `uncertainty` counts on filing text.
+1. **Filing events** — auditor change, restatement, going-concern, accounting-policy
+   change. The extraction fields and prompt are in place, but `extract_filing`
+   (`llm/extractors.py:267`) is **not called from anywhere**, so none of it runs.
+2. **ROIC against an explicitly stated WACC** — the economic question the system
+   cannot currently answer. `valuation.py::wacc` exists; the denominator definition
+   is the part that has to be stated rather than assumed.
+3. **A serial-acquirer flag** — `goodwill_intensity_marker` measures the share;
+   nothing yet reads it *across* years for repeated acquisition.
+4. **Loughran-McDonald `litigious` and `uncertainty` counts** on filing text.
+
+One follow-up created by the EBIT bridge: it applies when a period is written, so the
+88 existing rows gain EBIT only as `fundamentals` and `xbrl_statements` rotate over
+them. `_upsert_period` replaces `metrics` on re-fetch, so it is self-healing rather
+than permanently stale -- but at the current rotation that is days. A one-off
+re-derivation pass would close it immediately and would be needed again by the next
+derived metric; it is not urgent enough to interrupt the markers.
 
 Two cautions the note raises that belong with the implementation:
 
 - **Do not port US-calibrated scores to UK accounts unmodified.** Beneish and
   Altman were fitted to US GAAP data; FRS 102 and IFRS differ on leases,
   development-cost capitalisation and goodwill. Recalibration or a stated caveat is
-  required, not optional.
+  required, not optional. The Altman marker carries the caveat in `ALTMAN_DEMOTION_CAVEAT`.
 - **Every score must show its inputs.** The failure mode of these tools is a number
   that reads as a verdict; the note's recommendation is that a flag means "read
   this" and never "this is fraud".
