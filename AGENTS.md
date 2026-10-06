@@ -61,6 +61,26 @@ curl -fsS "http://127.0.0.1:${AWLTUX_PORT:-8080}/info" | grep -i "running commit
 The two must agree, and the page must **not** say "has uncommitted changes". If
 they disagree, the deploy did not happen — do not report the work as deployed.
 
+### When the deploy silently does nothing
+
+`docker compose` reads `.env` on every command and is strict about it: a single line
+that is not `KEY=VALUE` or a comment makes **every** compose command fail, the build
+included. It is easy to miss because compose writes the complaint to stderr while
+the surrounding pipeline still looks like it ran — and because the old container
+keeps serving, so the site never appears to break.
+
+This happened: a terminal transcript (a curl command and its JSON response) was
+pasted into the end of `.env`, and two rebuilds quietly did nothing while the
+container went on serving a 12-hour-old image.
+
+```bash
+docker compose config --quiet && echo "compose can read .env"
+```
+
+Read the build's exit status and its output. "The command returned" is not the same
+as "the image was rebuilt" — check the image's creation time or its baked
+provenance, which is the thing the page reports anyway.
+
 ---
 
 ## 2. Never delete the database. Migrate it.
