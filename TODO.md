@@ -21,11 +21,71 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
-None open. The last eight — `serve` not migrating, silent DeepSeek truncation, the
-`universe_refresh` startup race, CLI/server write-lock contention, the unhelpful
-blank dashboard, a stale container being indistinguishable from a code bug,
-SQLite's write lock being held across model calls, and a rate-limit counter
-failing the job it was counting — were fixed and are in the commit log.
+### `news_analysis` corroborates every story before rejecting it, so a run takes 4.3 hours
+
+Measured 2026-10-06, from the live job log the reader pasted:
+
+```
+PROGRESS 1 of 2659 examined, 0 selected
+PROGRESS 2 of 2659 examined, 0 selected      (6 seconds later)
+```
+
+The six seconds are `analysis/corroboration.py::assess`, called at
+`analysis/news_analysis.py:358`. Timed directly against the live database:
+
+| step | time |
+|---|---|
+| `analyse_text` (rhetoric) | 0.001 s |
+| **`assess` (corroboration)** | **5.7–5.9 s** |
+| items in the 14-day window | **2,668** |
+| implied run | **~4.3 hours** |
+
+`assess` builds a `Carrier` for **every** candidate in the pool and then
+`_group_by_similarity` compares them **pairwise** — about 80,000 title-similarity
+comparisons — for each story, whether or not any of those headlines resemble it. The
+pool is capped at 400 (`_recent_coverage(..., limit=400)`, the default), so this is
+2,668 × 400² / 2 ≈ 213 million comparisons to appraise at most `limit=40` stories.
+
+**And the ordering throws almost all of it away.** `is_interesting` is evaluated at
+line 363, *after* the corroboration, and its first condition rejects nearly everything:
+
+```
+none      1456
+mild       857
+moderate   212
+material   119   <- the gate's first condition
+critical    19   <-
+```
+
+138 of 2,668 can pass on materiality at all, which is why `0 selected` is correct and
+enormously expensive to arrive at. That is also why the job has **0 successful runs in
+7 attempts**: it has never once finished.
+
+**Next:** three changes, in order of payoff.
+
+1. **Corroborate lazily.** Conditions 1–3 of `is_interesting` (materiality, rhetoric,
+   held) need no corroboration. Condition 4 needs `carrier_count` — but only when
+   `publisher_kind in _NEEDS_CHECKING`, and `lookup()` is an in-memory registry, so
+   that test is free. Evaluating the cheap predicates first and computing corroboration
+   only when it can change the answer is equivalent — same decisions, same reasons, same
+   order — and takes the corroborations from 2,668 to roughly 140.
+2. **Skip already-appraised stories before the scan.** `NewsAnalysis.analysed_at` is
+   consulted at line 376, after the gate, and only suppresses the *model call*. The scan
+   takes every story in `days=14` every run. 24 rows exist, all inside
+   `refresh_after_days=7`.
+3. **Prefilter the pool before the O(n²) grouping.** Only titles near the subject can be
+   near-duplicates of it, so the 80,000 comparisons per story are avoidable.
+
+(1) and (2) together turn a 4.3-hour run into a couple of minutes. It also decides
+whether the job can ever enter the catch-up history, which keys on a *successful* run.
+
+### The last eight
+
+The eight before this one — `serve` not migrating, silent DeepSeek truncation, the
+`universe_refresh` startup race, CLI/server write-lock contention, the unhelpful blank
+dashboard, a stale container being indistinguishable from a code bug, SQLite's write
+lock being held across model calls, and a rate-limit counter failing the job it was
+counting — are in the commit log.
 
 Two of them were not a bug at all, and are worth remembering. The missing Info
 menu item and the `engine_label` template error were both the running container
@@ -49,6 +109,43 @@ invisible to git while `git status` reported a clean tree.
 ---
 
 ## Correctness questions still open
+
+### The accounts come from `companyfacts`, not from the filing's own XBRL
+
+Answered for a reader asking whether the tags in the Form 10-K are used. They are not,
+and the distinction costs three things.
+
+Every stored period is `source = "xbrl_companyfacts"` (92 of 92), fetched from
+`https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` (`providers/edgar.py:373`).
+That **is** the filer's own tagging — the SEC's aggregate of what they submitted — reached
+through a different artefact, mapped to canonical names by a hand-maintained `TAG_MAP`
+(`ingest/xbrl.py:82`) and filtered to annual forms, with the **earliest filed** fact
+winning per period so a later restatement cannot leak hindsight backwards.
+
+What is unused:
+
+- **The calculation linkbase** (`_cal.xml`) — the filer declaring, machine-readably,
+  which lines sum to which subtotal. That is the issuer publishing its own double-entry
+  arithmetic, and it is precisely the cross-check the accounting-health tab does not
+  have: today `ledger.composition` compares our components against our own assertions.
+- **The presentation linkbase** (`_pre.xml`) — which statement and section a tag belongs
+  to, instead of the order `TAG_MAP` asserts.
+- **Inline XBRL in the document** — nothing in the repo parses `ix:nonFraction`, even
+  though `shareholder_reports` downloads the 10-K bytes. `extract_filing`
+  (`llm/extractors.py:267`) is the document-reading path and is still called from
+  nowhere; it is the same gap listed under the marker queue.
+
+**Why it matters now:** it is the most likely explanation for the accounting-equation
+failures recorded under Operations (DFPH out by 95% of assets, AMBQ by 362%). Those are
+a tag meaning something different for that filer — a different context, a restated
+value, a concept whose definition moved — and the filer's own calculation linkbase is
+what would settle it.
+
+**Next:** fetch `_cal.xml` alongside the filing and check `ledger`'s subtotals against
+the filer's declared sums, rather than against ours. Self-contained, and it upgrades a
+plausible check into an authoritative one. Also worth knowing: `companyfacts` is the
+undimensioned aggregate, so a figure that exists only per-segment or per-class-of-stock
+is simply absent, and the linkbase path is the only route to it.
 
 ### A manual Run now can execute alongside the scheduled run of the same job
 
@@ -556,6 +653,39 @@ produced them, because a wrong `total_equity` is not only a broken equation -- `
 `debt_to_equity` and the Altman Z'' input all divide by it. The check is the tool for
 finding them; this is the list to work through.
 
+### Three pagers still reload the whole page
+
+The recommendations table on `/dashboard` swaps in place (`partials/recommendations.html`,
+`/partials/recommendations`, and `wirePartialPaging` in `static/app.js`). The other three
+still navigate, so a page change puts the reader back at the head of the document.
+
+Each needs the same two steps the dashboard needed, and no new mechanism:
+
+1. `src/awltux/web/templates/decisions.html` lines 86-169, `jobs.html` lines 215-287 and
+   `instrument.html` lines 613-627 (the news list) extracted into `partials/*.html`
+   wrapped in `<div id="..." data-partial="/partials/...">`.
+2. A fragment route beside the page route, rendering that partial.
+
+The one thing to get right is **what the region context includes**, because the fragment
+is fetched on every page click and anything page-only is recomputed for nothing. The
+dashboard's split is the pattern: `_recommendations_region` returns the rows and the
+pager, and `_recommendations_context` adds the summary strip on top. Applied here that
+means:
+
+- **`/decisions`** -- the region needs `predictions`, `horizon_windows`, `page`, `pages`,
+  `total`, `per_page`, `filters`. It must **not** drag in `reports`, which runs
+  `calibration_report` per horizon.
+- **`/jobs`** -- the region needs the runs and its own pager state; `stats` and the other
+  three tables on that page are page-level.
+- **`/instrument/{ticker}`** -- this one needs a new narrow query. `queries.instrument_detail`
+  fetches bars, filings, fundamentals, the decision and the valuation, and a news page
+  click must not re-run all of that; extract the news block into
+  `queries.instrument_news(session, ticker, page, per_page)` and have `instrument_detail`
+  call it, so there is one definition.
+
+`tests/test_partial_paging.py` carries the contract for the dashboard; adding a tuple to
+`REGIONS` extends it to each one as it lands.
+
 ### Every page is only tested against seeded data
 
 The `engine_label` failure and the empty-universe failure were both invisible to a
@@ -731,6 +861,46 @@ disk spends ~30 requests against an endpoint that has just banned this address.
 6. https://www.youtube.com/@PBoyle
 
 ---
+
+## Requested, not started
+
+Work a reader has asked for by name and that has not been built. Kept apart from the
+bug and operations sections because the trigger is a request rather than a measurement,
+but it is still the queue: an item here is owed, not aspirational.
+
+### Hover help on the valuation figures and the other fields
+
+Asked for directly: *"I don't understand what they represent and how to read them."*
+That is a comprehension failure on the numbers this system exists to produce, and it is
+the highest-value item in this file for that reason.
+
+The fields that need it, from the pages as they stand:
+
+- **`/dashboard`** — the table columns: *Suits*, *Margin of safety*, *Long term*,
+  *L score*, *L conf.*, *Short term*, *S score*, *S conf.*, *Setup / risk*,
+  *Sentiment*, *Engine*, *Updated*; and the summary strip, which is currently a row of
+  bare counters with no labels.
+- **`/instrument/{ticker}`** — the valuation block (fair value range, method, margin of
+  safety) and the accounting summary.
+- **`/accounts/{id}`** — the ledger's *Stated* and *Computed* columns, and the seven
+  health checks, which say *agrees* / *out* / *not computable* without saying what was
+  compared in terms a reader can act on.
+
+**How, so it is not done four different ways.** One glossary in Python — key, label,
+what it is, how to read it, and the direction that is good, which is the part people
+actually trip on — exposed to templates as a helper. The text must not be written into
+the templates, because the same field appears on more than one page and two copies
+drift. Note that `web/templating.py` already owns formatting for exactly this reason.
+
+The affordance should be a styled, keyboard-reachable tooltip rather than only a `title`
+attribute: `title` waits a second, truncates, cannot wrap a sentence, and does not
+appear at all on touch. A CSS `::after { content: attr(data-help) }` on a focusable span
+needs no JavaScript, which keeps the page working without `app.js` like everything else.
+
+There is also an argument for a **legend page** listing every field in one place — the
+hover answers "what is this one", and a reader who does not know the vocabulary yet
+wants to read the whole set once. Cheap once the glossary exists; worth deciding at the
+same time rather than after.
 
 ## Deliberately not doing
 
