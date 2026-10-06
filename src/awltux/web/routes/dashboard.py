@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
-from awltux import __version__
+from awltux import __version__, version
 from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
@@ -512,6 +512,11 @@ def info_page(request: Request) -> HTMLResponse:
         {
             "info": info,
             "version": __version__,
+            # How the number was arrived at. A fallback that cannot be seen is a
+            # fallback nobody fixes, and two of the three routes here (untagged,
+            # packaging metadata) mean the version is not what a release would say.
+            "version_source": version.current().source,
+            "version_tag": version.current().tag,
             "revision": _schema_revision(),
             "provenance": _provenance_note(info),
             "environment": environment,

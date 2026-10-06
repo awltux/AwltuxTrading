@@ -4,6 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awltux-trading"
+# Packaging metadata, and a *fallback* only. The running version is derived from the
+# nearest release tag at build time (`awltux/version.py`) and baked into
+# `build_info.json`; this value is reached only by a wheel installed somewhere with
+# neither git nor that file, and the Info page labels it `packaging metadata` when it
+# is used so a stale fallback cannot pass for a release. Kept roughly in step by hand
+# because setuptools needs a literal here to build a wheel at all.
 version = "0.1.0"
 description = "Background share valuation and market-sentiment advisor for Trading 212 (UK + US)"
 readme = "README.md"

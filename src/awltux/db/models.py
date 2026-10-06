@@ -36,6 +36,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from awltux import __version__
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
@@ -680,7 +682,10 @@ class DecisionRun(Base):
     conflict_flag: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
     llm_call_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
-    app_version: Mapped[str] = mapped_column(String(32), default="0.1.0")
+    # Defaulted from the derived version, not a literal. This was the fourth copy of
+    # "0.1.0" in the tree, and the one a reader would trust most: it is the value the
+    # ledger falls back to when a decision is written without one passed in.
+    app_version: Mapped[str] = mapped_column(String(32), default=lambda: __version__)
 
     outcomes: Mapped[list[DecisionOutcome]] = relationship(
         back_populates="decision", cascade="all, delete-orphan"

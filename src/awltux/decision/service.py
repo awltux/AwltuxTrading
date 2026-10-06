@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from awltux import __version__
 from awltux.analysis import macro
 from awltux.analysis.fundamental import build_snapshot
 from awltux.analysis.state import build_state
@@ -57,7 +58,10 @@ from awltux.decision.questions import build_questions, question_metadata
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "0.1.0"
+# Imported, not retyped. A second literal here was the one that mattered most:
+# it is stamped on every decision row, so drifting from `__version__` would make
+# the ledger's answer to "what produced this?" wrong exactly when it is asked.
+APP_VERSION = __version__
 
 #: News older than this is not "recent" for decision purposes.
 NEWS_WINDOW_DAYS = 30

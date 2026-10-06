@@ -276,10 +276,18 @@ def snapshot(
     failed build.
     """
     info = collect_from_git(count, root=root, paths=paths)
+    # The version travels with the commit history because both are facts about
+    # *this build*, and two files could be refreshed apart. Derived from the nearest
+    # release tag and the commits since it -- see `awltux/version.py`.
+    from awltux.version import from_git
+
+    version = from_git(root)
     payload: dict[str, Any] = {
         "generated_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         "head": info.head,
         "dirty": info.dirty,
+        "version": str(version) if version is not None else None,
+        "version_tag": version.tag if version is not None else None,
         "commits": [commit.to_dict() for commit in info.commits],
     }
     path.parent.mkdir(parents=True, exist_ok=True)

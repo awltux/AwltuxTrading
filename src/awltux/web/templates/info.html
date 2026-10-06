@@ -15,7 +15,18 @@
   </div>
   <div class="stat">
     <span class="stat-value">{{ version }}</span>
-    <span class="stat-label">version</span>
+    <span class="stat-label">
+      version
+      {# Where the number came from. `git tag` is a real release; `untagged` means no
+         release tag is reachable and the build count is the whole history;
+         `packaging metadata` is the one route that can go stale, because it reads a
+         static file. Showing it is what stops a fallback passing for a release. #}
+      <span class="muted">· {{ version_source }}</span>
+      {%- if version_tag %} <span class="muted">· {{ version_tag }}</span>{% endif %}
+      {%- if version_source != 'git tag' and version_source != 'baked at build' %}
+        <span class="warn" title="This is not a version derived from a release tag">&#9888;</span>
+      {%- endif %}
+    </span>
   </div>
   <div class="stat">
     <span class="stat-value">{{ info.commits | length }}</span>

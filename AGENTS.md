@@ -61,6 +61,32 @@ docker compose config --quiet && echo "compose can read .env"
 Read the build's exit status and output. "The command returned" is not "the image
 was rebuilt".
 
+### What bumps the version
+
+`INTERFACE_BREAKING_COUNT.RELEASE_COUNT.BUILD_COUNT_FOR_RELEASE`, derived from a git
+tag at build time — never typed. A release is a tag `v<breaking>.<release>`; the
+build counts the commits since it (`awltux/version.py`). The tagged commit is build
+`0`, so two images from the same release but different commits are different
+versions.
+
+| Component | Bump when |
+|---|---|
+| breaking | The HTTP API's shape, the schema in a way an old process could not tolerate, the config format, or the *meaning* of a decision-ledger field. Not an analysis change, however large. |
+| release | Anything a user would notice and no interface broke: a marker, a page, a fix, a changed default. |
+| build | Never — it is derived. |
+
+```bash
+git tag v0.2 && git push --tags     # a release is a tag, and nothing else
+```
+
+The version reaches the running process through `build_info.json`, which the image
+build writes and which is also where the commit history lives — both are facts about
+the build, so one cannot be refreshed without the other. A checkout with no tag
+reports `untagged`, and a wheel with neither git nor the baked file falls back to
+`pyproject.toml`; **the Info page prints which route was used**, because a fallback
+that cannot be seen is a fallback nobody fixes. `tests/test_version.py` fails if a
+version literal reappears anywhere under `src/`.
+
 ## 2. The database is never deleted, only migrated
 
 `data/awltux.db` (the `awltux-data` volume) is the only copy of the universe,

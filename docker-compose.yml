@@ -12,7 +12,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: awltux-trading:0.1.0
+    # Not a version claim. This used to read `awltux-trading:0.1.0`, which was the
+    # fifth place the version was typed by hand and the one nobody would think to
+    # update. The image's version is baked at build time from the release tag and
+    # reported on the Info page, which is the only place that can be authoritative;
+    # a local tag that disagreed would just be a second, wrong answer.
+    image: awltux-trading:local
     container_name: awltux-trading
     restart: unless-stopped
     env_file:
