@@ -1,4 +1,4 @@
-﻿{# The recommendations table and its pager, on their own.
+{# The recommendations table and its pager, on their own.
 
    Rendered twice: included by `dashboard.html`, and returned directly by
    `/partials/recommendations`, which is what a page change fetches. One template
@@ -11,7 +11,7 @@
   {% set next_dir = 'asc' if (filters.value('sort') == key and filters.value('direction') == 'desc') else 'desc' %}
   <a class="sort {% if filters.value('sort') == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
      href="{{ filters.href('/dashboard', sort=key, direction=next_dir) }}">
-    {{ label }}{% if filters.value('sort') == key %}<span class="arrow">{{ 'â–²' if filters.value('direction') == 'asc' else 'â–¼' }}</span>{% endif %}
+    {{ label }}{% if filters.value('sort') == key %}<span class="arrow">{{ '▲' if filters.value('direction') == 'asc' else '▼' }}</span>{% endif %}
   </a>
 {% endmacro %}
 
@@ -21,7 +21,7 @@
     {{ filters.shown('sector') }}
     <span class="muted small">
       {{ total }} instrument{{ '' if total == 1 else 's' }}
-      {{ 'in the analysed universe' if total else 'in the analysed universe â€” none matched' }}
+      {{ 'in the analysed universe' if total else 'in the analysed universe — none matched' }}
     </span>
   </h2>
 {% endif %}
@@ -73,7 +73,7 @@
       <td>
         {% if row.horizon_fit %}
           <span class="badge fit-{{ row.horizon_fit }}">{{ row.horizon_fit | replace('_', ' ') }}</span>
-        {% else %}<span class="muted">â€”</span>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
       </td>
 
       <td class="num {% if row.margin_of_safety and row.margin_of_safety > 0 %}good{% elif row.margin_of_safety %}bad{% endif %}">
@@ -114,19 +114,19 @@
 
       <td class="small">
         {% if row.setup_score is not none %}
-          <span title="Quality of the tactical setup (0 poor â€“ 4 excellent)">setup {{ row.setup_score | number(0) }}/4</span>
+          <span title="Quality of the tactical setup (0 poor – 4 excellent)">setup {{ row.setup_score | number(0) }}/4</span>
           <br>
-          <span class="muted" title="Risk of an adverse move over the next few weeks (0 minimal â€“ 4 severe)">
+          <span class="muted" title="Risk of an adverse move over the next few weeks (0 minimal – 4 severe)">
             risk {{ row.drawdown_risk | number(0) }}/4
           </span>
-        {% else %}<span class="muted">â€”</span>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
       </td>
 
       <td>
         {% if row.sentiment is not none %}
           <span class="meter"><span style="width: {{ ((row.sentiment + 1) / 2 * 100) | round(0) }}%"></span></span>
           <span class="muted small">{{ row.sentiment | number(2) }}</span>
-        {% else %}<span class="muted">â€”</span>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
       </td>
 
       <td class="small">
@@ -139,15 +139,15 @@
     </tr>
   {% else %}
     <tr><td colspan="14" class="empty">
-      {% if universe_size == 0 %}
+      {% if stats.universe_size == 0 %}
         Nothing is being analysed yet: the analysed universe is <strong>empty</strong>,
         which is why this table is blank rather than showing cheap or expensive
         names. Run <code>t212_instruments</code>, then <code>universe_refresh</code>
         to select what to follow, then <code>price_eod</code>,
-        <code>valuation</code> and <code>decision</code> â€” all from
+        <code>valuation</code> and <code>decision</code> — all from
         <a href="/jobs">Operations</a>.
       {% else %}
-        No decisions yet for the {{ universe_size }} instruments in the
+        No decisions yet for the {{ stats.universe_size }} instruments in the
         universe. Run <code>price_eod</code>, then <code>valuation</code> and
         <code>decision</code> from <a href="/jobs">Operations</a>.
       {% endif %}
@@ -160,11 +160,11 @@
 {% if pages > 1 %}
 <nav class="pager">
   {% if page > 1 %}
-    <a href="{{ filters.href('/dashboard', page=page - 1) }}">â† Prev</a>
+    <a href="{{ filters.href('/dashboard', page=page - 1) }}">← Prev</a>
   {% endif %}
   <span>Page {{ page }} of {{ pages }} ({{ total }} instruments)</span>
   {% if page < pages %}
-    <a href="{{ filters.href('/dashboard', page=page + 1) }}">Next â†’</a>
+    <a href="{{ filters.href('/dashboard', page=page + 1) }}">Next →</a>
   {% endif %}
 </nav>
 {% endif %}

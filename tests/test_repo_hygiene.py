@@ -99,6 +99,53 @@ def test_line_endings_are_normalised_by_the_repository() -> None:
         )
 
 
+def test_no_source_file_carries_mojibake() -> None:
+    """Text decoded with the wrong codec and written back is unrecoverable.
+
+    This happened: a PowerShell `Get-Content` (which reads as the ANSI code page) piped
+    into `Set-Content -Encoding utf8` re-encoded every non-ASCII character, so an em
+    dash became three characters and a black up-pointing triangle became a dagger. It
+    was committed and deployed -- the pages rendered the damage -- and it was **lossy**:
+    a stray C1 control character appeared where bytes could not round-trip, so no
+    transform could put the file back.
+
+    The guard is the same shape as the line-ending one above, and for the same reason:
+    the damage is invisible to `git status`, survives review, and is only ever found by
+    a person noticing that a page looks wrong. Edit text with a tool that writes UTF-8;
+    never round-trip it through a shell that guesses the codec.
+
+    Tracked files only. A generated file in the working tree with a BOM is not this
+    repository's content, and failing on it would make the guard about the workspace
+    rather than about what is committed.
+    """
+    suffixes = {".py", ".html", ".css", ".js", ".md", ".yaml", ".yml", ".toml", ".json"}
+    # What a UTF-8 string looks like once its bytes have been read as cp1252. Written as
+    # escapes, because a literal here would be the very thing this test forbids.
+    markers = ("\u00e2\u20ac", "\u00c3\u00a2", "\u00c2\u00b7")
+    tracked = _git("ls-files").stdout.split()
+
+    offenders: list[str] = []
+    for name in tracked:
+        path = REPO / name
+        if path.suffix not in suffixes or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            # Not valid UTF-8 is the same failure one step earlier.
+            offenders.append(f"{name}: not valid UTF-8")
+            continue
+        if path.read_bytes().startswith(b"\xef\xbb\xbf"):
+            offenders.append(f"{name}: has a UTF-8 BOM")
+        if any(marker in text for marker in markers):
+            offenders.append(f"{name}: contains cp1252-decoded UTF-8")
+
+    assert not offenders, (
+        "these committed files carry encoding damage, which no transform can undo:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 def test_the_dockerfile_copies_the_line_ending_attributes() -> None:
     """The attribute only helps if it reaches the place the check runs.
 

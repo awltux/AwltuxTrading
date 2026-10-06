@@ -1,5 +1,5 @@
-﻿{% extends "base.html" %}
-{% block title %}Recommendations â€” {{ app_name }}{% endblock %}
+{% extends "base.html" %}
+{% block title %}Recommendations — {{ app_name }}{% endblock %}
 
 {# Every link and control on this page is built from `filters`, the FilterSet the
    route parsed out of the query string (awltux/web/filters.py).
@@ -27,7 +27,7 @@
     <div class="stat">
       <span class="stat-value">
         {% for engine_name, count in stats.engine_counts.items() %}
-          {{ engine_name }}:{{ count }}{% if not loop.last %} Â· {% endif %}
+          {{ engine_name }}:{{ count }}{% if not loop.last %} · {% endif %}
         {% endfor %}
       </span>
       <span class="stat-label">decision engines</span>
@@ -58,9 +58,9 @@
 </section>
 
 <p class="notice">
-  <strong>Two independent verdicts.</strong> Long term (12â€“36 months) is driven by
-  valuation and business quality; short term (5â€“20 trading days) by trend, momentum
-  and news. They are allowed to disagree â€” that is the point. Both are shown, and
+  <strong>Two independent verdicts.</strong> Long term (12–36 months) is driven by
+  valuation and business quality; short term (5–20 trading days) by trend, momentum
+  and news. They are allowed to disagree — that is the point. Both are shown, and
   the selected horizon governs which call the filters and badges emphasise.
   <br>
   <strong>Short term means a swing on daily bars, not day trading.</strong> There is
@@ -71,19 +71,19 @@
 {# A limitation the reader must see, because it changes what the gate can claim. #}
 {% if capabilities and capabilities.portfolio is defined and not capabilities.portfolio %}
   <div class="notice warn">
-    <strong>Portfolio access unavailable â€” concentration limits are not enforced.</strong>
+    <strong>Portfolio access unavailable — concentration limits are not enforced.</strong>
     Your Trading 212 API key cannot read positions
     ({{ capabilities.errors.portfolio if capabilities.errors else 'scope missing' }}).
     Consequences you should know about:
     <ul>
       <li>"My holdings" will be empty, and the tactical view cannot tell whether you
-          already own a name â€” so it will answer "avoid" rather than "reduce".</li>
+          already own a name — so it will answer "avoid" rather than "reduce".</li>
       <li>The risk gate <strong>cannot count your positions or measure your
           exposure</strong>, so it reports those checks as unverified instead of
           passing them. Every <code>portfolio_limits</code> check below reads
           "NOT VERIFIED".</li>
     </ul>
-    Everything else â€” valuation, sentiment, both verdicts â€” works normally.
+    Everything else — valuation, sentiment, both verdicts — works normally.
     Add the <code>portfolio</code> scope to your key to restore these checks.
   </div>
 {% endif %}
@@ -127,7 +127,7 @@
             {% for option in spec.options %}
               <option value="{{ option.value }}"
                       {% if filters.value(spec.name) == option.value %}selected{% endif %}>
-                {{ option.label }}{% if option.note %} Â· {{ option.note }}{% endif %}
+                {{ option.label }}{% if option.note %} · {{ option.note }}{% endif %}
               </option>
             {% endfor %}
           </select>
@@ -168,7 +168,7 @@
     {% for f in applied %}
       <span class="chip">
         <span class="muted">{{ f.label }}:</span> {{ f.shown }}
-        <a href="{{ '/dashboard' ~ f.clear_query }}" title="Remove this filter" aria-label="Remove {{ f.label }} filter">Ã—</a>
+        <a href="{{ '/dashboard' ~ f.clear_query }}" title="Remove this filter" aria-label="Remove {{ f.label }} filter">×</a>
       </span>
     {% endfor %}
   </div>
