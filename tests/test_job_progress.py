@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import threading
 
 from awltux.scheduler import progress
 from awltux.scheduler.jobs import JobSpec, execute_job
@@ -106,6 +107,47 @@ class TestCapturing:
 
         text, _, _ = progress.read("probe")
         assert text.count("PROGRESS once only") == 1
+
+    def test_two_runs_at_once_do_not_write_into_each_others_logs(self):
+        """Two open runs must not write into each other's logs.
+
+        The scheduler runs one job at a time, but a manual `Run now`
+        (`POST /api/jobs/{id}/run` -> `run_now(wait=True)`) executes the job on the
+        web request thread and never touches the executor, so it overlaps whatever
+        the single worker is doing. The first version of `_CaptureHandler` had every
+        handler write to whichever run was active *on the emitting thread*, which is
+        all of them -- so each line landed in every open file.
+
+        Measured on the live container, 2026-10-06: run 317 (`shareholder_reports`,
+        scheduled) and run 318 (`news_rss`, manual) overlapped between 22:48:31Z and
+        22:49:12Z; 34 lines of 317's log were written twice (all logged inside that
+        window) and 318's `job news_rss: start` appeared twice. Here the two runs are
+        held open together by a barrier, so both handlers are attached before either
+        logs -- without the barrier the test could pass by the two never overlapping.
+        """
+        started = dt.datetime.now(dt.UTC)
+        both_open = threading.Barrier(2, timeout=10)
+
+        def run(job_id: str) -> None:
+            with progress.capture(job_id, None, started):
+                both_open.wait()
+                logging.getLogger("awltux.jobs").warning("line from %s", job_id)
+
+        threads = [
+            threading.Thread(target=run, args=(job_id,)) for job_id in ("alpha", "beta")
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        first, _, _ = progress.read("alpha")
+        second, _, _ = progress.read("beta")
+
+        assert first.count("line from alpha") == 1, first
+        assert "line from beta" not in first, first
+        assert second.count("line from beta") == 1, second
+        assert "line from alpha" not in second, second
 
     def test_the_log_is_replaced_not_appended(self):
         """The requirement: only the most recent run is kept."""

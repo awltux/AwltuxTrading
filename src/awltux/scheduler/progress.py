@@ -123,22 +123,50 @@ def log_path(job_id: str) -> Path:
 
 
 class _CaptureHandler(logging.Handler):
-    """Copies this thread's records into the active run's file.
+    """Copies one run's records into that run's file.
 
+    **Bound to its run and to the thread that opened it**, not looked up per record.
     Skips :data:`PROGRESS_LOGGER` because :func:`note` has already written those
     lines itself -- it has to, so that progress does not depend on the log level. It
     still *emits* them, so they reach the container log too; without this the file
     would carry each progress line twice whenever INFO was enabled.
+
+    More than one run can be open at once, so the ``awltux`` logger carries one of
+    these per open run and each must ignore the others' records. The scheduler runs
+    one job at a time (``MAX_CONCURRENT_JOBS``, `scheduler/service.py`), but
+    ``POST /api/jobs/{id}/run`` calls ``run_now(wait=True)``, which executes the job
+    on the web request thread and never touches the executor -- so a manual run
+    overlaps whatever the worker is doing. That is a queued bug of its own
+    (`TODO.md`); this handler has to be correct regardless. The first version asked
+    the *emitting* thread's ``_local.active`` which run to write to, and compared
+    ``record.thread`` against ``threading.get_ident()`` -- which is the emitting
+    thread by definition, so the test was always true. Every handler therefore wrote
+    every record into whichever run happened to be active on the logging thread.
+
+    Measured on the live container, 2026-10-06: run 317 (``shareholder_reports``,
+    22:48:27Z) and run 318 (``news_rss``, 22:48:31Z -- a manual run) overlapped, and
+    34 lines of 317's log were written twice -- every one of them logged after 318's
+    handler was attached -- while 318's own ``job news_rss: start`` appeared twice
+    and 317's appeared once. A job whose log shows each step twice reads as a job
+    doing each step twice.
     """
+
+    def __init__(self, run: RunLog, thread_id: int) -> None:
+        super().__init__()
+        self.run = run
+        self.thread_id = thread_id
+        self.setFormatter(_FORMAT)
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.name == PROGRESS_LOGGER:
             return
-        active: RunLog | None = getattr(_local, "active", None)
-        if active is None or getattr(record, "thread", None) != threading.get_ident():
+        # Only the thread that opened this run writes to it. A job that logs from a
+        # helper thread was never captured anyway, so nothing is lost by saying so
+        # explicitly rather than by accident.
+        if getattr(record, "thread", None) != self.thread_id:
             return
         try:
-            active.add(self.format(record))
+            self.run.add(self.format(record))
         except Exception:  # pragma: no cover - logging must not raise
             self.handleError(record)
 
@@ -186,8 +214,7 @@ def capture(job_id: str, run_id: int | None, started_at: dt.datetime) -> Iterato
         logger.debug("could not open the job log at %s", path, exc_info=True)
 
     active = RunLog(job_id=job_id, run_id=run_id, started_at=started_at, path=path)
-    handle = _CaptureHandler()
-    handle.setFormatter(_FORMAT)
+    handle = _CaptureHandler(active, threading.get_ident())
 
     root = logging.getLogger("awltux")
     previous = getattr(_local, "active", None)

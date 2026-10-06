@@ -87,11 +87,25 @@ plausible check into an authoritative one. Also worth knowing: `companyfacts` is
 undimensioned aggregate, so a figure that exists only per-segment or per-class-of-stock
 is simply absent, and the linkbase path is the only route to it.
 
-### A manual Run now can execute alongside the scheduled run of the same job
+### A manual Run now executes outside the scheduler's one-worker limit
 
 `SchedulerService.run_now` calls `execute_job(spec)` **directly** rather than
 going through APScheduler, so it bypasses `max_instances=1` entirely. A manual run
 of a job that is already running therefore executes concurrently with it.
+
+**It also bypasses `MAX_CONCURRENT_JOBS`, which is the wider half.** That limit is
+a property of the scheduler's executor (`scheduler/service.py:74`, one worker),
+and the manual path never reaches the executor -- so a manual run overlaps a
+*different* job as readily as its own, and the "one job at a time" reading the
+Operations page invites is not true of it. Measured 2026-10-06: run 318
+(`news_rss`, manual, started 22:48:31Z) ran concurrently with run 317
+(`shareholder_reports`, scheduled catch-up, 22:48:27Z -> 22:49:12Z) and died at
+22:52:14Z with `OperationalError: database is locked` on an `INSERT INTO news_item`
+-- the second write to SQLite is what fails, and no amount of single-worker
+scheduling prevents it while this path exists. One consequence was already fixed
+rather than queued: the two runs' progress-capture handlers cross-wrote each
+other's lines, so 317's log carried 34 duplicated lines and 318's `: start` line
+appeared twice (`scheduler/progress.py`).
 
 The evidence is in the live `ingest_run` history: two `news_rss` runs overlapped
 and the second died with `UNIQUE constraint failed: news_item.url_hash`. That
@@ -103,7 +117,10 @@ interleave, and jobs that are not idempotent would corrupt rather than duplicate
 **Decide:** should `run_now` refuse with a clear "already running" rather than
 returning zeros, or should it queue behind the scheduled run? Whatever is chosen,
 the refusal has to be visible to the CLI and the Run now button, both of which
-currently treat a `None` result as "nothing to do".
+currently treat a `None` result as "nothing to do". Submitting to the executor
+instead of calling `execute_job` would answer both halves at once, at the cost of
+`wait=True` no longer meaning "wait" — the button currently reports the run's
+result, so it would have to poll the run table instead.
 
 ### Build the accounting-quality markers from `docs/investment-markers.md`
 
