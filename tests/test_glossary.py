@@ -75,7 +75,22 @@ class TestTheExplanations:
         text = glossary.explanation("margin_of_safety")
 
         assert "discount" in text
-        assert "Bigger is safer" in text
+        assert "bigger number is safer" in text
+
+    def test_no_explanation_carries_markup(self):
+        """The text goes into an HTML attribute and is shown verbatim by CSS.
+
+        Markdown emphasis written here is not rendered, it is *displayed* -- the first
+        version of the margin-of-safety entry reached the browser reading
+        `**Bigger is safer**`. Emphasis in a tooltip has to be carried by the sentence.
+        """
+        for field in glossary.FIELDS:
+            for half in (field.what, field.reading):
+                for markup in ("**", "__", "[", "]", "`", "<"):
+                    assert markup not in half, (
+                        f"{field.key} carries {markup!r}, which the tooltip will show "
+                        f"literally: {half[:70]!r}"
+                    )
 
     def test_where_a_figure_is_not_arithmetic_the_entry_says_so(self):
         """The engine's confidence is a model's statement, not a probability, and the
@@ -90,7 +105,7 @@ class TestItReachesThePage:
         body = client.get("/dashboard").text
 
         assert 'class="help"' in body
-        assert "Bigger is safer" in body, "the margin-of-safety reading is missing"
+        assert "bigger number is safer" in body, "the margin-of-safety reading is missing"
 
     def test_the_fragment_carries_them_too(self, client):
         """The table is served twice -- included by the page and returned by the
@@ -98,7 +113,7 @@ class TestItReachesThePage:
         fragment = client.get("/partials/recommendations").text
 
         assert 'class="help"' in fragment
-        assert "Bigger is safer" in fragment
+        assert "bigger number is safer" in fragment
 
     def test_the_help_is_a_data_attribute_and_not_a_title(self, client):
         """`title` waits, truncates and never appears on touch. The text rides in a

@@ -85,7 +85,7 @@ FIELDS: tuple[Field, ...] = (
         "composite_score",
         "L score",
         "The long-term engine's own score for this share.",
-        "On that engine's own scale, so it ranks shares **within** an engine and means "
+        "On that engine's own scale, so it ranks shares within an engine and means "
         "nothing across engines. It is not a probability and not a percentage.",
     ),
     Field(
@@ -117,10 +117,10 @@ FIELDS: tuple[Field, ...] = (
         "Margin of safety",
         "How far the price sits below the estimated value of the business: the "
         "discount, as a percentage of that estimate.",
-        "**Bigger is safer**, and negative means the shares trade above the estimate. "
-        "It is a percentage of an estimate, not of a fact -- the valuation range above "
-        "it is the honest part, and a large margin of safety built on a low-confidence "
-        "valuation is not a bargain, it is an unknown quantity.",
+        "A bigger number is safer, and negative means the shares trade above the "
+        "estimate. It is a percentage of an estimate, not of a fact -- the valuation "
+        "range above it is the honest part, and a large margin of safety built on a "
+        "low-confidence valuation is not a bargain, it is an unknown quantity.",
     ),
     Field(
         "sentiment",
@@ -167,7 +167,7 @@ FIELDS: tuple[Field, ...] = (
         "fair_value_range",
         "Range",
         "Low to high across the valuation methods and the assumptions each used.",
-        "The price sitting **outside** the range is the interesting case; inside it, the "
+        "The interesting case is the price sitting outside the range; inside it, the "
         "market and the model broadly agree. A very wide range means the methods "
         "disagree, which is information about the business rather than a failure of the "
         "arithmetic.",
