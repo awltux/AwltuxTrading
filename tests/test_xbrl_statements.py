@@ -276,6 +276,40 @@ class TestWhichFactsAreAnnual:
 
         assert annual_periods(payload(facts)) == []
 
+    def test_a_mid_year_instant_does_not_create_a_fiscal_year(self):
+        """The bug a live filer exposed, found only by reading the rows it wrote.
+
+        A balance-sheet date is not always a year end. A company that tags goodwill
+        at the date of an impairment produced a ``FundamentalPeriod`` for that day
+        holding one figure -- a year that never existed, counted as coverage, and
+        incapable of supporting a single marker.
+        """
+        earnings = duration("Revenues", 400.0, "2023-04-01", "2024-03-31")
+        stray = instant("Goodwill", 5_210_000.0, "2024-04-15")
+
+        result = annual_periods(payload(combine(earnings, stray)))
+
+        assert [p.period_end.isoformat() for p in result] == ["2024-03-31"]
+        assert "goodwill" not in result[0].facts
+
+    def test_a_balance_sheet_instant_joins_its_own_year_end(self):
+        """The other half: a real year-end instant must still be captured."""
+        earnings = duration("Revenues", 400.0, "2023-04-01", "2024-03-31")
+        at_year_end = instant("Goodwill", 5_210_000.0, "2024-03-31")
+
+        result = annual_periods(payload(combine(earnings, at_year_end)))
+
+        assert result[0].facts["goodwill"].value == 5_210_000.0
+
+    def test_a_filer_tagging_only_a_balance_sheet_still_yields_a_period(self):
+        """The fallback, so the guard trades a phantom year for no missing one."""
+        facts = instant("Assets", 1000.0, "2023-12-31")
+
+        result = annual_periods(payload(facts))
+
+        assert len(result) == 1
+        assert result[0].facts["total_assets"].value == 1000.0
+
 
 class TestWhichFilingWins:
     def test_the_earliest_filing_wins(self):
@@ -478,8 +512,9 @@ class TestWritingToTheDatabase:
 
     def test_it_writes_annual_periods_with_their_citations(self, session, filer, apple):
         """A figure without its provenance is not usable for a forensic read."""
-        from awltux.db import FundamentalPeriod
         from sqlalchemy import select
+
+        from awltux.db import FundamentalPeriod
 
         report = self._sync(session, apple)
         session.flush()
@@ -510,8 +545,9 @@ class TestWritingToTheDatabase:
         fabricated provenance, which is worse than a missing one because it
         survives inspection by looking checkable.
         """
-        from awltux.db import FundamentalPeriod
         from sqlalchemy import select
+
+        from awltux.db import FundamentalPeriod
 
         self._sync(session, apple)
         session.flush()

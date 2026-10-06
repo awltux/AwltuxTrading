@@ -523,11 +523,34 @@ def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
             per_period[period_end] = ExtractedPeriod(period_end=period_end, currency=None)
         return per_period[period_end]
 
-    for spec in TAG_MAP:
-        chosen, span = _first_tag(facts, spec, instant=spec.key in INSTANT_METRICS)
+    for spec in (s for s in TAG_MAP if s.key not in INSTANT_METRICS):
+        chosen, span = _first_tag(facts, spec, instant=False)
         if span is None:
             continue
         for period_end, fact in chosen.items():
+            entry = slot(period_end)
+            entry.facts[spec.key] = _make_fact(spec.key, fact, period_end)
+            if entry.currency is None and spec.kind == MONETARY:
+                entry.currency = _currency_of(str(fact["_unit"]))
+
+    # Only a fact with an explicit twelve-month span defines a fiscal year. An
+    # instant is a balance-sheet date, and a balance-sheet date is not always a
+    # year end: a filer that tags a goodwill figure at the date of an impairment
+    # would otherwise get a "year" consisting of that one number, which inflates
+    # coverage and cannot support a single marker. Measured on a live filer whose
+    # 2024-04-15 row held nothing but `goodwill`.
+    established = set(per_period)
+
+    for spec in (s for s in TAG_MAP if s.key in INSTANT_METRICS):
+        chosen, span = _first_tag(facts, spec, instant=True)
+        if span is None:
+            continue
+        for period_end, fact in chosen.items():
+            # The `established` guard is skipped when nothing is established: a
+            # filer that tags only a balance sheet still has a balance sheet, and
+            # refusing it outright would trade a phantom year for a missing one.
+            if established and period_end not in established:
+                continue
             entry = slot(period_end)
             entry.facts[spec.key] = _make_fact(spec.key, fact, period_end)
             if entry.currency is None and spec.kind == MONETARY:
@@ -630,25 +653,35 @@ def sync_xbrl_fundamentals(
             continue
 
         try:
-            written = _write_periods(session, instrument, payload)
+            written, metrics_written = _write_periods(session, instrument, payload)
         except Exception as exc:  # noqa: BLE001 - one bad payload must not stop the run
             report.tickers_failed += 1
             report.failures.append(f"{instrument.t212_ticker}: {type(exc).__name__}: {exc}")
             continue
 
         report.periods_written += written
+        report.metrics_written += metrics_written
         session.flush()
 
     logger.info("xbrl fundamentals: %s", report.as_dict())
     return report
 
 
-def _write_periods(session: Session, instrument: Instrument, payload: dict[str, Any]) -> int:
-    """Upsert one instrument's annual periods. Returns how many were written."""
+def _write_periods(
+    session: Session, instrument: Instrument, payload: dict[str, Any]
+) -> tuple[int, int]:
+    """Upsert one instrument's annual periods.
+
+    Returns ``(periods_written, metrics_written)``. The second is counted rather
+    than left to the caller because a period's metric count is only known here --
+    and a field that always reads zero is worse than an absent one, since it looks
+    like a measurement.
+    """
     from awltux.ingest.fundamentals import _upsert_period, derive_metrics
 
     periods = annual_periods(payload)[-KEEP_YEARS:]
     written = 0
+    metric_total = 0
     for period in periods:
         metrics = period.metrics()
         # The derived ratios are ours, not the company's, so they are added to the
@@ -666,4 +699,5 @@ def _write_periods(session: Session, instrument: Instrument, payload: dict[str, 
             metric_sources=period.sources(),
         ):
             written += 1
-    return written
+            metric_total += len(period.sources())
+    return written, metric_total
