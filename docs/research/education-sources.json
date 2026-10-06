@@ -1,0 +1,1976 @@
+{
+ "note": "Channels, playlists and videos selected for the education-ingestion task in TODO.md. Enumerated 2026-10-06 with the youtube-transcripts skill. Committed so the channels are not re-walked: enumeration costs about 30 requests and the caption endpoint was rate-limited on the same day.",
+ "selected_playlists": [
+  {
+   "id": "PLBmr55S1qNIWca3xlZglpDhY4vwZIDqOW",
+   "title": "Intrinsic Value Calculation Examples 2025",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWca3xlZglpDhY4vwZIDqOW",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIWbyp9fDFEcLuW-Cf-Sjd6U",
+   "title": "Intrinsic Value Definition, Calculation & Examples",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWbyp9fDFEcLuW-Cf-Sjd6U",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqlDJlnBXUaJaMRNE7UDckn6",
+   "title": "Investment Philosophies",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqlDJlnBXUaJaMRNE7UDckn6",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqnZGADa8cTzeJblmrZY_SqP",
+   "title": "Investment Philosophies - The 2026 Edition",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqnZGADa8cTzeJblmrZY_SqP",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2Borql51x9Lj8S-bHUq3V6kuix-",
+   "title": "Little Book of Valuation (Revised Edition)",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2Borql51x9Lj8S-bHUq3V6kuix-",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIVvhkMCxAWR8v98dkltwzAi",
+   "title": "Margin of Safety - Seth Klarman - book summary - Part 1 - Introduction",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIVvhkMCxAWR8v98dkltwzAi",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIWDtbzyEhzzbDnFyA8vL-Im",
+   "title": "Margin of Safety - Seth Klarman - Value Investing",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWDtbzyEhzzbDnFyA8vL-Im",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIUmEykffcKsp0Mtnc1GC7tP",
+   "title": "Margin Of Safety Seth Klarman Full Book",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIUmEykffcKsp0Mtnc1GC7tP",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLCqWjBYtYpNjSpNskEA1uQP3YW6sku3QR",
+   "title": "Top Airline Stocks - Analysis, Valuation, Forecast",
+   "video_count": 9,
+   "url": "https://www.youtube.com/playlist?list=PLCqWjBYtYpNjSpNskEA1uQP3YW6sku3QR",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqmSH1Y8QIYQ-0HnbWpHvBzf",
+   "title": "Valuation (Fall 2016)",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqmSH1Y8QIYQ-0HnbWpHvBzf",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2Borqn0rW96St_MJchWcjbdfWxT",
+   "title": "Valuation (Undergraduate) Spring 2019",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2Borqn0rW96St_MJchWcjbdfWxT",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqlvUMO3nMwXOG-VIqxmAh3t",
+   "title": "Valuation MBA Spring 2020",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqlvUMO3nMwXOG-VIqxmAh3t",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2Borqkl7FoAhhWY4piiZPFJs5_e",
+   "title": "Valuation MBA Spring 2021",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2Borqkl7FoAhhWY4piiZPFJs5_e",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2Borqn8gg0lYSwMZ4ip71pX1TOT",
+   "title": "Valuation MBA Spring 2022",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2Borqn8gg0lYSwMZ4ip71pX1TOT",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqnhWfkEP2rRdhgpYKLS-NOJ",
+   "title": "Valuation MBA Spring 2023",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqnhWfkEP2rRdhgpYKLS-NOJ",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqlOjmzA9_LYgnzgt0N-2hGS",
+   "title": "Valuation MBA Spring 2024",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqlOjmzA9_LYgnzgt0N-2hGS",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqkgpNyRpP-NL3BS4yvFabXk",
+   "title": "Valuation MBA Spring 2025",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqkgpNyRpP-NL3BS4yvFabXk",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqmRAGzJb5OIvTAKZZu9HWF-",
+   "title": "Valuation Tools Webcasts",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqmRAGzJb5OIvTAKZZu9HWF-",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqkNzSSPrCDkO2jlufVCinVw",
+   "title": "Valuation Undergraduate (Spring 2017)",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqkNzSSPrCDkO2jlufVCinVw",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqkuWvvYH30HoAG8WwZfN6pK",
+   "title": "Valuation Undergraduate Spring 2020",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqkuWvvYH30HoAG8WwZfN6pK",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqlJsEfix7R9jtSXClFZhGvC",
+   "title": "Valuation Undergraduate Spring 2021",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqlJsEfix7R9jtSXClFZhGvC",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqmdITeQCG1Cn6MmGGGkfn6p",
+   "title": "Valuation Undergraduate Spring 2022",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqmdITeQCG1Cn6MmGGGkfn6p",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqkHJz49csCvaCXf3diCLRLl",
+   "title": "Valuation Undergraduate Spring 2023",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqkHJz49csCvaCXf3diCLRLl",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqmtIQKZ1jv3uuZDM_bQIICg",
+   "title": "Valuation Undergraduate Spring 2024",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqmtIQKZ1jv3uuZDM_bQIICg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLUkh9m2BorqkYrFjNdut81IIcYdLfgqNd",
+   "title": "Valuation Undergraduate Spring 2025",
+   "video_count": 26,
+   "url": "https://www.youtube.com/playlist?list=PLUkh9m2BorqkYrFjNdut81IIcYdLfgqNd",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIV9vcHAYOgV9nOqcI9RmUTU",
+   "title": "Value Investing",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIV9vcHAYOgV9nOqcI9RmUTU",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIUsEj-UoRmuT7A8B9fQ9DXR",
+   "title": "value investing",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIUsEj-UoRmuT7A8B9fQ9DXR",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIUgSbQnNtxvbe3-TzKPOMdM",
+   "title": "Value Investing 2022",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIUgSbQnNtxvbe3-TzKPOMdM",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIUJtjtSwtmtzICs5R7eOV9x",
+   "title": "Value Investing 2025",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIUJtjtSwtmtzICs5R7eOV9x",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIURxyqnwyDPRW6xBSptb2Ja",
+   "title": "VALUE INVESTING 2026",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIURxyqnwyDPRW6xBSptb2Ja",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIWwgNOe6zSXL1NiY6V1ngkL",
+   "title": "Value Investing 2026",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWwgNOe6zSXL1NiY6V1ngkL",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIUQtJq3_B3LLp8S0TLNqQEG",
+   "title": "Value investing and intrinsic value",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIUQtJq3_B3LLp8S0TLNqQEG",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIVuw_p_fweWXIZQ-sHds0NQ",
+   "title": "Value Investing Free Course",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIVuw_p_fweWXIZQ-sHds0NQ",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIWu_95yUwQ3g0imlcGAiWzO",
+   "title": "Value Investing Quadrant",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWu_95yUwQ3g0imlcGAiWzO",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIUvm1XMyfymovSADUysfuvg",
+   "title": "Value Investing Risk And Reward Quadrant",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIUvm1XMyfymovSADUysfuvg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIWzcy0MeKjFvGciZU8az8UQ",
+   "title": "Value Investing School",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWzcy0MeKjFvGciZU8az8UQ",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIW4VCkVL-P2DNSu2SV88Zb1",
+   "title": "Value Investing webinar",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIW4VCkVL-P2DNSu2SV88Zb1",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PLBmr55S1qNIWnBP8jVSQSBPletpLxXh-X",
+   "title": "Accounting for Investors",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWnBP8jVSQSBPletpLxXh-X",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "PLBmr55S1qNIVkrVc9avRLjBevVVVN2AhA",
+   "title": "DALIO INTERVIEW ON ECONOMY AND RECESSION",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIVkrVc9avRLjBevVVVN2AhA",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "PLBmr55S1qNIWSb95yck1ycR_ueEe_gGbx",
+   "title": "Recession",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIWSb95yck1ycR_ueEe_gGbx",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "PLHC72UlhAthBkIgxgZ1eQEPnQUU9Gsz2F",
+   "title": "Risk Management",
+   "video_count": 47,
+   "url": "https://www.youtube.com/playlist?list=PLHC72UlhAthBkIgxgZ1eQEPnQUU9Gsz2F",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "PLBmr55S1qNIUOqpBBzgFOyjsnPrnWB8tW",
+   "title": "STOCK MARKET RISKS",
+   "video_count": 287,
+   "url": "https://www.youtube.com/playlist?list=PLBmr55S1qNIUOqpBBzgFOyjsnPrnWB8tW",
+   "tier": "context",
+   "weight": 20
+  }
+ ],
+ "selected_videos": [
+  {
+   "id": "EH5L52qcfnY",
+   "title": "$50 Billion for Ferrari or Volkswagen - 6x vs 20x Cash Flow - Growth vs Value + Membership Giveaway",
+   "duration_seconds": 2026,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=EH5L52qcfnY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "BNcvn1OqMU8",
+   "title": "After Value Investing Webinar Live Q&A",
+   "duration_seconds": 2862,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=BNcvn1OqMU8",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PRfXq-NlJqo",
+   "title": "Alibaba - Adjusting My Intrinsic Value Calculation",
+   "duration_seconds": 309,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=PRfXq-NlJqo",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "VXLEI6YHvBs",
+   "title": "Analyzing Low Cash Flow Yields: The Investment Dilemma",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=VXLEI6YHvBs",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "6PE9cXDif8s",
+   "title": "BERKSHIRE A SELL, VALUE INVESTING BLASPHEMY!",
+   "duration_seconds": 713,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=6PE9cXDif8s",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "a66CZDUa6GQ",
+   "title": "Costco's Explosive Free Cash Flow Growth: The Secret to Their Success!",
+   "duration_seconds": 61,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=a66CZDUa6GQ",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "OltilQOChz0",
+   "title": "Costco's Explosive Free Cash Flow Growth: The Secret to Their Success!",
+   "duration_seconds": 61,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=OltilQOChz0",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "_eeqLZ_49b8",
+   "title": "Costco's Valuation at Risk: Limited Upside and Potential Correction",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=_eeqLZ_49b8",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "-jysGHtWkxE",
+   "title": "Criticism to a Value Investing Approach To Long-Term Wealth Accumulation & Compounding!",
+   "duration_seconds": 645,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=-jysGHtWkxE",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "VCwbWpNmcy4",
+   "title": "Discover Hidden High-Yield Cash Flow Companies This Year",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=VCwbWpNmcy4",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "G1VSnPWu7sY",
+   "title": "Do Valuations Matter?",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=G1VSnPWu7sY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "ASR3AGJpyBk",
+   "title": "Does Value Investing Beat The Market?",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=ASR3AGJpyBk",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "6ZdIJHFOvLg",
+   "title": "Evaluating Stocks: 5 Key Factors for Cash Flow Success",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=6ZdIJHFOvLg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "GpOzFKrnvdU",
+   "title": "Finding your Investing Lodestar: In Search of an Investment Philosophy!",
+   "duration_seconds": 2625,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=GpOzFKrnvdU",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "L6wtDdJN_js",
+   "title": "Free Cash Flow: How Alibaba's Incredible Yield Could Triple its Stock Price",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=L6wtDdJN_js",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "0TEEYiiLC44",
+   "title": "Google Stock Intrinsic Value",
+   "duration_seconds": 316,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=0TEEYiiLC44",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "051Y8qhkhAg",
+   "title": "Google\u2019s Exuberant Valuation & Justification!",
+   "duration_seconds": 189,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=051Y8qhkhAg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "u7yqBppCxsY",
+   "title": "How Companies Use $7 Billion Cash Flow Strategically",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=u7yqBppCxsY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "I3u-PjL-8ok",
+   "title": "How Free Cash Flow Benefits CVS Stock Owners",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=I3u-PjL-8ok",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "DpfFUHmM7wY",
+   "title": "How to Read & Analyze a Cash Flow Statement like a CFO - For Beginners",
+   "duration_seconds": 668,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=DpfFUHmM7wY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "-dMJuEUWitw",
+   "title": "Insane Cash Flow: Company's $5 Billion Quarter!",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=-dMJuEUWitw",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "jBl8FXPc9tY",
+   "title": "Introduction to Investment Philosophies, 3rd Edition",
+   "duration_seconds": 382,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=jBl8FXPc9tY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "v-Wg2Z7nc-o",
+   "title": "LVMH Stock Investing Analysis + Intrinsic Value",
+   "duration_seconds": 646,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=v-Wg2Z7nc-o",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "o8_ODbd0gYs",
+   "title": "Master Excel Like an Investment Banker: Cash Flow Secrets",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=o8_ODbd0gYs",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "AMXhVv81pms",
+   "title": "Master Excel Like an Investment Banker: Cash Flow Secrets",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=AMXhVv81pms",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "UQrOdQbe5Jw",
+   "title": "Master Excel Like an Investment Banker: Cash Flow Secrets",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=UQrOdQbe5Jw",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "4Ys6Oti-rbU",
+   "title": "Mastering Cash Flow Statements: Unlocking Financial Insights",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=4Ys6Oti-rbU",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "7swq1jIV5-Q",
+   "title": "Mastering Cash Flow: Buying Down Debt for Growth",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=7swq1jIV5-Q",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "8WMz2mjV0Hc",
+   "title": "Mastering Cash Flow: How Amazon's Growth Transforms Investments",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=8WMz2mjV0Hc",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "5v6aXfDxbyQ",
+   "title": "Mastering Working Capital: Unraveling the Heart of Free Cash Flow",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=5v6aXfDxbyQ",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "oRUqjQOwQPE",
+   "title": "Maximizing Your Investment: Understanding Free Cash Flow",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=oRUqjQOwQPE",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "Tvh0gSIK4CA",
+   "title": "MCD Stock Intrinsic Value",
+   "duration_seconds": 265,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=Tvh0gSIK4CA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "eSKxtg053WA",
+   "title": "Meta's $85 Billion Cash Flow Breakdown Revealed",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=eSKxtg053WA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "SHUKk_jxKO8",
+   "title": "Michael Burry sells all stocks but 1 - Holds this Cash Flow Monster during the coming Depression",
+   "duration_seconds": 2142,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=SHUKk_jxKO8",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "5L8THbcY0Yk",
+   "title": "Nvidia Stock Intrinsic Value - P/E Just 30!",
+   "duration_seconds": 469,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=5L8THbcY0Yk",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "nYs9fOlw4Gc",
+   "title": "Read a Cash Flow Statement - For Beginners - Read the Cashflow Statement like a CFO",
+   "duration_seconds": 668,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=nYs9fOlw4Gc",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "dSVgBrJvRf0",
+   "title": "Research Platform Overview - Low Risk/High Reward Value Investing Focus",
+   "duration_seconds": 1217,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=dSVgBrJvRf0",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "E1xv3N2Syz4",
+   "title": "S&P 500 vs. Sven's Active Value Investing - is it worth it?",
+   "duration_seconds": 211,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=E1xv3N2Syz4",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "xqVqjS1DjtA",
+   "title": "S&P Market Valuation: Record Highs & What It Means",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=xqVqjS1DjtA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "5NuOTAVw6K4",
+   "title": "Session 1 (of 42): Introduction to Investment Philosophies",
+   "duration_seconds": 1159,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=5NuOTAVw6K4",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "C4zBohJ_Pts",
+   "title": "Session 11: Closure on Growth and First Steps on Terminal Value",
+   "duration_seconds": 5581,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=C4zBohJ_Pts",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "so6vCWKCiXE",
+   "title": "Session 11: More on Growth and Terminal Value",
+   "duration_seconds": 6650,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=so6vCWKCiXE",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "JPtHVRPDnJg",
+   "title": "Session 12 (of 42): Introduction to Value Investing",
+   "duration_seconds": 1259,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=JPtHVRPDnJg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "CncUmN65lDs",
+   "title": "Session 12: Incremental, time-weighted Cash Flow Returns",
+   "duration_seconds": 4865,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=CncUmN65lDs",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "JOJWcEs0uWw",
+   "title": "Session 12: Loose Ends in Valuation",
+   "duration_seconds": 5177,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=JOJWcEs0uWw",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "A3MJAXEyJiY",
+   "title": "Session 12: The Terminal Value",
+   "duration_seconds": 2694,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=A3MJAXEyJiY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "MkMggWTZCh8",
+   "title": "Session 13 (of 42): Value Investing - The Passive Screeners",
+   "duration_seconds": 1274,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=MkMggWTZCh8",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "JE55w2FLL1A",
+   "title": "Session 13: Loose Ends in Valuation",
+   "duration_seconds": 4842,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=JE55w2FLL1A",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "nmPDxY7Q3lk",
+   "title": "Session 13: Stock-based Compensation and Stories in Valuation",
+   "duration_seconds": 5126,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=nmPDxY7Q3lk",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "4X1gdlQunWI",
+   "title": "Session 14 (of 42): Value Investing - The Contrarians",
+   "duration_seconds": 785,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=4X1gdlQunWI",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "WEgelyAqeeA",
+   "title": "Session 14: Closure on stories and numbers and fist valuations!",
+   "duration_seconds": 5986,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=WEgelyAqeeA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "hM58vM7rnx8",
+   "title": "Session 15 (of 42): Value Investing - The Activists",
+   "duration_seconds": 1081,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=hM58vM7rnx8",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "H0q6MxqfnsA",
+   "title": "Session 15: More story telling and first company valuations",
+   "duration_seconds": 4618,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=H0q6MxqfnsA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "oBLZ-tPH9X0",
+   "title": "Session 15: Valuations across the life cycle",
+   "duration_seconds": 5100,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=oBLZ-tPH9X0",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "knln8-Ni9OA",
+   "title": "Session 16: Closure on Intrinsic Value",
+   "duration_seconds": 4612,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=knln8-Ni9OA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "6GM2HcXYcsY",
+   "title": "Session 16: Valuing the market and companies across the life cycle",
+   "duration_seconds": 4629,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=6GM2HcXYcsY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "fdEnaqWUYzM",
+   "title": "Session 17: Optimizing the Debt Mix with Cost of Capital approach",
+   "duration_seconds": 4895,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=fdEnaqWUYzM",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "ml2Hfnx3kos",
+   "title": "Session 17: Valuing Declining, Emerging Market and Financial Service companies",
+   "duration_seconds": 5699,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=ml2Hfnx3kos",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "zDbBR8-myEQ",
+   "title": "Session 18: Finishing up with Cost of Capital Optimization",
+   "duration_seconds": 3106,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=zDbBR8-myEQ",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "f5eDlMgI-RA",
+   "title": "Session 18: Intrinsic Value Closure and Pricing Beginnings",
+   "duration_seconds": 5279,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=f5eDlMgI-RA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "oSSRcLhum1s",
+   "title": "Session 20: Pricing Closure and Asset-based Valuation/Pricing",
+   "duration_seconds": 4776,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=oSSRcLhum1s",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "T0DcUKaNgzY",
+   "title": "Session 21: Valuing Privately owned businesses (not publicly listed)",
+   "duration_seconds": 4991,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=T0DcUKaNgzY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "MqNyBBttuK8",
+   "title": "Session 22: Pricing Closure and Asset-based Valuation/Pricing",
+   "duration_seconds": 4657,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=MqNyBBttuK8",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "H4vQFg61h8A",
+   "title": "Session 23: Private company valuation",
+   "duration_seconds": 4532,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=H4vQFg61h8A",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "bm1zE4wCQvI",
+   "title": "Session 24: Closure on Dividends and First Steps on Valuation",
+   "duration_seconds": 4835,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=bm1zE4wCQvI",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "CERMihGaLlA",
+   "title": "Session 25: Valuation - The Final Frontier!",
+   "duration_seconds": 4753,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=CERMihGaLlA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "8WPPozFWjuI",
+   "title": "Session 33 (of 42): Market Timing - Valuing the Market",
+   "duration_seconds": 1048,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=8WPPozFWjuI",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "oFz94rZbc4c",
+   "title": "Session 4: DCF Big Picture and First Steps in Riskfree Rates",
+   "duration_seconds": 5087,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=oFz94rZbc4c",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "coS6TXtKfV0",
+   "title": "Session 5 (of 42): Valuation - The Basics",
+   "duration_seconds": 1439,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=coS6TXtKfV0",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "MtsRSkV4HUg",
+   "title": "Session 8: Closure on Cost of Capital + First steps on cash flows",
+   "duration_seconds": 4805,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=MtsRSkV4HUg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "QpeK80N9mhM",
+   "title": "Session 8: Cost of capital closure + First steps on cash flows",
+   "duration_seconds": 4796,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=QpeK80N9mhM",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "EOwEdlva1Rc",
+   "title": "Session 9: Digging Deeper into Cash Flows",
+   "duration_seconds": 4970,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=EOwEdlva1Rc",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "M6YpgP1ArNA",
+   "title": "Shocking Cash Flow Drop at Walgreens Raises Alarms",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=M6YpgP1ArNA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "wiEatHQH8U8",
+   "title": "Should You Take More Risk When Younger (VALUE INVESTING vs. MONEY MAKING)",
+   "duration_seconds": 429,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=wiEatHQH8U8",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "YXiVrq-VuQk",
+   "title": "Simple Business that Make Money!  +10% Cash Flow & Growth = Outstanding Investment Return Est.",
+   "duration_seconds": 2100,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=YXiVrq-VuQk",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "hiau5Jdf7zg",
+   "title": "The Cash Flow Secrets behind Nike's Inventory Management.",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=hiau5Jdf7zg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "YxpDT6hWxiU",
+   "title": "The Challenging Cash Flow Struggles of Walgreens Revealed",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=YxpDT6hWxiU",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "NQKIJU7TmTc",
+   "title": "The Numbers are in: A Post-Prospectus SpaceX Valuation!",
+   "duration_seconds": 2719,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=NQKIJU7TmTc",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "EybXQmxIq6U",
+   "title": "The Problem with High Stock Valuations",
+   "duration_seconds": 354,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=EybXQmxIq6U",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "yTStqMFRZwE",
+   "title": "The Secret to Understanding the CVS Stock Valuation",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=yTStqMFRZwE",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "J2FxkHMy1fM",
+   "title": "The Surprising Low Free Cash Flow Yield of Costco Shares",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=J2FxkHMy1fM",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "LWggUNX9EpA",
+   "title": "The Surprising Truth About PepsiCo's Cash Flow vs EBITDA",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=LWggUNX9EpA",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "kYO7xrHhqsY",
+   "title": "The Truth About Value Investing (What the Data Shows)",
+   "duration_seconds": 718,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=kYO7xrHhqsY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "BFpMUttwiuo",
+   "title": "This Market Is Crazy! Dividend & Valuation",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=BFpMUttwiuo",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "_0SZCYTtJhw",
+   "title": "Uncovering Market Beating Cash Flow Growth!",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=_0SZCYTtJhw",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "sbKjvTyywHE",
+   "title": "Understanding Cash Flow: How Timing Affects Business Revenue",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=sbKjvTyywHE",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "079vUTYWzek",
+   "title": "Understanding Free Cash Flow Is CRUCIAL For Investment Success",
+   "duration_seconds": 1336,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=079vUTYWzek",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "sJItNVxM4dk",
+   "title": "UnitedHealth: Massive Cash Flow & Shareholder Returns!",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=sJItNVxM4dk",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "31Bl7RK8n0M",
+   "title": "Unleashing the Power of Cash Flow: Liberty Media Forecast and Analysis",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=31Bl7RK8n0M",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "5gf0rZA06yQ",
+   "title": "Unlocking 5% Free Cash Flow: The Trifecta Buy",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=5gf0rZA06yQ",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "PNRQm0nkcOg",
+   "title": "Unlocking 5% Free Cash Flow: The Trifecta Buy",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=PNRQm0nkcOg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "4LSh1AD0yEs",
+   "title": "Unlocking Positive Cash Flow: Key Metrics Explained",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=4LSh1AD0yEs",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "1-gIh4wRgfY",
+   "title": "Unlocking Stock Evaluation: 5 Key Factors to Consider",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=1-gIh4wRgfY",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "D8X-8GMBUm0",
+   "title": "Unlocking Stock Potential: The Power of Free Cash Flow",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=D8X-8GMBUm0",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "s8BV-YPP4vU",
+   "title": "Unlocking the Hidden Cash Flow Potential of Liberty Media: A Game Changer.",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=s8BV-YPP4vU",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "KW5bjxh_s8E",
+   "title": "Value Investing - Intuit",
+   "duration_seconds": 5840,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=KW5bjxh_s8E",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "hGuymAEAjRo",
+   "title": "Value Investing for 2H 2026! The Opportunities!",
+   "duration_seconds": 402,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=hGuymAEAjRo",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "jK6IzZKN8e0",
+   "title": "Value Investing Is Not Dead - My Performance",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=jK6IzZKN8e0",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "WGFMQZjvPkg",
+   "title": "Value Investing Quadrant Bets - 5x Stocks!",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=WGFMQZjvPkg",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "b0Xo4Hp23pk",
+   "title": "Value Investing Quadrant Updated!",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=b0Xo4Hp23pk",
+   "tier": "core",
+   "weight": 100
+  },
+  {
+   "id": "xZfaJ33BCVQ",
+   "title": "Gold Will Hit $10k...",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=xZfaJ33BCVQ",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "30f5c9o34H8",
+   "title": "How to Read & Analyze a Balance Sheet like a CFO - For Beginners",
+   "duration_seconds": 1091,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=30f5c9o34H8",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "um67NHTdk6o",
+   "title": "How to Read & Analyze an Income Statement like a CFO - For Beginners",
+   "duration_seconds": 824,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=um67NHTdk6o",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "klpg4CzONBY",
+   "title": "How to Read In Income Statement - For Beginners - Profit vs Profit Margin",
+   "duration_seconds": 824,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=klpg4CzONBY",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "1duDA1pmkqk",
+   "title": "PepsiCo's Red Flags: Market Mess & Financials Exposed!",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=1duDA1pmkqk",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "LJ9yjsxnn00",
+   "title": "Spotting the Enron Collapse: Key Financial Red Flags",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=LJ9yjsxnn00",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "Ohses4Cte_g",
+   "title": "Understanding Goodwill Write-Downs: What You Need to Know",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=Ohses4Cte_g",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "QYlrAPlt6ko",
+   "title": "What Constitutes Market Manipulation? Featuring @LegalEagle",
+   "duration_seconds": 1027,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=QYlrAPlt6ko",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "lMn1p6oRtB8",
+   "title": "Why This Company\u2019s Debt Ratio is a Major Red Flag",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=lMn1p6oRtB8",
+   "tier": "supporting",
+   "weight": 50
+  },
+  {
+   "id": "MnoVV8-X6BQ",
+   "title": "$10 Billion in Free Cash Flow, 8% Yield - Bristol-Myers Squibb Company ($BMY) - Stock to own in 2024",
+   "duration_seconds": 1225,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=MnoVV8-X6BQ",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "IS8TAsPOOD0",
+   "title": "10 Stocks To Buy From Value Investing Quadrant",
+   "duration_seconds": 1030,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=IS8TAsPOOD0",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "Cpig5UfFuRA",
+   "title": "10 Stocks To Buy! Value Investing Quadrant October 2026",
+   "duration_seconds": 1279,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=Cpig5UfFuRA",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "vmS8oB2xO9A",
+   "title": "10 Stocks to Buy! Value Investing Quadrant Update 2H 2026",
+   "duration_seconds": 1314,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=vmS8oB2xO9A",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "L58TGpGaOxU",
+   "title": "AAPL Down 17% - RECORD $113 Billion in Cash Flow! Apple Earnings 2022",
+   "duration_seconds": 1823,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=L58TGpGaOxU",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "ieh0WRbO1fw",
+   "title": "AIG - 20% Earnings Yield - Long Term Value with Strong Upside - Management is Executing On Plan",
+   "duration_seconds": 2348,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=ieh0WRbO1fw",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "nOb08xHdsaQ",
+   "title": "Apple ($APPL) $687 Billion in Dividends and Share Buybacks - See What Buffett Saw",
+   "duration_seconds": 1488,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=nOb08xHdsaQ",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "u9HihTkeuWE",
+   "title": "BRK a Buy or Sell Now? Intrinsic Value, Cash & Margin of Safety!",
+   "duration_seconds": 654,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=u9HihTkeuWE",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "dpgGoUG4L88",
+   "title": "Buybacks and Stock Based Compensation (SBC) Distort True Owner's Earnings!",
+   "duration_seconds": 758,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=dpgGoUG4L88",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "yAtpMMC3aiw",
+   "title": "Capex, D&A, $707 Billion in Commitments Make Google a Very RISKY Stock to Buy!",
+   "duration_seconds": 985,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=yAtpMMC3aiw",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "AS-Agbqkvz4",
+   "title": "CHTR Stock A Buy on Buybacks - 3x to 5x by 2028!!!",
+   "duration_seconds": 794,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=AS-Agbqkvz4",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "0AVR0stqTzI",
+   "title": "Diageo ($DEO): Strong Cash Flow but Weak Growth \u2013 A Financial Analysis",
+   "duration_seconds": 1727,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=0AVR0stqTzI",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "5LyTR4tFfGc",
+   "title": "Fiserv *(FISV) Stock Looks Good, With Less Risk Than CHTR",
+   "duration_seconds": 694,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=5LyTR4tFfGc",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "9SArn9iDGgE",
+   "title": "Honda Motors ($HMC) - Massive Free Cash Flow But Falling Revenue",
+   "duration_seconds": 859,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=9SArn9iDGgE",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "eOx35HibaZs",
+   "title": "Is Lockheed Martin a Stock to Buy? LMT Stock Analysis. Strong Performance and Cash Flow",
+   "duration_seconds": 1025,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=eOx35HibaZs",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "CTTwALRC8g8",
+   "title": "JD.com - Over 400% Potential Return! $JD Valuation AT ALL TIME LOWs.",
+   "duration_seconds": 1238,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=CTTwALRC8g8",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "RQ8GxIGWsqc",
+   "title": "Lululemon Stock Analysis: Over $2 Billion in Free Cash Flow | Market Expansion Potential",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=RQ8GxIGWsqc",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "fEbHWL7MVag",
+   "title": "Nike Stock a Buy on Positive Risk & Reward!",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=fEbHWL7MVag",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "sAIK4lC_8Jg",
+   "title": "Recession Impact on Amazon Stock (AMZN)",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=sAIK4lC_8Jg",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "veuwNnn3qYM",
+   "title": "Stanley Black & Decker (SWK) - Long Term Strong Value Play - 9% Free Cash Flow Yield",
+   "duration_seconds": 1796,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=veuwNnn3qYM",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "0l6ogHBUIaM",
+   "title": "Starbucks SBUX Stock Analysis + Intrinsic Value",
+   "duration_seconds": 486,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=0l6ogHBUIaM",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "IQ_Gw7qx6K4",
+   "title": "The Shocking Collapse of Charles Schwab (SCHW) Balance Sheet - Will The Company Survive?",
+   "duration_seconds": 2192,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=IQ_Gw7qx6K4",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "kwOlV0jMYQ4",
+   "title": "Ulta Beauty ($ULTA) - $700 Expected Price - Lots of Free Cash Flow - Wonderful Company for 2024",
+   "duration_seconds": 877,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=kwOlV0jMYQ4",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "IYZwYiSpPcY",
+   "title": "UnitedHealth Group (UNH) - The Pandemic Buy - Up 150% - Great Buy During a Recession",
+   "duration_seconds": 2403,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=IYZwYiSpPcY",
+   "tier": "example",
+   "weight": 30
+  },
+  {
+   "id": "QGzgsSXdPjo",
+   "title": "\"Sequence of Returns Risk\"",
+   "duration_seconds": 934,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=QGzgsSXdPjo",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "xCgp3g4znn0",
+   "title": "5 Stocks to Hold During A Recession | Investing in a down market",
+   "duration_seconds": 1130,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=xCgp3g4znn0",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "QRQu4u0NY1o",
+   "title": "Apple Stock is Very Risky",
+   "duration_seconds": 247,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=QRQu4u0NY1o",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "OtAQKTPi_TY",
+   "title": "ASML Stock Risk And Reward",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=OtAQKTPi_TY",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "zpB7bL2VL5g",
+   "title": "Bets Quadrant - CHTR can buyback itself in 3 years or an airport...",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=zpB7bL2VL5g",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "LTDZCLjCa-E",
+   "title": "Country Risk 2025: The Story behind the Numbers!",
+   "duration_seconds": 1875,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=LTDZCLjCa-E",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "sres2R8etKA",
+   "title": "Country Risk: Determinants, Measures and Implications - The 2026 Edition",
+   "duration_seconds": 2220,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=sres2R8etKA",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "Nxi_tsL4104",
+   "title": "CVS Health Stock - Cash Machine with 300% Growth + Dividend + Buybacks",
+   "duration_seconds": 2855,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=Nxi_tsL4104",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "r06tnztEOys",
+   "title": "Data Update 5 for 2026: Risk and Hurdle Rates - The 2026 Edition!",
+   "duration_seconds": 1933,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=r06tnztEOys",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "SRpJEkzJpKs",
+   "title": "Data Update 8 for 2026: Dividends and Buybacks - The Investing Harvest!",
+   "duration_seconds": 2195,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=SRpJEkzJpKs",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "f8Xf76QaHSg",
+   "title": "Data Update 9 for 2025: Dividends and Buybacks - Inertia and Me-tooism!",
+   "duration_seconds": 1768,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=f8Xf76QaHSg",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "OLNOBdyyY7s",
+   "title": "Does Active Management Work For Institutional Investors?",
+   "duration_seconds": 331,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=OLNOBdyyY7s",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "gIYNCsp0TFY",
+   "title": "GOOG, MSFT, AMZN, NVDA \u2013 INVESTING RISK AND REWARD!!!",
+   "duration_seconds": 914,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=gIYNCsp0TFY",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "ZPlrkr1qaE0",
+   "title": "How Big Banks Stack Up to Silicon Valley Bank - Are Big Unrealized Losses a Risk?",
+   "duration_seconds": 1102,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=ZPlrkr1qaE0",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "t0EYr8Aex1I",
+   "title": "How Much Risk Should You Take?",
+   "duration_seconds": 384,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=t0EYr8Aex1I",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "dJJ0VWTITTs",
+   "title": "I'm Not Worried About A Recession, I Fear Utter Destruction...",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=dJJ0VWTITTs",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "HtHH3i0izSQ",
+   "title": "Investing During Recessions - How Should Investors Prepare?",
+   "duration_seconds": 944,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=HtHH3i0izSQ",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "CYMXieKorok",
+   "title": "Is The China Investing Risk Misunderstood?",
+   "duration_seconds": 326,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=CYMXieKorok",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "Ynn4q4qYIkU",
+   "title": "Kroger's $25 Billion Mega Buyout of Albertson's - Unveiling a Recession-Proof Investment Powerhouse",
+   "duration_seconds": 1770,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=Ynn4q4qYIkU",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "tEz6ZNTnIhE",
+   "title": "Market All-Time High! Risks Even Higher! Who is CRAZY Here?",
+   "duration_seconds": 457,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=tEz6ZNTnIhE",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "lSx5W8a3_yQ",
+   "title": "Nintendo is a Cool Stock/Great Moat!",
+   "duration_seconds": 569,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=lSx5W8a3_yQ",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "2gSGcCg8ISw",
+   "title": "No, the White House DIDN'T Just Redefine Recessions",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=2gSGcCg8ISw",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "SeRRJ98-wUA",
+   "title": "Pepsi's Stock Buybacks: A Dangerous Game?",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=SeRRJ98-wUA",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "j73Ag1pixt8",
+   "title": "Philip & Julia of @TwoCentsPBS Talk Money Management and Common Mistakes",
+   "duration_seconds": 2965,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=j73Ag1pixt8",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "apnM-y6sXVA",
+   "title": "Preparing for the Recession",
+   "duration_seconds": 557,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=apnM-y6sXVA",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "DDz0bbQiMI8",
+   "title": "Risk & Return - The Jesse Livermore Story",
+   "duration_seconds": 3219,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=DDz0bbQiMI8",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "mTGJz2AUaeY",
+   "title": "Session 2 (of 42): Understanding Risk I: Defining and Measuring Risk",
+   "duration_seconds": 914,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=mTGJz2AUaeY",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "YQt0fomcf80",
+   "title": "Session 29 (of 42): Not riskless, not even close - Pseudo or Speculative Arbitrage",
+   "duration_seconds": 921,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=YQt0fomcf80",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "X8rLxfoZ4JU",
+   "title": "Session 3 (of 42): Understanding Risk II: The Risk in Bonds",
+   "duration_seconds": 796,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=X8rLxfoZ4JU",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "nc6EKMUFPcc",
+   "title": "Session 4 (of 42): Understanding Risk III: The Risk in Equities",
+   "duration_seconds": 1618,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=nc6EKMUFPcc",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "1wyr2R471Dc",
+   "title": "Session 5: Closure on Riskfree Rates & Equity Risk Premiums",
+   "duration_seconds": 4988,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=1wyr2R471Dc",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "_SxIBHEGhbo",
+   "title": "Session 5: Closure on the end game and first steps on risk",
+   "duration_seconds": 4969,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=_SxIBHEGhbo",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "7NgfMyUHoFg",
+   "title": "Session 5: Finishing up riskfree rates and moving on to risk premiums",
+   "duration_seconds": 4622,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=7NgfMyUHoFg",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "ouNEMzzNQEo",
+   "title": "Session 6: Company Exposure to Country Risk + Implied Equity Risk Premiums",
+   "duration_seconds": 5280,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=ouNEMzzNQEo",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "GcFNj2f7EOQ",
+   "title": "Session 6: Implied Equity Risk Premiums",
+   "duration_seconds": 4702,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=GcFNj2f7EOQ",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "oeRtLInQTAM",
+   "title": "Session 6: Riskfree Rates and Equity Risk Premiums",
+   "duration_seconds": 4947,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=oeRtLInQTAM",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "qWSxyWsA09w",
+   "title": "Session 7: Betas, relative risk and first steps on cost of debt",
+   "duration_seconds": 4636,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=qWSxyWsA09w",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "nGXi-YnQqao",
+   "title": "Session 7: Equity Risk Premiums and Betas",
+   "duration_seconds": 17953,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=nGXi-YnQqao",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "FT7ZfG6Abzg",
+   "title": "Session 7: Measuring Relative Risk - Betas and Alternatives",
+   "duration_seconds": 4932,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=FT7ZfG6Abzg",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "c1kzZjD2Z8U",
+   "title": "Stocks, Bonds, and \u201cRisk\u201d",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=c1kzZjD2Z8U",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "RxCqxhRsHiY",
+   "title": "The Risk of (Individual) Stocks",
+   "duration_seconds": 1151,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=RxCqxhRsHiY",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "d-SagPpEz80",
+   "title": "The Risk the War in Iran Poses to the Global Economy",
+   "duration_seconds": 886,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=d-SagPpEz80",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "0d2pCt8JomQ",
+   "title": "Trump\u2019s $2B Chip Deal: Nvidia\u2019s Big Payout Explained",
+   "duration_seconds": 1780,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=0d2pCt8JomQ",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "2dtdQXnfP-I",
+   "title": "Unlocking Wealth: Why Share Buybacks Matter",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=2dtdQXnfP-I",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "thNrIsU88y8",
+   "title": "What \"Risk\" Actually Means in Investing",
+   "duration_seconds": 688,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=thNrIsU88y8",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "_mAJqr3Uzxc",
+   "title": "What does a recession mean for expected stock returns? [Canada]",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=_mAJqr3Uzxc",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "HXkRvpXimTw",
+   "title": "Why Share Buybacks Matter More Than Dividends",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=HXkRvpXimTw",
+   "tier": "context",
+   "weight": 20
+  },
+  {
+   "id": "AkDKNBgVa4Q",
+   "title": "Young Investors Should Take More Risk?",
+   "duration_seconds": null,
+   "channel": null,
+   "url": "https://www.youtube.com/watch?v=AkDKNBgVa4Q",
+   "tier": "context",
+   "weight": 20
+  }
+ ],
+ "counts": {
+  "playlists": 42,
+  "videos": 181
+ }
+}

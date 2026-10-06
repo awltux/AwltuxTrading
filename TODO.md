@@ -420,14 +420,156 @@ stops covering that path, and a modified file in it will not be reported. The
 Dockerfile says so in a comment, which is not a test.
 
 ---
+
 ## Ingest Education Videos on Value Investment
 
-Use the youtube-transcript skill to download the transcripts of all videos in the following list.
-Remember to use rate limiting as you have locked my ip address in the past.
-Identify the key concepts from each transcript that would be useful for the investment rating app.
-After analysing each transcript combine it with the others in FINDINGS.md, idenitfying common concepts and ideas and merging them where appropriate. This is a long term background task. 
+A long-running background task: read six value-investing channels, extract the
+concepts that could improve the rating app, and merge them into
+`docs/research/FINDINGS.md` alongside the existing literature.
 
-### YouTube channel homepages that are good references to learn value investing
+**Scope, measured rather than assumed** (enumerated 2026-10-06 with
+`yt_enumerate.py --playlists` and `--limit 150`):
+
+| Channel | playlists | videos listed |
+|---|---|---|
+| @Value-Investing | 287 | 301 |
+| @ThePlainBagel | 11 | 160 |
+| @BenFelixCSI | 7 | 159 |
+| @AswathDamodaranonValuation | 26 | 150 (hit the cap) |
+| @CstewartCFA | 9 | 306 |
+| @PBoyle | 47 | 157 |
+| **total** | **387** | **1,233** |
+
+Selecting by title narrows that to **42 playlists and 181 videos** — about 220 items,
+not 1,600. That is the difference between a task and an infinite one.
+
+### Read the core tier first, and prefer playlists for method
+
+The selector ranks by how much a title bears on the subject rather than including or
+excluding it, because a flat list was the first attempt and it rated *"40 QUOTES BY
+CHARLIE MUNGER"* level with *"Intrinsic Value Calculation Examples"*. Tiers, and what
+they are for:
+
+| Tier | Count (playlists / videos) | Use |
+|---|---|---|
+| **core** — intrinsic value, DCF, discount rates, cost of capital, margin of safety | 37 / 100 | the concepts this task exists to find |
+| **supporting** — accounting quality, filings, fraud markers | 1 / 9 | corroboration; the app already holds a literature base on this |
+| **context** — moats, capital allocation, buybacks, risk | 4 / 48 | worth reading, weaker bearing on the arithmetic |
+| **example** — one company analysed | — / ~24 | *checking*, not teaching: a worked valuation to compare the app's own against |
+
+Damodaran's `Valuation MBA` and `Valuation Undergraduate` courses (2016–2025) are
+pure method and are the highest-value material in the set.
+
+**Prefer playlists over raw video titles for method.** A curated course playlist is a
+syllabus; a channel's individual uploads are mostly company commentary. Title
+heuristics are a first pass and not a classifier — they still admit "Costco's
+Explosive Free Cash Flow Growth", because nothing in that title distinguishes it from
+a lecture on cash flow. Read the selection rather than trusting it.
+
+### How to run it
+
+The `youtube-transcripts` skill does the work; its scripts are at
+`~/.agents/skills/youtube-transcripts/scripts/`.
+
+```bash
+python yt_enumerate.py --playlists --out lists.json --append "<channel>/playlists"
+python yt_enumerate.py --out videos.json --limit 150 --append "<channel>"
+python yt_select.py --in lists.json  --out want_lists.json
+python yt_select.py --in videos.json --out want_videos.json
+python yt_transcripts.py --in want_videos.json --out-dir transcripts --max-per-run 40
+```
+
+Expand the selected **playlists** into videos before fetching — the playlist inventory
+names the courses, and the videos inside them are what carry the method.
+
+**Ration it.** At the scripts' defaults — 5s spacing, serial — 220 items is well over
+two hours of wall time and 220 caption requests. `--max-per-run 40` means six runs,
+spread over days rather than chained. The scripts enforce a 12-hour cooldown after a
+block and refuse to run again before it expires; that gate is the reason this is a
+background task rather than an afternoon's work.
+
+### Edge cases that will bite
+
+**A video can *suggest* a marker; it cannot be the evidence for one.** The
+companion reports carry a tier system (A/B/C/D) and an appendix of verified primary
+sources. A YouTube lecture is Tier D by construction — it is one person's summary,
+frequently of a paper that has since been challenged. Anything FINDINGS records must
+name the primary source and be graded on that, with the video recorded as *where the
+idea was noticed*. Otherwise this becomes the "sophisticated way of losing money"
+that `investment-markers.md` opens by warning against.
+
+**Separate method from worked example.** "Valuation MBA Spring 2025" teaches a
+technique; "MCD Stock Intrinsic Value" applies one to a ticker whose numbers are
+stale within a year and which may not be in the universe. Concepts come from the
+first. The second is worth keeping separately, as a way to check the app's own
+arithmetic against a worked case someone else did.
+
+**Expect promotional bias.** Value-investing YouTube runs on sponsorships and
+affiliate links, and titles are optimised for clicks. A concept that arrives attached
+to a product recommendation is suspect, and the transcript will usually say so
+somewhere.
+
+**Time-sensitivity cuts both ways.** Method ages slowly; examples, rates, tax rules
+and named tickers age fast. A 2019 valuation lecture predates IFRS 16 and its
+treatment of leases — record the video's date with every concept and do not carry a
+pre-2019 accounting assumption into the app.
+
+**No track record.** "I called the crash" is hindsight, not evidence, and a channel
+that posts ten predictions a year will be right sometimes. Nothing here is a
+performance claim.
+
+**Transcripts are machine-recognised.** Unpunctuated, no speaker labels, and numbers
+and ticker symbols are the least reliable part — "fifteen" and "50" are one
+mishearing apart. A figure taken from a transcript must never enter FINDINGS as a
+fact; find it in a filing or a paper or leave it out.
+
+**Duplicates and re-uploads.** The same talk appears on several of these channels,
+and channels re-upload. Dedupe on video id during enumeration and keep an eye on
+near-identical titles across channels.
+
+**Absent is not failed.** Some videos have no English captions at all. The manifest
+records `failed` with a reason so "no transcript exists" stays distinct from "we were
+blocked" — merging them turns a fetch failure into a silent gap in the research.
+
+**Attribution.** Many videos are interviews; the view expressed may be the guest's,
+not the channel's. Record who actually said it.
+
+**Copyright.** Quote briefly and link. Do not reproduce transcripts, and treat
+videos that read a book aloud (there is a Seth Klarman *Margin of Safety* reading in
+this set) as a copyright surface: analyse the ideas, do not copy the text.
+
+### What "done" looks like
+
+Every concept gets a **disposition**, not just a paragraph:
+
+| Disposition | Meaning |
+|---|---|
+| **implement** | worth building, with the primary source that justifies it and a tier |
+| **already covered** | link to where the app or `investment-markers.md` already does it |
+| **rejected** | with the reason, so it is not re-proposed |
+
+A FINDINGS entry with no disposition is a wish list, which is what the marker note
+and `TODO.md` section 6 both exist to prevent. Merge against
+`docs/investment-markers.md` rather than duplicating it: where a video and the
+literature describe the same marker, the literature entry is the record and the video
+becomes a citation on it.
+
+Where FINDINGS lives: `docs/research/FINDINGS.md`, next to the reports it grades
+against, so its claims sit beside the evidence base rather than apart from it.
+
+### Current state: blocked, and the selection is already done
+
+The IP is locked out of YouTube's caption endpoint by an earlier run that retried a
+`429`. Enumeration still works — channels, playlists and titles all read fine — so
+the selection is complete and only the transcripts are outstanding.
+
+**Tomorrow's run does not need to re-enumerate.** The selected playlists and videos
+are committed to `docs/research/education-sources.json` (42 playlists, 181 videos),
+so the expensive part already survives. Start by expanding the selected playlists
+into videos, then fetch. Re-walking six channels to rebuild a list that is already on
+disk spends ~30 requests against an endpoint that has just banned this address.
+
+### The channels
 
 1. https://www.youtube.com/@Value-Investing
 2. https://www.youtube.com/@ThePlainBagel
