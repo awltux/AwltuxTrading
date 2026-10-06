@@ -44,6 +44,8 @@ INCOME_METRICS: tuple[str, ...] = (
     "ebitda",
     "depreciation_amortisation",
     "interest_expense",
+    "interest_income",
+    "other_nonoperating_income",
     "pretax_income",
     "tax_expense",
     "net_income",
@@ -117,6 +119,14 @@ METRIC_NOTES: dict[str, str] = {
     "ebitda": "net debt / EBITDA",
     "depreciation_amortisation": "accruals (balance-sheet method), reinvestment rate",
     "interest_expense": "interest cover and the cost of debt in WACC",
+    "interest_income": (
+        "the other half of net interest, and what separates operating profit from "
+        "profit before tax; without it the P&L cannot articulate"
+    ),
+    "other_nonoperating_income": (
+        "the residual between operating profit and profit before tax that is neither "
+        "interest nor tax -- disposals, FX, associates; signed"
+    ),
     "pretax_income": "effective tax rate for NOPAT",
     "tax_expense": "effective tax rate for NOPAT",
     "net_income": "ROE, ROA, payout, cash conversion",

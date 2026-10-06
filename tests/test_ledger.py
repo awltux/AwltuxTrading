@@ -203,6 +203,114 @@ class TestProfitArticulation:
         assert "revenue" in statement.gaps
 
 
+class TestTheNonOperatingLines:
+    """Profit before tax is not "operating income less interest".
+
+    Reported from the accounts page for `AIT_US_EQ` FY2026-06-30, where the computed
+    column was out by exactly 12,191,000. The cause was two missing lines rather than a
+    wrong one: interest *income* and other non-operating income sit between operating
+    profit and profit before tax, and the taxonomy carried neither. The figures below
+    are that filing's own, taken from its `companyfacts` payload.
+    """
+
+    AIT = {
+        "revenue": 4_966_686_000.0,
+        "cost_of_goods_sold": 3_459_901_000.0,
+        "gross_profit": 1_506_785_000.0,
+        "sga_expense": 957_316_000.0,
+        "operating_income": 549_469_000.0,
+        "interest_expense": 17_386_000.0,
+        "interest_income": 9_448_000.0,
+        "other_nonoperating_income": 2_743_000.0,
+        "pretax_income": 544_274_000.0,
+        "tax_expense": 129_749_000.0,
+        "net_income": 414_525_000.0,
+    }
+
+    def test_every_subtotal_reconciles_to_the_filings_own_figure(self):
+        """Gross, operating, pretax and net, all four to the dollar.
+
+        The pretax line is the one that was wrong: 549,469,000 less 17,386,000 is
+        532,083,000, and the filing reports 544,274,000. The 12,191,000 gap is exactly
+        the interest income (9,448,000) plus other non-operating income (2,743,000).
+        """
+        statement = ledger.profit_and_loss(_year(**self.AIT))
+        cascades = {
+            line.key: (line.stated, line.computed)
+            for line in statement.lines
+            if line.key in ("gross_profit", "operating_income", "pretax_income", "net_income")
+        }
+
+        for key, (stated, computed) in cascades.items():
+            assert stated is not None, key
+            assert computed == pytest.approx(stated), f"{key}: {computed:,} vs {stated:,}"
+
+    def test_the_articulation_check_passes_on_it(self):
+        check = ledger.profit_articulation(_year(**self.AIT))
+
+        assert check.status == ledger.OK
+        assert check.residual == pytest.approx(0.0)
+
+    def test_the_residual_before_the_fix_is_what_was_reported(self):
+        """The measurement, kept as the regression: without the income lines the check
+        is out by the figure the reader saw."""
+        without = {k: v for k, v in self.AIT.items()
+                   if k not in ("interest_income", "other_nonoperating_income")}
+
+        check = ledger.profit_articulation(_year(**without))
+
+        assert check.residual == pytest.approx(12_191_000.0)
+
+    def test_interest_expense_is_still_deducted_without_an_income_line(self):
+        """The trap in the first implementation.
+
+        `_subtract` returns `None` when its *base* is missing, so writing the
+        non-operating step as `interest_income - interest_expense` silently dropped the
+        expense for any filer that has one and no other -- turning a correct deduction
+        into an omission. The two lines are independent.
+        """
+        cascade = ledger._profit_cascade(
+            {
+                "revenue": 1_000.0,
+                "cost_of_goods_sold": 600.0,
+                "sga_expense": 300.0,
+                "interest_expense": 20.0,
+            }
+        )
+
+        assert cascade["operating_income"] == pytest.approx(100.0)
+        assert cascade["pretax_income"] == pytest.approx(80.0), "the expense was dropped"
+
+    def test_a_filer_with_no_non_operating_lines_falls_back_to_operating_income(self):
+        cascade = ledger._profit_cascade(
+            {"revenue": 1_000.0, "cost_of_goods_sold": 600.0, "sga_expense": 100.0}
+        )
+
+        assert cascade["operating_income"] == pytest.approx(300.0)
+        assert cascade["pretax_income"] == pytest.approx(300.0)
+
+    def test_the_cascade_builds_from_components_not_from_stated_subtotals(self):
+        """Worth stating, because it is what makes the audit mean anything.
+
+        The cascade is "the arithmetic from the lines we hold", and the statement prints
+        it beside the filing's own subtotal so the residual shows what is missing. Using
+        the stated subtotal as the input would make the two agree by construction and the
+        check would never fail.
+        """
+        cascade = ledger._profit_cascade(
+            {"revenue": 1_000.0, "cost_of_goods_sold": 600.0, "sga_expense": 100.0,
+             "operating_income": 999.0}
+        )
+
+        assert cascade["operating_income"] == pytest.approx(300.0)
+
+    def test_the_chart_carries_both_lines_and_maps_them(self):
+        """A metric the extractor can return but the chart has no account for would be
+        stored and then never printed."""
+        assert ledger.BY_KEY["interest_income"].statement == "profit_and_loss"
+        assert ledger.BY_KEY["other_nonoperating_income"].statement == "profit_and_loss"
+
+
 class TestRetainedEarnings:
     def test_closing_equals_opening_plus_profit_less_dividends(self):
         previous = _year(**_balanced(retained_earnings=300.0))

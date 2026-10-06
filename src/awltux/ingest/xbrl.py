@@ -108,6 +108,21 @@ TAG_MAP: tuple[MetricTag, ...] = (
         "InterestExpenseNonoperating",
         "InterestExpense",
     )),
+    # The other half of net interest, and the line that makes a profit and loss
+    # articulate. Its absence is not academic: on `AIT_US_EQ` FY2026-06-30, operating
+    # income less interest expense is 532,083,000 against a reported profit before tax
+    # of 544,274,000, and the 12,191,000 gap is exactly this tag (9,448,000) plus
+    # other non-operating income (2,743,000).
+    MetricTag("interest_income", MONETARY, (
+        "InvestmentIncomeInterest",
+        "InterestIncomeOperating",
+        "InterestAndDividendIncomeOperating",
+    )),
+    MetricTag("other_nonoperating_income", MONETARY, (
+        "OtherNonoperatingIncomeExpense",
+        "NonoperatingIncomeExpense",
+        "OtherNonoperatingIncome",
+    )),
     MetricTag("pretax_income", MONETARY, (
         "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
         "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",

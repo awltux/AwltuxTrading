@@ -112,6 +112,13 @@ CHART: tuple[Account, ...] = (
         "interest_expense", "Interest expense", "profit_and_loss", "Finance", DEBIT,
     ),
     Account(
+        "interest_income", "Interest income", "profit_and_loss", "Finance", CREDIT,
+    ),
+    Account(
+        "other_nonoperating_income", "Other non-operating income",
+        "profit_and_loss", "Finance", CREDIT, signed=True,
+    ),
+    Account(
         "pretax_income", "Profit before tax", "profit_and_loss", "Finance", CREDIT,
         role="subtotal", signed=True,
     ),
@@ -411,6 +418,15 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, float | None]:
     and :func:`profit_articulation` audits them against the reported figure, and two
     copies of the same arithmetic would eventually disagree about which lines are
     included -- which is exactly the disagreement the audit exists to detect.
+
+    **Profit before tax is not "operating income less interest".** Interest *income* and
+    other non-operating items sit between the two as well, and leaving them out put a
+    visible residual on the page for any filer that has them. Measured on `AIT_US_EQ`
+    FY2026-06-30: operating income 549,469,000 less interest expense 17,386,000 is
+    532,083,000 against a reported profit before tax of 544,274,000 -- a gap of
+    12,191,000, which is exactly the interest income (9,448,000) plus other
+    non-operating income (2,743,000) the taxonomy did not carry. With them, the three
+    lines reconcile to the reported figure to the dollar.
     """
     gross = _subtract(_stated(metrics, "revenue"), _stated(metrics, "cost_of_goods_sold"))
     operating = _subtract(
@@ -419,7 +435,26 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, float | None]:
         _stated(metrics, "sga_expense"),
         _stated(metrics, "depreciation_amortisation"),
     )
-    pretax = _subtract(operating, _stated(metrics, "interest_expense"))
+    # Added when present, deducted when present, and `None` only when neither side is
+    # stated -- which is what falls back to operating income. Using `_subtract` here
+    # instead reads well and is wrong: it returns `None` when its *base* is missing, so
+    # a filer with interest expense and no interest income would have had the expense
+    # silently dropped rather than deducted.
+    additions = _sum(
+        _stated(metrics, "interest_income"),
+        _stated(metrics, "other_nonoperating_income"),
+    )
+    interest = _stated(metrics, "interest_expense")
+    if additions is None and interest is None:
+        non_operating = None
+    else:
+        non_operating = (additions or 0.0) - (interest or 0.0)
+    if operating is None:
+        pretax = None
+    elif non_operating is None:
+        pretax = operating
+    else:
+        pretax = operating + non_operating
     return {
         "gross_profit": gross,
         "operating_income": operating,
@@ -508,6 +543,8 @@ def profit_and_loss(period: FundamentalPeriod) -> Statement:
             "Finance and tax",
             [
                 _line(metrics, "interest_expense"),
+                _line(metrics, "interest_income"),
+                _line(metrics, "other_nonoperating_income"),
                 _line(metrics, "pretax_income", cascade["pretax_income"]),
                 _line(metrics, "tax_expense"),
                 _line(metrics, "net_income", cascade["net_income"]),

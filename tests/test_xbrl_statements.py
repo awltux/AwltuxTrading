@@ -220,6 +220,54 @@ class TestAgainstRealEdgarOutput:
         assert "interest_expense" not in periods[-1].facts
 
 
+class TestTheNonOperatingTags:
+    """The two tags that make a profit and loss articulate.
+
+    Reported from the accounts page for `AIT_US_EQ` FY2026-06-30, where the computed
+    profit before tax was 532,083,000 against a reported 544,274,000 -- a gap of
+    12,191,000, which is interest income (9,448,000) plus other non-operating income
+    (2,743,000). Both figures are in this payload and were simply not being read.
+    """
+
+    def test_interest_income_is_read_from_the_tag_the_filing_uses(self):
+        facts = combine(
+            duration("OperatingIncomeLoss", 549_469_000.0, "2025-07-01", "2026-06-30"),
+            duration("InvestmentIncomeInterest", 9_448_000.0, "2025-07-01", "2026-06-30"),
+        )
+
+        period = annual_periods(payload(facts))[0]
+
+        assert period.metrics()["interest_income"] == 9_448_000.0
+
+    def test_other_non_operating_income_is_read_too(self):
+        facts = combine(
+            duration(
+                "OtherNonoperatingIncomeExpense", 2_743_000.0, "2025-07-01", "2026-06-30"
+            )
+        )
+
+        period = annual_periods(payload(facts))[0]
+
+        assert period.metrics()["other_nonoperating_income"] == 2_743_000.0
+
+    def test_a_net_interest_line_is_not_mistaken_for_the_gross(self):
+        """The two are different figures and only one belongs in each slot.
+
+        `InterestIncomeExpenseNet` is interest income less interest expense -- 9,448,000
+        less 17,386,000 on this filing, so -7,938,000. Reading it as either component
+        would double-count one side; it is deliberately not mapped.
+        """
+        facts = combine(
+            duration("InterestExpenseNonoperating", 17_386_000.0, "2025-07-01", "2026-06-30"),
+            duration("InvestmentIncomeInterest", 9_448_000.0, "2025-07-01", "2026-06-30"),
+        )
+
+        period = annual_periods(payload(facts))[0]
+
+        assert period.metrics()["interest_expense"] == 17_386_000.0
+        assert period.metrics()["interest_income"] == 9_448_000.0
+
+
 class TestWhichFactsAreAnnual:
     def test_a_quarterly_fact_is_not_an_annual_one(self):
         """A 10-Q duration in an annual column is a figure off by a factor of four."""
