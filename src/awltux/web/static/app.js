@@ -1,9 +1,10 @@
 /* AwltuxTrading dashboard behaviour.
  *
  * Only the things the server cannot do: consume the live news stream, draw the
- * price sparkline, trigger a job, and tell the server which clock the reader is
- * on. Everything else -- sorting, filtering, paging -- is a plain URL so it works
- * without this file.
+ * price sparkline, trigger a job, swap a table's page in place, and tell the server
+ * which clock the reader is on. Everything else -- sorting, filtering, paging -- is a
+ * plain URL so it works without this file. The paging below is an enhancement rather
+ * than a mechanism: the links are still links.
  */
 (function () {
   "use strict";
@@ -396,10 +397,85 @@
     window.setInterval(refreshRunning, 5000);
   }
 
+  // --------------------------------------------------------- paging in place
+  // A page change used to be a full navigation, which puts the reader back at the
+  // head of the document -- so "next page" on a long table meant losing your place
+  // and scrolling back down to it.
+  //
+  // The pager links are untouched: they are still real URLs, they still work with
+  // this file absent, and everything else about them -- the query string the server
+  // built, the filters it carries -- is reused rather than reconstructed here. All
+  // this does is fetch the region the server already knows how to render on its own
+  // and put it back, leaving the scroll position alone.
+
+  function swapRegion(region, url) {
+    region.setAttribute("aria-busy", "true");
+    return fetch(url, { headers: { "X-Requested-With": "fetch" } })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.text();
+      })
+      .then(function (html) {
+        var holder = document.createElement("div");
+        holder.innerHTML = html;
+        var replacement = holder.firstElementChild;
+        // A region that did not come back as a region is not something to put on the
+        // page: better to fall back to a navigation than to render half a page.
+        if (!replacement || !replacement.dataset.partial) throw new Error("not a region");
+        region.replaceWith(replacement);
+        replacement.setAttribute("tabindex", "-1");
+        // Focused so a keyboard reader lands in the rows that changed rather than on
+        // a link that no longer exists -- and preventScroll so that focus does not
+        // undo the whole point by jumping to the region.
+        try { replacement.focus({ preventScroll: true }); } catch (e) { /* older browsers */ }
+      });
+  }
+
+  function wirePartialPaging() {
+    document.addEventListener("click", function (event) {
+      if (!event.target.closest) return;
+      var link = event.target.closest("[data-partial] .pager a");
+      if (!link) return;
+      // New tab, new window, download: let the browser do what the reader asked for.
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey ||
+          event.ctrlKey || event.shiftKey || event.altKey) return;
+
+      var region = link.closest("[data-partial]");
+      if (!region || !region.dataset.partial) return;
+      event.preventDefault();
+
+      // The query comes from the link because the server built it and it is also what
+      // the address bar should end up showing.
+      var query = "";
+      try { query = new URL(link.href, window.location.origin).search; } catch (e) { query = ""; }
+
+      swapRegion(region, region.dataset.partial + query)
+        .then(function () {
+          // Pushed so the page is still shareable and Back still works. Without it the
+          // table would show page 3 while the address bar said page 1.
+          window.history.pushState({ region: region.id }, "", link.href);
+        })
+        .catch(function () {
+          // A swap that failed is a reason to fall back to the thing that always works,
+          // not to leave the reader on a page whose pager does nothing.
+          window.location.href = link.href;
+        });
+    });
+
+    window.addEventListener("popstate", function () {
+      var region = document.querySelector("[data-partial]");
+      if (!region || !region.dataset.partial) return;
+      swapRegion(region, region.dataset.partial + window.location.search).catch(function () {
+        window.location.reload();
+      });
+    });
+  }
+
   function init() {
     startTicker();
     drawChart();
     wireJobButtons();
+    wirePartialPaging();
     window.addEventListener("resize", drawChart);
   }
 

@@ -728,11 +728,22 @@ def sector_counts(session: Session) -> list[tuple[str | None, int]]:
     return [(sector, count) for sector, count in rows]
 
 
-def universe_stats(session: Session) -> dict[str, Any]:
-    """Headline counters for the dashboard header."""
-    total = session.execute(
+def universe_size(session: Session) -> int:
+    """How many instruments are in the analysed universe.
+
+    Its own query because two callers want the one number without the rest of
+    :func:`universe_stats`: the recommendations table needs it to explain an empty
+    result, and a page change re-renders that table on its own. :func:`universe_stats`
+    calls this rather than repeating the count, so the two cannot disagree.
+    """
+    return session.execute(
         select(func.count()).select_from(Instrument).where(Instrument.in_universe.is_(True))
     ).scalar_one()
+
+
+def universe_stats(session: Session) -> dict[str, Any]:
+    """Headline counters for the dashboard header."""
+    total = universe_size(session)
     resolved = session.execute(
         select(func.count())
         .select_from(Instrument)

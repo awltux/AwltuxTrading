@@ -8,7 +8,7 @@ updates (the news ticker) are the only thing that requires JS.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
@@ -48,15 +48,65 @@ def dashboard(
     than refused, because a stale bookmark or a hand-edited URL should show the
     table and name what it ignored.
     """
+    return templates.TemplateResponse(
+        request, "dashboard.html", _recommendations_context(request, page, per_page)
+    )
+
+
+@router.get(
+    "/partials/recommendations", response_class=HTMLResponse, include_in_schema=False
+)
+def recommendations_partial(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(100, ge=10, le=500),
+) -> HTMLResponse:
+    """Just the recommendations table, for a page change that must not reload the page.
+
+    The same region builder as the full page, so a fragment cannot show different rows,
+    different counts or a different filter state from the page it replaces.
+    """
+    return templates.TemplateResponse(
+        request,
+        "partials/recommendations.html",
+        _recommendations_region(request, page, per_page),
+    )
+
+
+def _recommendations_context(request: Request, page: int, per_page: int) -> dict[str, Any]:
+    """Everything the whole page needs: the region plus what sits around it."""
+    context = _recommendations_region(request, page, per_page)
+    with session_scope() as session:
+        context["stats"] = queries.universe_stats(session)
+        context["capabilities"] = (
+            cached_t212_capabilities(session) if get_settings().env.t212_configured else None
+        )
+    context["horizons"] = {
+        "long_term": get_settings().horizons.long_term,
+        "short_term": get_settings().horizons.short_term,
+    }
+    return context
+
+
+def _recommendations_region(request: Request, page: int, per_page: int) -> dict[str, Any]:
+    """The rows and the pager -- everything the swapped fragment needs, and no more.
+
+    Split from the page context deliberately. A page change fetches only the region, so
+    everything left in :func:`_recommendations_context` would otherwise be recomputed on
+    every click: `universe_stats` is a full sweep of the universe and it is used by the
+    summary strip *above* the table, which the swap does not touch.
+    """
     with session_scope() as session:
         sectors = filters.sector_options(queries.sector_counts(session))
+        # The one figure from the page header the region itself needs: it explains an
+        # empty table, and an empty table is a thing the swap has to be able to render.
+        size = queries.universe_size(session)
 
     allowed = filters.recommendation_specs(sectors=sectors)
     spec = filters.FilterSet.parse(allowed, request.query_params)
 
     sector, sector_unknown = filters.sector_filter(spec.opt("sector"))
 
-    offset = (page - 1) * per_page
     with session_scope() as session:
         rows, total = queries.recommendations(
             session,
@@ -75,30 +125,18 @@ def dashboard(
             only_held=(spec.value("view") == "held"),
             search=spec.opt("q"),
             limit=per_page,
-            offset=offset,
+            offset=(page - 1) * per_page,
         )
-        stats = queries.universe_stats(session)
-        capabilities = cached_t212_capabilities(session) if get_settings().env.t212_configured else None
 
-    pages = max((total + per_page - 1) // per_page, 1)
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "rows": rows,
-            "total": total,
-            "page": page,
-            "pages": pages,
-            "per_page": per_page,
-            "filters": spec,
-            "stats": stats,
-            "capabilities": capabilities,
-            "horizons": {
-                "long_term": get_settings().horizons.long_term,
-                "short_term": get_settings().horizons.short_term,
-            },
-        },
-    )
+    return {
+        "rows": rows,
+        "total": total,
+        "page": page,
+        "pages": max((total + per_page - 1) // per_page, 1),
+        "per_page": per_page,
+        "filters": spec,
+        "universe_size": size,
+    }
 
 
 @router.get("/instrument/{ticker}", response_class=HTMLResponse, include_in_schema=False)

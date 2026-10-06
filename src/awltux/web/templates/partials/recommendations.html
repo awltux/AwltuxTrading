@@ -1,0 +1,171 @@
+﻿{# The recommendations table and its pager, on their own.
+
+   Rendered twice: included by `dashboard.html`, and returned directly by
+   `/partials/recommendations`, which is what a page change fetches. One template
+   for both, so a fragment and a full page cannot drift apart.
+
+   The wrapper carries the endpoint as an attribute rather than the script
+   constructing it, in the same style as `base.html`: the markup states where to
+   read from, the script does not build the URL from parts. #}
+{% macro sort_link(key, label, title=None) %}
+  {% set next_dir = 'asc' if (filters.value('sort') == key and filters.value('direction') == 'desc') else 'desc' %}
+  <a class="sort {% if filters.value('sort') == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
+     href="{{ filters.href('/dashboard', sort=key, direction=next_dir) }}">
+    {{ label }}{% if filters.value('sort') == key %}<span class="arrow">{{ 'â–²' if filters.value('direction') == 'asc' else 'â–¼' }}</span>{% endif %}
+  </a>
+{% endmacro %}
+
+<div id="recommendations" data-partial="/partials/recommendations">
+{% if filters.given('sector') %}
+  <h2 class="drilldown">
+    {{ filters.shown('sector') }}
+    <span class="muted small">
+      {{ total }} instrument{{ '' if total == 1 else 's' }}
+      {{ 'in the analysed universe' if total else 'in the analysed universe â€” none matched' }}
+    </span>
+  </h2>
+{% endif %}
+
+<div class="table-wrap">
+<table class="grid">
+  <thead>
+    <tr>
+      <th>{{ sort_link('name', 'Instrument') }}</th>
+      <th>{{ sort_link('horizon_fit', 'Suits', 'Which horizon the evidence actually supports') }}</th>
+      <th class="num">{{ sort_link('margin_of_safety', 'Margin of safety') }}</th>
+      <th class="num">Price</th>
+      <th>{{ sort_link('action', 'Long term', '12-36 months') }}</th>
+      <th class="num">{{ sort_link('composite_score', 'L score') }}</th>
+      <th class="num">{{ sort_link('confidence', 'L conf.') }}</th>
+      <th>{{ sort_link('short_term_action', 'Short term', '5-20 trading days') }}</th>
+      <th class="num">{{ sort_link('short_term_score', 'S score') }}</th>
+      <th class="num">{{ sort_link('short_term_confidence', 'S conf.') }}</th>
+      <th>Setup / risk</th>
+      <th>{{ sort_link('sentiment', 'Sentiment') }}</th>
+      <th>Engine</th>
+      <th>{{ sort_link('freshness', 'Updated') }}</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    {% set primary = 'short_term' if horizon == 'short_term' else 'long_term' %}
+    <tr class="{% if row.conflict %}conflict{% endif %} {% if row.is_held %}held{% endif %}">
+      <td>
+        <a href="/instrument/{{ row.ticker }}"><strong>{{ row.ticker }}</strong></a>
+        <span class="muted small">{{ row.name[:34] }}</span>
+        {% if row.is_held %}<span class="chip small held">held</span>{% endif %}
+        {# The reverse of the Sectors drill-down: pick a sector off a row and see
+           everything else in it. "unclassified" is shown rather than left blank
+           because an empty cell would read as a rendering fault, and 194 of the
+           500 instruments are in that state. #}
+        <br>
+        {% if row.sector %}
+          <a class="muted small sector-link"
+             href="{{ filters.href('/dashboard', sector=row.sector) }}"
+             title="Show every instrument in {{ row.sector }}">{{ row.sector }}</a>
+        {% else %}
+          <a class="muted small sector-link unclassified"
+             href="{{ filters.href('/dashboard', sector=unclassified_sector) }}"
+             title="Show every instrument with no sector on file">unclassified</a>
+        {% endif %}
+      </td>
+
+      <td>
+        {% if row.horizon_fit %}
+          <span class="badge fit-{{ row.horizon_fit }}">{{ row.horizon_fit | replace('_', ' ') }}</span>
+        {% else %}<span class="muted">â€”</span>{% endif %}
+      </td>
+
+      <td class="num {% if row.margin_of_safety and row.margin_of_safety > 0 %}good{% elif row.margin_of_safety %}bad{% endif %}">
+        {{ row.margin_of_safety | pct(1, false) }}
+      </td>
+      <td class="num">
+        {{ row.price | number(2) }}
+        <span class="muted small {% if row.change_pct and row.change_pct > 0 %}good{% elif row.change_pct %}bad{% endif %}">
+          {{ row.change_pct | pct(1) }}
+        </span>
+      </td>
+
+      {# ---- long term ---- #}
+      {% set long_cell %}
+        <span class="badge {{ row.action | action_class }}">{{ (row.action or 'no call') | replace('_', ' ') }}</span>
+        {% if row.action and not row.gate_allowed %}
+          <span class="muted small" title="{{ row.gate_reason }}">{{ row.gate_reason or 'refused' }}</span>
+        {% elif row.gate_allowed %}
+          <span class="chip small ok">allowed</span>
+        {% endif %}
+      {% endset %}
+      <td class="{% if primary == 'long_term' %}primary{% endif %}">{{ long_cell }}</td>
+      <td class="num">{{ row.composite_score | number(1) }}</td>
+      <td class="num">{{ row.confidence | pct0 }}</td>
+
+      {# ---- short term ---- #}
+      {% set short_cell %}
+        <span class="badge {{ row.short_term_action | action_class }}">{{ (row.short_term_action or 'no call') | replace('_', ' ') }}</span>
+        {% if row.short_term_action and not row.short_term_gate_allowed %}
+          <span class="muted small" title="{{ row.short_term_gate_reason }}">{{ row.short_term_gate_reason or 'refused' }}</span>
+        {% elif row.short_term_gate_allowed %}
+          <span class="chip small ok">allowed</span>
+        {% endif %}
+      {% endset %}
+      <td class="{% if primary == 'short_term' %}primary{% endif %}">{{ short_cell }}</td>
+      <td class="num">{{ row.short_term_score | number(1) }}</td>
+      <td class="num">{{ row.short_term_confidence | pct0 }}</td>
+
+      <td class="small">
+        {% if row.setup_score is not none %}
+          <span title="Quality of the tactical setup (0 poor â€“ 4 excellent)">setup {{ row.setup_score | number(0) }}/4</span>
+          <br>
+          <span class="muted" title="Risk of an adverse move over the next few weeks (0 minimal â€“ 4 severe)">
+            risk {{ row.drawdown_risk | number(0) }}/4
+          </span>
+        {% else %}<span class="muted">â€”</span>{% endif %}
+      </td>
+
+      <td>
+        {% if row.sentiment is not none %}
+          <span class="meter"><span style="width: {{ ((row.sentiment + 1) / 2 * 100) | round(0) }}%"></span></span>
+          <span class="muted small">{{ row.sentiment | number(2) }}</span>
+        {% else %}<span class="muted">â€”</span>{% endif %}
+      </td>
+
+      <td class="small">
+        {{ engine_label(row.engine, row.uncalibrated) }}
+        {% if row.conflict %}<span class="chip small warn" title="An action disagrees with the composite of the model's own scores">conflict</span>{% endif %}
+      </td>
+      <td class="small muted" title="Decision {{ row.decision_at | datetime }}">
+        {{ row.decision_at | ago }}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="14" class="empty">
+      {% if universe_size == 0 %}
+        Nothing is being analysed yet: the analysed universe is <strong>empty</strong>,
+        which is why this table is blank rather than showing cheap or expensive
+        names. Run <code>t212_instruments</code>, then <code>universe_refresh</code>
+        to select what to follow, then <code>price_eod</code>,
+        <code>valuation</code> and <code>decision</code> â€” all from
+        <a href="/jobs">Operations</a>.
+      {% else %}
+        No decisions yet for the {{ universe_size }} instruments in the
+        universe. Run <code>price_eod</code>, then <code>valuation</code> and
+        <code>decision</code> from <a href="/jobs">Operations</a>.
+      {% endif %}
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if pages > 1 %}
+<nav class="pager">
+  {% if page > 1 %}
+    <a href="{{ filters.href('/dashboard', page=page - 1) }}">â† Prev</a>
+  {% endif %}
+  <span>Page {{ page }} of {{ pages }} ({{ total }} instruments)</span>
+  {% if page < pages %}
+    <a href="{{ filters.href('/dashboard', page=page + 1) }}">Next â†’</a>
+  {% endif %}
+</nav>
+{% endif %}
+</div>
