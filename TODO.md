@@ -482,23 +482,6 @@ started", which would keep the first-start behaviour and drop the other 61 runs.
 guard in `scheduler/jobs.py` is where a "ran recently" reason would go, and
 `job_statuses` already knows when each job last succeeded.
 
-### The universe news poll is the longest run and reports no progress
-
-`ingest_rss_news` (`ingest/news.py:346`) loops over every instrument in the universe
-with no `progress.note`, so the progress panel for it contains only what the logger
-happens to emit. Observed 2026-10-06 during `news_rss` run #220: **55 minutes in,
-~1,750 classification calls at a steady 30 per minute**, and the panel showed five
-truncated-classification warnings and nothing else. The run looked stalled; it was
-working normally the whole time.
-
-Every comparable loop already reports its position — the decision sweep, news
-appraisal, XBRL statements, fundamentals, price batches and symbol resolution all got
-a note. This is the longest of them and the only one that does not.
-
-**Next:** a `progress.note(f"{position} of {len(instruments)}: {instrument.t212_ticker}")`
-on the loop, the shape the other seven use. It cannot be verified without a live run
-of an hour or more, so it is worth doing alongside whatever bounds this job.
-
 ### The universe news poll needs hours and never finishes
 
 `ingest_rss_news` (`ingest/news.py:346`) walks every instrument in the universe, up to
@@ -593,6 +576,34 @@ means:
 
 `tests/test_partial_paging.py` carries the contract for the dashboard; adding a tuple to
 `REGIONS` extends it to each one as it lands.
+
+### `xbrl_statements` measures coverage, so a wrong extraction is never revisited
+
+The job's coverage probe (`scheduler/dependencies.py::_probe_xbrl_statements`) counts
+filers with a CIK that have **no** `xbrl_companyfacts` row at all. The job is
+`backfill=True`, so once that count reaches zero `skip_reason` skips it.
+
+That is the right test for "is there anything to fetch", and the wrong one for "is what
+we stored correct". A period extracted with the wrong tags counts as covered, so a filer
+whose statements we read wrongly is never read again -- and the gap can only be closed by
+a code change nobody knows is needed.
+
+Measured 2026-10-06: **314** US filers, **30** with stored periods, **284** without. The
+rotation is `ORDER BY max(as_of) NULLS FIRST, ticker` with `reports.per_run: 60`, so the
+284 drain first and the 30 already-extracted are re-read as runs 5-6. That ordering is
+the only reason the ledger fixes of the same day reached stored rows at all; had those 30
+been extracted last they would have been re-read first and then never again.
+
+**This is the lag both fixes on 2026-10-06 ran into**, and neither reaches a stored row on
+its own: `analysis/ledger.py` reads stored metrics, so a filer extracted before the fix
+keeps the old figures until the job rotates back over it. The EBIT bridge, the
+interest-income lines and the four balance-sheet components all share it.
+
+**Next:** the probe needs a second notion of outstanding -- a period written by an older
+version of the mapper. Everything needed is derivable rather than needing new state: the
+row carries `as_of`, and `metric_sources` records the tag each figure came from, so
+"extracted before tag X existed" is answerable. A mapper version stamped on the row would
+make it exact. Cheap, and it turns a silent staleness into a queue entry the job drains.
 
 ### Every page is only tested against seeded data
 
