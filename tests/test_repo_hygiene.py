@@ -1,4 +1,4 @@
-"""A guard on what git is actually ignoring.
+"""A guard on what git is actually ignoring, and on the state of the TODO queue.
 
 Written after a `.gitignore` pattern silently excluded nine of thirteen research
 reports from version control. The failure was invisible in the way that matters:
@@ -7,10 +7,14 @@ because ignored, not because committed. Two commits of mine claimed to add those
 files and did not.
 
 So this asserts the property directly rather than trusting the tree to look right.
+The TODO checks at the end are the same idea applied to AGENTS.md section 6: the
+file is a queue of outstanding work, and an item left in it after it was implemented
+reads as work still owed.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -156,4 +160,120 @@ def test_no_tracked_file_is_matched_by_an_ignore_pattern() -> None:
     assert not matched, (
         "these tracked files are matched by .gitignore, which means an ignore "
         f"pattern has started covering real content: {matched[:10]}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# TODO.md is a queue, not a graveyard -- AGENTS.md section 6
+# --------------------------------------------------------------------------- #
+
+#: The sections a TODO item may live under. A subset check, not equality: adding a
+#: section is free, renaming one away from AGENTS.md is not.
+TODO_SECTIONS = (
+    "Bugs",
+    "Correctness questions still open",
+    "Operations",
+    "Deliberately not doing",
+)
+
+#: How a completed item gets left behind instead of deleted. `git log -S` and
+#: `git blame` are the record of what was done; the file is only what is still owed,
+#: so a closed item costs the next reader the work of disproving it.
+#:
+#: Deliberately narrow. Two attempts to widen it produced false positives on
+#: legitimate prose: "rather than **failing closed**" is a domain term, and
+#: "**Done when:** a JEV key is configured" states an item's acceptance criterion.
+#: A guard that makes people reword honest entries is worse than the drift it
+#: prevents, so "fixed" and "resolved" are matched as closure clauses while "done",
+#: "closed" and "completed" are only caught as a bold status lede, where they cannot
+#: be anything else.
+CLOSED_MARKERS = (
+    r"- \[[xX]\]",  # a ticked checkbox
+    r"~~\S.*?\S~~",  # struck through
+    r"^\*\*(Fixed|Resolved|Completed|Implemented)\b",  # a status lede
+    r"\b(is|are|was|were)\s+(now\s+)?(fixed|resolved)\b",  # "...are fixed."
+)
+
+
+def _todo_lines() -> list[str]:
+    path = REPO / "TODO.md"
+    if not path.exists():
+        pytest.skip("TODO.md is not present")
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def _todo_items() -> list[tuple[int, str, list[str]]]:
+    """Each `###` entry as ``(first line number, heading, its lines including it)``.
+
+    The unit of the rule is an *entry*, which is why this is parsed rather than
+    scanned line by line over the whole file. The preamble states the rule ("items
+    are deleted when they are fixed") and the `## Bugs` narrative records what past
+    fixes turned out to be, and both legitimately use the vocabulary a closed item
+    would. Checking those would make the file's own explanation of its rule illegal.
+    """
+    items: list[tuple[int, str, list[str]]] = []
+    current: tuple[int, str, list[str]] | None = None
+
+    for number, line in enumerate(_todo_lines(), start=1):
+        if line.startswith("### "):
+            current = (number, line.strip(), [line])
+            items.append(current)
+        elif line.startswith("## "):
+            current = None
+        elif current is not None:
+            current[2].append(line)
+
+    return items
+
+
+def test_no_todo_item_is_marked_closed() -> None:
+    """Implementing an item deletes it, in the same commit.
+
+    The rule is not merely style. A list that accumulates its finished entries stops
+    being a list of what is owed, and the reader can no longer tell an open item from
+    one that was dealt with a fortnight ago -- which is the only question the file
+    exists to answer.
+
+    The markers are narrow on purpose: this catches a status written *in place* -- a
+    tick, a strikethrough, "**Fixed**", "... is fixed" -- and does not try to judge
+    whether an entry's subject matter still holds. That is a reading task, and it is
+    the reason the same section of AGENTS.md tells you to re-measure.
+    """
+    found: list[str] = []
+    for number, _heading, lines in _todo_items():
+        for offset, line in enumerate(lines):
+            if any(re.search(marker, line) for marker in CLOSED_MARKERS):
+                found.append(f"{number + offset}: {line.strip()}")
+
+    assert not found, (
+        "these TODO.md entries are marked as finished. Delete them instead -- the "
+        "commit that implements an item is the record of it, and a queue that keeps "
+        "its closed items is one nobody reads:\n  " + "\n  ".join(found)
+    )
+
+
+def test_every_todo_item_sits_under_a_known_section() -> None:
+    """An entry with no section is one nobody will scan past.
+
+    AGENTS.md names the sections; this asserts they still exist and that nothing has
+    drifted out from under them.
+    """
+    sections: list[str] = []
+    orphans: list[str] = []
+
+    for number, line in enumerate(_todo_lines(), start=1):
+        if line.startswith("## "):
+            sections.append(line[3:].strip())
+        elif line.startswith("### ") and not sections:
+            orphans.append(f"{number}: {line.strip()}")
+
+    assert not orphans, (
+        "these TODO.md entries appear before any `##` section, so they are filed "
+        "under nothing:\n  " + "\n  ".join(orphans)
+    )
+
+    missing = [name for name in TODO_SECTIONS if name not in sections]
+    assert not missing, (
+        f"AGENTS.md section 6 names these TODO.md sections and they are gone: {missing}. "
+        f"Found instead: {sections}"
     )

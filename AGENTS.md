@@ -9,6 +9,7 @@ without it.
 pytest -q && ruff check src tests
 # refactor pass over your own diff -- step 5, then prove it changed nothing:
 pytest -q && ruff check src tests
+# queue what you found and did not fix; delete what you fixed -- step 6:
 git add -A && git commit
 docker compose exec awltux awltux quiet --timeout 1800   # let in-flight jobs finish
 docker compose build && docker compose up -d
@@ -186,7 +187,42 @@ was split into five named families rather than excused; that is the pass working
 Debt that cannot be paid in this commit goes in `TODO.md` with its evidence, never
 in a lowered standard.
 
-## 6. Clean up
+## 6. `TODO.md` is the queue, not a graveyard
+
+Mid-task you will find something that is not your task: a bug two files away, a
+missing case, a provider that lies, a decision that needs making later. Do not chase
+it and do not lose it. Write it in `TODO.md` and carry on — a discovery you have not
+measured yet does not belong in the diff you are halfway through.
+
+**An entry is the evidence, not the title.** What you already know and would
+otherwise have to rediscover: the measurement, the file and line, the command, the
+run id, what you ruled out. *Payment endpoints are flaky* is not an entry; a status
+code, an instant and the condition that produced it is. The next reader is a session
+with none of your context, and the evidence is the part it cannot reconstruct — which
+is also the only thing that stops the same investigation being run twice.
+
+**Implementing an entry deletes it, in the same commit.** The file lists what is
+still owed, so an item left behind after the fix costs the next reader the work of
+disproving it. A ticked checkbox, a `**Fixed**` heading or struck-through text is the
+same lie with extra steps: `git log -S` and `git blame` are the record of what was
+done, and this file is only the queue. A queue that accumulates its closed items is
+one nobody reads.
+
+**Stale is the quieter failure.** An entry whose numbers were right when written and
+are wrong now is worse than a missing one, because it is believed. Re-measure and
+correct it, or delete it. `decision_run` was still described here as holding nothing
+to rank for a stage after it held 81 decisions and every pipeline job had run.
+
+```bash
+grep -n '^### ' TODO.md          # everything still open
+```
+
+The sections are **Bugs**, **Correctness questions still open**, **Operations** and
+**Deliberately not doing** — the last for a decision *against* acting, with its
+reason, so it stops being re-proposed. `tests/test_repo_hygiene.py` fails on a closed
+item left in place, so the rule is not merely remembered.
+
+## 7. Clean up
 
 `git status` clean ≠ workspace clean: ignored scratch accumulates invisibly. When
 pytest cannot write `.pytest_cache` it falls back to `pytest-cache-files-*` in the

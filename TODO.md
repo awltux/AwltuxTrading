@@ -4,12 +4,15 @@ Open work on AwltuxTrading: bugs, gaps and decisions that are known and
 deliberately deferred. This is the "found it, not fixing it now" list — not a
 roadmap, and not a wish list.
 
-**How this file is kept.** An item goes in the moment it is found, with the
-evidence that found it, so nobody has to rediscover it. Items are *deleted* when
-they are fixed rather than ticked off: git history is the record of what was
-done, and a list of closed items stops being read. Anything already decided
-against lives under **Deliberately not doing** with the reason, so it is not
-re-litigated.
+**How this file is kept** — the full rule is `AGENTS.md` section 6. An item goes in
+the moment it is found, with the evidence that found it, so nobody has to rediscover
+it. Items are *deleted* when they are implemented rather than ticked off: git history
+is the record of what was done, and a list of closed items stops being read. An entry
+whose numbers have gone stale is corrected or deleted, because a stale item is
+believed. Anything already decided against lives under **Deliberately not doing** with
+the reason, so it is not re-litigated.
+
+`tests/test_repo_hygiene.py` fails on a closed item left in place.
 
 Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 **P3** documentation and polish.
@@ -65,25 +68,6 @@ returning zeros, or should it queue behind the scheduled run? Whatever is chosen
 the refusal has to be visible to the CLI and the Run now button, both of which
 currently treat a `None` result as "nothing to do".
 
-### The classifier's output budget was sized to the answer, not to the call
-
-**Fixed and worth recording, because the diagnosis took three attempts.** A
-headline classification was truncated on 6.7% of calls (165 of 2,474) and the log
-said the response was incomplete JSON. It was not: the body was **empty**. The
-`max_tokens` cap was 500, the *content* of a successful call is about 120 tokens,
-and the rest of the recorded output was reasoning the API does not return in
-`message.content` — so the budget was sized to the answer when it had to cover the
-thinking.
-
-`news.classify_max_tokens` is now 2,000 with the retry at `llm.max_output_tokens`.
-Raising a `max_tokens` cap is close to free: it is a cap, not a reservation, so an
-ordinary call generates exactly what it did before. Five calls had also burned
-their retry at 1,500 and were lost entirely.
-
-The lesson is in `Completion.json_object`, which now names this cause when it sees
-an empty body, because "the JSON is incomplete" sent three people looking for a
-truncation point that did not exist.
-
 ### Build the accounting-quality markers from `docs/investment-markers.md`
 
 **Partly done.** The data prerequisite is closed and the first two markers are in:
@@ -116,13 +100,21 @@ Two cautions the note raises that belong with the implementation:
   that reads as a verdict; the note's recommendation is that a flag means "read
   this" and never "this is fraud".
 
-### Every decision so far has failed its own gate
+### Every long-term decision so far has failed its own gate
 
-`decision_run` holds 17 rows and `sum(gate_allowed)` is **0**: not one decision has
-been actionable. The decisions themselves look ordinary — 12 came from DeepSeek,
-5 from the deterministic engine — so this is either the gate working exactly as
-intended on a universe with no accounts stored (`fundamentals` is 0 of 500
-covered) or a threshold that nothing can clear. **Not investigated.**
+`decision_run` holds 81 rows and `sum(gate_allowed)` is **0**: no long-term call has
+been actionable. Short term is not the same story — 2 of the 81 pass — so this is not
+"the gate refuses everything", it is specifically the long-term checks.
+
+The decisions look ordinary. 76 came from DeepSeek and 5 from the deterministic
+engine, and no JEV key is configured, so every one is also uncalibrated. Of the 81,
+77 answer `horizon_fit = neither` and 4 `short_term`; the binding rules are
+`price_stale` (52) and `confidence_below_floor` (28).
+
+Both of those are the gate doing its job on a universe with no accounts stored —
+`fundamentals` coverage is the real constraint, and a stale price is a stale price.
+The open question is whether the confidence floor is calibrated against that
+universe or is a threshold nothing can clear. **Not investigated.**
 
 **Next:** read one decision's `gate` JSON against its `answers`, and see which
 check refused it. The gate reason strings are supposed to be specific enough to
@@ -142,62 +134,45 @@ much more deliberation than the schema requires, or the model loops on some inpu
 `input_tokens` and `output_tokens` for every call, so the inputs that trigger it can
 be found rather than guessed at.
 
-### 13 instruments have no listing a search can find
+### `symbol_resolution`'s ISIN answer is discarded by the next instrument sync
 
-**The wrong-symbol problem is fixed.** The 92 instruments that failed every price
-run had a symbol *derived* from a Trading 212 ticker, and T212's tickers are
-frequently former ones. `instrument_alias` was already the translation table -- it
-had `confidence`, `method` (`isin | name | manual | ticker`), `is_manual` and a note
--- but its only producer was the derivation itself.
+Measured against the live database, and it contradicts what this item used to claim.
 
-The `symbol_resolution` job now looks the company up by **ISIN**, which survives a
-rename. Against the 92: **74 resolved**, 5 refused, 13 with no match. Examples:
-`AHAC_US_EQ -> HUMA` (Humacyte), `BSN_US_EQ -> EVTL` (Vertical Aerospace),
-`CNCTl_EQ -> SNWS.L` (Smiths News), `AURC_US_EQ -> BETR` (Better Home & Finance).
+**18** instruments in the universe have an ISIN and no price bar. They are the
+residue of the 92 whose Yahoo symbol was *derived* from a Trading 212 ticker, and
+T212's tickers are frequently former ones. `symbol_resolution` looks those up by
+**ISIN** — which survives a rename — and reports them resolved. It writes the answer
+to `instrument_alias`, provider `yahoo`, `is_manual=False`.
 
-**Two rules were added after reading the first run rather than its count**, and both
-were found in the output rather than by design:
+**Nothing reads that row.** `ingest/prices.py` builds its work from
+`Instrument.yahoo_symbol` (`prices.py:128,143`), never from the alias table. The only
+path from an alias into `yahoo_symbol` is `universe.py::_resolve_mapping`, which
+copies across aliases where `is_manual IS TRUE` (lines 213–225) — so a non-manual
+result is not merely unused, it is skipped by design.
 
-- **5 cross-listings were refused.** An ISIN identifies the *company*, and a company
-  can be listed in several places. `DOOO_US_EQ` came back as `DOO.TO` (Toronto) and
-  `EVTCY_US_EQ` as `EVTA.F` (Frankfurt) -- the venue decides price, currency and
-  liquidity, so a Toronto price on a Nasdaq row is a plausible number that is simply
-  not the right one. Those five need a human to choose the listing, which is the
-  correct outcome rather than a silent wrong one.
-- **One placeholder was refused.** `BIOK_US_EQ` resolved to `DUMY0001134`, Yahoo's
-  stand-in for a company with no live listing.
+The same function then **overwrites the alias** with the derived symbol (lines
+247–259). That is why `DOOO_US_EQ` carries alias `DOOO`, `method='us_bare'` — the
+derived guess — where this file previously recorded `DOO` at confidence 0.907 as
+"applied, verified live". `t212_instruments` has run 51 times since. The resolution
+is destroyed, not just ignored.
 
-**The 13 are honest, not a bug.** They have no listing a search can find:
-`AFAR_US_EQ` (a SPAC that appears to have completed), `BLVNl_EQ`, `HGENl_EQ`,
-`HMSGl_EQ`, `INXl_EQ`, `NGHTl_EQ`, `PODPl_EQ`, `PPCl_EQ`, `SAL_US_EQ`, `STAF_US_EQ`
-and the three others in the run detail. Most are suspended or delisted UK small-caps.
-Checked against the live endpoint: `AFAR_US_EQ` and `BLVNl_EQ` return **zero**
-candidates by ISIN *and* by name. No rule can find a listing that does not exist.
+So the residue growing from 13 to 18 is one cause, not drift: names go stale, the
+job re-resolves them, and the answer is thrown away on the next sync.
 
-**The 5 cross-listings were a bug, and are fixed.** The venue penalty refused the
-foreign listing correctly, and then the job stopped: it fell back to a name search
-only when the ISIN search returned *nothing*, and an ISIN search for a company listed
-in several places returns the foreign ones rather than nothing. BRP's
-`CA05577W2004` comes back as `DOO.TO` and `CA05577W2004.SG`; the Nasdaq `DOO` is
-never in that list. The right listing sat one name search away, unasked. The
-fallback now runs whenever the ISIN match is not good enough to apply, and prefers a
-usable name match to a refused ISIN one. Verified live: `DOO` at 0.907, exchange
-agrees, applied -- while `AFAR_US_EQ` and `BLVNl_EQ` still resolve to nothing, so the
-rule does not manufacture matches.
+**A cut of them are honest, not a bug.** `AFAR_US_EQ` (a SPAC that appears to have
+completed) and `BLVNl_EQ` were checked against the live endpoint and return **zero**
+candidates by ISIN *and* by name. `BIOK_US_EQ` resolved to `DUMY0001134`, Yahoo's
+stand-in for a company with no live listing, and was refused. Most of the rest are
+suspended or delisted UK small-caps. No rule can find a listing that does not exist.
 
-**Known gap: nothing shows these to a human, and they are retried for ever.** An
-earlier version of this note claimed the failures were "visible as needing review
-rather than silently retried". Neither is true. `stuck` is defined purely as "in the
-universe with no stored bar", so all 13 are looked up again every run, for ever,
-whatever their alias says -- 26 requests a day that cannot change the answer. And no
-page lists aliases needing review: the note and the `is_manual` flag exist and are
-honoured, but the only place either surfaces is the instrument page, one ticker at a
-time. A reviewer has no list to work from.
-
-**Next, if it matters:** the same lookup should be applied to `sec_cik` and
-`ch_company_number`, which are resolved by name matching today and have the same
-weakness. And the 13 need either a retry backoff -- stop re-asking a question whose
-answer cannot change -- or a review queue where a human can set the symbol by hand.
+**Next:** decide which side owns the symbol. Either the price job reads
+`instrument_alias` where `provider='yahoo'` — making the derivation one producer
+among several — or resolution sets `is_manual=True`, which is a smaller change but
+marks a machine's guess as a human's decision, and that distinction is the reason the
+flag exists. Then the 18 need either a retry backoff, so a question whose answer
+cannot change stops being asked daily, or a review queue: there are **no** manual
+aliases at all (`is_manual` count is 0), and the only place one surfaces is the
+instrument page, one ticker at a time. A reviewer has no list to work from.
 
 ### The Fal embeddings route is refused by OpenRouter, not by us
 
@@ -342,21 +317,6 @@ This item was found by running quiet, which is the tool doing its job.
 same shape as `fundamentals`, so a run is bounded by design rather than by the
 universe happening to be small. A bounded run also makes the daily cadence honest:
 at 4.1/min, 500 instruments cannot complete inside one interval.
-
-### Finish building the live data
-
-The deployment has the reference data and the prices — 500 instruments in
-universe over 17,553 bars, and 3,555 stored news items — but no decisions yet
-(`decision_run` 0), so the Recommendations table has nothing to rank.
-
-An earlier version of this item claimed the universe, prices and news were all
-empty. That was read from `data/awltux.db` on the host, which the container does
-not use; it mounts the named volume `awltux-data` at `/data`. The lesson is the
-one this file keeps recording: check which artifact the claim is about.
-
-**Next:** let `price_eod` and `fundamentals` rotate through the universe, then
-`news_analysis` (new, and so far unrun on real data), `sentiment`, `valuation`
-and `decision`. Expect `price_eod` to take a while and to be rate-limited.
 
 ### Every page is only tested against seeded data
 
