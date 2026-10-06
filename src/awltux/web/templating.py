@@ -150,6 +150,34 @@ def fmt_ago(value: Any) -> str:
     return format_moment(when, "%Y-%m-%d")
 
 
+def fmt_interval(seconds: Any) -> str:
+    """A schedule interval as the schedule it actually is.
+
+    **Sub-minute intervals are shown in seconds.** The page used to render every
+    interval as minutes rounded to a whole number, so ``edgar_atom_events`` at 45
+    seconds printed **"1.0m"** -- a schedule the job does not have. A reader who then
+    finds no per-minute history cannot tell a broken scheduler from their own
+    misreading, which is exactly how that job's silence went unnoticed.
+
+    The units change with the magnitude for the same reason: ``604800`` rendered as
+    "10080.0m" is technically correct and tells a reader nothing.
+    """
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return "—"
+
+    if value < 90:
+        return f"{value:.0f}s"
+    if value < 3600:
+        return f"{value / 60:.0f}m"
+    if value < 86400:
+        hours = value / 3600
+        return f"{hours:.0f}h" if abs(hours - round(hours)) < 0.05 else f"{hours:.1f}h"
+    days = value / 86400
+    return f"{days:.0f}d" if abs(days - round(days)) < 0.05 else f"{days:.1f}d"
+
+
 def action_class(action: str | None) -> str:
     """CSS class for an action badge. Unknown actions are visibly unknown."""
     return {
@@ -216,6 +244,7 @@ def create_templates() -> Jinja2Templates:
             "ratio": fmt_ratio,
             "datetime": fmt_datetime,
             "duration": fmt_duration,
+            "interval": fmt_interval,
             "ago": fmt_ago,
             "action_class": action_class,
             "materiality_class": materiality_class,

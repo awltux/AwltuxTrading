@@ -9,6 +9,8 @@ and you want to see the error rather than read it in the run history.
     awltux settings              # show effective configuration (secrets redacted)
     awltux job <job-id>          # run one scheduled job now
     awltux jobs                  # list the registered jobs
+    awltux quiet                 # pause scheduling and wait, before a rebuild
+    awltux unquiet               # undo it, if the rebuild was called off
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from awltux import __version__
 
@@ -271,6 +274,119 @@ def cmd_job(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_quiet(args: argparse.Namespace) -> int:
+    """Ask the running server to stop starting work, and wait for what is running.
+
+    Deliberately the first half of an upgrade rather than a nicer shutdown. By the
+    time SIGTERM arrives the drain has a deadline and a job that overruns it is
+    killed mid-write; the run row is closed as interrupted on the next boot, which
+    is honest but is still work lost. Asking before the rebuild costs nothing and
+    leaves nothing to interrupt.
+    """
+    from awltux.config import get_settings
+
+    settings = get_settings()
+    status = _ask_server(settings, "POST", "/api/quiet")
+    if status is None:
+        print(
+            f"nothing is listening at {_local_base_url(settings)}, so no scheduler is "
+            "running and there is nothing to quiet.",
+            file=sys.stderr,
+        )
+        return _report_open_runs_without_a_server()
+
+    print(f"quieted at {status.get('quiet_since') or 'now'}")
+
+    deadline = time.monotonic() + float(args.timeout)
+    while not status.get("idle") and time.monotonic() < deadline:
+        running = ", ".join(status.get("running") or []) or "?"
+        print(f"  waiting for {running}", file=sys.stderr)
+        time.sleep(args.poll)
+        status = _ask_server(settings, "GET", "/api/quiet") or status
+
+    if not status.get("idle"):
+        running = ", ".join(status.get("running") or [])
+        print(
+            f"still running after {args.timeout:.0f}s: {running}\n"
+            "Not safe to rebuild yet. Either wait, or accept that the job will be "
+            "interrupted and closed as such on the next start.",
+            file=sys.stderr,
+        )
+        return 3
+
+    print("idle: no jobs running. Safe to rebuild and redeploy.")
+    return 0
+
+
+def cmd_unquiet(args: argparse.Namespace) -> int:
+    """Undo `awltux quiet`, for an upgrade that was called off."""
+    from awltux.config import get_settings
+
+    settings = get_settings()
+    status = _ask_server(settings, "DELETE", "/api/quiet")
+    if status is None:
+        print(f"nothing is listening at {_local_base_url(settings)}", file=sys.stderr)
+        return 1
+    print("resumed: the scheduler is taking work again.")
+    return 0
+
+
+def _report_open_runs_without_a_server() -> int:
+    """Distinguish "no server, so nothing is scheduled" from "no server, but a run
+    row is open" -- the second means something died mid-job and the last word on the
+    deployment is wrong."""
+    from awltux.db import session_scope
+    from awltux.scheduler.jobs import running_jobs
+
+    try:
+        with session_scope() as session:
+            open_runs = sorted(running_jobs(session))
+    except Exception as exc:  # pragma: no cover - diagnostics only
+        print(f"could not read the run table: {exc}", file=sys.stderr)
+        return 2
+
+    if open_runs:
+        print(
+            "but the run table has open rows for: "
+            + ", ".join(open_runs)
+            + "\nA previous process died mid-job; the next start closes these as "
+            "interrupted.",
+            file=sys.stderr,
+        )
+        return 3
+
+    print("The run table has no open rows either: nothing is mid-write.")
+    return 0
+
+
+def _ask_server(settings, method: str, path: str) -> dict | None:
+    """One request to the local server. ``None`` when nothing is listening.
+
+    ``DELETE`` is included because `unquiet` is an undo rather than a resource of
+    its own; the pair reads as create/destroy on the quiet state.
+    """
+    import httpx
+
+    url = f"{_local_base_url(settings)}{path}"
+    try:
+        response = httpx.request(
+            method,
+            url,
+            # Short: a quiet call is a question about state, not work. Hanging here
+            # would block the upgrade on the very thing quiet exists to unblock.
+            timeout=httpx.Timeout(30.0, connect=2.0),
+        )
+    except httpx.HTTPError:
+        return None
+    if response.status_code >= 400:
+        print(f"server refused: HTTP {response.status_code} {response.text}", file=sys.stderr)
+        return None
+    try:
+        return response.json()
+    except ValueError:  # pragma: no cover - the endpoint returns JSON
+        return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="awltux", description="AwltuxTrading")
     parser.add_argument("--log-level", default=None, help="override the configured log level")
@@ -333,6 +449,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     job.set_defaults(func=cmd_job)
+
+    quiet = sub.add_parser(
+        "quiet",
+        help="stop starting jobs and wait for the running ones, before a rebuild",
+    )
+    quiet.add_argument(
+        "--timeout",
+        type=float,
+        default=900.0,
+        help="seconds to wait for in-flight jobs before giving up (default 900)",
+    )
+    quiet.add_argument("--poll", type=float, default=3.0, help="seconds between checks")
+    quiet.set_defaults(func=cmd_quiet)
+
+    sub.add_parser(
+        "unquiet", help="resume scheduling after an abandoned upgrade"
+    ).set_defaults(func=cmd_unquiet)
 
     return parser
 

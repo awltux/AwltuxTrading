@@ -330,6 +330,60 @@ def jobs(request: Request) -> dict[str, Any]:
     }
 
 
+@router.get("/quiet", summary="Whether the scheduler is quieted, and what is finishing")
+def quiet_status(request: Request) -> dict[str, Any]:
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        return {"quiet": False, "quiet_since": None, "running": [], "idle": True}
+    return scheduler.quiet_status()
+
+
+@router.post("/quiet", summary="Stop taking on new work so an upgrade can wait")
+def request_quiet(
+    request: Request,
+    wait: float = Query(
+        0.0,
+        ge=0.0,
+        le=3_600.0,
+        description=(
+            "Seconds to wait for in-flight jobs to finish. 0 returns immediately. "
+            "Exceeding it returns 409 with the jobs still running."
+        ),
+    ),
+) -> dict[str, Any]:
+    """Refuse new work, and optionally block until nothing is running.
+
+    Returns 409 rather than 200 when the wait expires with jobs still running, so
+    an upgrade script that checks the status code cannot mistake "asked" for
+    "safe to rebuild". The body names the stragglers either way.
+    """
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="scheduler is not running")
+
+    status = scheduler.quiet()
+    if wait > 0:
+        stragglers = scheduler.wait_for_idle(wait)
+        status = scheduler.quiet_status()
+        if stragglers:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "still running after the wait; not safe to rebuild yet",
+                    **status,
+                },
+            )
+    return status
+
+
+@router.delete("/quiet", summary="Resume scheduling after an aborted upgrade")
+def cancel_quiet(request: Request) -> dict[str, Any]:
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="scheduler is not running")
+    return scheduler.unquiet()
+
+
 @router.post("/jobs/{job_id}/run", summary="Trigger a job now")
 def run_job(job_id: str, request: Request) -> dict[str, Any]:
     scheduler = getattr(request.app.state, "scheduler", None)

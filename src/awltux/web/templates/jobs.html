@@ -4,6 +4,20 @@
 {% block content %}
 <h1>Operations</h1>
 
+{% if quiet and quiet.quiet %}
+<p class="notice">
+  <strong>Quieted{% if quiet.quiet_since %} since {{ quiet.quiet_since | datetime }}{% endif %}.</strong>
+  Scheduling is paused so a rebuild can wait for in-flight work, which is why no row
+  shows a next run.
+  {% if quiet.running %}
+    Still running: {{ quiet.running | join(", ") }}.
+  {% else %}
+    Nothing is running — safe to rebuild.
+  {% endif %}
+  Resume with <code>awltux unquiet</code>, or a restart.
+</p>
+{% endif %}
+
 <section class="summary">
   <div class="stat"><span class="stat-value">{{ stats.universe_size }}</span><span class="stat-label">in universe</span></div>
   <div class="stat"><span class="stat-value">{{ stats.mapped }}</span><span class="stat-label">price-mapped</span></div>
@@ -88,7 +102,7 @@
           {% endfor %}
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
-      <td class="num">{{ (job.interval_seconds / 60) | round(0) }}m</td>
+      <td class="num">{{ job.interval_seconds | interval }}</td>
       <td class="small muted">{{ job.next_run | datetime if job.next_run else '—' }}</td>
       <td>
         {% if not job.enabled %}<span class="muted">disabled (missing credential)</span>

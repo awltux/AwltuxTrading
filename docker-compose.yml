@@ -31,7 +31,13 @@ services:
       - "127.0.0.1:${AWLTUX_PORT:-8080}:${AWLTUX_PORT:-8080}"
     volumes:
       - awltux-data:/data
-    stop_grace_period: 30s
+    # Long enough for the scheduler's drain to finish a job mid-batch rather than
+    # being SIGKILLed partway. The app's own budget is AWLTUX_SHUTDOWN_DRAIN_SECONDS
+    # (20 by default) and must stay under this figure, or Docker kills first and the
+    # wait is theatre. A job known to run for minutes should be headed off with
+    # `awltux quiet` before the container is replaced -- this is the safety net, not
+    # the mechanism.
+    stop_grace_period: 60s
     logging:
       driver: json-file
       options:

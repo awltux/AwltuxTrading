@@ -65,8 +65,19 @@ authentication, so it must not be exposed on a network.
 ### Updating a running deployment
 
 ```bash
-docker compose up -d --build     # rebuild AND recreate
+docker compose exec awltux awltux quiet --timeout 1800   # wait for in-flight jobs
+docker compose up -d --build                             # rebuild AND recreate
 ```
+
+**Quiet it first.** Rebuilding sends the container SIGTERM, and on SIGTERM the app
+stops scheduling and waits — but only briefly, because the container is going whether
+the wait finishes or not. A job that outruns that window is killed part-way through
+writing its batch; the run row is closed as *interrupted* on the next start, which is
+honest but is still work lost and a database left mid-transaction. `awltux quiet`
+asks *before* the rebuild instead: it pauses scheduling and waits for as long as it
+takes. Exit code `3` means a job outran the timeout and it is **not** safe to rebuild
+yet. `awltux unquiet` resumes, if you decide not to upgrade after all; the state is
+also cleared by any restart.
 
 **`docker build` on its own does not update a running container, and neither does
 `docker compose up -d` without `--build`** — the latter reuses whatever image is
@@ -378,6 +389,8 @@ honest and checkable.
 docker compose exec awltux awltux settings   # effective config, secrets redacted
 docker compose exec awltux awltux jobs       # the job registry
 docker compose exec awltux awltux job price_eod   # run one job now
+docker compose exec awltux awltux quiet      # pause and wait, before a rebuild
+docker compose exec awltux awltux unquiet    # resume after an abandoned upgrade
 ```
 
 ### Running the app outside Docker

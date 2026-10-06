@@ -73,6 +73,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         logger.info("AwltuxTrading shutting down")
         try:
+            # Stop scheduling, then give what is already running a bounded chance to
+            # finish. `shutdown(wait=False)` on its own abandons a job mid-batch and
+            # leaves its run open, which the next start then closes as interrupted --
+            # honest, but still lost work on every upgrade.
+            #
+            # Bounded, and shorter than the container's stop grace period, because the
+            # container is going to stop whether this returns or not: waiting longer
+            # only turns a clean upgrade into a SIGKILL with extra steps. A long job
+            # is meant to be headed off by `awltux quiet` before the rebuild, not by
+            # this.
+            budget = settings.env.shutdown_drain_seconds
+            if budget > 0:
+                remaining = scheduler.drain(timeout=budget)
+                if remaining:
+                    logger.warning(
+                        "shutdown: %s still running after %.0fs and will be "
+                        "interrupted; run `awltux quiet` before upgrading to avoid this",
+                        ", ".join(remaining),
+                        budget,
+                    )
             scheduler.shutdown(wait=False)
             # Checkpoint the in-memory rate-limit counters before the engine goes
             # away, so a restart resumes each provider's budget rather than

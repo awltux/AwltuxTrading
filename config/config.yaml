@@ -24,20 +24,30 @@ universe:
   instrument_types: [STOCK]
 
 # --- ingest cadences (seconds unless noted) -----------------------------------
+#
+# ONE HOUR IS THE FLOOR. Nothing in this system needs finer resolution: it is a
+# long-horizon advisory tool, the providers are free tiers with rate limits, and the
+# daily bars it reasons about only change once a day. Several of these were once
+# 45 to 900 seconds, which -- now that the scheduler actually fires them -- would
+# have spent provider quota confirming that nothing had changed.
+#
+# The scheduler randomises each job's first run across the hour (see
+# `scheduler/service.py`), so these do not all fire on the same tick. That is why the
+# values are round: the spread is what stops them colliding, not a hand-picked phase.
 schedule:
   t212_instruments: 86400        # daily; T212 rate limit is 1 req / 50s
-  t212_account: 300
-  prices_intraday: 900           # 15 min while the exchange is open
+  t212_account: 3600
+  prices_intraday: 3600          # was 15 min; quotes are a display feed, not an input
   prices_eod: 86400              # once after the close
-  quotes_held: 300               # 5 min for held/watchlist names
+  quotes_held: 3600              # was 5 min
   fundamentals_rotation_per_day: 70
   edgar_submissions: 3600
-  edgar_atom_events: 45
-  companies_house: 900
-  news_rss: 300
-  news_finnhub: 1200
-  news_marketaux: 1800
-  news_gdelt: 900
+  edgar_atom_events: 3600        # was 45 SECONDS; the Atom feed holds hours of events
+  companies_house: 3600          # was 15 min
+  news_rss: 3600                 # was 5 min
+  news_finnhub: 3600             # was 20 min
+  news_marketaux: 3600           # was 30 min
+  news_gdelt: 3600               # was 15 min
   sentiment_aggregate: 3600
   valuation: 86400               # full sweep nightly; event-driven otherwise
   decision: 86400

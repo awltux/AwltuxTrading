@@ -365,6 +365,10 @@ def jobs_page(
         "jobs.html",
         {
             "jobs": scheduler.status() if scheduler else [],
+            # Quieted-for-upgrade is a state a human set and must be able to see, or
+            # the next person reads "no next run" on every row as a broken
+            # scheduler -- which is exactly how the paused-jobs bug presented.
+            "quiet": scheduler.quiet_status() if scheduler else None,
             "runs": runs,
             "stats": stats,
             "statuses": statuses,

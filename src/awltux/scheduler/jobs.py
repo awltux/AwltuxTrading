@@ -62,8 +62,14 @@ class JobSpec:
     # not what is required. Surfaced on the Operations page and checked for cycles
     # by tests/test_job_dependencies.py.
     depends_on: tuple[str, ...] = ()
-    # Jitter spreads provider calls so we do not hammer a free tier at :00.
-    jitter_seconds: int = 0
+    #: True when the job only has work while its coverage probe reports a gap.
+    #:
+    #: A *backfill* job -- resolving symbols, appraising stored stories -- has nothing
+    #: to do once its count reaches zero, and running it anyway spends provider calls
+    #: confirming that. A *refresh* job is the opposite: its coverage reads zero
+    #: precisely when it is working, and time alone creates its next run's work. So
+    #: the default is to run, and a job opts in to being skipped when idle.
+    backfill: bool = False
     enabled: bool = True
     requires: tuple[str, ...] = ()
 
@@ -200,6 +206,63 @@ def record_run(job_id: str, started: dt.datetime, result: JobResult | None, erro
         logger.exception("failed to record ingest run for %s", job_id)
 
 
+def skip_reason(spec: JobSpec, status: Any) -> str | None:
+    """Whether this run should be skipped, from the job's place in the pipeline.
+
+    A pure function of the spec and the status, so the rule can be tested as a rule
+    rather than through whatever state a database happens to be in. Two questions:
+
+    * **Are its dependencies met?** A declared dependency that has neither succeeded
+      nor produced anything to read blocks the job. Running news appraisal against an
+      empty news table, or a decision sweep against no valuations, spends provider and
+      model calls to produce nothing.
+    * **Has it anything to do?** Asked only of jobs that declare themselves
+      ``backfill``. A refresh job's coverage reaches zero precisely when it is
+      working -- prices are current, valuations exist -- and skipping it then would
+      freeze them, because the next hour's work is something no coverage count can
+      see yet.
+
+    A job with no coverage notion at all (a poller, a housekeeping sweep) has
+    ``outstanding is None`` and always runs. That is deliberate: its whole purpose is
+    to fetch what has not been published yet, which by definition is not in the
+    database to be counted.
+    """
+    if status is None:
+        return None
+    if status.blocked:
+        return f"waiting for {', '.join(status.never_ran)}"
+    if spec.backfill and status.outstanding == 0:
+        return f"nothing outstanding: {status.reason}"
+    return None
+
+
+def guard_reason(spec: JobSpec) -> str | None:
+    """Why a scheduled run should be skipped, or ``None`` to go ahead.
+
+    Reads the statuses from the database and applies :func:`skip_reason`. Reuses the
+    machinery the Operations page already uses for its queue rather than inventing a
+    second notion of readiness that could disagree with it.
+
+    Any failure here runs the job. A guard that cannot evaluate itself is not evidence
+    that there is nothing to do, and refusing to work because a query failed would
+    turn a transient database problem into a silent outage.
+    """
+    from awltux.db import session_scope
+    from awltux.scheduler.dependencies import job_statuses
+    from awltux.scheduler.registry import build_job_specs
+
+    try:
+        with session_scope() as session:
+            statuses = {
+                status.id: status for status in job_statuses(session, build_job_specs())
+            }
+    except Exception:  # pragma: no cover - a guard must never stop a job
+        logger.exception("could not evaluate the guard for %s; running it", spec.id)
+        return None
+
+    return skip_reason(spec, statuses.get(spec.id))
+
+
 def execute_job(spec: JobSpec) -> JobResult | None:
     """Run a job with timing, error capture and run logging.
 
@@ -208,6 +271,24 @@ def execute_job(spec: JobSpec) -> JobResult | None:
     """
     started = dt.datetime.now(dt.UTC)
     run_id = start_run(spec.id, started)
+
+    watched = guard_reason(spec)
+    if watched is not None:
+        # Recorded, not silent. A job that fires, finds nothing to do and says so is
+        # a good outcome; the alternative is what prompted this -- a run history with
+        # holes in it cannot be told apart from a scheduler that is not firing at all.
+        skipped = JobResult(note=f"skipped: {watched}")
+        skipped.detail["elapsed_seconds"] = round(
+            (dt.datetime.now(dt.UTC) - started).total_seconds(), 3
+        )
+        # Copied into the detail for the same reason the normal path does it: the
+        # note is what the Operations page reads back, and a skip whose reason is
+        # not stored is indistinguishable from a job that did nothing.
+        skipped.detail["note"] = skipped.note
+        finish_run(run_id, spec.id, started, skipped, None)
+        logger.info("job %s: skipped (%s)", spec.id, watched)
+        return skipped
+
     logger.info("job %s: start", spec.id)
     result: JobResult | None = None
     error: str | None = None

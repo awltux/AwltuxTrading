@@ -58,6 +58,14 @@ class EnvSettings(BaseSettings):
     #: made page-count assertions depend on whether a job happened to have fired.
     #: Explicitly off in the test fixture rather than inferred from the environment.
     scheduler_enabled: bool = True
+    #: How long a shutdown gives running jobs to finish before abandoning them.
+    #:
+    #: Must stay under the container's `stop_grace_period`, or Docker sends SIGKILL
+    #: first and the wait is theatre. This is a safety net for the ordinary restart;
+    #: a job known to be long-running should be headed off with `awltux quiet` before
+    #: the container is replaced, which stops new work and waits without a deadline.
+    #: Zero disables the wait.
+    shutdown_drain_seconds: int = 20
 
     # Trading 212
     t212_api_key: SecretStr | None = None
@@ -164,9 +172,19 @@ class UniverseConfig(BaseModel):
 
 
 class ScheduleConfig(BaseModel):
+    """How often each job runs, in seconds.
+
+    **One hour is the floor, and these defaults are the last line of defence for
+    it.** Nothing here needs finer resolution -- the providers are free tiers with
+    rate limits, and the daily bars the model reasons about change once a day -- so a
+    job asking to run faster is a mistake rather than a preference. `test_scheduler`
+    asserts the floor against the built registry, so a default changed here to
+    something sub-hourly fails rather than quietly spending quota.
+    """
+
     t212_instruments: int = 86_400
-    t212_account: int = 300
-    prices_intraday: int = 900
+    t212_account: int = 3_600
+    prices_intraday: int = 3_600
     prices_eod: int = 86_400
     #: Instruments the end-of-day price job asks for in one run. ``0`` prices the
     #: whole universe, which is what a daily job on 500 names can afford.
@@ -180,18 +198,18 @@ class ScheduleConfig(BaseModel):
     #: provider search and the search endpoint is rate-limited like everything else,
     #: so a backlog drains over several runs rather than in one burst.
     symbol_resolution_per_run: int = 120
-    quotes_held: int = 300
+    quotes_held: int = 3_600
     fundamentals_rotation_per_day: int = 70
     edgar_submissions: int = 3_600
-    edgar_atom_events: int = 45
-    companies_house: int = 900
-    news_rss: int = 300
-    news_finnhub: int = 1_200
-    news_marketaux: int = 1_800
-    news_gdelt: int = 900
-    news_analysis: int = 1_800
-    news_relevance: int = 900
-    news_embeddings: int = 1_800
+    edgar_atom_events: int = 3_600
+    companies_house: int = 3_600
+    news_rss: int = 3_600
+    news_finnhub: int = 3_600
+    news_marketaux: int = 3_600
+    news_gdelt: int = 3_600
+    news_analysis: int = 3_600
+    news_relevance: int = 3_600
+    news_embeddings: int = 3_600
     symbol_resolution: int = 86_400
     #: The Treasury publishes once per business day, so anything under a few hours
     #: is only useful for picking up a corrected publication.

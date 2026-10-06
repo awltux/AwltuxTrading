@@ -8,8 +8,15 @@ without it.
 ```bash
 pytest -q && ruff check src tests
 git add -A && git commit
+docker compose exec awltux awltux quiet --timeout 1800   # let in-flight jobs finish
 docker compose build && docker compose up -d
 ```
+
+**Quiet before you rebuild.** `up -d` sends SIGTERM and the lifespan drains, but that
+drain is bounded (it must be, the container is going regardless), so a long job gets
+killed mid-batch and its run closes as *interrupted* next boot. `awltux quiet` pauses
+scheduling first and waits for as long as it takes; exit 3 means a job outran the
+timeout and it is **not** safe to rebuild yet. `awltux unquiet` undoes it.
 
 Green tests are not a deployment. Verify it landed:
 
