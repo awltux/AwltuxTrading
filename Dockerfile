@@ -48,6 +48,13 @@ COPY alembic.ini ./
 # should not depend on the two files staying in agreement.
 COPY .git ./.git
 COPY .gitignore ./.gitignore
+# The line-ending attributes, because the check below runs `git status` *here* and
+# git reads `.gitattributes` from the working tree. Without this file the builder has
+# no `text=auto`, so a file committed as LF and checked out as CRLF compares as
+# modified and *every* image is branded dirty -- the Info page then prints the right
+# commit next to "has uncommitted changes", which is how a real warning becomes
+# noise. See the note at the top of `.gitattributes`.
+COPY .gitattributes ./.gitattributes
 RUN PYTHONPATH=/build/src python -m awltux.buildinfo \
         --write /build/src/awltux/build_info.json \
         --paths src pyproject.toml README.md config alembic.ini

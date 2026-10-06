@@ -95,6 +95,22 @@ def test_line_endings_are_normalised_by_the_repository() -> None:
         )
 
 
+def test_the_dockerfile_copies_the_line_ending_attributes() -> None:
+    """The attribute only helps if it reaches the place the check runs.
+
+    `git status` reads `.gitattributes` from the working tree, and the dirty-tree
+    check runs in the builder stage, which copies an explicit list of paths rather
+    than the whole repository. The attribute and the `COPY` are two halves of one
+    invariant: with either missing, every image is branded a dirty build again and
+    the Info page's warning goes back to meaning nothing.
+    """
+    dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY .gitattributes" in dockerfile, (
+        "the builder stage must copy .gitattributes, or its `git status` has no "
+        "text=auto and reports every CRLF file as modified"
+    )
+
+
 def test_the_research_reports_are_tracked() -> None:
     """Not merely present on disk — actually in the index."""
     on_disk = {path.name for path in (REPO / "docs" / "research").glob("*.md")}

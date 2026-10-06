@@ -43,7 +43,9 @@ Two ways it silently lies:
 container**, where Git for Windows' system `core.autocrlf=true` does not exist, so
 without a repository-level `text=auto` every CRLF working-tree file compares as
 modified and *every* image is branded dirty. That is a false alarm that reads
-exactly like a real one, which is why it must not be allowed back.
+exactly like a real one, which is why it must not be allowed back. The Dockerfile
+`COPY`s it into the builder for this reason — if that line is ever dropped, the
+warning comes back and nothing else will tell you.
 
 Either way the symptom is the same: **the Info page hash does not match
 `git rev-parse HEAD`.** That is a real defect, not cosmetic — every result the
