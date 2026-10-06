@@ -106,6 +106,10 @@ def instrument_page(request: Request, ticker: str) -> HTMLResponse:
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown instrument {ticker}")
         history = queries.price_history(session, ticker, limit=400)
+        # The chart frame is drawn whether or not there is anything to put in it,
+        # so the panel needs a sentence saying what it is waiting for. Computed
+        # here rather than in the template because it is four different reads.
+        waiting_note = queries.price_history_waiting_note(session, ticker, bars=len(history))
         # The page used to show only the latest decision, so "what did it say last
         # week, and was it right" had no answer anywhere.
         predictions, prediction_count = queries.decision_history(
@@ -121,6 +125,7 @@ def instrument_page(request: Request, ticker: str) -> HTMLResponse:
             "decision": detail["decision"],
             "valuation": detail["valuation"],
             "history": history,
+            "waiting_note": waiting_note,
             "filings": detail["filings"],
             "fundamentals": detail["fundamentals"],
             "news": detail["news"],

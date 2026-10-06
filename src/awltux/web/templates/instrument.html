@@ -273,14 +273,34 @@
 
 {# -------------------------------------------------------------- price chart #}
 <h2>Price history</h2>
-{% if history %}
-  <div class="sparkline" data-points="{{ history | length }}">
-    <canvas id="price-chart" height="180"
-            data-series="{{ history | map(attribute='close') | list | tojson }}"
-            data-dates="{{ history | map(attribute='date') | list | tojson }}"></canvas>
-  </div>
+{#
+  The frame is always drawn, even with nothing to put in it.
+
+  This used to be an either/or: a chart, or a bare sentence. An instrument with no
+  prices therefore showed a gap where the panel should be, and a reader could not
+  tell whether the job had run and found nothing or had never run at all. An empty
+  chart with its axes drawn says "this is where the prices will go", and the line
+  underneath says what is being waited for and why.
+#}
+<div class="sparkline" data-points="{{ history | length }}">
+  {#
+    Single-quoted attributes, deliberately. `tojson` emits raw `"` characters and
+    only escapes `'` (as \u0027), so a double-quoted attribute ends at the first
+    date and the browser sees `data-dates="["`. That made JSON.parse throw, and the
+    chart silently drew nothing -- the panel was blank for every instrument that
+    actually had prices, which is the opposite of what it looked like.
+  #}
+  <canvas id="price-chart" height="180"
+          data-series='{{ history | map(attribute="close") | list | tojson }}'
+          data-dates='{{ history | map(attribute="date") | list | tojson }}'
+          {% if waiting_note %}title="{{ waiting_note }}"{% endif %}></canvas>
+</div>
+{% if history | length >= 2 %}
+  <p class="muted small">
+    {{ history | length }} daily bars, {{ history[0].date }} to {{ history[-1].date }}.
+  </p>
 {% else %}
-  <p class="muted">No price history stored.</p>
+  <p class="muted small">{{ waiting_note }}</p>
 {% endif %}
 
 {# ------------------------------------------------------------------ filings #}

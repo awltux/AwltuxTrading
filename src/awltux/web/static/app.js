@@ -167,18 +167,22 @@
   }
 
   // ------------------------------------------------------------- price chart
+  //
+  // The frame is drawn even when there is nothing to draw inside it.
+  //
+  // This used to return early on fewer than two points, so an instrument with no
+  // stored bars rendered a blank panel that was indistinguishable from a chart
+  // that had failed to load. The axes and the waiting message are now drawn on the
+  // empty canvas, so the panel always says what it is waiting for.
   function drawChart() {
     var canvas = document.getElementById("price-chart");
     if (!canvas) return;
 
-    var series, dates;
-    try {
-      series = JSON.parse(canvas.dataset.series || "[]");
-      dates = JSON.parse(canvas.dataset.dates || "[]");
-    } catch (err) {
-      return;
-    }
-    if (!series || series.length < 2) return;
+    // Parsed independently: the dates only label the axis, so a malformed date
+    // list must not take the price line down with it. It did once -- see the note
+    // on the attribute quoting in instrument.html.
+    var series = parseList(canvas.dataset.series);
+    var dates = parseList(canvas.dataset.dates);
 
     var ratio = window.devicePixelRatio || 1;
     var width = canvas.clientWidth || 600;
@@ -190,20 +194,21 @@
     ctx.scale(ratio, ratio);
     ctx.clearRect(0, 0, width, height);
 
-    var min = Math.min.apply(null, series);
-    var max = Math.max.apply(null, series);
-    if (max === min) { max = min + 1; }
-
     var pad = 8;
     var plotWidth = width - pad * 2;
     var plotHeight = height - pad * 2 - 14;
 
-    function x(i) { return pad + (i / (series.length - 1)) * plotWidth; }
-    function y(value) { return pad + plotHeight - ((value - min) / (max - min)) * plotHeight; }
-
-    // Grid
+    // The axes are drawn first and unconditionally, so an empty panel has the
+    // same shape as a full one and reads as "nothing yet" rather than "broken".
     ctx.strokeStyle = "#2a323c";
     ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pad, pad);
+    ctx.lineTo(pad, pad + plotHeight);
+    ctx.lineTo(width - pad, pad + plotHeight);
+    ctx.stroke();
+
+    // Grid
     for (var g = 0; g <= 4; g++) {
       var gy = pad + (g / 4) * plotHeight;
       ctx.beginPath();
@@ -211,6 +216,18 @@
       ctx.lineTo(width - pad, gy);
       ctx.stroke();
     }
+
+    if (series.length < 2) {
+      drawEmptyChart(ctx, width, pad, plotWidth, plotHeight, series);
+      return;
+    }
+
+    var min = Math.min.apply(null, series);
+    var max = Math.max.apply(null, series);
+    if (max === min) { max = min + 1; }
+
+    function x(i) { return pad + (i / (series.length - 1)) * plotWidth; }
+    function y(value) { return pad + plotHeight - ((value - min) / (max - min)) * plotHeight; }
 
     // Price line, coloured by whether the period ended up or down.
     var rising = series[series.length - 1] >= series[0];
@@ -242,6 +259,44 @@
       var lastLabel = dates[dates.length - 1];
       ctx.fillText(lastLabel, width - pad - ctx.measureText(lastLabel).width, height - 3);
     }
+  }
+
+  /** Parse a JSON list out of a data attribute; [] if absent or malformed. */
+  function parseList(raw) {
+    try {
+      var value = JSON.parse(raw || "[]");
+      return Array.isArray(value) ? value : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  /** The empty frame: the axes, a flat baseline, and any lone point. */
+  function drawEmptyChart(ctx, width, pad, plotWidth, plotHeight, series) {
+    var middle = pad + plotHeight / 2;
+
+    // One bar is still a fact, so plot it rather than pretending there is none.
+    // Its height is arbitrary -- with a single point there is no scale to place it
+    // on -- so it sits mid-plot and the sentence below says what it is.
+    var textOffset = 4;
+    if (series.length === 1) {
+      ctx.fillStyle = "#8b95a4";
+      ctx.beginPath();
+      ctx.arc(pad + plotWidth / 2, middle, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      // Under the dot, not through it.
+      textOffset = 22;
+    }
+
+    // Only the headline is drawn here. The reason it is waiting belongs in the
+    // sentence underneath, which is selectable, translatable and reachable by a
+    // screen reader -- none of which canvas text is, so repeating it there would
+    // be duplication without the benefit.
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#8b95a4";
+    ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("Waiting for data", width / 2, middle + textOffset);
+    ctx.textAlign = "start";
   }
 
   // ---------------------------------------------------------------- job runs

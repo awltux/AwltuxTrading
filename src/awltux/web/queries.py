@@ -22,6 +22,7 @@ from awltux.db import (
     FundamentalPeriod,
     IngestRun,
     Instrument,
+    InstrumentAlias,
     NewsAnalysis,
     NewsItem,
     PriceBar,
@@ -29,7 +30,7 @@ from awltux.db import (
     SentimentSeries,
     ValuationRun,
 )
-from awltux.timezones import utc_today
+from awltux.timezones import format_moment, utc_today
 
 SortKey = Literal[
     "composite_score", "short_term_score", "margin_of_safety", "confidence",
@@ -716,6 +717,121 @@ def price_history(session: Session, ticker: str, *, limit: int = 400) -> list[di
         {"date": bar.date.isoformat(), "close": bar.close, "volume": bar.volume}
         for bar in reversed(rows)
     ]
+
+
+#: Bars a line needs. One point is a dot, and a dot is not a trend.
+MIN_BARS_FOR_CHART = 2
+
+
+def price_history_waiting_note(session: Session, ticker: str, *, bars: int) -> str | None:
+    """What the price panel is waiting for, or ``None`` once it can draw.
+
+    The panel used to render "No price history stored." for every empty case.
+    That sentence is true of four situations that need four different responses,
+    and reading the same words for all of them is why an empty panel reads as a
+    broken one:
+
+    * the instrument is not in the analysed universe, so the end-of-day job
+      never asks for it -- ``load_price_targets`` filters on ``in_universe`` --
+      and this gap will **not** close on its own;
+    * it is in the universe but no provider symbol has been resolved, so there
+      is nothing to ask for either;
+    * the symbol resolves and the job has simply not run yet, which does close
+      on its own;
+    * the job ran and the provider returned nothing under that symbol, which
+      does not.
+
+    Naming which one it is costs a few reads and saves the reader waiting on a
+    gap that will never fill.
+    """
+    if bars >= MIN_BARS_FOR_CHART:
+        return None
+
+    if bars == 1:
+        return (
+            "Waiting for data — one daily bar is stored and a line needs two. "
+            "The next end-of-day price run will add to it."
+        )
+
+    instrument = session.get(Instrument, ticker)
+    if instrument is None:
+        return "Waiting for data — this instrument is not in the database."
+
+    # The provider identity goes into the answer whichever way the rest falls:
+    # it is either the symbol the prices will arrive under, or the record of why
+    # no symbol was chosen.
+    alias = session.execute(
+        select(InstrumentAlias)
+        .where(InstrumentAlias.instrument_t212_ticker == ticker)
+        .where(InstrumentAlias.provider == "yahoo")
+        .limit(1)
+    ).scalar_one_or_none()
+    symbol = instrument.yahoo_symbol or (alias.symbol if alias else None)
+    recorded = f" The symbol lookup recorded: {alias.note}" if alias and alias.note else ""
+
+    if instrument.excluded:
+        return (
+            "Waiting for data — this instrument is excluded from analysis, so the "
+            f"end-of-day price job does not request it.{recorded}"
+        )
+    if not instrument.in_universe:
+        # Whether the universe is empty or this name is simply outside it matters:
+        # the first is a pipeline that has not run, the second is a decision about
+        # this instrument, and only one of them is worth waiting on.
+        in_universe = session.execute(
+            select(func.count())
+            .select_from(Instrument)
+            .where(Instrument.in_universe.is_(True))
+        ).scalar_one()
+        if in_universe == 0:
+            return (
+                "Waiting for data — no instrument is in the analysed universe yet, so "
+                "the end-of-day price job has nothing to request. It fills once the "
+                f"universe refresh has run.{recorded}"
+            )
+        return (
+            "Waiting for data — this instrument is not in the analysed universe, so the "
+            "end-of-day price job does not request it. This panel stays empty until a "
+            f"universe refresh selects it.{recorded}"
+        )
+    if not symbol:
+        return (
+            "Waiting for data — no Yahoo symbol has been resolved for this instrument, so "
+            f"there is nothing to request prices for. Re-run the symbol resolution job.{recorded}"
+        )
+
+    last_run = session.execute(
+        select(IngestRun)
+        .where(IngestRun.job == "price_eod")
+        .order_by(desc(IngestRun.started_at))
+        .limit(1)
+    ).scalar_one_or_none()
+    if last_run is None:
+        return (
+            f"Waiting for data — {symbol} resolves, and the end-of-day price job has not "
+            f"recorded a run yet. The first run will fetch the history.{recorded}"
+        )
+
+    when = format_moment(last_run.started_at)
+    if last_run.error:
+        return (
+            f"Waiting for data — {symbol} resolves, but the end-of-day price run on {when} "
+            f"failed: {last_run.error}.{recorded}"
+        )
+    # The stored failure list is a sample (capped, see PriceIngestReport.as_dict),
+    # so membership here proves the provider was asked, and absence proves nothing.
+    if symbol in ((last_run.detail or {}).get("failed") or []):
+        return (
+            f"Waiting for data — {symbol} resolves, and the end-of-day price run on {when} "
+            "asked for it, but the provider returned no history. That usually means the "
+            f"symbol is not the one the provider uses, or the listing is suspended.{recorded}"
+        )
+    return (
+        f"Waiting for data — {symbol} resolves, but the end-of-day price run on {when} "
+        "stored no bars for it. Instruments that have never been priced are asked for "
+        f"first, so the next run should fill it.{recorded}"
+    )
+
 
 
 def latest_quotes(session: Session, tickers: list[str]) -> dict[str, Quote]:
