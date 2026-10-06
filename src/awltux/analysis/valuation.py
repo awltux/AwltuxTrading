@@ -55,6 +55,14 @@ DEFAULT_TAX_RATE = 0.22
 #: Fallback pre-tax cost of debt when a company's own interest expense is unusable.
 DEFAULT_COST_OF_DEBT = 0.055
 
+#: The rate shock the per-instrument sensitivity is measured over.
+#:
+#: One percentage point, because that is the unit a reader already thinks in and
+#: the one central banks move in. It is a *measurement*, not a prediction: the
+#: result says how much of a fair value rests on the discount rate, and says
+#: nothing about where rates are going.
+RATE_SHOCK = 0.01
+
 METHOD_NAMES = {
     "dcf": "Discounted cash flow (FCFF)",
     "epv": "Earnings power value",
@@ -115,6 +123,14 @@ class ValuationResult:
     #: successfully but carry zero weight (Graham) and must not be presented as
     #: having influenced the result.
     contributing_methods: list[str] = field(default_factory=list)
+    #: Percentage change in the blended fair value for a one-point *rise* in the
+    #: risk-free rate, so a long-duration company reads as a large negative number.
+    #:
+    #: This is a sensitivity, not a forecast. It answers the one question a reader
+    #: cannot get from the fair value itself: how much of this number is a bet on
+    #: the discount rate rather than on the company. The discount rate is the only
+    #: input the model takes from the market rather than from the filings.
+    rate_sensitivity: float | None = None
 
     @property
     def methods_applied(self) -> list[str]:
@@ -140,6 +156,7 @@ class ValuationResult:
             "fair_value_high": self.fair_value_high,
             "margin_of_safety": self.margin_of_safety,
             "valuation_confidence": self.valuation_confidence,
+            "rate_sensitivity": self.rate_sensitivity,
             "methods": [method.as_dict() for method in self.methods],
             "methods_applied": self.methods_applied,
             "methods_computed": self.methods_computed,
@@ -759,6 +776,7 @@ def value_instrument(
     extra_inputs: dict[str, Any] | None = None,
     risk_free_rate: float | None = None,
     risk_free_rate_note: str | None = None,
+    risk_free_rate_source: str | None = None,
 ) -> ValuationResult:
     """Run every method and blend them. Pure function of its inputs.
 
@@ -813,9 +831,8 @@ def value_instrument(
                 if risk_free_rate is None
                 else risk_free_rate
             ),
-            "risk_free_rate_source": (
-                "config" if risk_free_rate is None else "resolved"
-            ),
+            "risk_free_rate_source": risk_free_rate_source
+            or ("config" if risk_free_rate is None else "supplied"),
             "risk_free_rate_note": risk_free_rate_note,
             "risk_free_rate_fallback": settings.valuation.risk_free_rate,
             "equity_risk_premium": settings.valuation.equity_risk_premium,
@@ -824,56 +841,93 @@ def value_instrument(
     }
 
     snapshot_with_ebitda = snapshot
-    methods = [
-        dcf_fcff(
-            snapshot=snapshot,
-            market_cap=market_cap,
-            shares=shares,
-            beta=beta,
-            net_debt=net_debt,
-            settings=settings,
-            risk_free_rate=risk_free_rate,
-        ),
-        earnings_power_value(
-            snapshot=snapshot,
-            periods=periods,
-            shares=shares,
-            beta=beta,
-            net_debt=net_debt,
-            settings=settings,
-            risk_free_rate=risk_free_rate,
-        ),
-        residual_income(
-            snapshot=snapshot,
-            shares=shares,
-            beta=beta,
-            book_value=book_value,
-            settings=settings,
-            risk_free_rate=risk_free_rate,
-        ),
-        relative_multiples(
-            snapshot=snapshot_with_ebitda,
-            price=price,
-            book_value=book_value,
-            net_debt=net_debt,
-            shares=shares,
-            peers=peers,
-            settings=settings,
-        ),
-        dividend_discount(
-            snapshot=snapshot,
-            beta=beta,
-            settings=settings,
-            risk_free_rate=risk_free_rate,
-        ),
-        graham_number(snapshot=snapshot, book_value=book_value, shares=shares),
-    ]
+
+    def methods_at(rate: float | None) -> list[MethodResult]:
+        """Every method, discounted at one risk-free rate.
+
+        A function of the rate because the sensitivity below re-runs the whole set
+        at a shocked one. The rate is the only input that differs between the two
+        runs, which is what makes the difference attributable to it rather than to
+        noise elsewhere in the model.
+        """
+        return [
+            dcf_fcff(
+                snapshot=snapshot,
+                market_cap=market_cap,
+                shares=shares,
+                beta=beta,
+                net_debt=net_debt,
+                settings=settings,
+                risk_free_rate=rate,
+            ),
+            earnings_power_value(
+                snapshot=snapshot,
+                periods=periods,
+                shares=shares,
+                beta=beta,
+                net_debt=net_debt,
+                settings=settings,
+                risk_free_rate=rate,
+            ),
+            residual_income(
+                snapshot=snapshot,
+                shares=shares,
+                beta=beta,
+                book_value=book_value,
+                settings=settings,
+                risk_free_rate=rate,
+            ),
+            relative_multiples(
+                snapshot=snapshot_with_ebitda,
+                price=price,
+                book_value=book_value,
+                net_debt=net_debt,
+                shares=shares,
+                peers=peers,
+                settings=settings,
+            ),
+            dividend_discount(
+                snapshot=snapshot,
+                beta=beta,
+                settings=settings,
+                risk_free_rate=rate,
+            ),
+            graham_number(snapshot=snapshot, book_value=book_value, shares=shares),
+        ]
+
+    methods = methods_at(risk_free_rate)
     result.methods = methods
 
     base, low, high, band, contributing, notes = blend(methods, price=price, settings=settings)
     result.notes.extend(notes)
     result.inputs["scenario_band"] = band
     result.contributing_methods = contributing
+
+    # How much of this fair value is a bet on the discount rate.
+    #
+    # `relative_multiples` and `graham_number` ignore the rate, so a company valued
+    # mostly on peers barely moves and one valued on a long forecast moves a lot --
+    # which is exactly the distinction a reader needs and cannot see in a single
+    # number. Measured on one percentage point because that is the unit rates are
+    # discussed in.
+    effective_rate = (
+        settings.valuation.risk_free_rate if risk_free_rate is None else risk_free_rate
+    )
+    shocked_base, *_ = blend(
+        methods_at(effective_rate + RATE_SHOCK), price=price, settings=settings
+    )
+    if base and shocked_base:
+        change = (shocked_base / base - 1.0) * 100.0
+        result.rate_sensitivity = round(change, 2)
+        result.inputs["rate_sensitivity"] = {
+            "shock": RATE_SHOCK,
+            "fair_value_change_pct": result.rate_sensitivity,
+            "note": (
+                f"a {RATE_SHOCK:.0%} rise in the risk-free rate moves the blended "
+                f"fair value by {change:+.1f}%; it is the share of this valuation "
+                "that rests on the discount rate rather than on the company"
+            ),
+        }
 
     if base is None:
         result.status = "insufficient_data"
@@ -979,6 +1033,7 @@ def run_valuations(
             settings=settings,
             risk_free_rate=risk_free.value,
             risk_free_rate_note=risk_free.note,
+            risk_free_rate_source=risk_free.source,
         )
 
         session.add(

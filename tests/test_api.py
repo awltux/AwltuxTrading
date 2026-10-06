@@ -184,6 +184,31 @@ class TestTemplatesRenderWithData:
         assert "Long term" in response.text
         assert "Short term" in response.text
 
+    def test_the_instrument_page_shows_the_discount_rate_and_its_sensitivity(
+        self, client, populated
+    ):
+        """The risk-free rate is the only input the model takes from the market
+        rather than from the filings, so the value it produced has to say where the
+        rate came from -- and how much of the value depends on it."""
+        body = client.get("/instrument/TEST_US_EQ").text
+        # Collapse the template's indentation so the assertion is about the words
+        # rather than about how they happen to be wrapped.
+        text = " ".join(body.split())
+
+        assert "Risk-free rate" in text
+        assert "Rate sensitivity" in text
+        assert "per +1% risk-free rate" in text
+        # The rate is a fraction like 0.0531, and `pct` treats a value as an
+        # already-percentage number unless told otherwise -- which renders a 5.31%
+        # rate as "+0.05%".
+        assert "4.20%" in text, "the configured rate must render as a rate, not 100x small"
+        # `pct` supplies the sign, so a literal one in the template would render
+        # "+ +1%" -- the same mistake the signed-proportion tests exist to catch.
+        assert "++" not in text
+        # With no observation stored, the fallback must say that it is a fallback
+        # rather than presenting a constant as though it were a market price.
+        assert "configured constant" in text
+
     def test_the_operations_page_renders_run_history(self, client, populated):
         assert client.get("/jobs").status_code == 200
 

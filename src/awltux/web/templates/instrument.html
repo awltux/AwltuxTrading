@@ -253,12 +253,54 @@
 {# ----------------------------------------------------------------- valuation #}
 <h2>Valuation</h2>
 {% if valuation %}
+  {% set assumptions = (valuation.inputs or {}).get('assumptions') or {} %}
+  {% set sensitivity = (valuation.inputs or {}).get('rate_sensitivity') %}
   <dl class="kv">
     <div><dt>Price used</dt><dd>{{ valuation.price | money(valuation.currency) }}</dd></div>
     <div><dt>Fair value (base)</dt><dd>{{ valuation.fair_value_base | money(valuation.currency) }}</dd></div>
     <div><dt>Range</dt><dd>{{ valuation.fair_value_low | number(2) }} – {{ valuation.fair_value_high | number(2) }}</dd></div>
     <div><dt>Margin of safety</dt><dd>{{ valuation.margin_of_safety | pct(1, false) }}</dd></div>
     <div><dt>Valuation confidence</dt><dd>{{ valuation.valuation_confidence | pct0 }}</dd></div>
+    {% if assumptions.risk_free_rate %}
+      {#
+        The discount rate is the only input the model takes from the market rather
+        than from the filings, so where it came from is shown next to the value it
+        produced -- and the fallback is named when the market was not observed,
+        because "4.2% because nothing better was available" is a different claim
+        from "4.2% because that is what the market charged".
+      #}
+      <div>
+        <dt>Risk-free rate</dt>
+        <dd>
+          {#- both of these are fractions, so `already_percent` must be false or
+              `pct` renders a 5.31% rate as "+0.05%". -#}
+          {{ assumptions.risk_free_rate | pct(2, false) }}
+          <span class="muted small">
+            {%- if assumptions.risk_free_rate_source == 'market' -%}
+              observed from the market
+            {%- else -%}
+              configured constant
+            {%- endif -%}
+            {%- if assumptions.risk_free_rate_note %} — {{ assumptions.risk_free_rate_note }}{% endif -%}
+          </span>
+        </dd>
+      </div>
+    {% endif %}
+    {% if sensitivity %}
+      <div>
+        <dt>Rate sensitivity</dt>
+        <dd>
+          {#- `pct` adds the sign itself; writing one here renders "+ +1%", and
+              the shock is a fraction, so it needs `already_percent=false`. -#}
+          {{ sensitivity.fair_value_change_pct | pct(1) }} per {{ sensitivity.shock | pct(0, false) }}
+          risk-free rate
+          <span class="muted small">
+            — how much of this value rests on the discount rate rather than on the
+            company; not a forecast of rates
+          </span>
+        </dd>
+      </div>
+    {% endif %}
     <div><dt>Methods applied</dt><dd>{{ valuation.methods_applied | join(', ') or '—' }}</dd></div>
     <div><dt>Status</dt><dd>{{ valuation.status }}{% if valuation.notes %} — {{ valuation.notes }}{% endif %}</dd></div>
     <div><dt>As of</dt><dd>{{ valuation.as_of | datetime }}</dd></div>

@@ -233,10 +233,127 @@ class TestTheModelUsesIt:
 
         assumptions = result.inputs["assumptions"]
         assert assumptions["risk_free_rate"] == pytest.approx(0.0531)
-        assert assumptions["risk_free_rate_source"] == "resolved"
+        assert assumptions["risk_free_rate_source"] == "supplied"
         assert "2026-10-05" in assumptions["risk_free_rate_note"]
         # The constant is kept alongside, so a reader can see what was overridden.
         assert assumptions["risk_free_rate_fallback"] == pytest.approx(0.042)
+
+    def test_the_market_source_is_recorded_when_it_was_the_market(self, settings):
+        period = make_period(
+            "TEST_US_EQ",
+            dt.date(2025, 12, 31),
+            {
+                "revenue": 1_000_000.0,
+                "net_income": 100_000.0,
+                "free_cash_flow": 120_000.0,
+                "shares_outstanding": 100_000.0,
+                "eps_diluted": 1.0,
+            },
+        )
+        result = value_instrument(
+            price=20.0,
+            currency="USD",
+            periods=[period],
+            closes=[20.0, 21.0],
+            volumes=[1.0, 1.0],
+            market_cap=1_500_000.0,
+            beta=1.0,
+            peers=PeerMultiples(),
+            settings=settings,
+            risk_free_rate=0.0531,
+            risk_free_rate_note="10 Yr US Treasury par yield",
+            risk_free_rate_source="market",
+        )
+        assert result.inputs["assumptions"]["risk_free_rate_source"] == "market"
+
+
+class TestRateSensitivity:
+    """How much of a fair value is a bet on the discount rate.
+
+    A sensitivity, not a forecast. It answers the question the fair value cannot:
+    whether this number rests on the company's cash flows or on the rate used to
+    discount them -- which is the only input the model takes from the market rather
+    than from the filings.
+    """
+
+    def _value(self, settings, metrics, peers=None):
+        period = make_period("TEST_US_EQ", dt.date(2025, 12, 31), metrics)
+        return value_instrument(
+            price=10.0,
+            currency="USD",
+            periods=[period],
+            closes=[10.0, 11.0],
+            volumes=[1.0, 1.0],
+            market_cap=1_000_000.0,
+            beta=1.0,
+            peers=peers or PeerMultiples(),
+            settings=settings,
+            risk_free_rate=0.0531,
+        )
+
+    CASH_GENERATOR = {
+        "revenue": 1_000_000.0,
+        "net_income": 150_000.0,
+        "operating_cash_flow": 220_000.0,
+        "free_cash_flow": 190_000.0,
+        "total_debt": 100_000.0,
+        "net_debt": 60_000.0,
+        "total_equity": 800_000.0,
+        "shares_outstanding": 100_000.0,
+        "eps_diluted": 1.50,
+        "revenue_cagr": 0.03,
+    }
+
+    def test_a_rise_in_the_rate_lowers_the_value(self, settings):
+        """The sign is the whole point: higher discount rate, lower present value."""
+        result = self._value(settings, self.CASH_GENERATOR)
+        assert result.rate_sensitivity is not None
+        assert result.rate_sensitivity < 0
+
+    def test_the_shock_and_the_change_are_recorded_on_the_run(self, settings):
+        result = self._value(settings, self.CASH_GENERATOR)
+        recorded = result.inputs["rate_sensitivity"]
+
+        assert recorded["shock"] == pytest.approx(0.01)
+        assert recorded["fair_value_change_pct"] == pytest.approx(result.rate_sensitivity)
+        assert "not a forecast" in recorded["note"].lower() or "discount rate" in recorded["note"]
+        assert result.as_dict()["rate_sensitivity"] == result.rate_sensitivity
+
+    def test_it_is_a_real_remeasurement_not_a_relabelled_constant(self, settings):
+        """Shocking the rate must move the number it claims to describe."""
+        shocked = self._value(settings, self.CASH_GENERATOR)
+        # Same company, a rate two points higher: the sensitivity must differ,
+        # because the response is not linear in the discount rate.
+        period = make_period("TEST_US_EQ", dt.date(2025, 12, 31), self.CASH_GENERATOR)
+        higher = value_instrument(
+            price=10.0,
+            currency="USD",
+            periods=[period],
+            closes=[10.0, 11.0],
+            volumes=[1.0, 1.0],
+            market_cap=1_000_000.0,
+            beta=1.0,
+            peers=PeerMultiples(),
+            settings=settings,
+            risk_free_rate=0.0731,
+        )
+        assert shocked.rate_sensitivity != higher.rate_sensitivity
+
+    def test_a_peer_anchored_valuation_is_less_rate_sensitive(self, settings):
+        """Multiples and Graham ignore the rate, so a company valued on peers must
+        move less than one valued on its own discounted cash flows. That contrast
+        is the reason the measure is worth showing."""
+        peers = PeerMultiples(
+            sector="Industrials", sample_size=8, ev_ebitda=12.0, pe=18.0, pb=2.5
+        )
+        cash_flows = self._value(settings, self.CASH_GENERATOR)
+        # Almost no free cash flow, so the DCF and EPV carry little of the blend.
+        thin = dict(self.CASH_GENERATOR, free_cash_flow=0.0, operating_cash_flow=1_000.0)
+        multiples_led = self._value(settings, thin, peers=peers)
+
+        assert cash_flows.rate_sensitivity is not None
+        assert multiples_led.rate_sensitivity is not None
+        assert abs(multiples_led.rate_sensitivity) < abs(cash_flows.rate_sensitivity)
 
 
 class TestTheJob:
