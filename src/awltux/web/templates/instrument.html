@@ -357,17 +357,46 @@
 
 {# ------------------------------------------------------------------ filings #}
 <h2>Published reports</h2>
+{#
+  The shareholders' report is the primary evidence about a business, so whether the
+  document is *held* is shown separately from whether a link to it exists. A row that
+  says "open" points at a URL somewhere else; a row that says "read" means this
+  system has the bytes, and quoting or re-parsing them needs no network.
+#}
+<p class="muted small">
+  Annual reports held:
+  <strong>{{ instrument.annual_reports or 0 }}</strong>
+  {% if instrument.reports_synced_at %}
+    (checked {{ instrument.reports_synced_at | datetime('%Y-%m-%d') }})
+  {% else %}
+    — never collected for this instrument
+  {% endif %}
+</p>
 {% if filings %}
   <table class="grid compact">
-    <thead><tr><th>Filed</th><th>Type</th><th>Source</th><th>Status</th><th>Link</th></tr></thead>
+    <thead><tr><th>Filed</th><th>Type</th><th>Source</th><th>Status</th><th>Document</th></tr></thead>
     <tbody>
     {% for filing in filings %}
       <tr>
         <td>{{ filing.filed_at | datetime('%Y-%m-%d') }}</td>
         <td>{{ filing.filing_type or '—' }}</td>
         <td>{{ filing.source }}</td>
-        <td>{{ filing.status }}</td>
-        <td>{% if filing.url %}<a href="{{ filing.url }}" target="_blank" rel="noopener noreferrer">open</a>{% endif %}</td>
+        <td>
+          {{ filing.status }}
+          {#- A refusal is recorded on the row rather than swallowed, so a filing
+              that was found and could not be downloaded is visible as that and not
+              as one still waiting its turn. -#}
+          {% if filing.error %}<span class="muted small">— {{ filing.error }}</span>{% endif %}
+        </td>
+        <td>
+          {% if filing.raw_path %}
+            <a href="/filing/{{ filing.id }}/document" target="_blank" rel="noopener noreferrer">read</a>
+          {% endif %}
+          {% if filing.url %}
+            {% if filing.raw_path %}·{% endif %}
+            <a href="{{ filing.url }}" target="_blank" rel="noopener noreferrer">source</a>
+          {% endif %}
+        </td>
       </tr>
     {% endfor %}
     </tbody>

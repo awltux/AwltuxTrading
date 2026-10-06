@@ -10,13 +10,13 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from awltux import __version__
 from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
-from awltux.db import session_scope
+from awltux.db import Filing, session_scope
 from awltux.ingest.universe import cached_t212_capabilities
 from awltux.web import queries
 from awltux.web.templating import templates
@@ -419,6 +419,57 @@ def _provenance_note(info) -> str:
     return (
         "No git checkout and no recorded build artifact, so this install cannot "
         "name the revision it is running."
+    )
+
+
+@router.get("/filing/{filing_id}/document", include_in_schema=False)
+def filing_document(filing_id: int) -> Response:
+    """Serve a downloaded shareholders' report so it can be read.
+
+    **Served with a sandbox policy, not merely as a file.** A filing is third-party
+    HTML from a host this application does not control, and it is served from the
+    dashboard's own origin -- an origin that can reach the API and therefore the
+    account. `Content-Security-Policy: sandbox` puts the document in an opaque origin
+    with scripts, forms and same-origin reads disabled, so the browser will lay out a
+    10-K and refuse to let it do anything else. Deliberately not `allow-same-origin`,
+    which would hand back exactly the access the policy exists to remove.
+
+    The path is re-resolved against the data directory before it is opened. It comes
+    from our own database, but a stored path is still a path, and a route that joins
+    one to a root without checking is how a traversal arrives.
+    """
+    settings = get_settings()
+    with session_scope() as session:
+        filing = session.get(Filing, filing_id)
+        if filing is None or not filing.raw_path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no stored document for filing {filing_id}",
+            )
+        raw_path = filing.raw_path
+        document_type = filing.content_type or "text/html"
+        title = filing.title or filing.filing_type or "filing"
+
+    data_dir = settings.data_dir.resolve()
+    path = (data_dir / raw_path).resolve()
+    if not path.is_relative_to(data_dir) or not path.is_file():
+        raise HTTPException(
+            status_code=404, detail=f"stored document for filing {filing_id} is missing"
+        )
+
+    return Response(
+        content=path.read_bytes(),
+        media_type=document_type,
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'inline; filename="{filing_id}.htm"',
+            # The document is immutable once filed, so it is worth caching in the
+            # browser; a reader going back and forth through six years should not
+            # re-download a megabyte each time.
+            "Cache-Control": "private, max-age=86400",
+            "X-Document": title[:120],
+        },
     )
 
 

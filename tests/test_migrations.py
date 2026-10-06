@@ -166,6 +166,10 @@ class TestMigrationPath:
         assert "horizon" in columns(settings.db_path, "decision_outcome")
         # 0003's column, so a fresh database gets the exchange reference too.
         assert "exchange_id" in columns(settings.db_path, "instrument")
+        # 0007's flag: whether the shareholders' reports are held.
+        assert {"annual_reports", "reports_synced_at"} <= columns(
+            settings.db_path, "instrument"
+        )
 
     def test_migrating_twice_is_idempotent(self, settings: Settings):
         """A container restarts often; a migration that requires a clean database

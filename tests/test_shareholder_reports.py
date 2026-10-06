@@ -290,6 +290,180 @@ class TestDownloadingTheDocument:
             assert report.discovered == 0
 
 
+class TestTheInstrumentFlag:
+    """Whether the reports are held, recorded on the instrument.
+
+    The question "can I read this company's accounts?" is asked once per row on the
+    dashboard and once per instrument by the acquisition job, so it is stored rather
+    than derived. It is recomputed from the rows on every run, never incremented, so
+    a half-finished run leaves it describing what is held rather than what was
+    attempted.
+    """
+
+    def test_the_count_comes_from_documents_actually_held(self, settings):
+        with session_scope() as session:
+            session.add(make_instrument(TICKER, in_universe=True))
+            session.flush()
+            _filing(session, TICKER, url=_url("000000000000000001"), status="fetched")
+            _filing(session, TICKER, url=_url("000000000000000002"), status="fetched")
+            # Still pending, so it is not held.
+            _filing(session, TICKER, url=_url("000000000000000003"), status="pending")
+            # A quarterly report is not a shareholders' report.
+            _filing(
+                session, TICKER, url=_url("000000000000000004"), form="10-Q", status="fetched"
+            )
+            session.flush()
+
+            documents.refresh_report_flags(session)
+
+            instrument = session.get(Instrument, TICKER)
+            assert instrument is not None
+            assert instrument.annual_reports == 2
+            assert instrument.reports_synced_at is not None
+
+    def test_it_corrects_itself_when_a_document_disappears(self, settings):
+        """Derived, not incremented: a run that dies halfway must not inflate it."""
+        with session_scope() as session:
+            session.add(make_instrument(TICKER, in_universe=True))
+            session.flush()
+            row = _filing(session, TICKER, url=_url("000000000000000001"), status="fetched")
+            session.flush()
+            documents.refresh_report_flags(session)
+            assert session.get(Instrument, TICKER).annual_reports == 1
+
+            # The document is lost, or turns out never to have been one.
+            row.status = "failed"
+            session.flush()
+            documents.refresh_report_flags(session)
+
+            assert session.get(Instrument, TICKER).annual_reports == 0
+
+    def test_an_instrument_with_nothing_collected_is_zero_not_unknown(self, settings):
+        with session_scope() as session:
+            session.add(make_instrument(TICKER, in_universe=True))
+            session.flush()
+
+            documents.refresh_report_flags(session)
+
+            instrument = session.get(Instrument, TICKER)
+            # Zero is a true statement about a fresh install; the timestamp is what
+            # says whether anyone has looked.
+            assert instrument.annual_reports == 0
+            assert instrument.reports_synced_at is not None
+
+
+class TestReadingADocument:
+    """Serving a filing is serving third-party HTML from the dashboard's origin."""
+
+    def _store(self, settings, body=REAL_FILING, status="fetched"):
+        url = _url(ACCESSIONS[2026])
+        path = documents.document_path(settings, TICKER, url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        with session_scope() as session:
+            row = _filing(session, TICKER, url=url, status=status)
+            row.raw_path = str(path.relative_to(settings.data_dir))
+            row.content_type = "text/html"
+            row.doc_hash = "0" * 64
+            session.flush()
+            return row.id
+
+    def test_the_stored_bytes_are_served(self, client, settings):
+        filing_id = self._store(settings)
+        response = client.get(f"/filing/{filing_id}/document")
+
+        assert response.status_code == 200
+        assert response.content == REAL_FILING
+        assert response.headers["content-type"].startswith("text/html")
+
+    def test_it_is_served_under_a_sandbox_policy(self, client, settings):
+        """Not merely as a file.
+
+        A filing is untrusted HTML served from an origin that can reach the API and
+        therefore the account. `sandbox` puts it in an opaque origin with scripts and
+        same-origin reads disabled; `allow-same-origin` would hand back exactly the
+        access the policy exists to remove.
+        """
+        filing_id = self._store(settings)
+        response = client.get(f"/filing/{filing_id}/document")
+
+        policy = response.headers["content-security-policy"]
+        assert "sandbox" in policy
+        assert "allow-same-origin" not in policy
+        assert "allow-scripts" not in policy
+        assert response.headers["x-content-type-options"] == "nosniff"
+
+    def test_a_filing_with_no_document_is_a_404(self, client, session):
+        with session_scope() as scope:
+            row = _filing(scope, TICKER, url=_url(ACCESSIONS[2026]), status="pending")
+            scope.flush()
+            filing_id = row.id
+
+        assert client.get(f"/filing/{filing_id}/document").status_code == 404
+
+    def test_an_unknown_filing_is_a_404(self, client):
+        assert client.get("/filing/999999/document").status_code == 404
+
+    def test_a_stored_path_cannot_escape_the_data_directory(self, client, settings):
+        """It comes from our own database, but a stored path is still a path."""
+        with session_scope() as session:
+            row = _filing(session, TICKER, url=_url(ACCESSIONS[2026]), status="fetched")
+            row.raw_path = "../../../../etc/passwd"
+            session.flush()
+            filing_id = row.id
+
+        assert client.get(f"/filing/{filing_id}/document").status_code == 404
+
+    def test_a_row_whose_file_is_gone_is_a_404_rather_than_a_500(self, client, settings):
+        filing_id = self._store(settings)
+        url = _url(ACCESSIONS[2026])
+        documents.document_path(settings, TICKER, url).unlink()
+
+        assert client.get(f"/filing/{filing_id}/document").status_code == 404
+
+
+class TestTheInstrumentPage:
+    def test_it_reports_how_many_reports_are_held(self, client, settings):
+        with session_scope() as session:
+            session.add(make_instrument(TICKER, in_universe=True))
+            session.flush()
+            _filing(session, TICKER, url=_url(ACCESSIONS[2026]), status="fetched")
+            session.flush()
+            documents.refresh_report_flags(session)
+            session.commit()
+
+        text = " ".join(client.get(f"/instrument/{TICKER}").text.split())
+        assert "Annual reports held:" in text
+
+    def test_a_held_document_offers_a_read_link(self, client, settings):
+        url = _url(ACCESSIONS[2026])
+        path = documents.document_path(settings, TICKER, url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(REAL_FILING)
+        with session_scope() as session:
+            row = _filing(session, TICKER, url=url, status="fetched")
+            row.raw_path = str(path.relative_to(settings.data_dir))
+            session.flush()
+            filing_id = row.id
+            session.commit()
+
+        body = client.get(f"/instrument/{TICKER}").text
+        assert f"/filing/{filing_id}/document" in body
+        assert ">read<" in body
+
+    def test_a_pending_filing_is_not_offered_as_readable(self, client, session):
+        with session_scope() as scope:
+            row = _filing(scope, TICKER, url=_url(ACCESSIONS[2026]), status="pending")
+            scope.flush()
+            filing_id = row.id
+            scope.commit()
+
+        body = client.get(f"/instrument/{TICKER}").text
+        assert f"/filing/{filing_id}/document" not in body
+        # The original is still reachable, which is the honest thing to offer.
+        assert ">source<" in body
+
+
 class TestDiscoveringTheHistory:
     def _patch(self, monkeypatch, provider, *, entries):
         monkeypatch.setattr(

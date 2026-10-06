@@ -40,11 +40,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
-from awltux.db import Filing, Instrument
+from awltux.db import Filing, Instrument, utcnow
 from awltux.db.session import release_write_lock
 from awltux.providers.edgar import ANNUAL_FORMS
 from awltux.providers.http import ProviderError
@@ -311,6 +311,44 @@ def fetch_annual_reports(
 
     logger.info("document fetch: %s", report.as_dict())
     return report
+
+
+def refresh_report_flags(session: Session) -> int:
+    """Recompute the per-instrument flag from what is actually held on disk.
+
+    Derived from the ``filing`` rows rather than incremented as documents arrive, so
+    the flag is self-correcting: a run that fails halfway, a filing that turns out
+    to be a refusal page, or a document deleted from the volume all leave the count
+    describing reality rather than describing what was attempted.
+
+    Scoped to the universe, which is what the dashboard lists and what the
+    acquisition job selects from. An instrument outside it keeps a zero, which is
+    the honest answer for something nothing is collecting reports for.
+    """
+    counts = {
+        ticker: count
+        for ticker, count in session.execute(
+            select(Filing.instrument_t212_ticker, func.count())
+            .where(Filing.filing_type.in_(ANNUAL_FORMS))
+            .where(Filing.status == "fetched")
+            .group_by(Filing.instrument_t212_ticker)
+        ).all()
+    }
+
+    now = utcnow()
+    updated = 0
+    instruments = session.execute(
+        select(Instrument).where(Instrument.in_universe.is_(True))
+    ).scalars().all()
+    for instrument in instruments:
+        held = counts.get(instrument.t212_ticker, 0)
+        if instrument.annual_reports != held or instrument.reports_synced_at is None:
+            instrument.annual_reports = held
+            instrument.reports_synced_at = now
+            updated += 1
+
+    session.flush()
+    return updated
 
 
 def _as_datetime(value: str | None) -> dt.datetime | None:

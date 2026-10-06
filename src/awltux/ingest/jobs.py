@@ -827,7 +827,11 @@ def sync_shareholder_reports() -> JobResult:
     older 10-Ks cut off by a limit rather than by a date. The second downloads the
     documents behind those rows.
     """
-    from awltux.ingest.documents import deepen_annual_history, fetch_annual_reports
+    from awltux.ingest.documents import (
+        deepen_annual_history,
+        fetch_annual_reports,
+        refresh_report_flags,
+    )
 
     settings = get_settings()
     years = settings.reports.years
@@ -838,6 +842,10 @@ def sync_shareholder_reports() -> JobResult:
 
     with session_scope() as session:
         download = fetch_annual_reports(session, limit=per_run, settings=settings)
+        # The flag is recomputed from the rows rather than incremented as documents
+        # arrive, so a run that dies halfway leaves it describing what is held
+        # rather than what was attempted.
+        flagged = refresh_report_flags(session)
 
     detail = {
         "years": years,
@@ -846,6 +854,7 @@ def sync_shareholder_reports() -> JobResult:
         "failed": download.failed,
         "bytes_written": download.bytes_written,
         "instruments_covered": len(download.instruments),
+        "instruments_flagged": flagged,
         "discovery_errors": discovery.errors[:5],
         "download_errors": download.errors[:5],
     }

@@ -145,6 +145,22 @@ class Instrument(Base, TimestampMixin):
     market_cap: Mapped[float | None] = mapped_column(Float)
     median_daily_turnover_gbp: Mapped[float | None] = mapped_column(Float)
 
+    # --- shareholders' reports ------------------------------------------------
+    #: Annual-report *documents* held for this instrument.
+    #:
+    #: A stored count rather than one derived from `filing` on every read. The
+    #: question the flag answers -- "can I read this company's accounts?" -- is asked
+    #: once per row on the dashboard and once per instrument by the acquisition job,
+    #: and deriving it both times means a join over the largest table in the database
+    #: to answer something that changes once a day.
+    #:
+    #: Zero means "none held", not "unknown": an instrument nobody has looked at yet
+    #: and one whose reports genuinely do not exist are the same state as far as a
+    #: reader is concerned, and `reports_synced_at` distinguishes them.
+    annual_reports: Mapped[int] = mapped_column(Integer, default=0)
+    #: When the count was last refreshed, so a zero can be dated.
+    reports_synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
     exchange_ref: Mapped[Exchange | None] = relationship(back_populates="instruments")
     aliases: Mapped[list[InstrumentAlias]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"
