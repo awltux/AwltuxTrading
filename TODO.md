@@ -124,9 +124,27 @@ answer that from the receipt alone, so if they are not, that is the bug.
 
 The budget is now 2,000 with an 8,000 retry, and one call in the live log produced
 **6,529 output tokens to classify one headline**. Raising the cap made these
-succeed, so nothing is lost — but 6.5k tokens of deliberation to emit a
-150-character JSON object is not explainable by the task, and it is the same hidden
-reasoning that made the original 500-token budget look adequate.
+graceful — but 6.5k tokens of deliberation to emit a 150-character JSON object is not
+explainable by the task, and it is the same hidden reasoning that made the original
+500-token budget look adequate.
+
+**Re-measured 2026-10-06 17:06–17:55, during `news_rss` run #220.** The per-job
+progress log is what made this visible at all: the five warnings were spread across a
+45-minute run and previously sat in the container log among every other job's output.
+
+- **1,402** `news_classification` calls in two hours, **344,124** output and **780,658**
+  input tokens.
+- **5** of them spent the whole 2,000-token budget and returned *no content at all* —
+  10,000 output tokens, about **3%** of the window's output, for five headlines.
+- **0** calls in the window exceeded 2,000 output tokens. So the "8,000 retry" does not
+  show up as a large call; the retry produces a short answer, which means the *first*
+  attempt is pure waste every time rather than a rare fallback.
+
+The token share is small, which is why this looked minor. The wall-clock share is not:
+the warnings land at 17:17:21, 17:21:47, 17:23:11, 17:29:18 and 17:31:37 — so single
+headlines consumed **one to six minutes each** while the run classified the rest at
+roughly 1–2 seconds per call (1,402 calls over 45 minutes). Five inputs account for a
+disproportionate slice of a 45-minute run.
 
 **Worth understanding before trusting the cost model:** either the prompt invites
 much more deliberation than the schema requires, or the model loops on some inputs
