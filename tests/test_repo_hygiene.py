@@ -64,6 +64,37 @@ def test_source_documents_are_not_ignored(candidate: str) -> None:
     )
 
 
+def test_line_endings_are_normalised_by_the_repository() -> None:
+    """The container's dirty-tree check must not depend on the host's git config.
+
+    `awltux.buildinfo` decides whether an image can be tied to a commit by asking
+    `git status`, and the Docker build runs that inside a container with no
+    `core.autocrlf`. On Windows, Git for Windows sets `core.autocrlf=true` in its
+    *system* config -- not the repository's -- so CRLF files compare equal to LF
+    blobs on the host and modified in the container. Six files did exactly that,
+    which branded **every** image a dirty build however carefully the work was
+    committed: the Info page printed the correct commit next to "has uncommitted
+    changes", so the warning meant nothing.
+
+    A `text=auto` attribute in the repository is what makes the comparison the same
+    in both places, and `check-attr` is the only honest way to assert it -- reading
+    `.gitattributes` by hand would not prove git applies it.
+    """
+    for candidate in (
+        "src/awltux/cli.py",
+        # One of the six that were CRLF on disk and LF in the commit.
+        "src/awltux/analysis/news_analysis.py",
+        "src/awltux/scheduler/dependencies.py",
+    ):
+        result = _git("check-attr", "text", candidate)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().endswith("text: auto"), (
+            f"{candidate} is not normalised by a repository attribute, so its "
+            "line endings decide the dirty-tree check on whichever machine runs "
+            f"it. git check-attr said: {result.stdout.strip()!r}"
+        )
+
+
 def test_the_research_reports_are_tracked() -> None:
     """Not merely present on disk — actually in the index."""
     on_disk = {path.name for path in (REPO / "docs" / "research").glob("*.md")}

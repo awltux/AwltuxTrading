@@ -1,0 +1,18 @@
+# Line endings are normalised in the repository, and that has to be declared HERE.
+#
+# `git status` is what the container build uses to decide whether an image can be
+# tied to a commit (see `awltux.buildinfo` and the builder stage of the Dockerfile).
+# On Windows, Git for Windows sets `core.autocrlf=true` in its *system* config, so
+# CRLF files match LF blobs and the tree looks clean. The container has no such
+# config, so the same files were compared raw and six of them reported modified --
+# which branded **every** image a dirty build no matter how carefully the work was
+# committed. The Info page then printed the correct commit next to "has uncommitted
+# changes", which is worse than printing nothing: it says the deploy cannot be
+# trusted when it can, so the warning stops meaning anything.
+#
+# `text=auto` makes the normalisation a property of the repository rather than of
+# the machine that happens to be checking it out. Git decides per file -- anything
+# with a NUL byte near the start is left alone as binary -- and normalises line
+# endings on the way in and out, so a CRLF working tree and an LF blob compare equal
+# wherever the check runs.
+* text=auto
