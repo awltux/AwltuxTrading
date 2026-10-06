@@ -582,3 +582,41 @@ class TestWritingToTheDatabase:
         report = sync_xbrl_fundamentals(session, provider=None, tickers=["NOCIK_US_EQ"])
 
         assert report.tickers_attempted == 0
+
+    def test_the_rotation_advances_between_runs(self, session):
+        """A run must not re-read the filers the previous run already covered.
+
+        The first version ordered the queue by ``Instrument.updated_at``, which this
+        job never touches, so the order never moved: two consecutive runs each
+        reported twelve periods written while the table stayed at twelve rows. The
+        job looked busy and drained nothing, which is the harder failure to notice
+        -- a job that reports work but makes no progress looks healthier than one
+        that fails.
+        """
+        from awltux.ingest.xbrl import sync_xbrl_fundamentals
+        from tests.helpers import make_instrument
+
+        for number, ticker in enumerate(("AAA_US_EQ", "BBB_US_EQ", "CCC_US_EQ")):
+            instrument = make_instrument(ticker, name=f"Co {ticker}", isin=f"US{number:010d}")
+            instrument.sec_cik = f"000000000{number}"
+            session.add(instrument)
+        session.flush()
+
+        payload_data = payload(duration("Revenues", 400.0, "2023-01-01", "2023-12-31"))
+        asked: list[str] = []
+
+        class StubProvider:
+            def get_company_facts(self, cik, **_kwargs):
+                asked.append(cik)
+                return payload_data
+
+        first = sync_xbrl_fundamentals(session, provider=StubProvider(), limit=1)
+        session.flush()
+        second = sync_xbrl_fundamentals(session, provider=StubProvider(), limit=1)
+
+        assert first.periods_written == 1 and second.periods_written == 1
+        assert len(asked) == 2
+        assert asked[0] != asked[1], (
+            "the second run re-read the filer the first had just written, so with a "
+            "queue of 312 the job would never drain it"
+        )

@@ -30,11 +30,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
-from awltux.db import Instrument
+from awltux.db import FundamentalPeriod, Instrument
 from awltux.db.session import release_write_lock
 from awltux.providers.edgar import EdgarProvider, ProviderError
 
@@ -613,8 +613,17 @@ def sync_xbrl_fundamentals(
 ) -> XbrlReport:
     """Write each US filer's annual statements into ``FundamentalPeriod``.
 
-    Rotates least-recently-attempted first, the same shape as the Yahoo path, so a
-    rationed run spreads across the universe instead of retrying the same names.
+    Rotates least-recently-extracted first, so a rationed run spreads across the
+    universe instead of retrying the same names.
+
+    **The rotation is ordered on this job's own output, not on the instrument.**
+    ``Instrument.updated_at`` is the obvious key and it is the wrong one: nothing
+    in this job touches the instrument row, so the order never changes and every
+    run re-reads the same first slice. That is not theoretical -- the first two
+    runs both reported twelve periods written while the table stayed at twelve
+    rows, because the second run overwrote the first one's filers. Ordered on
+    ``max(as_of)`` of the rows it writes, the queue actually drains, and a filer
+    whose payload failed stays at the front rather than being skipped past.
 
     **The write lock is released before every network call.** A companyfacts
     payload is megabytes and the request is not fast; holding SQLite's write lock
@@ -625,12 +634,21 @@ def sync_xbrl_fundamentals(
     provider = provider or EdgarProvider(settings)
     report = XbrlReport()
 
+    # Nulls first: a filer with no XBRL period at all is the one with work to do.
+    extracted_at = (
+        select(func.max(FundamentalPeriod.as_of))
+        .where(FundamentalPeriod.instrument_t212_ticker == Instrument.t212_ticker)
+        .where(FundamentalPeriod.source == SOURCE)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+
     statement = (
         select(Instrument)
         .where(Instrument.in_universe.is_(True))
         .where(Instrument.excluded.is_(False))
         .where(Instrument.sec_cik.is_not(None))
-        .order_by(Instrument.updated_at.asc())
+        .order_by(extracted_at.asc().nullsfirst(), Instrument.t212_ticker.asc())
     )
     if tickers:
         statement = statement.where(Instrument.t212_ticker.in_(tickers))
@@ -638,33 +656,46 @@ def sync_xbrl_fundamentals(
         statement = statement.limit(limit)
 
     for instrument in session.execute(statement).scalars().all():
-        report.tickers_attempted += 1
-        cik = instrument.sec_cik
-        assert cik is not None
-
-        # Before the request, not after it: this is the whole reason the rule
-        # exists, and an after-the-fact release is the bug that was fixed twice.
-        release_write_lock(session)
-        try:
-            payload = provider.get_company_facts(cik)
-        except ProviderError as exc:
-            report.tickers_failed += 1
-            report.failures.append(f"{instrument.t212_ticker}: {exc}")
-            continue
-
-        try:
-            written, metrics_written = _write_periods(session, instrument, payload)
-        except Exception as exc:  # noqa: BLE001 - one bad payload must not stop the run
-            report.tickers_failed += 1
-            report.failures.append(f"{instrument.t212_ticker}: {type(exc).__name__}: {exc}")
-            continue
-
-        report.periods_written += written
-        report.metrics_written += metrics_written
-        session.flush()
+        _sync_one(session, instrument, provider, report)
 
     logger.info("xbrl fundamentals: %s", report.as_dict())
     return report
+
+
+def _sync_one(
+    session: Session, instrument: Instrument, provider: EdgarProvider, report: XbrlReport
+) -> None:
+    """Fetch and store one filer's statements, recording any failure on the report.
+
+    One named step rather than a loop body, because the two failures it absorbs are
+    different in kind and both need saying: the provider refused us, or the payload
+    arrived and could not be parsed. Either way the run continues -- 312 filers is
+    too many to lose to one bad response -- and the report carries which happened.
+    """
+    report.tickers_attempted += 1
+    cik = instrument.sec_cik
+    assert cik is not None
+
+    # Before the request, not after it: this is the whole reason the rule exists,
+    # and an after-the-fact release is the bug that was fixed twice.
+    release_write_lock(session)
+    try:
+        payload = provider.get_company_facts(cik)
+    except ProviderError as exc:
+        report.tickers_failed += 1
+        report.failures.append(f"{instrument.t212_ticker}: {exc}")
+        return
+
+    try:
+        written, metrics_written = _write_periods(session, instrument, payload)
+    except Exception as exc:  # noqa: BLE001 - one bad payload must not stop the run
+        report.tickers_failed += 1
+        report.failures.append(f"{instrument.t212_ticker}: {type(exc).__name__}: {exc}")
+        return
+
+    report.periods_written += written
+    report.metrics_written += metrics_written
+    session.flush()
 
 
 def _write_periods(
