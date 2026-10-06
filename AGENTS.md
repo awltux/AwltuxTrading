@@ -1,269 +1,133 @@
-# Working agreement for this repository
+# AwltuxTrading — working agreement
 
-**Read this before starting work.** It records process rules that are not visible
-from the code, and every one of them exists because something went wrong without
-it.
+Process rules not derivable from the code. Each exists because something broke
+without it.
 
----
-
-## 1. Commit and deploy at the end of every stage
-
-**A stage is not finished when the tests pass. It is finished when it is committed
-and the running container has been rebuilt from that commit.**
-
-The rule:
+## 1. A stage ends at a *deployed* commit
 
 ```bash
-pytest -q                       # must be green
-ruff check src tests            # must be clean
-git add -A && git commit        # the stage is only real once it is a commit
-docker compose build            # rebuild from that commit
-docker compose up -d            # replace the running container
-# then VERIFY — see below. Do not skip this.
+pytest -q && ruff check src tests
+git add -A && git commit
+docker compose build && docker compose up -d
 ```
 
-### Why this matters more than it looks
-
-The container image bakes its build provenance at build time (`awltux.buildinfo`),
-because the runtime image has no `.git` and no `git` binary. The **Info** page is
-the only way to answer "which revision is actually running?", and it can only be
-right if the image was built from a clean, committed tree.
-
-Two ways it silently lies:
-
-- **Built from a dirty tree.** The dirty-tree check covers `src`, `pyproject.toml`,
-  `README.md`, `config` and `alembic.ini` — the things the image copies. Any
-  uncommitted change to those makes the Info page print the *previous* commit plus
-  **"has uncommitted changes"**, so the hash you read is not the code you are
-  running.
-- **Not rebuilt at all.** Then the container is simply older than the checkout, and
-  nothing on the page says so.
-
-`.gitattributes` is load-bearing here. The check runs `git status` **inside the
-container**, where Git for Windows' system `core.autocrlf=true` does not exist, so
-without a repository-level `text=auto` every CRLF working-tree file compares as
-modified and *every* image is branded dirty. That is a false alarm that reads
-exactly like a real one, which is why it must not be allowed back. The Dockerfile
-`COPY`s it into the builder for this reason — if that line is ever dropped, the
-warning comes back and nothing else will tell you.
-
-Either way the symptom is the same: **the Info page hash does not match
-`git rev-parse HEAD`.** That is a real defect, not cosmetic — every result the
-dashboard shows becomes untraceable to the code that produced it.
-
-### Verifying the deploy actually landed
+Green tests are not a deployment. Verify it landed:
 
 ```bash
-git rev-parse --short HEAD                 # what you expect
+git rev-parse --short HEAD
 curl -fsS "http://127.0.0.1:${AWLTUX_PORT:-8080}/info" | grep -i "running commit"
 ```
 
-The two must agree, and the page must **not** say "has uncommitted changes". If
-they disagree, the deploy did not happen — do not report the work as deployed.
+The hash must match and the page must **not** say *has uncommitted changes*.
+Otherwise it did not deploy — do not report it as deployed.
 
-### When the deploy silently does nothing
+The image bakes provenance (`awltux.buildinfo`) because the runtime image has no
+`.git`. The dirty-tree check covers only the copied paths — `src`, `pyproject.toml`,
+`README.md`, `config`, `alembic.ini` — so an uncommitted change to those makes the
+Info page name the *previous* commit.
 
-`docker compose` reads `.env` on every command and is strict about it: a single line
-that is not `KEY=VALUE` or a comment makes **every** compose command fail, the build
-included. It is easy to miss because compose writes the complaint to stderr while
-the surrounding pipeline still looks like it ran — and because the old container
-keeps serving, so the site never appears to break.
+`.gitattributes` (`text=auto`) and the Dockerfile `COPY` of it are load-bearing: the
+check runs `git status` **inside** the container, which has no Windows
+`core.autocrlf`, so without it every CRLF file reads as modified and every image is
+branded dirty.
 
-This happened: a terminal transcript (a curl command and its JSON response) was
-pasted into the end of `.env`, and two rebuilds quietly did nothing while the
-container went on serving a 12-hour-old image.
+### Silent no-ops
+
+`docker compose` parses `.env` strictly. One line that is not `KEY=VALUE` or a
+comment fails **every** compose command — build included — while the old container
+keeps serving, so nothing looks wrong:
 
 ```bash
 docker compose config --quiet && echo "compose can read .env"
 ```
 
-Read the build's exit status and its output. "The command returned" is not the same
-as "the image was rebuilt" — check the image's creation time or its baked
-provenance, which is the thing the page reports anyway.
+Read the build's exit status and output. "The command returned" is not "the image
+was rebuilt".
 
-### Clean up after yourself before you finish
+## 2. The database is never deleted, only migrated
 
-**`git status` being clean is not the same as the workspace being clean.** Scratch
-that an ignore pattern covers is invisible to `git status` and accumulates anyway.
+`data/awltux.db` (the `awltux-data` volume) is the only copy of the universe,
+prices, filings, news, decisions and their outcomes. It is **not a cache**; a fresh
+database is not an upgrade.
 
-The specific offender, because it is silent and it compounds: when pytest cannot
-write its cache directory it falls back to creating `pytest-cache-files-XXXXXXXX`
-in the current directory, and those are gitignored, so nothing ever reports them.
-108 of them had piled up at the repository root before anyone noticed. If you see
-the warning below, that is this happening:
+- Migrations are **additive and inspection-guarded** — add a column only
+  `if "x" not in _columns(table)` — so `upgrade head` is correct on fresh, old and
+  already-migrated databases alike.
+- `awltux migrate` copies the DB to `data/backups/` before rewriting anything, and
+  skips the copy when nothing is pending.
+- Destructive, and not part of any upgrade: deleting the file, `awltux seed-demo
+  --reset`.
+- `alembic check` must report *No new upgrade operations detected*.
 
-    PytestCacheWarning: could not create cache path .../.pytest_cache/v/cache/nodeids
+## 3. Tests are offline
 
-Check for them, and for anything else you left, before declaring a stage done:
+`conftest.py` forces every credential to `None`; a test that reaches a provider is a
+bug. Capture the real response as a fixture instead — the provider output in
+`tests/test_symbol_identity.py` is verbatim.
+
+Stub **every** provider a job touches. Stubbing one and not the other reaches the
+live host.
+
+Never call `create_app()` to look at a page: the lifespan starts the scheduler, which
+calls providers and writes. Render the template directly.
+
+A registered job needs a `PROBES` entry (`scheduler/dependencies.py`) and a
+`SUMMARISERS` entry (`scheduler/outcomes.py`). Tests enforce both.
+
+## 4. Code standards
+
+Six properties, each with a live example.
+
+**Clean** — names describe the domain (`load_price_targets`, `APPLY_FLOOR`). An
+unknown renders as `—`, never `0` (`web/templating.py`). An uncertain match is
+refused and recorded, not guessed (`APPLY_FLOOR`, venue penalty, `ingest/identity.py`).
+Nothing is inferred silently.
+
+**Efficient** — never hold SQLite's write lock across a network call
+(`release_write_lock`). Alternate network and DB phases per batch
+(`refresh_prices_eod` chunks at 40). Bound bulk writes (`INSTRUMENT_FLUSH_EVERY`,
+`RELEVANCE_BACKFILL_ROWS`). Every provider call goes through `BudgetGuard`. Re-doing
+settled work every run is a bug even when it is correct.
+
+**Modular** — decide in a pure function, fetch in an adapter: `ingest/identity.py`
+takes candidates and returns a score, so its rules are testable with no network.
+Providers parse and return; they never decide. One concern per module — SQL in
+`web/queries.py`, formatting in `web/templating.py`, time in `timezones.py`.
+
+**Secure** — this dashboard shows holdings and has no login. Secrets stay out of the
+repo and the image; never print one (`redacted_dump`, `doctor`). Loopback-bound in
+`docker-compose.yml`. `allow_live_orders` stays false and is checked at the point of
+action, not only in config. Validate anything that becomes a path or a query
+(`parse_zone`); bound parameters only. Fail closed, and say so.
+
+**Testable** — assert the property, not the implementation. A regression test names
+the failure it prevents and the measurement, in its docstring. Assertions must be
+able to fail.
+
+**Maintainable** — migrations additive (above). A comment explains the *why*: what the
+obvious implementation was, what it did wrong, what was measured. Unresolved questions
+go in `TODO.md` with their evidence. Correct a document the change invalidates, in the
+same commit.
+
+### Template traps
+
+Both have caused silent bugs.
+
+- `pct(v, digits, already_percent=True)` treats `v` as a percentage *number*. A
+  fraction needs `pct(0.053, 2, false)`, or 5.3% renders as `+0.05%`.
+- `tojson` emits raw `"` and escapes only `'`, so JSON in an HTML attribute must be
+  **single-quoted** — otherwise the attribute ends at the first inner quote and
+  `JSON.parse` throws.
+
+## 5. Clean up
+
+`git status` clean ≠ workspace clean: ignored scratch accumulates invisibly. When
+pytest cannot write `.pytest_cache` it falls back to `pytest-cache-files-*` in the
+CWD; 108 had piled up.
 
 ```bash
-git status --short                              # tracked work only
-ls -d pytest-cache-files-* 2>/dev/null           # pytest's fallback temp dirs
+ls -d pytest-cache-files-* 2>/dev/null
 ```
 
-Put your own scratch in `.tmp/` or `.tests-tmp/`, both of which are gitignored and
-both of which are meant to be disposable. Do not invent a new scratch directory at
-the repository root — that is how `wtmp/`, `_tmp/` and the rest arrived.
-
-Anything a later step genuinely needs — a regenerated asset, a migration — belongs
-in the commit, not in scratch. If it is in `.tmp/`, it does not exist as far as the
-next session is concerned.
-
----
-
-## 2. Never delete the database. Migrate it.
-
-`data/awltux.db` (the `awltux-data` volume in Docker) holds every fact this system
-has recorded: the instrument universe, price history, filings, news, decisions and
-their scored outcomes. It is **not a cache**, and it is never deleted, reset or
-recreated to pick up a schema change. A fresh database is not an upgrade — it
-discards the only copy of the history.
-
-When a model changes, the schema moves forward in place:
-
-```bash
-alembic revision -m "what changed"   # additive, inspection-guarded
-awltux migrate                       # applies it to the existing file
-```
-
-- Migrations must be **additive and inspection-guarded** — `0004` adds
-  `news_item.event_type` only if the column is absent — so `upgrade head` is
-  correct for a fresh database, an old one, and one already migrated.
-- `awltux migrate` **copies the database to `data/backups/` before rewriting
-  anything**, and skips the copy when nothing is pending.
-- The only things that destroy stored data are deleting the file and
-  `awltux seed-demo --reset`. Neither is part of an upgrade.
-- `alembic check` must report "No new upgrade operations detected" — that is how
-  you know the models and the live database agree.
-
----
-
-## 3. The test suite is offline, and must stay that way
-
-`pytest` runs entirely offline: no network, no API keys. `conftest.py` forces every
-credential to `None` and asserts that no provider is configured. Do not write a
-test that needs a live provider — capture the real response shape as a fixture
-instead (see `tests/test_symbol_identity.py`, where the candidates are verbatim
-provider output).
-
-Never run the app's `create_app()` against the live data directory just to look at
-a page: its lifespan **starts the scheduler**, which performs real provider calls
-and writes to the database. Render the template directly instead.
-
----
-
-## 4. Comments explain *why*, and name the failure they prevent
-
-This codebase records reasoning that is not recoverable from the code: what the
-obvious implementation was, what it did wrong, and what the evidence was. A comment
-that restates the code is noise; a comment that says "this used to return early on
-fewer than two points, so an empty panel was indistinguishable from a broken one"
-is the point of the file.
-
-When a bug is found in the behaviour rather than the code — a wrong threshold, a
-mistaken rule — write down what was measured. `TODO.md` holds the open ones and the
-resolved ones that would otherwise be re-litigated.
-
----
-
-## 5. What "good code" means here
-
-Six properties. Each rule below is already followed somewhere in this tree, and the
-example is named so the standard is a thing you can go and read rather than an
-adjective.
-
-### Clean — say what the thing is, and never guess
-
-- **Names describe the domain, not the type.** `load_price_targets`,
-  `price_history_waiting_note`, `APPLY_FLOOR` — not `get_data`, `handle`, `THRESH`.
-- **An unknown value is rendered as visible, never as a plausible number.** A
-  missing figure shows `—`; it never becomes `0`, because `0` is a real value and a
-  reader cannot tell the two apart. `templating.py` exists to be the one place that
-  rule lives.
-- **A wrong answer is worse than a visible gap.** Where a match is uncertain — a
-  symbol, a company, a venue — the code refuses to apply it and records why, rather
-  than picking the best of a bad set. See `APPLY_FLOOR` and the venue penalty in
-  `ingest/identity.py`.
-- **Nothing is inferred silently.** Configuration is explicit; a missing credential
-  is reported as missing rather than producing an unauthenticated request that
-  fails somewhere else entirely.
-
-### Efficient — the network and the write lock are the expensive things
-
-- **Never hold SQLite's write lock across a network call.** Release it first
-  (`release_write_lock`), as every provider-touching job does.
-- **Alternate network and database phases per batch** rather than wrapping a whole
-  run in one transaction. `refresh_prices_eod` chunks at 40 for exactly this
-  reason: one transaction across hundreds of provider calls locks the dashboard out
-  for its duration.
-- **Bound every bulk operation.** `INSTRUMENT_FLUSH_EVERY`,
-  `RELEVANCE_BACKFILL_ROWS`, `RELEVANCE_FLUSH_EVERY` exist so a large import cannot
-  balloon memory or the lock.
-- **Respect the provider's budget.** `BudgetGuard` is acquired before every paid or
-  rate-limited call; do not add a call that bypasses it.
-- **Do work only where it is needed.** The symbol lookup considers only instruments
-  with no stored bar, and the universe refresh rations itself across the day. A job
-  that re-does settled work every run is a bug even when it is correct.
-
-### Modular — separate what decides from what fetches
-
-- **A decision is a pure function.** `ingest/identity.py` takes candidates and an
-  instrument and returns a scored result, so the scoring rules can be tested against
-  real provider output with no network. Its docstring states the split: *this module
-  decides; the provider only proposes.* Prefer that shape for any new judgement.
-- **The provider's output is untrusted data, returned as-is.** Adapters parse and
-  stop. They do not decide, and they do not silently drop a candidate the caller
-  might need to explain a refusal.
-- **One concern per module.** SQL lives in `web/queries.py` so the templates never
-  build their own; formatting lives in `web/templating.py`; timezone handling lives
-  in `timezones.py`. If you are about to write SQL or a format string in a template,
-  the function you actually want belongs in one of those.
-- **No circular convenience.** A module may import the layers beneath it, not its
-  siblings' internals.
-
-### Secure — this dashboard shows holdings and has no login
-
-- **Secrets never enter the repository or the image.** `.env` is gitignored *and*
-  `.dockerignore`d; `.dockerignore` keeps it out even though no `COPY` would have
-  taken it. Never print a credential: `redacted_dump` reports presence, and `doctor`
-  reports length and character class.
-- **The service is bound to loopback and is not authenticated.** `docker-compose.yml`
-  binds `127.0.0.1` deliberately. Do not move it onto a network interface, and do
-  not add an endpoint that assumes a trusted caller.
-- **Trading stays gated.** `allow_live_orders` must remain false by default and must
-  be checked at the point of action, not only in configuration.
-- **Validate anything that becomes a path or a query.** `parse_zone` checks a cookie
-  value against the real tz database before it reaches `ZoneInfo`, because zone keys
-  are filesystem paths. Use bound parameters, never string-built SQL, and treat
-  every provider string as untrusted input.
-- **Fail closed on access, and say so.** A refusal is reported as a refusal; it is
-  never softened into an empty success.
-
-### Testable — offline, deterministic, and about the property that broke
-
-- **The suite is offline and must stay that way** (section 3). If a behaviour needs
-  a real provider, capture its response as a fixture and assert against that — the
-  captured candidates in `tests/test_symbol_identity.py` are verbatim provider
-  output, which is why the rule they test is trustworthy.
-- **Test the property, not the implementation.** `test_the_chart_attributes_are_parseable_json`
-  parses the attribute as the browser would; it does not grep for a string that
-  happens to be there today.
-- **A regression test names the failure it prevents,** in its docstring, with the
-  measurement. A test whose reason is lost gets deleted by the next person who finds
-  it inconvenient.
-- **Assertions must be things that can fail.** No `assert True`, no asserting a
-  helper you just wrote returns what you just made it return.
-
-### Maintainable — leave the reasoning where the next person will find it
-
-- **Migrations are additive and inspection-guarded** (section 2), so `upgrade head`
-  is correct for a fresh database, an old one and one already migrated.
-- **Comments carry the *why*, including what was tried and rejected** (section 4).
-  This is the single highest-value habit in this repository: the reasoning is not
-  recoverable from the code, and without it someone re-litigates the same decision.
-- **Open questions have a home.** `TODO.md` records what is unresolved *and the
-  evidence*, so the next session starts from measurement rather than from scratch.
-- **Correct the record when it turns out to be wrong.** A claim in a document that
-  is no longer true is a bug; fix it in the same change that invalidates it.
-- **The build can always name itself** (section 1). Code that cannot say which
-  revision is running cannot have its results trusted or reproduced.
+Own scratch goes in `.tmp/` or `.tests-tmp/`. Anything a later step needs belongs in
+the commit — if it is in `.tmp/`, it does not exist.
