@@ -120,6 +120,58 @@ class TestDerivedMetrics:
         assert derived["roce"] == 150.0 / 900.0
 
 
+class TestTheEbitBridge:
+    """EBIT is stated by no provider, and two markers need it.
+
+    Measured on the live database before this existed: **0 of 88 stored periods
+    carried an `ebit`**, while 89% carried `pretax_income`, 75% `operating_income`
+    and 60% `interest_expense`. `metrics.py` says the metric exists "for NOPAT and
+    Altman Z''", so an always-absent name left both uncomputable and made the Altman
+    marker report an incomplete input set for every filer.
+    """
+
+    def test_the_identity_is_preferred(self):
+        """EBIT = pretax income + interest expense, which stays right when there is
+        non-operating income -- the case the metric note warns about."""
+        derived = derive_metrics(
+            {
+                "pretax_income": 100.0,
+                "interest_expense": 25.0,
+                "operating_income": 999.0,
+            }
+        )
+
+        assert derived["ebit"] == 125.0, "the identity, not the operating-income proxy"
+
+    def test_operating_income_is_the_fallback_when_interest_is_absent(self):
+        """An approximation, used because it is the difference between EBIT existing
+        for three quarters of filers and for half of them."""
+        derived = derive_metrics({"pretax_income": 100.0, "operating_income": 130.0})
+
+        assert derived["ebit"] == 130.0
+
+    def test_a_provider_definition_is_never_overwritten(self):
+        derived = derive_metrics({"ebit": 111.0, "pretax_income": 100.0, "interest_expense": 25.0})
+
+        assert "ebit" not in derived
+
+    def test_it_is_left_missing_when_neither_route_is_available(self):
+        assert "ebit" not in derive_metrics({"net_income": 100.0, "total_assets": 1_000.0})
+
+    def test_it_stays_a_stated_metric_in_the_vocabulary(self):
+        """The bridge must not reclassify it.
+
+        `test_metrics.py` asserts `DERIVED_METRICS` and `EXTRACTABLE_METRICS` are
+        disjoint -- a metric is either asked of an extractor or computed by us. EBIT
+        is asked of an extractor, so it is bridged here rather than moved, exactly as
+        `free_cash_flow` is.
+        """
+        from awltux.metrics import DERIVED_METRICS, EXTRACTABLE_METRICS
+
+        assert "ebit" in EXTRACTABLE_METRICS
+        assert "ebit" not in DERIVED_METRICS
+
+
 class TestInfoFallback:
     def test_profile_figures_map_onto_canonical_names(self):
         metrics = metrics_from_info(

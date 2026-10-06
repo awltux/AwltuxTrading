@@ -193,10 +193,10 @@ def derive_metrics(metrics: dict[str, float]) -> dict[str, float]:
     Derived values are recomputed here rather than trusted from a provider, so
     the sign conventions are ours and are applied consistently across taxonomies.
 
-    Four families rather than one long sequence. Each ``_..._ratios`` helper names
-    what it measures, guards its own preconditions, and returns only what it could
-    compute -- so a provider that publishes revenue but no balance sheet yields
-    margins and nothing else, without a branch in a caller.
+    One named helper per family rather than one long sequence. Each ``_..._ratios``
+    helper names what it measures, guards its own preconditions, and returns only
+    what it could compute -- so a provider that publishes revenue but no balance
+    sheet yields margins and nothing else, without a branch in a caller.
     """
     derived: dict[str, float] = {}
     for compute in (
@@ -205,6 +205,7 @@ def derive_metrics(metrics: dict[str, float]) -> dict[str, float]:
         _return_ratios,
         _per_share_ratios,
         _cash_flow_ratios,
+        _income_bridges,
     ):
         derived.update(compute(metrics))
     return derived
@@ -309,6 +310,41 @@ def _cash_flow_ratios(metrics: dict[str, float]) -> dict[str, float]:
     capex = metrics.get("capex")
     if operating_cash is not None and capex is not None:
         return {"free_cash_flow": operating_cash - capex}
+    return {}
+
+
+def _income_bridges(metrics: dict[str, float]) -> dict[str, float]:
+    """EBIT, stated by an identity when no provider publishes it.
+
+    ``free_cash_flow`` above is the same shape, and this one is measured rather than
+    assumed: on the live database **0 of 88 stored periods carry a stated ``ebit``**,
+    against 89% carrying ``pretax_income``, 75% ``operating_income`` and 60%
+    ``interest_expense``. The metric is in the extraction vocabulary because
+    ``awltux/metrics.py`` records what consumes it -- "NOPAT and Altman Z''" -- and a
+    name no provider ever populates leaves both of those permanently uncomputable.
+
+    Two routes, in the order of how well each answers the question:
+
+    * ``pretax_income + interest_expense`` is the identity, and the only route that
+      stays right when there is non-operating income.
+    * ``operating_income`` is the fallback, and it is an **approximation**: the same
+      metric note records that the two are "distinct from operating income when there
+      is non-operating income". It is used anyway because it is the difference
+      between EBIT existing for three quarters of filers and for half of them.
+
+    Only filled when absent, so a provider that does state EBIT is never overwritten.
+    """
+    if metrics.get("ebit") is not None:
+        return {}
+
+    pretax = metrics.get("pretax_income")
+    interest = metrics.get("interest_expense")
+    if pretax is not None and interest is not None:
+        return {"ebit": pretax + interest}
+
+    operating = metrics.get("operating_income")
+    if operating is not None:
+        return {"ebit": operating}
     return {}
 
 
