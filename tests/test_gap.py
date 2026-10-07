@@ -51,11 +51,63 @@ class TestClosingAResidual:
         assert gap.best(55_908.0, {}) is None
 
     def test_the_filer_s_own_rounding_is_within_tolerance(self):
-        """The residual is a difference of figures we hold, so the tolerance has to be
-        the one the comparison that produced it used. A tighter one would reject a
-        correct match over rounding in the filing itself."""
-        assert gap.best(55_908.0, {"short_term_investments": 55_910.0}) is not None
+        """The epsilon is for floating-point noise, not for a near-miss.
+
+        A caption that belongs closes the residual to the pound, because the residual is
+        a difference of figures we already hold. Accepting 0.5% -- the tolerance the
+        *check* uses to decide whether it has failed -- let a wrong pair through on the
+        first live run.
+        """
+        assert gap.best(55_908.0, {"short_term_investments": 55_908.0 + 1e-6}) is not None
+        assert gap.best(55_908.0, {"short_term_investments": 55_910.0}) is None
         assert gap.best(55_908.0, {"short_term_investments": 60_000.0}) is None
+
+
+class TestTheMeasuredNearMiss:
+    """The live run's wrong answer, from MSFT's current-liability gap.
+
+    Current liabilities are stated at 168,825 against the 93,326 we hold, so the residual
+    is 75,499. The right answer is short-term income taxes (2,534) plus short-term
+    unearned revenue (72,965), which is *exactly* 75,499.
+
+    Under the 0.5% tolerance this module started with -- 377 on that residual -- the
+    search returned a pair ending in **long-term** unearned revenue instead, summing to
+    75,712. That is 213 out: comfortably inside the tolerance, and the wrong caption to
+    put in a prompt for every later filing. Combinations are enumerated alphabetically,
+    so it won because `l` sorts before `s`.
+    """
+
+    RESIDUAL = 75_499.0
+    CAPTIONS = {
+        "long_term_unearned_revenue": 2_747.0,
+        "short_term_income_taxes": 2_534.0,
+        "short_term_unearned_revenue": 72_965.0,
+        "long_term_income_taxes": 28_647.0,
+    }
+
+    def test_the_exact_pair_is_chosen(self):
+        found = gap.best(self.RESIDUAL, self.CAPTIONS)
+
+        assert found is not None
+        assert set(found.labels) == {"short_term_income_taxes", "short_term_unearned_revenue"}
+        assert found.total == self.RESIDUAL
+
+    def test_the_near_miss_is_not_even_a_candidate(self):
+        assert gap.closing_captions(self.RESIDUAL, self.CAPTIONS) == [
+            gap.Discovery(
+                labels=("short_term_income_taxes", "short_term_unearned_revenue"),
+                total=self.RESIDUAL,
+                residual=self.RESIDUAL,
+            )
+        ]
+
+    def test_the_closest_total_wins_over_the_first_found(self):
+        """Not the alphabetically earlier one, which is what `found[0]` gave."""
+        captions = {"a_line": 70_000.0, "b_line": 5_499.0, "z_line": 75_499.0}
+
+        found = gap.best(self.RESIDUAL, captions)
+
+        assert found is not None and found.labels == ("z_line",)
 
 
 class TestAmbiguityIsDeclined:

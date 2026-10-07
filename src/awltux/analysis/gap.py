@@ -36,11 +36,23 @@ from dataclasses import dataclass
 #: How many captions may be combined to close one residual. See the module docstring.
 MAX_COMBINATION = 2
 
-#: How close is exact. The residual is a difference of figures we already hold, so the
-#: tolerance is the same one `ledger.tolerance` applies to the comparison that produced
-#: it -- a tighter one would reject a correct match over the filer's own rounding.
-TOLERANCE_FRACTION = 0.005
-TOLERANCE_FLOOR = 1.0
+#: How close is exact.
+#:
+#: **Deliberately not `ledger.tolerance`.** That one answers "has this check failed?"
+#: and is 0.5% of the figure, which is right for deciding whether a stated subtotal
+#: agrees with the parts. This answers a different question -- "is this caption the
+#: missing line?" -- and there the answer is exact or it is a coincidence: the residual
+#: is a difference of figures we already hold, so a caption that belongs closes it to
+#: the pound.
+#:
+#: Measured 2026-10-07, and it is why this is not 0.5%. `MSFT_US_EQ`'s current
+#: liabilities are out by 75,499, and the correct pair is short-term income taxes
+#: (2,534) plus short-term unearned *revenue* (72,965) -- exactly 75,499. Under a 0.5%
+#: tolerance the search instead returned the pair ending in long-term unearned revenue,
+#: which sums to 75,712: 213 out, comfortably inside 377, and simply the wrong answer.
+#: The epsilon below is for floating-point noise only.
+TOLERANCE_FRACTION = 1e-9
+TOLERANCE_FLOOR = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,9 +108,15 @@ def closing_captions(
 def best(residual: float, captions: Mapping[str, float]) -> Discovery | None:
     """The single best explanation for a residual, or ``None``.
 
+    "Best" is the closest total, and only then the shortest explanation -- not the first
+    one the search happens to reach. That ordering matters: combinations are enumerated
+    alphabetically, so taking the first match returned a pair ending in *long-term*
+    unearned revenue over the exact pair ending in short-term income taxes, purely
+    because `l` sorts before `s`.
+
     Ambiguity is declined rather than guessed at: two *different* single captions that
-    both close the gap means the arithmetic cannot tell which is the missing line, and
-    recording either would be a coin toss written into a prompt.
+    both close the gap exactly means the arithmetic cannot tell which is the missing
+    line, and recording either would be a coin toss written into a prompt.
     """
     found = closing_captions(residual, captions)
     if not found:
@@ -106,7 +124,7 @@ def best(residual: float, captions: Mapping[str, float]) -> Discovery | None:
     singles = [discovery for discovery in found if discovery.exact]
     if len(singles) > 1:
         return None
-    return found[0]
+    return min(found, key=lambda discovery: (len(discovery.labels), abs(discovery.total - residual)))
 
 
 def unexplained(residual: float, captions: Mapping[str, float]) -> bool:
