@@ -125,3 +125,69 @@ class TestIsUkListing:
 
     def test_unknown_is_not_uk(self):
         assert is_uk_listing(None, None) is False
+
+
+class TestTheUkIdentity:
+    """The Python rule and the SQL one must select the same instruments.
+
+    They are two implementations because the rule has to run *in the query*: the
+    `uk_companies` job applied its limit to the whole universe and filtered in Python,
+    so the limit was spent on instruments it was about to discard -- 50 of 18,488
+    selected, 11 kept, and the identical 11 on every run because nothing was written to
+    move the window. This walks both over the same rows and asserts they agree, which is
+    the only thing that keeps the duplication safe.
+    """
+
+    CASES = (
+        (None, "VOD.L"),
+        (None, "AAPL"),
+        ("London Stock Exchange", None),
+        ("LSE", None),
+        ("LSEG", None),
+        ("XLON", None),
+        ("NASDAQ", None),
+        ("New York Stock Exchange", None),
+        ("Amsterdam", "ADYEN.AS"),
+        (None, None),
+        ("", ""),
+        ("london stock exchange", "vod.l"),
+    )
+
+    def test_the_predicate_agrees_with_the_python_rule(self, session):
+        from sqlalchemy import select
+
+        from awltux.db import Instrument
+        from awltux.ingest.symbols import uk_listing_predicate
+
+        for index, (exchange, symbol) in enumerate(self.CASES):
+            session.add(
+                Instrument(
+                    t212_ticker=f"CASE{index}_EQ",
+                    name=f"Case {index}",
+                    instrument_type="STOCK",
+                    exchange_name=exchange,
+                    yahoo_symbol=symbol,
+                    in_universe=True,
+                )
+            )
+        session.flush()
+
+        expected = {
+            f"CASE{index}_EQ"
+            for index, (exchange, symbol) in enumerate(self.CASES)
+            if is_uk_listing(exchange, symbol)
+        }
+        selected = {
+            row.t212_ticker
+            for row in session.execute(
+                select(Instrument).where(
+                    uk_listing_predicate(Instrument.exchange_name, Instrument.yahoo_symbol)
+                )
+            ).scalars().all()
+        }
+
+        assert selected == expected, (
+            "the SQL predicate and `is_uk_listing` disagree, which is how the limit "
+            "came to be spent on instruments the job then discarded"
+        )
+        assert expected, "the sample must contain at least one UK listing to be a test"

@@ -660,27 +660,33 @@ def resolve_uk_companies(
     reports nothing attempted rather than spending a request to find out it is not a UK
     company.
     """
-    from awltux.ingest.symbols import is_uk_listing
+    from awltux.ingest.symbols import uk_listing_predicate
 
     settings = settings or get_settings()
     provider = provider or CompaniesHouseProvider(settings)
     if not provider.configured:
         return {"skipped": "AWLTUX_COMPANIES_HOUSE_API_KEY is not set"}
 
+    # The UK restriction is in the *query*, not applied afterwards. Filtering in Python
+    # spent the limit on instruments about to be discarded: a run selected 50 of 18,488
+    # unresolved rows, kept the 11 UK ones among them, and -- because nothing is written
+    # when nothing matches -- selected the same 11 every time. Measured 2026-10-07: eight
+    # consecutive runs with `matched=0`, and 107 of the universe's 118 UK listings never
+    # attempted at all.
     statement = (
         select(Instrument)
         .where(Instrument.in_universe.is_(True))
         .where(Instrument.ch_company_number.is_(None))
+        .where(uk_listing_predicate(Instrument.exchange_name, Instrument.yahoo_symbol))
+        # Deterministic, so "which fifty" is answerable and the walk advances in a
+        # stated order rather than in whatever rowid order SQLite returns.
+        .order_by(Instrument.t212_ticker)
     )
     if tickers is not None:
         statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
     if limit:
         statement = statement.limit(limit)
-    instruments = [
-        row
-        for row in session.execute(statement).scalars().all()
-        if is_uk_listing(row.exchange_name, row.yahoo_symbol)
-    ]
+    instruments = list(session.execute(statement).scalars().all())
 
     summary = {"attempted": len(instruments), "matched": 0, "confident": 0, "unmatched": 0}
     for position, instrument in enumerate(instruments, start=1):

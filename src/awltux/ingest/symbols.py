@@ -297,9 +297,20 @@ def _market_of(code: str | None) -> str | None:
     return code
 
 
+#: Exchange spellings that mean the London Stock Exchange, and the substring that does.
+#:
+#: Named as data because two things have to agree about them: the Python test
+#: :func:`is_uk_listing` and the SQL predicate :func:`uk_listing_predicate`. They were
+#: separate implementations for one commit and `uk_companies` paid for it -- the query
+#: applied its limit before the Python filter, so a run saw the first 50 unresolvable
+#: instruments in the universe and kept whichever eleven happened to be UK listings.
+UK_EXCHANGE_CODES = ("LSE", "LSEG", "XLON")
+UK_EXCHANGE_MARKER = "LONDON"
+
+
 def _normalise_exchange(exchange_name: str) -> str | None:
     upper = exchange_name.strip().upper()
-    if "LONDON" in upper or upper in {"LSE", "LSEG", "XLON"}:
+    if UK_EXCHANGE_MARKER in upper or upper in UK_EXCHANGE_CODES:
         return "LSE"
     if "NASDAQ" in upper:
         return "NASDAQ"
@@ -316,3 +327,28 @@ def is_uk_listing(exchange_name: str | None, yahoo_symbol: str | None) -> bool:
     if yahoo_symbol and yahoo_symbol.upper().endswith(".L"):
         return True
     return bool(exchange_name and _normalise_exchange(exchange_name) == "LSE")
+
+
+def uk_listing_predicate(exchange_column, symbol_column):
+    """The same rule as :func:`is_uk_listing`, as a SQLAlchemy expression.
+
+    The duplicate implementation exists because the rule has to run **in the query**.
+    `uk_companies` applied its limit to the whole universe and then filtered in Python,
+    so the limit was spent on instruments it was going to discard: measured 2026-10-07,
+    a run selected 50 of 18,488 unresolved instruments, kept the 11 UK ones among them,
+    and -- because nothing was written when nothing matched -- selected the identical 11
+    on every subsequent run. 118 UK listings are in the universe and 107 had never been
+    attempted.
+
+    The two are kept in step by ``UK_EXCHANGE_CODES`` and ``UK_EXCHANGE_MARKER``, and by
+    a test that runs both over the same inputs.
+    """
+    from sqlalchemy import func, or_
+
+    exchange = func.upper(func.coalesce(exchange_column, ""))
+    symbol = func.upper(func.coalesce(symbol_column, ""))
+    return or_(
+        symbol.like("%.L"),
+        exchange.like(f"%{UK_EXCHANGE_MARKER}%"),
+        exchange.in_(UK_EXCHANGE_CODES),
+    )

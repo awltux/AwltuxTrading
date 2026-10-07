@@ -25,9 +25,11 @@ import logging
 import random
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -333,7 +335,7 @@ class ResponseCache:
         self.raw_root.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def key(provider: str, url: str) -> str:
+    def key(provider: str, url: str, params: Mapping[str, Any] | None = None) -> str:
         """A stable filename for a cached response.
 
         Returns the digest **only** -- the provider is already a directory level
@@ -342,8 +344,25 @@ class ResponseCache:
         :meth:`write` only created the first level, every cache write raised
         ``FileNotFoundError``. The provider is still folded into the hash, so two
         providers caching the same URL cannot collide.
+
+        **``params`` is part of the key, and leaving it out was a real bug.** The URL
+        this is handed is the path alone, so every request that varied only by query
+        string shared one cache entry for the whole TTL. Measured 2026-10-07:
+        ``/search/companies`` -- cached for 24 hours -- returned the same twenty
+        candidates for every company name, which is why `uk_companies` reported
+        ``matched=0`` on eight consecutive runs while the matcher itself was sound.
+        The same shape reached `finnhub.company_news` (one article filed under 60
+        tickers), `marketaux.latest_news` and both GDELT tone calls.
+
+        Sorted and urlencoded so the same query in a different insertion order is the
+        same request, and so a value containing the separator cannot impersonate two
+        parameters.
         """
-        digest = hashlib.sha256(f"{provider}\x1f{url}".encode()).hexdigest()[:32]
+        basis = url
+        if params:
+            query = urlencode(sorted((str(key), str(value)) for key, value in params.items()))
+            basis = f"{url}?{query}"
+        digest = hashlib.sha256(f"{provider}\x1f{basis}".encode()).hexdigest()[:32]
         return digest
 
     def _meta_path(self, provider: str, key: str) -> Path:
@@ -521,7 +540,9 @@ class HttpClient:
         exists, so an unchanged resource costs one 304 instead of a full body.
         """
         full_url = url if url.startswith("http") else f"{self.base_url}{url}"
-        key = ResponseCache.key(self.provider, full_url)
+        # `params` is in the key: the URL is the path alone, so without it every
+        # request that varied only by query shared one cache entry. See `key`.
+        key = ResponseCache.key(self.provider, full_url, params)
         cached = self.cache.read(self.provider, key)
 
         if cached is not None and cache_ttl > 0 and self.cache.is_fresh(cached, cache_ttl):

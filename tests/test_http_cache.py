@@ -48,6 +48,43 @@ class TestKeyLayout:
             "yahoo", "https://example.test/b"
         )
 
+    def test_different_params_get_different_keys(self):
+        """The bug that made `uk_companies` report `matched=0` for eight runs.
+
+        The URL handed to `key` is the *path* -- `params` travels separately to httpx --
+        so before this every request to `/search/companies` shared one entry, and the
+        first company name searched answered for all of them for 24 hours.
+        """
+        companies_house = "https://api.company-information.service.gov.uk/search/companies"
+
+        hays = ResponseCache.key("companies_house", companies_house, {"q": "Hays"})
+        morgan = ResponseCache.key("companies_house", companies_house, {"q": "Morgan Sindall"})
+
+        assert hays != morgan
+
+    def test_the_order_of_params_does_not_change_the_key(self):
+        """Two spellings of one query are one request, or the cache misses half the
+        time and doubles the provider traffic it exists to halve."""
+        url = "https://example.test/search"
+        first = ResponseCache.key("x", url, {"q": "a", "limit": 20})
+        second = ResponseCache.key("x", url, {"limit": 20, "q": "a"})
+
+        assert first == second
+
+    def test_no_params_still_keys_on_the_url_alone(self):
+        """Unchanged for the callers that pass none, so their entries survive."""
+        url = "https://example.test/x"
+        assert ResponseCache.key("x", url) == ResponseCache.key("x", url, None)
+        assert ResponseCache.key("x", url) == ResponseCache.key("x", url, {})
+
+    def test_a_value_cannot_impersonate_two_parameters(self):
+        """The pairs are urlencoded, so a value containing `&` or `=` stays one value."""
+        url = "https://example.test/x"
+        sneaky = ResponseCache.key("x", url, {"q": "a&b=1"})
+        split = ResponseCache.key("x", url, {"q": "a", "b": "1"})
+
+        assert sneaky != split
+
 
 class TestRoundTrip:
     def test_a_write_can_be_read_back(self, cache: ResponseCache):
