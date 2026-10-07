@@ -70,6 +70,12 @@ the gate is too strict or the universe is genuinely unattractive; the answer is 
      13  (none)                   `avoid` produces no suggestion anyway
       1  probability_below_floor
 
+**Short term is not the same story, and it is the control.** 7 of the 1,495 pass its gate
+-- all seven of the `strong_buy` calls -- against **0** for long term. So this is
+specifically the long-term checks rather than a gate that refuses everything, which is
+what the entry this replaced had established at 81 decisions and could not explain.
+`horizon_fit` agrees: 1,478 `neither`, 16 `short_term`, 1 `long_term`.
+
 **The scores are not being suppressed -- there is nothing to suppress.** Across the whole
 universe the composite score runs 0.6 to **63.5**, median 32, and only **6 decisions
 clear 60**. A gate refusing good opportunities would leave a pile of them at the door;
@@ -103,27 +109,6 @@ harder to tell apart.
 
 `price_stale` is separate and mechanical: 499 decisions refused for data one hour past a
 36-hour limit, which is a refresh cadence question rather than a judgement.
-
-### `xbrl_statements` reports success when the payload yields no periods
-
-A fetch that returns a payload we cannot extract anything from is recorded as a
-*succeeding* run. Measured 2026-10-07 against the live database: of the **314**
-in-universe instruments with a resolved SEC CIK, only **40** have a period from
-`xbrl_companyfacts`. The other **274** have nothing, and nothing anywhere says whether
-that is because the rotation has not reached them or because we asked, received a
-payload, and took no figures out of it.
-
-The two cases need different fixes -- waiting versus reading the tags differently -- and
-they are currently indistinguishable. `_write_periods` returns `written == 0` for the
-second case, and `_sync_one` treats it as success: it clears any blocker and moves on.
-
-**Decide:** is "asked, received, extracted nothing" a *blocker* (stage `extract`), or is
-it normal for filers whose statements live in tags `TAG_MAP` does not carry? The honest
-answer is probably both, and the blocker would need to say which. Recording it is the
-cheap half and it is the half that makes the case visible at all; it must **not** be
-inferred from a missing period, because that would flag all 274 including the ones simply
-not yet reached -- which is exactly the mistake the attention filter's level 2 avoids by
-only firing when there is no other route to the accounts.
 
 ### The accounts come from `companyfacts`, not from the filing's own XBRL
 
@@ -300,26 +285,6 @@ Two cautions the note raises that belong with the implementation:
   that reads as a verdict; the note's recommendation is that a flag means "read
   this" and never "this is fraud".
 
-### Every long-term decision so far has failed its own gate
-
-`decision_run` holds 81 rows and `sum(gate_allowed)` is **0**: no long-term call has
-been actionable. Short term is not the same story — 2 of the 81 pass — so this is not
-"the gate refuses everything", it is specifically the long-term checks.
-
-The decisions look ordinary. 76 came from DeepSeek and 5 from the deterministic
-engine, and no JEV key is configured, so every one is also uncalibrated. Of the 81,
-77 answer `horizon_fit = neither` and 4 `short_term`; the binding rules are
-`price_stale` (52) and `confidence_below_floor` (28).
-
-Both of those are the gate doing its job on a universe with no accounts stored —
-`fundamentals` coverage is the real constraint, and a stale price is a stale price.
-The open question is whether the confidence floor is calibrated against that
-universe or is a threshold nothing can clear. **Not investigated.**
-
-**Next:** read one decision's `gate` JSON against its `answers`, and see which
-check refused it. The gate reason strings are supposed to be specific enough to
-answer that from the receipt alone, so if they are not, that is the bug.
-
 ### `symbol_resolution`'s ISIN answer is discarded by the next instrument sync
 
 Measured against the live database, and it contradicts what this item used to claim.
@@ -360,7 +325,7 @@ cannot change stops being asked daily, or a review queue: there are **no** manua
 aliases at all (`is_manual` count is 0), and the only place one surfaces is the
 instrument page, one ticker at a time. A reviewer has no list to work from.
 
-### The identity keys are stored, but 5,800 existing rows do not carry them
+### The identity keys are stored, but 19,474 existing rows do not carry the third one
 
 The same-event grouping used to be one cosine threshold and nothing else. Measured
 2026-10-07 through the deployed container against the 1,000 embedded stories, of the
@@ -385,11 +350,19 @@ stories that already agree on what kind of thing happened, not the decision.
 and vetoes 439 of those 672 joins today.
 
 **What is missing is the third key.** `metric`, `period` and `magnitude` are new columns
-and **every existing row is NULL**. The veto reads an absent key as "not stated" rather
-than "different" -- the alternative would veto every join until the data caught up,
-silently -- so the metric half is inert until rows are re-classified. `news_relevance`
-backfills at **200 model calls per run** (`news.relevance_backfill_per_run`) against
-5,800 rows, so roughly 29 runs.
+and almost every row is NULL. Re-measured 2026-10-07 against **20,168** stored stories --
+the entry said 5,800, which was right when written and is 3.4x out now:
+
+    metric      694 set (3%)     19,474 null
+    period      124 set (1%)     20,044 null
+    magnitude    98 set (0%)     20,070 null
+
+The veto reads an absent key as "not stated" rather than "different" -- the alternative
+would veto every join until the data caught up, silently -- so the metric half is inert
+until rows are re-classified. `news_relevance` backfills at **200 model calls per run**
+(`news.relevance_backfill_per_run`), which against 19,474 rows is roughly 97 runs rather
+than the 29 this entry used to claim. `event_type` and `direction` are separate and much
+further along: 16,761 (83%) and 20,111 (100%).
 
 `metric` is the one that matters and the reason the columns exist at all. On the five
 pairs that decided the threshold, the *true* EasyJet takeover pair scores **0.7925** and
@@ -542,12 +515,15 @@ and `cost_usd` from the model's published per-million rate. It needs the rates i
 `config.yaml` beside `news.embeddings`, because they are per model and the parser already
 knows which model answered.
 
-### Six sweeps still do not skip an instrument a refresh is working on
+### The per-instrument mechanisms are half-wired: leases on six sweeps, blockers on two
 
-The one-instrument refresh takes a lease (`ingest/lease.py`) and the sweeps consult it so
-the two cannot write the same company at once. Six of them do not yet: `filings_edgar`,
-`shareholder_reports`, `uk_companies`, `news_relevance`, `news_analysis` and
-`sentiment`. Wired: `price_eod`, `fundamentals`, `xbrl_statements`, `news_rss`,
+Two mechanisms that protect one instrument from another, each adopted by some jobs and not
+others. Merged because a reader fixing either wants the other's list.
+
+**Leases.** The one-instrument refresh takes a lease (`ingest/lease.py`) and the sweeps
+consult it so the two cannot write the same company at once. Six do not yet:
+`filings_edgar`, `shareholder_reports`, `uk_companies`, `news_relevance`, `news_analysis`
+and `sentiment`. Wired: `price_eod`, `fundamentals`, `xbrl_statements`, `news_rss`,
 `valuation` and `decision` — the six that call `lease.exclude_locked(...)` on their
 instrument selection.
 
@@ -564,24 +540,24 @@ not an emergency. `refresh.py` does not pause the scheduler for its duration, wh
 close the window completely, because a thread that died while holding the pause would
 leave the whole scheduler stopped; the lease expires and that failure mode does not exist.
 
-### Only two jobs record a per-instrument blocker
-
-`instrument_blocker` exists so a *missing* figure is not mistaken for an answer, and
-`fundamentals` and `xbrl_statements` write to it. Every other job that can fail one
-instrument and succeed the rest still records nothing: `shareholder_reports` (a refused
+**Blockers.** `instrument_blocker` exists so a *missing* figure is not mistaken for an
+answer, and only `fundamentals` and `xbrl_statements` write to it. Every other job that can
+fail one instrument and succeed the rest records nothing: `shareholder_reports` (a refused
 download is in `download_errors` and nowhere else), `filings_edgar`, `uk_companies`,
 `edgar_events`, `prices` and `symbol_resolution`.
 
-Measured 2026-10-07, which is why this is a queue item and not a hypothetical: parsing
-the per-instrument failure lists out of the last **400** `ingest_run.detail` payloads
-found **5 instruments** in total. The lists are free text, each job words its own
-differently, and `retention` prunes the detail away -- so the evidence exists in the log
-and decays before anyone can act on it.
+Measured 2026-10-07, which is why this is a queue item and not a hypothetical: parsing the
+per-instrument failure lists out of the last **400** `ingest_run.detail` payloads found
+**5 instruments** in total. The lists are free text, each job words its own differently,
+and `retention` prunes the detail away — so the evidence exists in the log and decays
+before anyone can act on it.
 
 The add is mechanical: `record_blocker` where a job appends to its failure list,
-`clear_blocker` where it succeeds. `uk_companies` is the one to do first, because the
-level-2 reason for a UK listing is "no Companies House number" and a *rejected* lookup is
-a different and more actionable problem with the same em-dash today.
+`clear_blocker` where it succeeds. `uk_companies` was the one to do first — the level-2
+reason for a UK listing is "no Companies House number" — and it is less pressing on its
+own account now that 115 of the 118 UK listings resolve. The case for it is the general
+one: `xbrl_statements` and `fundamentals` are the only jobs whose per-instrument failures
+are visible at all.
 
 ### `decision` still sweeps the whole universe, and six jobs have no stopping point
 
@@ -650,6 +626,14 @@ request now, as does `news_rss`. The claim that it never could is stale.
 Lowering `max_deep_per_run` is not a fix: 40 stories is already a rationed batch,
 and cutting it further only means the backlog grows instead.
 
+**Not merged with *A CPU-bound job still starves the web UI*, and it is the only pair the
+clean-down left apart.** Both are consequences of one process running the scheduler, but
+they are different failures with different fixes: this one is that jobs are unbounded and
+some have no boundary to be asked to leave at, and that one is that a running job holds
+`/dashboard` at 14 seconds because CPython runs one thread at a time. Merging them would
+produce an entry whose first half a per-run limit answers and whose second half a second
+process does. **See also** the other entry for why more CPU cannot help.
+
 ### A CPU-bound job still starves the web UI, and one worker only halves it
 
 Capping the job pool at one worker (`MAX_CONCURRENT_JOBS`) stopped five jobs running
@@ -688,6 +672,11 @@ Two things follow, and they are different sizes of change:
 answers in under 0.2s even with a job running, which distinguishes "the app is down"
 from "the app is busy" — the distinction missing when this was first reported as a
 freeze.
+
+**See also** *`decision` still sweeps the whole universe, and six jobs have no stopping
+point*: the same single process is why a job that has no boundary to check cannot be
+asked to leave, and one that can be asked still holds the interpreter for the batch it is
+inside. That entry is the job-side half of this one, and the two have different fixes.
 
 ### `json_each` cannot use an index, so per-instrument news is a table scan
 
@@ -863,33 +852,50 @@ means:
 `tests/test_partial_paging.py` carries the contract for the dashboard; adding a tuple to
 `REGIONS` extends it to each one as it lands.
 
-### `xbrl_statements` measures coverage, so a wrong extraction is never revisited
+### `xbrl_statements` cannot tell "not reached" from "read and empty" from "read wrongly"
 
-The job's coverage probe (`scheduler/dependencies.py::_probe_xbrl_statements`) counts
-filers with a CIK that have **no** `xbrl_companyfacts` row at all. The job is
-`backfill=True`, so once that count reaches zero `skip_reason` skips it.
+Three states, one job, and its success test distinguishes none of them. Merged from two
+entries that were each measuring a different face of the same gap.
 
-That is the right test for "is there anything to fetch", and the wrong one for "is what
-we stored correct". A period extracted with the wrong tags counts as covered, so a filer
-whose statements we read wrongly is never read again -- and the gap can only be closed by
-a code change nobody knows is needed.
+**State one: asked, received, extracted nothing -- and recorded as success.** Measured
+2026-10-07: of the **314** in-universe instruments with a resolved SEC CIK, only **40**
+had a period from `xbrl_companyfacts`; the other **274** had nothing, and nothing
+anywhere said whether that was because the rotation had not reached them or because we
+asked, received a payload, and took no figures out of it. `_write_periods` returns
+`written == 0` for the second case and `_sync_one` treats it as success: it clears any
+blocker and moves on. The two need different fixes -- waiting versus reading the tags
+differently -- and they are indistinguishable.
 
-Measured 2026-10-06: **314** US filers, **30** with stored periods, **284** without. The
-rotation is `ORDER BY max(as_of) NULLS FIRST, ticker` with `reports.per_run: 60`, so the
-284 drain first and the 30 already-extracted are re-read as runs 5-6. That ordering is
-the only reason the ledger fixes of the same day reached stored rows at all; had those 30
-been extracted last they would have been re-read first and then never again.
+**State two: the coverage probe counts rows, so a wrongly-read filer is never revisited.**
+`_probe_xbrl_statements` counts CIK-having filers with **no** `xbrl_companyfacts` row at
+all, and the job is `backfill=True`, so once that count reaches zero `skip_reason` skips
+it. A period extracted with the wrong tags counts as covered. Measured 2026-10-06: 314
+filers, 30 with periods, 284 without -- and the rotation is
+`ORDER BY max(as_of) NULLS FIRST, ticker` with `reports.per_run: 60`, so the 284 drain
+first and the 30 already-extracted are re-read as runs 5-6. That ordering is the only
+reason the ledger fixes of the same day reached stored rows at all; had those 30 been
+extracted last they would have been re-read first and then never again.
 
-**This is the lag both fixes on 2026-10-06 ran into**, and neither reaches a stored row on
-its own: `analysis/ledger.py` reads stored metrics, so a filer extracted before the fix
-keeps the old figures until the job rotates back over it. The EBIT bridge, the
-interest-income lines and the four balance-sheet components all share it.
+**This is the lag both 2026-10-06 fixes ran into**, and neither reaches a stored row on its
+own: `analysis/ledger.py` reads stored metrics, so a filer extracted before the fix keeps
+the old figures until the job rotates back over it. The EBIT bridge, the interest-income
+lines and the four balance-sheet components all share it -- and so does every discovery
+the new metric-field registry makes, because a caption learned from one filing reaches
+another only when that filing is next read.
+
+**Decide:** is "asked, received, extracted nothing" a *blocker* (stage `extract`), or is it
+normal for filers whose statements live in tags `TAG_MAP` does not carry? The honest
+answer is probably both, and the blocker would need to say which. It must **not** be
+inferred from a missing period, because that would flag all 274 including the ones simply
+not yet reached -- the mistake the attention filter's level 2 avoids by only firing when
+there is no other route to the accounts.
 
 **Next:** the probe needs a second notion of outstanding -- a period written by an older
 version of the mapper. Everything needed is derivable rather than needing new state: the
 row carries `as_of`, and `metric_sources` records the tag each figure came from, so
 "extracted before tag X existed" is answerable. A mapper version stamped on the row would
-make it exact. Cheap, and it turns a silent staleness into a queue entry the job drains.
+make it exact, and it would turn both silent staleness *and* silent emptiness into a queue
+entry the job drains.
 
 ### Every page is only tested against seeded data
 
