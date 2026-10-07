@@ -30,6 +30,10 @@ from awltux.web import filters
 AWKWARD = "Surgical & Medical Instruments & Apparatus, NEC (incl. dental)"
 PLAIN = "Pharmaceutical Preparations"
 
+#: The coarse sector both SIC strings above are derived into. It has a space, so the
+#: sector-page URLs exercise escaping too.
+GROUP = "Health Care"
+
 
 def visible_text(html: str) -> str:
     """The page as a reader sees it: markup and attribute values removed.
@@ -263,20 +267,38 @@ class TestTheSectorTranslation:
 
 @pytest.fixture
 def sectors(session):
-    """Three sectors, one of them awkward, plus instruments with no sector.
+    """Instruments across two coarse sectors, plus one with no sector at all.
 
     The counts are deliberately uneven so a test can tell "filtered to the right
-    sector" from "returned everything". Sector sentiment is seeded too: the
-    Sectors page lists only sectors that have a series, so without it the page
-    renders its empty state and every link assertion below would pass vacuously.
+    sector" from "returned everything". Sector sentiment is seeded too, keyed on the
+    SIC industry string the older jobs still write.
+
+    ``sector_group`` is what the sector *pages* are keyed on, and it is set to match
+    the SIC string here the way ``analysis/sectors.assign`` would derive it -- a test
+    fixture that set only one of the two would let a page filter on a column nothing
+    had populated and still look correct.
     """
     from awltux.db import SentimentSeries
     from tests.helpers import make_instrument
 
-    session.add(make_instrument("PHRM_US_EQ", name="Pharma One", sector=PLAIN, isin="US1"))
-    session.add(make_instrument("PHRM2_US_EQ", name="Pharma Two", sector=PLAIN, isin="US2"))
-    session.add(make_instrument("SURG_US_EQ", name="Surgical One", sector=AWKWARD, isin="US3"))
-    session.add(make_instrument("NONE_US_EQ", name="No Sector", sector=None, isin="US4"))
+    session.add(
+        make_instrument(
+            "PHRM_US_EQ", name="Pharma One", sector=PLAIN, sector_group=GROUP, isin="US1"
+        )
+    )
+    session.add(
+        make_instrument(
+            "PHRM2_US_EQ", name="Pharma Two", sector=PLAIN, sector_group=GROUP, isin="US2"
+        )
+    )
+    session.add(
+        make_instrument(
+            "SURG_US_EQ", name="Surgical One", sector=AWKWARD, sector_group=GROUP, isin="US3"
+        )
+    )
+    session.add(
+        make_instrument("NONE_US_EQ", name="No Sector", sector=None, isin="US4")
+    )
     today = dt.date.today()
     for scope_id, score in ((PLAIN, 0.4), (AWKWARD, -0.2)):
         session.add(
@@ -291,7 +313,7 @@ def sectors(session):
     # Committed, not merely flushed: the request runs in its own session and
     # cannot see rows this one has not published.
     session.commit()
-    return {"plain": PLAIN, "awkward": AWKWARD, "none": "NONE_US_EQ"}
+    return {"plain": PLAIN, "awkward": AWKWARD, "none": "NONE_US_EQ", "group": GROUP}
 
 
 def landing(html: str, ticker: str) -> bool:
@@ -299,40 +321,122 @@ def landing(html: str, ticker: str) -> bool:
 
 
 class TestTheSectorsPageLinksIntoTheTable:
-    def test_each_sector_name_is_a_link_to_the_filtered_table(self, client, sectors):
-        """The drill-down itself: the name on this page is the way in."""
+    """The index lists the *coarse* sectors and links each to its own page.
+
+    It used to list the SIC industry strings and link into the recommendations table's
+    query string. That made the drill-down a filter rather than a view -- no news, no
+    sentiment, and a "sector" of one company -- so the link now goes to a page, and the
+    table it contains is the same template the dashboard renders.
+    """
+
+    def test_each_sector_name_is_a_link_to_its_own_page(self, client, sectors):
         body = client.get("/sectors").text
 
-        assert f"/dashboard?sector={urllib.parse.quote(PLAIN, safe='')}" in body
+        assert f"/sectors/{urllib.parse.quote(GROUP, safe='')}" in body
 
-    def test_an_awkward_sector_name_is_escaped_in_the_link(self, client, sectors):
-        """`&` unescaped would split the parameter and filter on a sector that
-        does not exist -- which looks exactly like a sector with no members."""
+    def test_a_sector_name_with_a_space_is_escaped_in_the_link(self, client, sectors):
+        """`Health Care` unescaped would be a URL with a space in it, which the browser
+        fixes and a test would not notice."""
         body = client.get("/sectors").text
 
-        assert urllib.parse.quote(AWKWARD, safe="") in body
-        assert "sector=Surgical & Medical" not in body, "the ampersand was left raw"
+        assert urllib.parse.quote(GROUP, safe="") in body
+        assert "/sectors/Health Care" not in body, "the space was left raw"
 
     def test_following_the_link_from_the_page_works(self, client, sectors):
         """The end-to-end path, using the href the page actually emitted.
 
         Asserting the two halves separately would not catch a link that is built
-        correctly and parsed differently -- the failure this whole module is about.
+        correctly and routed differently -- the failure this module exists for.
         """
         page = client.get("/sectors").text
-        href = re.search(r'href="(/dashboard\?sector=[^"]+)"', page)
+        href = re.search(r'href="(/sectors/[^"]+)"', page)
 
         assert href, "the Sectors page emitted no drill-down link"
 
-        body = client.get(href.group(1).replace("&amp;", "&")).text
+        body = client.get(href.group(1)).text
 
-        assert landing(body, "PHRM_US_EQ") or landing(body, "SURG_US_EQ")
-        assert "Filtered by" in body
+        assert landing(body, "PHRM_US_EQ")
+        assert landing(body, "SURG_US_EQ"), "both industry strings are in this group"
+        assert not landing(body, "NONE_US_EQ"), "an unclassified instrument leaked in"
+
+    def test_the_unclassified_bucket_is_reachable(self, client, sectors):
+        """185 in-universe instruments have no group, and an index that omitted them
+        would make a third of the universe unreachable from the sector pages."""
+        body = client.get("/sectors").text
+
+        assert "/sectors/Unclassified" in body
+
+        page = client.get("/sectors/Unclassified").text
+        assert landing(page, "NONE_US_EQ")
 
     def test_the_count_column_is_present(self, client, sectors):
         body = client.get("/sectors").text
 
         assert "Instruments" in body
+
+
+class TestASectorPage:
+    def test_an_unknown_sector_is_a_404_not_an_empty_page(self, client, sectors):
+        """"No such sector" and "a sector with nothing in it" are different answers,
+        and the second is already reachable."""
+        assert client.get("/sectors/Vibes").status_code == 404
+
+    def test_it_carries_the_sector_own_news(self, client, session, sectors):
+        """The point of the page: an industry's stories, appraised *for the industry*."""
+        from awltux.db import NewsAnalysis, NewsItem, utcnow
+
+        item = NewsItem(
+            source="google_news",
+            url="https://x.test/sector-news",
+            url_hash="sector-news-1",
+            title="Pharma pricing pressure builds in Washington",
+            published_at=utcnow(),
+            tickers=[],
+            sectors=[GROUP],
+            materiality="material",
+            direction="negative",
+            relevant=True,
+            created_at=utcnow(),
+        )
+        session.add(item)
+        session.flush()
+        session.add(
+            NewsAnalysis(
+                news_item_id=item.id,
+                subject_type="sector",
+                subject_id=GROUP,
+                source_domain="x.test",
+                evidence_grade="weak",
+                credibility=0.4,
+                scepticism_summary="One unnamed source and no filing behind it.",
+                flags=[],
+                warnings=[],
+                caveats=[],
+                claims=[],
+                omissions=[],
+                techniques=[],
+                source_biases=[],
+                factors={},
+                analysed_at=utcnow(),
+                created_at=utcnow(),
+            )
+        )
+        session.commit()
+
+        body = client.get(f"/sectors/{urllib.parse.quote(GROUP, safe='')}").text
+
+        assert "Pharma pricing pressure builds" in body
+        assert "One unnamed source and no filing behind it." in body, (
+            "the sector's own appraisal, not a company's"
+        )
+
+    def test_sorting_stays_on_the_sector(self, client, sectors):
+        """A column heading on a sector page must re-sort the sector. Pointing it at
+        `/dashboard` would silently widen the view to the whole universe."""
+        body = client.get(f"/sectors/{urllib.parse.quote(GROUP, safe='')}").text
+
+        assert f"/sectors/{urllib.parse.quote(GROUP, safe='')}?sort=" in body
+        assert 'href="/dashboard?sort=' not in body
 
 
 class TestTheDrillDownLands:
@@ -416,15 +520,29 @@ class TestFiltersCompose:
 
 
 class TestTheSectorLinkOnARow:
-    def test_each_row_links_to_its_own_sector(self, client, sectors):
-        """The reverse drill-down: table to sector, with no second control."""
+    """The reverse drill-down: table to sector page.
+
+    The row shows the *industry string* and links on the *group*, which is the one
+    place both vocabularies appear together -- the string is what the register said,
+    the group is what has a page.
+    """
+
+    def test_each_row_links_to_its_sector_page(self, client, sectors):
         body = client.get("/dashboard").text
 
-        href = "/dashboard?sector=" + urllib.parse.quote(PLAIN, safe="")
+        assert "/sectors/" + urllib.parse.quote(GROUP, safe="") in body
 
-        assert href in body
-
-    def test_an_unclassified_row_links_to_the_unclassified_view(self, client, sectors):
+    def test_the_industry_string_is_still_shown(self, client, sectors):
+        """The link is the group, but the reader still sees what EDGAR recorded --
+        the group is a derivation and hiding its input would make it unauditable."""
         body = client.get("/dashboard").text
 
-        assert f"sector={filters.UNCLASSIFIED}" in body
+        assert PLAIN in body
+
+    def test_an_unclassified_row_links_to_the_unclassified_page(self, client, sectors):
+        body = client.get("/dashboard").text
+
+        assert "/sectors/Unclassified" in body
+        assert f"sector={filters.UNCLASSIFIED}" not in body, (
+            "the row no longer filters the dashboard; it opens the sector page"
+        )

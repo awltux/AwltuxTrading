@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>
+  {{ name }}
+  <span class="muted small">
+    {{ instrument_count }} instrument{{ '' if instrument_count == 1 else 's' }}
+    {%- if is_unclassified %} with no sector on file{% else %} classified here{% endif %}
+  </span>
+</h1>
+<p class="muted small">
+  <a href="/sectors">← All sectors</a>
+</p>
+
+{% if is_unclassified %}
+  <p class="muted small">
+    These have neither a SEC SIC code nor a sector string, so there is nothing to derive
+    a group from. The SIC code arrives from EDGAR for US filers; the rest are mostly
+    non-US listings that no provider has classified.
+  </p>
+{% endif %}
+
+{# ---- sentiment ---------------------------------------------------------- #}
+<section class="summary">
+  <h2>Sentiment</h2>
+  {% if latest %}
+    <p>
+      Latest <strong>{{ latest.score | number(2) }}</strong>
+      ({{ latest.articles }} article{{ '' if latest.articles == 1 else 's' }})
+      <span class="meter"><span style="width: {{ ((latest.score + 1) / 2 * 100) | round(0) }}%"></span></span>
+    </p>
+    <p class="small muted">
+      {% for point in series[-21:] %}{{ point.date }} {{ point.score | number(2) }}{% if not loop.last %} · {% endif %}{% endfor %}
+    </p>
+  {% else %}
+    {# The distinction the rest of this codebase keeps making: "no sentiment" and "no
+       news to measure it from" produce the same blank, and only one of them is a gap. #}
+    <p class="muted">
+      No sentiment recorded for this sector yet.
+      {% if news %}
+        There are {{ news | length }} recent stor{{ 'y' if news | length == 1 else 'ies' }} below;
+        the aggregation job has not run over them.
+      {% else %}
+        The <code>news_sectors</code> and <code>sentiment_aggregate</code> jobs populate
+        this — see <a href="/jobs">Operations</a>.
+      {% endif %}
+    </p>
+  {% endif %}
+</section>
+
+{# ---- the sector's own news ---------------------------------------------- #}
+<section>
+  <h2>News</h2>
+  {% if news %}
+    <ul class="news-list sceptic">
+      {% for item, analysis in news %}
+        <li class="mat-{{ item.materiality | materiality_class }}">
+          <a href="/news/{{ item.id }}">{{ item.title }}</a>
+          <span class="muted small">
+            {{ item.source }} · {{ item.published_at | ago }}
+            {% if item.direction %} · {{ item.direction }}{% endif %}
+            {% if item.materiality %} · {{ item.materiality }}{% endif %}
+          </span>
+          {% if analysis %}
+            {# The appraisal for *this sector*, not for a company the story also names:
+               that is the whole reason the analysis is keyed per subject. #}
+            <span class="badge {{ analysis.evidence_grade | grade_class }}">
+              {{ analysis.evidence_grade or 'unrated' }} evidence
+            </span>
+            {% if analysis.scepticism_summary %}
+              <p class="small muted">{{ analysis.scepticism_summary }}</p>
+            {% endif %}
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">
+      No sector-tagged stories yet. The <code>news_sectors</code> job polls one Google
+      News query per sector — see <a href="/jobs">Operations</a>. Until it has run, a
+      sector has no news of its own, because every other feed is addressed by ticker.
+    </p>
+  {% endif %}
+</section>
+
+{# ---- the instruments ---------------------------------------------------- #}
+<section>
+  <h2>Instruments</h2>
+  {# The same template the dashboard renders, so sorting, paging and the empty state
+     behave identically -- and `list_base` keeps a column sort on *this* sector rather
+     than sending the reader to the whole universe. #}
+  {% include "partials/recommendations.html" %}
+</section>
+{% endblock %}

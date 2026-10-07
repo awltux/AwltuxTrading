@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -16,6 +17,7 @@ from sqlalchemy import desc, select
 
 from awltux import __version__, version
 from awltux.analysis import ledger
+from awltux.analysis import sectors as sector_map
 from awltux.analysis.fundamental import build_snapshot
 from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
@@ -399,36 +401,93 @@ def decisions_page(
 
 @router.get("/sectors", response_class=HTMLResponse, include_in_schema=False)
 def sectors_page(request: Request) -> HTMLResponse:
-    """Sector sentiment, and the way into the instruments behind each sector.
+    """The eleven coarse sectors, plus the unclassified bucket, with counts.
 
-    The drill-down is a link to the recommendations table with the sector filter
-    applied rather than a table of its own. A sector view would otherwise need its
-    own sorting, paging and filtering, and would be a second place for those rules
-    to disagree with the first -- so the sector is handed to the page that already
-    knows how to show instruments, and the link is just a querystring.
-
-    The instrument count is carried into the link text because "sector" here is the
-    SEC SIC industry string: the live universe has 144 of them for 500 instruments,
-    and a reader who cannot see that most name one company will click expecting a
-    list and find a single row.
+    Keyed on ``sector_group`` and not on the SIC industry string. The *sentiment* series
+    is still recorded against the industry string by the older jobs, so it is matched in
+    where it can be -- but the index lists the eleven, because those are the sectors that
+    have pages, that news can be captured for, and that a reader recognises.
     """
     with session_scope() as session:
-        sectors = queries.sector_sentiment(session, days=60)
-        counts = dict(queries.sector_counts(session))
+        counts = dict(queries.sector_group_counts(session))
+        series = queries.sector_sentiment(session, days=60)
 
-    latest = {name: series[-1] if series else None for name, series in sectors.items()}
-    ordered = sorted(
-        sectors.items(),
-        key=lambda item: (latest[item[0]]["score"] if latest[item[0]] else -99),
-        reverse=True,
-    )
+    latest = {name: points[-1] if points else None for name, points in series.items()}
+    rows = [
+        {
+            "name": name,
+            "count": counts.get(name, 0),
+            "latest": latest.get(name),
+        }
+        for name in sector_map.SECTOR_NAMES
+    ]
+    # Sorted by instrument count: the empty corners of the taxonomy fall to the bottom,
+    # which is where a reader who wants a sector with something in it will look. Ties
+    # keep the classification's own order, so the page does not reshuffle between loads.
+    rows.sort(key=lambda row: -row["count"])
     return templates.TemplateResponse(
         request,
         "sectors.html",
         {
-            "sectors": ordered,
-            "latest": latest,
-            "counts": counts,
+            "sectors": rows,
+            "unclassified": {
+                "name": sector_map.UNCLASSIFIED,
+                "count": counts.get(None, 0),
+            },
+            "total_instruments": sum(counts.values()),
+        },
+    )
+
+
+@router.get("/sectors/{name}", response_class=HTMLResponse, include_in_schema=False)
+def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTMLResponse:
+    """One sector: its instruments, its news, and its sentiment.
+
+    This is the sector's page rather than a filtered view of the recommendations table,
+    which is what the old link was. The table is the same template either way --
+    `partials/recommendations.html` is included here with `list_base` set to this page --
+    so sorting and paging behave identically and a click on a column heading re-sorts the
+    sector instead of dropping the reader into the whole universe.
+
+    An unknown name is a 404 rather than an empty page: "no such sector" and "a sector
+    with nothing in it" are different answers, and the second is already reachable
+    through the unclassified bucket.
+    """
+    if not sector_map.is_sector_page(name):
+        raise HTTPException(status_code=404, detail="no such sector")
+
+    per_page = 50
+    with session_scope() as session:
+        counts = dict(queries.sector_group_counts(session))
+        rows, total = queries.recommendations(
+            session,
+            sector_group=name,
+            limit=per_page,
+            offset=(page - 1) * per_page,
+        )
+        news = queries.sector_news(session, name)
+        series = queries.sector_sentiment_series(session, name, days=60)
+        size = queries.universe_size(session)
+
+    pages = max(1, -(-total // per_page))
+    return templates.TemplateResponse(
+        request,
+        "sector.html",
+        {
+            "name": name,
+            "rows": rows,
+            "total": total,
+            "page": min(page, pages),
+            "pages": pages,
+            "per_page": per_page,
+            "filters": filters.FilterSet.parse(filters.recommendation_specs(), {}),
+            "universe_size": size,
+            "list_base": f"/sectors/{quote(name, safe='')}",
+            "news": news,
+            "series": series,
+            "latest": series[-1] if series else None,
+            "instrument_count": counts.get(name if name != sector_map.UNCLASSIFIED else None, 0),
+            "is_unclassified": name == sector_map.UNCLASSIFIED,
         },
     )
 

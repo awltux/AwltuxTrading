@@ -2,60 +2,54 @@
 {% block title %}Sectors — {{ app_name }}{% endblock %}
 
 {% block content %}
-<h1>Sector sentiment</h1>
+<h1>Sectors</h1>
 <p class="muted small">
-  Aggregated from classified headlines, with GDELT tone where available.
-  Sector classification is derived (SEC SIC for US filers, provider industry
-  fields for UK listings) rather than licensed ICB/GICS, so treat it as
-  approximate.
+  The eleven sectors an instrument is classified into, derived from its SEC SIC code by
+  <code>analysis/sectors.py</code>. Click one for its instruments, its own news and its
+  sentiment.
 </p>
 <p class="muted small">
-  Click a sector to see the instruments in it on
-  <a href="/dashboard">Recommendations</a>, with the filter applied. The count is
-  how many instruments the analysed universe holds in that sector — many sectors
-  here name a single company, because this is the SEC's industry string and not a
-  licensed classification.
+  {{ total_instruments }} in-universe instruments carry a sector. The SEC's industry
+  description it is derived from is far finer — 144 strings for 500 instruments, most
+  naming a single company — which is why the grouping exists: a page per industry string
+  is a page nobody visits, and a news query for one returns nothing.
 </p>
 
-{% if sectors %}
 <table class="grid">
   <thead>
-    <tr><th>Sector</th><th class="num">Latest</th><th class="num">Articles</th><th>Trend</th><th>Series</th><th class="num">Instruments</th></tr>
+    <tr><th>Sector</th><th class="num">Instruments</th><th class="num">Latest</th><th>Trend</th></tr>
   </thead>
   <tbody>
-  {% for name, series in sectors %}
-    {% set last = latest[name] %}
-    {% set count = counts.get(name, 0) %}
+  {% for row in sectors %}
     <tr>
       <td>
-        {# The drill-down. An empty sector still links: landing on a filtered
-           table that says "0 instruments" answers the question, whereas a
-           disabled link would leave the reader wondering whether it was empty or
-           broken. #}
-        <a href="/dashboard?sector={{ name | urlencode }}"><strong>{{ name }}</strong></a>
+        {# Every sector links, including an empty one: landing on a page that says
+           "0 instruments" answers the question, whereas a disabled link leaves the
+           reader wondering whether it was empty or broken. #}
+        <a href="/sectors/{{ row.name | urlencode }}"><strong>{{ row.name }}</strong></a>
       </td>
-      <td class="num {% if last and last.score > 0 %}good{% elif last %}bad{% endif %}">
-        {{ last.score | number(2) if last else '—' }}
+      <td class="num {% if not row.count %}muted{% endif %}">{{ row.count if row.count else '—' }}</td>
+      <td class="num {% if row.latest and row.latest.score > 0 %}good{% elif row.latest %}bad{% endif %}">
+        {{ row.latest.score | number(2) if row.latest else '—' }}
       </td>
-      <td class="num">{{ last.articles if last else '—' }}</td>
       <td>
-        {% if last %}
-          <span class="meter"><span style="width: {{ ((last.score + 1) / 2 * 100) | round(0) }}%"></span></span>
+        {% if row.latest %}
+          <span class="meter"><span style="width: {{ ((row.latest.score + 1) / 2 * 100) | round(0) }}%"></span></span>
         {% endif %}
       </td>
-      <td class="small muted">
-        {% for point in series[-14:] %}{{ point.score | number(2) }}{% if not loop.last %} · {% endif %}{% endfor %}
-      </td>
-      <td class="num {% if not count %}muted{% endif %}">{{ count if count else '—' }}</td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
-{% else %}
-  <p class="muted">
-    No sector sentiment yet. It is computed from classified news, so run the
-    <code>news_rss</code> and <code>sentiment</code> jobs from
-    <a href="/jobs">Operations</a> first.
-  </p>
-{% endif %}
+
+{# Not a twelfth sector: the 185 instruments with neither a SIC code nor a sector
+   string. Offered on the same table because leaving them out would make a third of
+   the universe unreachable from here, and a reader would have no way to tell that
+   from "this taxonomy has no gaps". #}
+<p class="muted small">
+  <a href="/sectors/{{ unclassified.name | urlencode }}"><strong>Unclassified</strong></a>
+  — {{ unclassified.count }} in-universe instrument{{ '' if unclassified.count == 1 else 's' }}
+  with no SIC code and no sector string on file, so there is nothing to classify them
+  from.
+</p>
 {% endblock %}

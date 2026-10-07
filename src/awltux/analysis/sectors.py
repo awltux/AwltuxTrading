@@ -238,6 +238,20 @@ def group_for(sic_code: str | int | None = None, sector_text: str | None = None)
     return None
 
 
+#: The name the sector pages use for instruments that have no group at all.
+#:
+#: Not one of the eleven, and not a twelfth sector: 185 in-universe instruments have
+#: neither a SIC code nor a sector string, and they have to be reachable from the
+#: sector index or the pages silently omit a third of the universe. Kept as a word
+#: rather than a sentinel so ``/sectors/Unclassified`` is a URL a reader can read.
+UNCLASSIFIED = "Unclassified"
+
+
+def is_sector_page(name: str | None) -> bool:
+    """Whether ``name`` is a sector page: one of the eleven, or the unclassified one."""
+    return name in SECTOR_NAMES or name == UNCLASSIFIED
+
+
 def is_sector(name: str | None) -> bool:
     """Whether ``name`` is one of the eleven, for validating a URL or a form value."""
     return name in SECTOR_NAMES

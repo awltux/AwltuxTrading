@@ -14,8 +14,8 @@ from typing import Any
 
 from fastapi.templating import Jinja2Templates
 
+from awltux.analysis import sectors as sector_map
 from awltux.timezones import as_utc, current_zone_name, current_zone_note, format_moment, zone_label
-from awltux.web.filters import UNCLASSIFIED
 from awltux.web.glossary import explanation
 
 logger = logging.getLogger(__name__)
@@ -286,12 +286,13 @@ def create_templates() -> Jinja2Templates:
             # `engine_label(engine, uncalibrated)` because it takes two arguments,
             # and a filter-style call would raise `'engine_label' is undefined`.
             "engine_label": engine_label,
-            # The URL value meaning "no sector". A global rather than page state
-            # because it is vocabulary, not data: a row links to it and the sector
-            # control offers it, and both must spell it the same way. Hard-coding
-            # the string in a template would let the two drift apart, and the
-            # failure would be a filter that matches nothing rather than an error.
-            "unclassified_sector": UNCLASSIFIED,
+            # The name of the "no sector on file" page. A global rather than page state
+            # because it is vocabulary, not data: a row links to it and the sector index
+            # offers it, and both must spell it the same way. Deliberately a *different*
+            # string from `filters.UNCLASSIFIED`, which is the opaque dropdown value the
+            # dashboard's industry-string filter uses -- that one is a query parameter,
+            # this one is a URL a reader can read.
+            "unclassified_sector": sector_map.UNCLASSIFIED,
             # Which clock the times on this page are rendered in. A function, not a
             # value, so it is resolved at render time from the request's context
             # rather than fixed when the environment was built.

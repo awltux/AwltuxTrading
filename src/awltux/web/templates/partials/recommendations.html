@@ -1,13 +1,19 @@
 {# The recommendations table and its pager, on their own.
 
-   Rendered twice: included by `dashboard.html`, and returned directly by
-   `/partials/recommendations`, which is what a page change fetches. One template
-   for both, so a fragment and a full page cannot drift apart.
+   Rendered in **three** places now: included by `dashboard.html`, returned directly
+   by `/partials/recommendations` (which is what a page change fetches), and included
+   by `sector.html` with the sector's own instruments in `rows`. One template for all
+   three, so a fragment and a full page -- and a sector and the dashboard -- cannot
+   drift apart.
 
-   The wrapper carries the endpoint as an attribute rather than the script
-   constructing it, in the same style as `base.html`: the markup states where to
-   read from, the script does not build the URL from parts. #}
+   `list_base` is where the sort and pager links point. It defaults to `/dashboard`
+   because that is what the dashboard and the fragment both want, and the sector page
+   passes its own path so a sort click there re-sorts *the sector* instead of silently
+   dropping the reader onto the whole universe. The wrapper carries the endpoint as an
+   attribute rather than the script constructing it, in the same style as `base.html`:
+   the markup states where to read from, the script does not build the URL from parts. #}
 {% from "partials/_help.html" import help %}
+{% set list_base = list_base | default('/dashboard') %}
 
 {# `explain_key` is separate from `key` because the two vocabularies differ: the sort
    key for the long-term verdict is `action`, while the glossary calls it
@@ -16,7 +22,7 @@
 {% macro sort_link(key, label, title=None, explain_key=None) %}
   {% set next_dir = 'asc' if (filters.value('sort') == key and filters.value('direction') == 'desc') else 'desc' %}
   <a class="sort {% if filters.value('sort') == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
-     href="{{ filters.href('/dashboard', sort=key, direction=next_dir) }}">
+     href="{{ filters.href(list_base, sort=key, direction=next_dir) }}">
     {{ label }}{% if filters.value('sort') == key %}<span class="arrow">{{ '▲' if filters.value('direction') == 'asc' else '▼' }}</span>{% endif %}
   </a>{{ help(explain_key or key) }}
 {% endmacro %}
@@ -69,19 +75,22 @@
           <span class="chip small warn"
                 title="{{ row.attention_summary }}">{{ row.attention_count }} issue{{ '' if row.attention_count == 1 else 's' }}</span>
         {% endif %}
-        {# The reverse of the Sectors drill-down: pick a sector off a row and see
-           everything else in it. "unclassified" is shown rather than left blank
-           because an empty cell would read as a rendering fault, and 194 of the
-           500 instruments are in that state. #}
+        {# The sector drill-down: pick the coarse group off a row and see everything
+           else in it, including the sector's own news. This used to filter the
+           dashboard by the SIC industry *string*, which meant a "sector" of one
+           company and no way to see an industry's news at all.
+           "Unclassified" is shown rather than left blank because an empty cell would
+           read as a rendering fault, and 185 of the 500 instruments are in that
+           state. #}
         <br>
-        {% if row.sector %}
+        {% if row.sector_group %}
           <a class="muted small sector-link"
-             href="{{ filters.href('/dashboard', sector=row.sector) }}"
-             title="Show every instrument in {{ row.sector }}">{{ row.sector }}</a>
+             href="/sectors/{{ row.sector_group | urlencode }}"
+             title="Instruments, news and sentiment for {{ row.sector_group }}">{{ row.sector_group }}</a>
         {% else %}
           <a class="muted small sector-link unclassified"
-             href="{{ filters.href('/dashboard', sector=unclassified_sector) }}"
-             title="Show every instrument with no sector on file">unclassified</a>
+             href="/sectors/{{ unclassified_sector | urlencode }}"
+             title="Instruments with no sector on file">unclassified</a>
         {% endif %}
       </td>
 
@@ -175,11 +184,11 @@
 {% if pages > 1 %}
 <nav class="pager">
   {% if page > 1 %}
-    <a href="{{ filters.href('/dashboard', page=page - 1) }}">← Prev</a>
+    <a href="{{ filters.href(list_base, page=page - 1) }}">← Prev</a>
   {% endif %}
   <span>Page {{ page }} of {{ pages }} ({{ total }} instruments)</span>
   {% if page < pages %}
-    <a href="{{ filters.href('/dashboard', page=page + 1) }}">Next →</a>
+    <a href="{{ filters.href(list_base, page=page + 1) }}">Next →</a>
   {% endif %}
 </nav>
 {% endif %}

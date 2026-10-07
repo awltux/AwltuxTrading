@@ -16,7 +16,7 @@ from sqlalchemy import Select, desc, func, select
 from sqlalchemy.orm import Session
 
 from awltux.analysis import attention as attention_rules
-from awltux.analysis import macro
+from awltux.analysis import macro, sectors
 from awltux.analysis.attention import Reason
 from awltux.analysis.embeddings import group_events
 from awltux.config import get_settings
@@ -68,6 +68,9 @@ class RecommendationRow:
     ticker: str
     name: str
     sector: str | None
+    #: The coarse eleven -- what the sector page is keyed on. Beside ``sector`` rather
+    #: than replacing it: the row shows the industry string and links to the group.
+    sector_group: str | None
     currency: str | None
     price: float | None
     change_pct: float | None
@@ -227,6 +230,7 @@ def _instruments_in_scope(
     only_held: bool = False,
     sector: str | None = None,
     sector_unknown: bool = False,
+    sector_group: str | None = None,
     search: str | None = None,
 ) -> list[Instrument]:
     """The instruments the table may show, narrowed by the column filters.
@@ -237,9 +241,11 @@ def _instruments_in_scope(
     are not incidental; the point of moving them is that they are all the same kind of
     thing and the assembly below is not.
 
-    The universe condition is not a filter and is here regardless: every other query in
-    this module assumes it, and an instrument outside the universe has no business
-    occupying a row.
+    ``sector_group`` is the coarse eleven and is a *different question* from ``sector``,
+    which is the SEC industry string. Both are kept because both are asked: the
+    dashboard's dropdown lists the 148 industry strings a reader can search by name,
+    and the sector page is keyed on the eleven that have pages. ``sector_group=UNCLASSIFIED``
+    selects the instruments with no group, which is a real population of 185.
     """
     query = (
         select(Instrument)
@@ -252,6 +258,10 @@ def _instruments_in_scope(
         query = query.where(Instrument.sector.is_(None))
     elif sector:
         query = query.where(Instrument.sector == sector)
+    if sector_group == sectors.UNCLASSIFIED:
+        query = query.where(Instrument.sector_group.is_(None))
+    elif sector_group:
+        query = query.where(Instrument.sector_group == sector_group)
     if search:
         pattern = f"%{search.lower()}%"
         query = query.where(
@@ -280,6 +290,7 @@ def recommendations(
     horizon_fit: str | None = None,
     sector: str | None = None,
     sector_unknown: bool = False,
+    sector_group: str | None = None,
     only_suggestions: bool = False,
     only_held: bool = False,
     needs_attention: bool = False,
@@ -306,6 +317,7 @@ def recommendations(
         only_held=only_held,
         sector=sector,
         sector_unknown=sector_unknown,
+        sector_group=sector_group,
         search=search,
     )
     if not instruments:
@@ -393,6 +405,7 @@ def recommendations(
                 ticker=instrument.t212_ticker,
                 name=instrument.display_name,
                 sector=instrument.sector,
+                sector_group=instrument.sector_group,
                 currency=instrument.currency_code,
                 price=price,
                 change_pct=change_pct,
@@ -930,6 +943,52 @@ def recent_news(
     if min_materiality:
         statement = statement.where(NewsItem.materiality == min_materiality)
     return list(session.execute(statement.limit(limit)).scalars().all())
+
+
+def sector_group_counts(session: Session) -> list[tuple[str | None, int]]:
+    """How many in-universe instruments sit in each coarse sector.
+
+    ``None`` is a real key, exactly as :func:`sector_counts` documents for the
+    industry string: 185 in-universe instruments have neither a SIC code nor a sector
+    string, and the index has to be able to offer them or a third of the universe is
+    unreachable from the sector pages.
+    """
+    rows = session.execute(
+        select(Instrument.sector_group, func.count())
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .group_by(Instrument.sector_group)
+    ).all()
+    return [(group, count) for group, count in rows]
+
+
+def sector_news(session: Session, name: str, *, limit: int = 25) -> list[tuple[Any, Any]]:
+    """Recent stories tagged with a sector, each with its *sector* appraisal.
+
+    Scoped to the subject, which is the whole point of the per-subject appraisal: a
+    story that also names a company has a different verdict for the company, and the
+    sector page must show the sector's.
+    """
+    tickers: list[tuple[NewsItem, Any]] = []
+    rows = list(
+        session.execute(
+            select(NewsItem)
+            .where(NewsItem.relevant.is_(True))
+            .order_by(desc(NewsItem.published_at))
+            .limit(400)
+        ).scalars().all()
+    )
+    tagged = [row for row in rows if name in (row.sectors or [])]
+    appraisals = appraisals_for(session, tagged, subject=("sector", name))
+    for row in tagged[:limit]:
+        tickers.append((row, appraisals.get(row.id)))
+    return tickers
+
+
+def sector_sentiment_series(session: Session, name: str, *, days: int = 60) -> list[dict[str, Any]]:
+    """One sector's sentiment series, oldest first. Empty when it has none yet."""
+    series = sector_sentiment(session, days=days)
+    return series.get(name, [])
 
 
 def sector_sentiment(session: Session, *, days: int = 30) -> dict[str, list[dict[str, Any]]]:
