@@ -23,9 +23,28 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
-None open. The two before this one — a cache key that ignored the query string, and a
-`uk_companies` walk that attempted the same eleven instruments on every run — were found
-together in 2026-10-07 and are in the commit log.
+### `SOURCE_PREFERENCE` ranks a source nothing writes, so Yahoo beats the filer's own tags
+
+Found 2026-10-16 while wiring `llm_extraction`. `analysis/fundamental.py:36` ranks
+`llm_extraction` 5, `edgar_xbrl` 4, `companies_house_ixbrl` 3, `yahoo_statements` 2,
+`yahoo_info` 1, and `_dedupe_by_period` compares `SOURCE_PREFERENCE.get(period.source, 0)`.
+No writer in the repo ever writes `source="edgar_xbrl"`; `ingest/xbrl.py` writes
+**`xbrl_companyfacts`**, which is absent from the map and therefore scores **0** — below
+both Yahoo sources. Measured on the live database the same day: 277 periods, 226 of them
+`xbrl_companyfacts` and 41 `yahoo_statements`. So wherever the two describe the same
+`(period_end, period_type)` the scraped snapshot wins and the filer's tagging is dropped,
+which is the inverse of the comment above the map ("A figure extracted from the filed
+document with a citation beats a scraped snapshot").
+
+The fix is one line, but which value is a decision: `xbrl_companyfacts` is the SEC's
+aggregate of the filer's tags rather than our reading of the document, so it is arguably
+`edgar_xbrl` (4) or a name of its own. It changes which figures every marker and
+accounting check is computed from, so measure those before and after rather than assuming
+they improve.
+
+This replaces a section that read "none open". The two bugs before it — a cache key that
+ignored the query string, and a `uk_companies` walk that attempted the same eleven
+instruments on every run — were found together in 2026-10-07 and are in the commit log.
 
 The nine before those — `serve` not migrating, silent DeepSeek truncation, the
 `universe_refresh` startup race, CLI/server write-lock contention, the unhelpful blank
@@ -115,12 +134,15 @@ harder to tell apart.
 Answered for a reader asking whether the tags in the Form 10-K are used. They are not,
 and the distinction costs three things.
 
-Every stored period is `source = "xbrl_companyfacts"` (92 of 92), fetched from
-`https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` (`providers/edgar.py:373`).
-That **is** the filer's own tagging — the SEC's aggregate of what they submitted — reached
-through a different artefact, mapped to canonical names by a hand-maintained `TAG_MAP`
-(`ingest/xbrl.py:82`) and filtered to annual forms, with the **earliest filed** fact
-winning per period so a later restatement cannot leak hindsight backwards.
+Every stored period comes from `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json`
+(`providers/edgar.py:373`) or from a Yahoo statement, never from the document: 277 periods
+on 2026-10-16 split 226 `xbrl_companyfacts`, 41 `yahoo_statements`, 10 `yahoo_info`. The
+`companyfacts` route **is** the filer's own tagging — the SEC's aggregate of what they
+submitted — reached through a different artefact, mapped to canonical names by a
+hand-maintained `TAG_MAP` (`ingest/xbrl.py:82`) and filtered to annual forms, with the
+**earliest filed** fact winning per period so a later restatement cannot leak hindsight
+backwards. `llm_extraction` is a fourth source since the extraction began writing periods,
+and it outranks all three.
 
 What is unused:
 
@@ -130,10 +152,13 @@ What is unused:
   have: today `ledger.composition` compares our components against our own assertions.
 - **The presentation linkbase** (`_pre.xml`) — which statement and section a tag belongs
   to, instead of the order `TAG_MAP` asserts.
-- **Inline XBRL in the document** — nothing in the repo parses `ix:nonFraction`, even
-  though `shareholder_reports` downloads the 10-K bytes. `extract_filing`
-  (`llm/extractors.py:267`) is the document-reading path and is still called from
-  nowhere; it is the same gap listed under the marker queue.
+- **The document's own inline XBRL** — nothing in the repo parses `ix:nonFraction`, even
+  though `shareholder_reports` downloads the 10-K bytes. The document *is* read, by the
+  model: `extract_filing` (`llm/extractors.py:267`) is called from
+  `ingest/parsing.py::extract_held_filings`, which stores what it reads as an
+  `llm_extraction` period. So the figures come from a machine-readable aggregate or from
+  a model's reading of the prose and tables, and never from the tags embedded in the
+  document the model was given.
 
 **Why it matters now:** it is the most likely explanation for the accounting-equation
 failures recorded under Operations (DFPH out by 95% of assets, AMBQ by 362%). Those are
@@ -764,13 +789,13 @@ either can be observed.
 
 First found by the trial balance on the accounts page (`analysis/ledger.py`) on 2026-10-06,
 when the entry said "of the 22 instruments with a computable equation, 14 agree and 4 are
-out". **Re-measured 2026-10-07 against 187 stored periods**, and the equation turned out
-to be the smallest part of it:
+out". **Re-measured 2026-10-16 against 277 stored periods**, and the equation is the
+smallest part of it:
 
-    187 fundamental periods
-     23 fail the equation          (12%)   -- our extraction contradicts the filing
-    166 fail a composition check   (89%)   -- a stated subtotal vs the parts we hold
-    117 fail profit articulation   (63%)   -- profit, which every ratio divides by
+    277 fundamental periods (101 instruments)
+      31 fail the equation          (15% of the 207 computable)  -- our extraction contradicts the filing
+     248 fail a composition check   (90%)   -- a stated subtotal vs the parts we hold
+     184 fail profit articulation   (66%)   -- profit, which every ratio divides by
 
 The equation is still the sharpest signal, because a published balance sheet balances by
 construction:

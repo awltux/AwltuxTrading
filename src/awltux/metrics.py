@@ -12,23 +12,27 @@ They did not agree -- the prompt omitted ``interest_expense``,
 the prompt never asks for is a figure that does not exist, so the two ends of the
 pipeline disagreed about what the system could know, silently.
 
+**Units are normalised on the way in, and the docstring used to say the opposite.** It
+said units are not normalised and must not be assumed -- a Yahoo statement states actual
+currency units, a filing extraction states whatever the document used -- and that every
+marker is therefore written as a ratio within a period. That held only while every stored
+period came from a provider that states actual units. `analysis/fundamental.py` ranks
+`llm_extraction` **first** among sources, so the first extracted period to be stored
+unscaled would win every comparison and put MSFT's revenue at 331,839 rather than
+331,839,012,864 -- a factor of a million, in the figures the dashboard and the valuation
+both print. See :func:`unit_scale`, and `ingest/parsing.py` for where it is applied.
+
 **Adding a name here is a deliberate act.** A name in the gate but not in the
 prompt is never extracted. A name in the prompt but not in the gate is discarded
 on arrival, which looks exactly like the model failing to find it. Both are
 invisible at runtime, which is why the prompt is *generated* from
 :func:`prompt_metric_names` rather than typed out beside it.
-
-**Units are not normalised and must not be assumed.** A Yahoo statement states
-actual currency units; a filing extraction states whatever the document used,
-which for a UK annual report is usually thousands or millions. Ratios *inside* a
-period are therefore safe and cross-period additions are not. Every marker built
-on these metrics is written to be a ratio within a period, or a comparison of
-ratios across periods, for that reason.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -229,6 +233,54 @@ OUTFLOW_METRICS: frozenset[str] = frozenset({"capex", "dividends_paid"})
 
 def is_canonical(name: str) -> bool:
     return name in CANONICAL_METRICS
+
+
+#: What a filing's stated units multiply to, to give actual currency units.
+#:
+#: Keyed on the word a document uses rather than on a fixed list of phrases, because a
+#: filing writes "in millions", "USD millions", "($000s)" and "thousands of Canadian
+#: dollars" for the same thing. Matched against whole words of the lowercased string.
+UNIT_SCALES: tuple[tuple[str, float], ...] = (
+    ("billions", 1e9),
+    ("billion", 1e9),
+    ("millions", 1e6),
+    ("million", 1e6),
+    ("thousands", 1e3),
+    ("thousand", 1e3),
+    ("000s", 1e3),
+    ("000", 1e3),
+    ("actual", 1.0),
+    ("units", 1.0),
+    ("ones", 1.0),
+)
+
+#: Splitting on anything that is not a letter or a digit is what makes ``($000's)`` and
+#: ``US$'000`` both read as thousands.
+_UNIT_WORD = re.compile(r"[a-z0-9]+")
+
+
+def unit_scale(units: str | None) -> float | None:
+    """The multiplier from a filing's stated units to actual currency units.
+
+    ``None`` when the document did not say, or said something not recognised -- and the
+    caller must refuse the period rather than store it. Getting this wrong is a silent
+    factor of a million in every absolute figure the dashboard prints, and there is no
+    later marker that would notice: the ratios are scale-invariant, so the analysis would
+    look healthy while the numbers beside it were wrong.
+
+    Whole words, largest first: whole words so that a hedge like "unstated" is not read as
+    "stated units", and largest first so that a document naming two -- "in thousands of
+    units" -- is read as thousands, with the vague "units"/"ones" catch-alls tried last.
+    """
+    if not units:
+        return None
+    words = _UNIT_WORD.findall(str(units).lower())
+    if not words:
+        return None
+    for token, scale in UNIT_SCALES:
+        if token in words:
+            return scale
+    return None
 
 
 def value_of(metrics: Mapping[str, Any] | None, key: str) -> float | None:

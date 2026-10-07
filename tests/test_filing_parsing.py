@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from awltux.db import Filing
 from awltux.ingest import parsing
 from awltux.llm.extractors import ExtractedMetric, ExtractionResult
@@ -251,6 +253,133 @@ class TestReadingTheHeldFilings:
 
         assert report["parsed"] == 1
         assert len(read) == 1, "only the named instrument's filing is read"
+
+
+class TestWritingThePeriod:
+    """The extraction's figures become a `FundamentalPeriod` the analysis can read.
+
+    Before this they went nowhere: `filing.parsed` held 38-41 cited metrics per filing and
+    no period carried the source `llm_extraction`, so the whole 10-K pipeline was a dead
+    end -- nothing read those figures, and the metric-field discovery loop had nothing to
+    learn from. `analysis/fundamental.py::SOURCE_PREFERENCE` already ranked that source
+    **first**, so the consumer existed and only the writer was missing.
+    """
+
+    def _run(self, session, settings, monkeypatch, result):
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Total revenue 331,839</p>")
+        _filing(session, url="https://sec.test/period.htm", raw_path=raw)
+        session.commit()
+        monkeypatch.setattr(parsing, "extract_filing", lambda *a, **k: result)
+        return parsing.extract_held_filings(session, settings=settings)
+
+    def _result(self, **overrides) -> ExtractionResult:
+        metric = ExtractedMetric(
+            name="revenue",
+            value=331_839.0,
+            span="Total revenue 331,839",
+            location="Income Statements",
+        )
+        fields = {
+            "metrics": {"revenue": metric},
+            "units": "millions",
+            "period_end": "2026-06-30",
+            "period_type": "annual",
+            "confidence": 0.95,
+        }
+        fields.update(overrides)
+        return ExtractionResult(**fields)
+
+    def _period(self, session):
+        from sqlalchemy import select
+
+        from awltux.db import FundamentalPeriod
+
+        return session.execute(
+            select(FundamentalPeriod)
+            .where(FundamentalPeriod.instrument_t212_ticker == "TEST_US_EQ")
+            .where(FundamentalPeriod.source == "llm_extraction")
+        ).scalar_one_or_none()
+
+    def test_the_figures_are_stored_and_scaled_to_actual_units(self, session, settings, monkeypatch):
+        """The measurement this test exists for: MSFT's income statement is in millions,
+        so its revenue extracts as 331,839 where the provider sources hold
+        331,839,012,864. Stored unscaled, the source that ranks *first* would be the one a
+        million times too small -- and no marker would notice, because ratios are
+        scale-invariant."""
+        report = self._run(session, settings, monkeypatch, self._result())
+        session.flush()
+
+        period = self._period(session)
+
+        assert report["periods_stored"] == 1
+        assert period is not None
+        assert period.period_end == dt.date(2026, 6, 30)
+        assert period.period_type == "annual"
+        assert period.metrics["revenue"] == 331_839_000_000.0
+        assert period.confidence == 0.95
+
+    def test_the_citation_survives(self, session, settings, monkeypatch):
+        """A figure with a span and a location is the whole reason this source outranks a
+        scraped snapshot."""
+        self._run(session, settings, monkeypatch, self._result())
+        session.flush()
+
+        source = self._period(session).metric_sources["revenue"]
+
+        assert source["span"] == "Total revenue 331,839"
+        assert source["location"] == "Income Statements"
+        assert source["source"] == "llm_extraction"
+
+    def test_derived_ratios_are_computed_from_the_scaled_figures(self, session, settings, monkeypatch):
+        """They are ours, so they are recomputed rather than scaled -- and they carry no
+        citation, because claiming the issuer tagged `net_margin` would be a fabricated
+        provenance."""
+        result = self._result()
+        result.metrics["net_income"] = ExtractedMetric(
+            name="net_income", value=133_749.0, span="Net income 133,749", location="Income Statements"
+        )
+
+        self._run(session, settings, monkeypatch, result)
+        session.flush()
+
+        period = self._period(session)
+
+        assert "net_margin" in period.metrics
+        assert "net_margin" not in (period.metric_sources or {})
+
+    @pytest.mark.parametrize("unusable", ["", "not stated", "bananas", None])
+    def test_units_the_document_did_not_state_lose_the_period(
+        self, session, settings, monkeypatch, unusable
+    ):
+        """Refused rather than assumed to be actual.
+
+        This source outranks every provider, so a period stored at the wrong scale does
+        not merely look wrong -- it *wins*. There is no later marker that would catch it,
+        because the ratios are scale-invariant.
+        """
+        report = self._run(session, settings, monkeypatch, self._result(units=unusable))
+        session.flush()
+
+        assert report.get("unscaled_period") == 1
+        assert self._period(session) is None
+
+    def test_a_period_end_the_document_did_not_state_is_not_stored(
+        self, session, settings, monkeypatch
+    ):
+        report = self._run(
+            session, settings, monkeypatch, self._result(period_end=None)
+        )
+        session.flush()
+
+        assert report.get("unusable_period") == 1
+        assert self._period(session) is None
+
+    def test_the_source_outranks_the_providers_it_shares_a_period_with(self):
+        """The reason the scaling matters, asserted where it is decided."""
+        from awltux.analysis.fundamental import SOURCE_PREFERENCE
+
+        assert SOURCE_PREFERENCE["llm_extraction"] == max(SOURCE_PREFERENCE.values())
 
 
 class TestLearningACaption:

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from awltux.llm.prompts import FILING_EXTRACTION_INSTRUCTION
 from awltux.metrics import (
     BALANCE_METRICS,
@@ -22,6 +24,7 @@ from awltux.metrics import (
     METRIC_NOTES,
     STATED_METRICS,
     is_canonical,
+    unit_scale,
 )
 
 
@@ -122,3 +125,53 @@ class TestPromptStaysInStepWithTheGate:
             if re.search(rf"\b{re.escape(name)}\b", FILING_EXTRACTION_INSTRUCTION)
         ]
         assert present == []
+
+
+class TestUnitScale:
+    """A filing states its figures in whatever it likes, and the stored periods do not.
+
+    `SOURCE_PREFERENCE` ranks `llm_extraction` above every provider, so an extracted
+    period stored at the document's own scale would be the one that *wins* every
+    comparison -- MSFT's revenue at 331,839 where the provider sources hold 331,839,012,864.
+    No marker would catch it, because the ratios are scale-invariant.
+    """
+
+    @pytest.mark.parametrize(
+        "stated, scale",
+        [
+            ("millions", 1e6),
+            ("in millions", 1e6),
+            ("USD millions", 1e6),
+            ("thousands", 1e3),
+            ("thousands of Canadian dollars", 1e3),
+            ("($000s)", 1e3),
+            ("US$'000", 1e3),
+            ("in $000's", 1e3),
+            ("actual", 1.0),
+            ("units", 1.0),
+            ("billions", 1e9),
+            # A document that names two is read as the larger: the vague catch-alls are
+            # tried last, so "units" cannot answer for a filing that said "thousands".
+            ("in thousands of units", 1e3),
+        ],
+    )
+    def test_a_stated_scale_is_read(self, stated, scale):
+        assert unit_scale(stated) == scale
+
+    @pytest.mark.parametrize(
+        "stated",
+        ["", None, "not stated", "bananas", "per share", "not actually stated"],
+    )
+    def test_an_unstated_or_unknown_scale_is_refused(self, stated):
+        """`None` rather than a default of 1.0. Assuming "actual" is the one guess that
+        silently multiplies every figure by a million, and nothing later would notice.
+
+        "not actually stated" is here because matching is on whole words: a substring rule
+        finds "actual" inside "actually" and reads a refusal as actual units."""
+        assert unit_scale(stated) is None
+
+    def test_the_apostrophe_spelling_of_thousands_is_read(self):
+        """`($000's)` is the same notation as `($000s)`, and the token is split on the
+        apostrophe rather than searched for as a substring."""
+        assert unit_scale("in $000's") == 1e3
+        assert unit_scale("US$'000") == 1e3

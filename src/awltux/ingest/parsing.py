@@ -140,64 +140,150 @@ def extract_held_filings(
         progress.note(
             f"{position} of {total}: {filing.instrument_t212_ticker} {filing.filing_type}"
         )
-
-        name = _company_name(session, filing.instrument_t212_ticker)
-        document = document_text(settings.data_dir / (filing.raw_path or ""))
-        if not document:
-            filing.status = "skipped"
-            filing.error = (
-                "no text extractor for this document"
-                if (filing.raw_path or "").lower().endswith(".pdf")
-                else "the stored document could not be read as text"
-            )
-            report["skipped_no_text"] += 1
-            session.flush()
-            continue
-
-        # The lock is released before the model call, for the same reason every other
-        # job does it: this is a network round trip measured in seconds, and SQLite's
-        # single writer must not be held across it.
-        session.commit()
-        try:
-            result = extract_filing(
-                document, company_name=name, settings=settings, vocabulary=vocabulary
-            )
-        except Exception as exc:  # noqa: BLE001 - one document must not stop the refresh
-            filing.status = "failed"
-            filing.error = f"{type(exc).__name__}: {exc}"
-            report["failed"] += 1
-            report["errors"].append(f"{filing.instrument_t212_ticker}: {exc}")
-            session.flush()
-            continue
-
-        if result is None:
-            # No key configured, an empty document, or the budget refused the call.
-            # Left at `fetched` rather than failed, because none of those is a property
-            # of the document -- and marking it failed would retire it permanently.
-            report["failed"] += 1
-            report["errors"].append(
-                f"{filing.instrument_t212_ticker}: the extractor returned nothing "
-                "(no credential, no text, or the budget refused the call)"
-            )
-            session.flush()
-            continue
-
-        filing.parsed = {
-            "extraction": result.as_dict(),
-            "extractor_version": EXTRACTOR_VERSION,
-            "llm_call_id": result.llm_call_id,
-        }
-        filing.extractor_version = EXTRACTOR_VERSION
-        filing.status = "parsed"
-        filing.error = None
-        report["parsed"] += 1
-        report["events"] += len(result.filing_events)
-        session.flush()
-
-        _note_discoveries(session, filing.instrument_t212_ticker, result, report)
+        _read_one(session, filing, vocabulary=vocabulary, settings=settings, report=report)
 
     logger.info("filing extraction: %s", {k: v for k, v in report.items() if k != "errors"})
     return report
+
+
+def _read_one(
+    session: Session,
+    filing: Filing,
+    *,
+    vocabulary: dict[str, Any],
+    settings: Settings,
+    report: dict[str, Any],
+) -> None:
+    """Read one filing's document and record what it says against the row.
+
+    Its own function because the four outcomes -- no text, the call failed, the call
+    returned nothing, parsed -- are each a different decision about the filing's status,
+    and reading them in the loop that walks the batch hid the rule that they are *not* the
+    same: only a parsed document is retired, and the rest must be retried.
+    """
+    name = _company_name(session, filing.instrument_t212_ticker)
+    document = document_text(settings.data_dir / (filing.raw_path or ""))
+    if not document:
+        filing.status = "skipped"
+        filing.error = (
+            "no text extractor for this document"
+            if (filing.raw_path or "").lower().endswith(".pdf")
+            else "the stored document could not be read as text"
+        )
+        report["skipped_no_text"] += 1
+        session.flush()
+        return
+
+    # The lock is released before the model call, for the same reason every other job
+    # does it: this is a network round trip measured in seconds, and SQLite's single
+    # writer must not be held across it.
+    session.commit()
+    try:
+        result = extract_filing(
+            document, company_name=name, settings=settings, vocabulary=vocabulary
+        )
+    except Exception as exc:  # noqa: BLE001 - one document must not stop the refresh
+        filing.status = "failed"
+        filing.error = f"{type(exc).__name__}: {exc}"
+        report["failed"] += 1
+        report["errors"].append(f"{filing.instrument_t212_ticker}: {exc}")
+        session.flush()
+        return
+
+    if result is None:
+        # No key configured, an empty document, or the budget refused the call. Left at
+        # `fetched` rather than failed, because none of those is a property of the
+        # document -- and marking it failed would retire it permanently.
+        report["failed"] += 1
+        report["errors"].append(
+            f"{filing.instrument_t212_ticker}: the extractor returned nothing "
+            "(no credential, no text, or the budget refused the call)"
+        )
+        session.flush()
+        return
+
+    filing.parsed = {
+        "extraction": result.as_dict(),
+        "extractor_version": EXTRACTOR_VERSION,
+        "llm_call_id": result.llm_call_id,
+    }
+    filing.extractor_version = EXTRACTOR_VERSION
+    filing.status = "parsed"
+    filing.error = None
+    report["parsed"] += 1
+    report["events"] += len(result.filing_events)
+    session.flush()
+
+    _note_discoveries(session, filing.instrument_t212_ticker, result, report)
+    _store_period(session, filing, result, report)
+
+
+def _store_period(
+    session: Session, filing: Filing, result: Any, report: dict[str, Any]
+) -> None:
+    """Write the extracted figures as a `FundamentalPeriod` the analysis can read.
+
+    **The extraction went nowhere before this.** `filing.parsed` held 38-41 cited metrics
+    per filing and no period source was `llm_extraction`, so the whole 10-K pipeline was a
+    dead end: nothing read those figures, and the metric-field discovery loop had nothing
+    to learn from. `analysis/fundamental.py::SOURCE_PREFERENCE` already ranks
+    `llm_extraction` **first** among sources, so the consumer was built and only the
+    writer was missing.
+
+    **Scaled to actual units, and refused when the document did not say.** The figures
+    arrive in whatever the filing used -- MSFT's income statement is in millions, so its
+    revenue extracts as 331,839 where the provider sources hold 331,839,012,864. Since
+    this source outranks them, storing it unscaled would put a figure a million times too
+    small at the top of the preference order, and *no marker would notice*: the ratios are
+    scale-invariant, so the analysis would read healthy while the numbers printed beside
+    it were wrong. An unrecognised or absent `units` therefore loses the period and is
+    counted, rather than being stored on the assumption that it is probably actual.
+    """
+    # `fundamentals` owns the period key and the period-end parser; the import is local
+    # because that module reaches for providers, exactly as `ingest/xbrl.py` does it.
+    from awltux.ingest.fundamentals import _parse_period_end, _upsert_period, derive_metrics
+    from awltux.metrics import unit_scale
+
+    instrument = session.get(Instrument, filing.instrument_t212_ticker)
+    period_end = _parse_period_end(result.period_end)
+    if instrument is None or period_end is None or not result.metric_values:
+        # Nothing to attach a period to, nothing to date it, or no figures at all. One
+        # counter, because none of the three is a reading of the document's units.
+        report["unusable_period"] = report.get("unusable_period", 0) + 1
+        return
+
+    scale = unit_scale(result.units)
+    if scale is None:
+        # `source="llm_extraction"` outranks every provider, so an unscaled period would
+        # win every comparison it took part in. Refusing is the only safe answer when the
+        # document does not say what its figures are in.
+        logger.info(
+            "filing extraction for %s states units %r, which is not usable; the period "
+            "is not stored",
+            filing.instrument_t212_ticker,
+            result.units,
+        )
+        report["unscaled_period"] = report.get("unscaled_period", 0) + 1
+        return
+
+    metrics = {name: value * scale for name, value in result.metric_values.items()}
+    # The derived ratios are ours, not the company's, so they are computed from the
+    # scaled figures rather than scaled themselves -- and they are added without a
+    # citation, exactly as `ingest/xbrl.py` does it. The extraction cannot supply one
+    # anyway: `validate_extraction` gates on `EXTRACTABLE_METRICS`, which excludes them.
+    metrics.update(derive_metrics(metrics))
+
+    _upsert_period(
+        session,
+        instrument,
+        period_end=period_end,
+        period_type=result.period_type or "annual",
+        metrics=metrics,
+        source="llm_extraction",
+        confidence=result.confidence,
+        metric_sources=result.metrics_for_storage,
+    )
+    report["periods_stored"] = report.get("periods_stored", 0) + 1
 
 
 def _note_discoveries(session: Session, ticker: str, result: Any, report: dict[str, Any]) -> None:
