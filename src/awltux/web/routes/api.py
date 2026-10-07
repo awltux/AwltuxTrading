@@ -148,6 +148,7 @@ def instrument(ticker: str) -> dict[str, Any]:
                 "currency": instrument_row.currency_code,
                 "exchange": instrument_row.exchange_name,
                 "sector": instrument_row.sector,
+                "sector_group": instrument_row.sector_group,
                 "industry": instrument_row.industry,
                 "sector_source": instrument_row.sector_source,
                 "yahoo_symbol": instrument_row.yahoo_symbol,

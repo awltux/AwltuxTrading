@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from awltux.analysis.sectors import assign
 from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument, InstrumentAlias, utcnow
 from awltux.db.session import release_write_lock
@@ -464,6 +465,11 @@ def _sync_profile(
     if info.get("sector") and not instrument.sector:
         instrument.sector = str(info["sector"])
         instrument.sector_source = "yahoo"
+        # Yahoo gives a GICS name rather than a code, and `sectors.group_for` reads it
+        # through the alias table -- "Basic Materials" becomes Materials. Assigned here
+        # too because a sector page grouped by a value nothing filled in is a page that
+        # silently excludes the instrument.
+        assign(instrument)
     if info.get("industry") and not instrument.industry:
         instrument.industry = str(info["industry"])
     if info.get("marketCap"):

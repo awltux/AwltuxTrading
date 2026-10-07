@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from awltux.analysis.sectors import assign
 from awltux.config import Settings, get_settings
 from awltux.db import Filing, Instrument, NewsItem, utcnow
 from awltux.db.session import release_write_lock
@@ -178,6 +179,9 @@ def sync_filings(
                 if not instrument.sector:
                     instrument.sector = sic_description or f"SIC {sic}"
                     instrument.sector_source = "edgar_sic"
+                # The coarse group follows the code, so it is assigned here rather
+                # than left to whatever the sector string happened to be.
+                assign(instrument)
 
         # Release the write lock between companies: this loop makes several
         # provider calls per instrument, and holding one transaction across all of

@@ -134,7 +134,13 @@ class Instrument(Base, TimestampMixin):
     mapping_confidence: Mapped[float] = mapped_column(Float, default=0.0)
 
     # --- classification -----------------------------------------------------
+    # ``sector`` is the industry *description* the register supplied -- 148 distinct
+    # strings over 500 in-universe instruments, one or two names each. ``sector_group``
+    # is the coarse eleven a page and a news query can actually be built on, derived
+    # from ``sic_code`` by ``analysis/sectors.py``. Both are kept: the description is
+    # what EDGAR said, and the group is a derivation that can be recomputed.
     sector: Mapped[str | None] = mapped_column(String(96), index=True)
+    sector_group: Mapped[str | None] = mapped_column(String(32), index=True)
     industry: Mapped[str | None] = mapped_column(String(128))
     sector_source: Mapped[str | None] = mapped_column(String(32))
     sic_code: Mapped[str | None] = mapped_column(String(8))

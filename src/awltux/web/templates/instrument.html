@@ -17,6 +17,10 @@
   <div><dt>Mapping confidence</dt><dd>{{ instrument.mapping_confidence | pct0 }}</dd></div>
   <div><dt>Sector</dt><dd>{{ instrument.sector or '—' }}
     {% if instrument.sector_source %}<span class="muted small">via {{ instrument.sector_source }}</span>{% endif %}
+    {# The coarse eleven, derived from the SIC code. Shown beside the SIC industry string
+       because that string is what the register said and this is what the sector page
+       groups by, and a reader looking at one needs to be able to see the other. #}
+    {% if instrument.sector_group %}<span class="muted small">· grouped as {{ instrument.sector_group }}</span>{% endif %}
   </dd></div>
   <div><dt>SIC</dt><dd>{{ instrument.sic_code or '—' }}</dd></div>
   <div><dt>Companies House</dt><dd>{{ instrument.ch_company_number or '—' }}</dd></div>

@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from awltux.analysis.sectors import assign
 from awltux.db import (
     FundamentalPeriod,
     Instrument,
@@ -306,6 +307,7 @@ def _seed_instrument(
     instrument.yahoo_symbol = spec.symbol
     instrument.sector = spec.sector
     instrument.sector_source = "demo"
+    assign(instrument)
     instrument.industry = DEMO_MARKER
     instrument.in_universe = True
     instrument.excluded = False
