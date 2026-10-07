@@ -121,20 +121,31 @@
     {% endfor %}
     {% for spec in filters.controls %}
       <label {% if spec.help %}title="{{ spec.help }}"{% endif %}>
-        {{ spec.label }}
-        {% if spec.kind == 'choice' %}
-          <select name="{{ spec.name }}" aria-label="{{ spec.label }}">
-            <option value="">Any</option>
-            {% for option in spec.options %}
-              <option value="{{ option.value }}"
-                      {% if filters.value(spec.name) == option.value %}selected{% endif %}>
-                {{ option.label }}{% if option.note %} · {{ option.note }}{% endif %}
-              </option>
-            {% endfor %}
-          </select>
+        {% if spec.kind == 'flag' %}
+          {# A checkbox needs no label text of its own beside it: `spec.label` is the
+             legend, and repeating it before the box reads as two controls. The hidden
+             pair is what makes "unchecked" submit as *absent* rather than as an empty
+             value the parser has to interpret. #}
+          <input type="checkbox" name="{{ spec.name }}" value="1"
+                 {% if filters.given(spec.name) %}checked{% endif %}
+                 aria-label="{{ spec.label }}">
+          {{ spec.label }}
         {% else %}
-          <input type="search" name="{{ spec.name }}" value="{{ filters.value(spec.name) }}"
-                 placeholder="{{ spec.placeholder }}" aria-label="{{ spec.label }}">
+          {{ spec.label }}
+          {% if spec.kind == 'choice' %}
+            <select name="{{ spec.name }}" aria-label="{{ spec.label }}">
+              <option value="">Any</option>
+              {% for option in spec.options %}
+                <option value="{{ option.value }}"
+                        {% if filters.value(spec.name) == option.value %}selected{% endif %}>
+                  {{ option.label }}{% if option.note %} · {{ option.note }}{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          {% else %}
+            <input type="search" name="{{ spec.name }}" value="{{ filters.value(spec.name) }}"
+                   placeholder="{{ spec.placeholder }}" aria-label="{{ spec.label }}">
+          {% endif %}
         {% endif %}
       </label>
     {% endfor %}

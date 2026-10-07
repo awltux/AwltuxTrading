@@ -174,13 +174,20 @@ class TestTheFormCarriesState:
         assert "page=7" in spec.query(sector=PLAIN)
 
     def test_every_control_is_rendered(self, specs):
-        """The form and the validator read the same declaration."""
+        """The form and the validator read the same declaration.
+
+        The list is exact on purpose: a filter that exists in the URL and is missing
+        from the form is one a reader can only reach by editing the address bar, and a
+        control missing from the *validator* would be silently dropped on submit. So a
+        new filter is a deliberate edit here.
+        """
         assert [item.name for item in parse(specs).controls] == [
             "q",
             "sector",
             "action",
             "engine",
             "horizon_fit",
+            "attention",
         ]
 
 

@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument, InstrumentAlias, utcnow
 from awltux.db.session import release_write_lock
+from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.metrics import CANONICAL_METRICS  # noqa: F401  (re-exported: the vocabulary is shared)
 from awltux.providers.companies_house import CompaniesHouseProvider, normalise_company_number
 from awltux.providers.http import ProviderError
@@ -35,6 +36,9 @@ from awltux.providers.yahoo import YahooProvider
 from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
+
+#: This job's registry id, used to key the blockers it records.
+JOB = "fundamentals"
 
 #: Yahoo ``income_stmt`` / ``balance_sheet`` / ``cashflow`` row labels mapped onto
 #: canonical keys. Order matters: the first label present wins, and later entries
@@ -394,6 +398,18 @@ def sync_fundamentals(
             financials = provider.get_financials(symbol)
         except ProviderError as exc:
             report.failures.append(f"{instrument.t212_ticker}: {exc}")
+            # The provider refused, so this instrument's statements cannot be had from
+            # here. Recorded as a blocker as well as a failure: the report's list is for
+            # the run's log and expires with it, and the dashboard's attention filter
+            # needs to outlive the run.
+            record_blocker(
+                session,
+                instrument.t212_ticker,
+                job=JOB,
+                stage="statements",
+                reason=str(exc),
+            )
+            session.flush()
             continue
 
         columns = (financials.get("income") or {}).get("columns") or []
@@ -413,6 +429,8 @@ def sync_fundamentals(
                 confidence=0.7,
             )
             report.periods_written += 1
+        # Statements arrived, so whatever was recorded against this step is stale.
+        clear_blocker(session, instrument.t212_ticker, job=JOB, stage="statements")
         session.flush()
         # Two provider calls per instrument, so the write lock is released
         # between them rather than held across the whole run.

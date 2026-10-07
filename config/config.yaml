@@ -9,6 +9,18 @@ app:
   timezone: Europe/London
   # Decisions are only produced for instruments whose symbol mapping resolved.
   require_resolved_mapping: true
+  # How strict the "Needs attention" filter on the dashboard is. The reasons are
+  # graded and this picks the rung; the ladder is cumulative, so level 2 includes
+  # everything level 1 flags.
+  #
+  #   1  the figures we hold are wrong or incomplete      (~25 of 500)
+  #   2  and we cannot obtain the accounts at all         (~190)
+  #   3  and we have not finished covering it             (~90%)
+  #
+  # 3 is the honest long-run target; it is not the default because a filter that
+  # selects almost the whole table tells the reader nothing. Raise it as coverage
+  # improves -- it is the only change needed.
+  attention_level: 1
 
 # --- universe -----------------------------------------------------------------
 universe:

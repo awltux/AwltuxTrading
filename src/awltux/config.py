@@ -162,6 +162,25 @@ class AppConfig(BaseModel):
     name: str = "AwltuxTrading"
     timezone: str = "Europe/London"
     require_resolved_mapping: bool = True
+    #: How strict the dashboard's "Needs attention" filter is, from 1 to 3.
+    #:
+    #: The system is still settling, so what counts as a problem changes as coverage
+    #: improves. Rather than edit the rule set each time, the reasons are graded and
+    #: this picks the rung; raising it is the only change needed to make the filter
+    #: stricter. The ladder is cumulative -- level N means levels 1..N.
+    #:
+    #: * **1 -- the figures we hold are wrong or incomplete.** The accounting equation
+    #:   does not balance, the latest annual period is missing revenue or total assets,
+    #:   is more than 18 months old, has no provenance, or a job has recorded a failure
+    #:   for this instrument. Measured on the live universe, 2026-10-07: **25 of 500**.
+    #: * **2 -- and we cannot obtain the accounts at all.** A US-listed instrument with
+    #:   no SEC CIK, or an LSE one with no Companies House number: no amount of waiting
+    #:   produces its accounts. Takes it to about **190 of 500**.
+    #: * **3 -- and we have not finished covering it.** No accounts fetched yet, or
+    #:   documents held that nothing has parsed. This is the honest long-run test and
+    #:   about **90% of the table** while the extractor is unwired, which is why it is
+    #:   not the default: a filter that selects almost everything discriminates nothing.
+    attention_level: int = Field(default=1, ge=1, le=3)
 
 
 class UniverseConfig(BaseModel):

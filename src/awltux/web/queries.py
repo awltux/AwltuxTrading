@@ -15,7 +15,9 @@ from typing import Any, Literal
 from sqlalchemy import Select, desc, func, select
 from sqlalchemy.orm import Session
 
+from awltux.analysis import attention as attention_rules
 from awltux.analysis import macro
+from awltux.analysis.attention import Reason
 from awltux.db import (
     DecisionOutcome,
     DecisionRun,
@@ -96,6 +98,22 @@ class RecommendationRow:
     valuation_at: dt.datetime | None
     price_at: dt.datetime | None
     is_held: bool
+    #: Why this instrument should not be trusted yet, at the configured attention
+    #: level. Empty means assessed and clean, not "not assessed" -- see
+    #: :func:`awltux.analysis.attention.assess`.
+    attention: tuple[Reason, ...] = ()
+
+    @property
+    def attention_summary(self) -> str:
+        """Every reason on one line, for a tooltip."""
+        return "; ".join(
+            f"{reason.label} — {reason.detail}" if reason.detail else reason.label
+            for reason in self.attention
+        )
+
+    @property
+    def attention_count(self) -> int:
+        return len(self.attention)
 
     def action_for(self, horizon: str) -> str | None:
         return self.short_term_action if horizon == "short_term" else self.action
@@ -199,11 +217,55 @@ def _answer_value(answers: dict[str, Any], question: str, field: str) -> float |
         return None
 
 
-# A paged query assembled as four labelled phases. The branches are the filter set,
-# and the filter set *is* the specification of this table -- one `if` per option the
-# page offers. Extracting them would put the readable list of what can be filtered
-# somewhere other than the query it filters.
-def recommendations(  # noqa: C901
+def _instruments_in_scope(
+    session: Session,
+    *,
+    only_held: bool = False,
+    sector: str | None = None,
+    sector_unknown: bool = False,
+    search: str | None = None,
+) -> list[Instrument]:
+    """The instruments the table may show, narrowed by the column filters.
+
+    Extracted from :func:`recommendations`, which had grown one branch per filter the
+    page offers on top of the four phases that assemble a row -- and the page has since
+    gained a fifth. The filter set *is* the specification of this table, so the branches
+    are not incidental; the point of moving them is that they are all the same kind of
+    thing and the assembly below is not.
+
+    The universe condition is not a filter and is here regardless: every other query in
+    this module assumes it, and an instrument outside the universe has no business
+    occupying a row.
+    """
+    query = (
+        select(Instrument)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+    )
+    if only_held:
+        query = query.where(Instrument.is_held.is_(True))
+    if sector_unknown:
+        query = query.where(Instrument.sector.is_(None))
+    elif sector:
+        query = query.where(Instrument.sector == sector)
+    if search:
+        pattern = f"%{search.lower()}%"
+        query = query.where(
+            func.lower(Instrument.t212_ticker).like(pattern)
+            | func.lower(Instrument.name).like(pattern)
+        )
+    return list(session.execute(query).scalars().all())
+
+
+# A paged query assembled as labelled phases. Both halves of this are deliberate: the
+# phases are narrow queries rather than one wide join, and the branches are the filter
+# set, which *is* the specification of this table -- one `if` per option the page offers,
+# so the readable list of what can be filtered is the query that filters rather than a
+# helper a reader has to go and find. What could be cut was cut: the scope phase moved to
+# `_instruments_in_scope`, and the assembly loop is flat over instruments already
+# narrowed. If this grows a sixth filter, split the assembly out rather than adding a
+# reason here.
+def recommendations(
     session: Session,
     *,
     sort: SortKey = "composite_score",
@@ -216,6 +278,7 @@ def recommendations(  # noqa: C901
     sector_unknown: bool = False,
     only_suggestions: bool = False,
     only_held: bool = False,
+    needs_attention: bool = False,
     search: str | None = None,
     limit: int = 200,
     offset: int = 0,
@@ -234,25 +297,13 @@ def recommendations(  # noqa: C901
     name a sector would leave a third of the universe unreachable.
     """
     # --- 1. which instruments are in scope ---------------------------------
-    instrument_query = (
-        select(Instrument)
-        .where(Instrument.in_universe.is_(True))
-        .where(Instrument.excluded.is_(False))
+    instruments = _instruments_in_scope(
+        session,
+        only_held=only_held,
+        sector=sector,
+        sector_unknown=sector_unknown,
+        search=search,
     )
-    if only_held:
-        instrument_query = instrument_query.where(Instrument.is_held.is_(True))
-    if sector_unknown:
-        instrument_query = instrument_query.where(Instrument.sector.is_(None))
-    elif sector:
-        instrument_query = instrument_query.where(Instrument.sector == sector)
-    if search:
-        pattern = f"%{search.lower()}%"
-        instrument_query = instrument_query.where(
-            func.lower(Instrument.t212_ticker).like(pattern)
-            | func.lower(Instrument.name).like(pattern)
-        )
-
-    instruments = list(session.execute(instrument_query).scalars().all())
     if not instruments:
         return [], 0
     tickers = [row.t212_ticker for row in instruments]
@@ -286,12 +337,23 @@ def recommendations(  # noqa: C901
         scope_id: score for scope_id, score in session.execute(_latest_sentiment()).all()
     }
 
-    # --- 4. assemble -------------------------------------------------------
+    # --- 4. why each instrument should not be trusted yet -------------------
+    #
+    # Always assessed, not only when the filter is on: the row carries its reasons either
+    # way, so a reader can see *why* a row is suspect without switching the filter on to
+    # find out. Bounded by the instruments already in scope, and four queries behind it.
+    assessed = attention_rules.assess(session, tickers=tickers)
+
+    # --- 5. assemble -------------------------------------------------------
     result: list[RecommendationRow] = []
     for instrument in instruments:
         decision = decisions.get(instrument.t212_ticker)
         valuation = valuations.get(instrument.t212_ticker)
+        attention = assessed.get(instrument.t212_ticker)
+        reasons = attention.reasons if attention is not None else ()
 
+        if needs_attention and not reasons:
+            continue
         if action and (decision is None or decision.action_for(horizon) != action):
             continue
         if engine and (decision is None or decision.engine != engine):
@@ -364,6 +426,7 @@ def recommendations(  # noqa: C901
                     else None
                 ),
                 is_held=instrument.is_held,
+                attention=tuple(reasons),
             )
         )
 

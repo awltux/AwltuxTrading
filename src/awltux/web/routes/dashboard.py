@@ -123,6 +123,7 @@ def _recommendations_region(request: Request, page: int, per_page: int) -> dict[
             sector_unknown=sector_unknown,
             only_suggestions=(spec.value("view") == "suggestions"),
             only_held=(spec.value("view") == "held"),
+            needs_attention=spec.given("attention"),
             search=spec.opt("q"),
             limit=per_page,
             offset=(page - 1) * per_page,

@@ -60,6 +60,15 @@
         <a href="/instrument/{{ row.ticker }}"><strong>{{ row.ticker }}</strong></a>
         <span class="muted small">{{ row.name[:34] }}</span>
         {% if row.is_held %}<span class="chip small held">held</span>{% endif %}
+        {# Why this row should not be trusted yet, from `analysis/attention.py`. Shown
+           whether or not the filter is on, so the reader can see *why* a row is suspect
+           without switching the filter on to find out. The reasons are in the tooltip,
+           each naming what it measured -- a bare count would be the verdict this
+           codebase keeps refusing to render. #}
+        {% if row.attention_count %}
+          <span class="chip small warn"
+                title="{{ row.attention_summary }}">{{ row.attention_count }} issue{{ '' if row.attention_count == 1 else 's' }}</span>
+        {% endif %}
         {# The reverse of the Sectors drill-down: pick a sector off a row and see
            everything else in it. "unclassified" is shown rather than left blank
            because an empty cell would read as a rendering fault, and 194 of the

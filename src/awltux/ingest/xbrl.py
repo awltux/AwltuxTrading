@@ -36,10 +36,16 @@ from sqlalchemy.orm import Session
 from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument
 from awltux.db.session import release_write_lock
+from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.providers.edgar import EdgarProvider, ProviderError
 from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
+
+#: This job's registry id, used to key the blockers it records. Named rather than
+#: repeated, because a blocker keyed by a misspelt job id is a blocker the attention
+#: check never reports.
+JOB = "xbrl_statements"
 
 #: A fiscal year, within a window wide enough for 52/53-week retailers and for
 #: companies whose year end moves a few days. Below this a fact is a quarter;
@@ -760,6 +766,12 @@ def _sync_one(
     different in kind and both need saying: the provider refused us, or the payload
     arrived and could not be parsed. Either way the run continues -- 312 filers is
     too many to lose to one bad response -- and the report carries which happened.
+
+    Both also become an :class:`~awltux.db.models.InstrumentBlocker` under this job, and
+    success clears it. The report's ``failures`` list is for the run's log; the blocker is
+    the record that outlives the run, which is what the dashboard's attention filter
+    reads. Without it "we tried and this filer's statements cannot be had" and "we have
+    not got to it yet" are the same em-dash.
     """
     report.tickers_attempted += 1
     cik = instrument.sec_cik
@@ -773,6 +785,14 @@ def _sync_one(
     except ProviderError as exc:
         report.tickers_failed += 1
         report.failures.append(f"{instrument.t212_ticker}: {exc}")
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=JOB,
+            stage="statements",
+            reason=str(exc),
+        )
+        session.flush()
         return
 
     try:
@@ -780,8 +800,20 @@ def _sync_one(
     except Exception as exc:  # noqa: BLE001 - one bad payload must not stop the run
         report.tickers_failed += 1
         report.failures.append(f"{instrument.t212_ticker}: {type(exc).__name__}: {exc}")
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=JOB,
+            stage="xbrl",
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+        session.flush()
         return
 
+    # The payload arrived and parsed, so whatever was recorded against this step is no
+    # longer true. Both stages, because either could have been the one that failed.
+    clear_blocker(session, instrument.t212_ticker, job=JOB, stage="statements")
+    clear_blocker(session, instrument.t212_ticker, job=JOB, stage="xbrl")
     report.periods_written += written
     report.metrics_written += metrics_written
     session.flush()

@@ -42,7 +42,15 @@ from awltux.web.queries import SortKey
 #: active-filter chips. It means the reader sets it somewhere other than the form
 #: -- ``sort`` through a column header, ``horizon`` through its own picker -- so
 #: rendering a second control for it would be two ways to set one value.
-Kind = Literal["choice", "text", "none"]
+#:
+#: ``flag`` is a checkbox: absent means off, ``"1"`` means on. It is a kind of its own
+#: rather than a two-option ``choice`` because a dropdown with "yes/no" is a worse
+#: control for one binary, and because the parse rule differs -- see :meth:`FilterSet.parse`.
+Kind = Literal["choice", "text", "none", "flag"]
+
+#: The value a set flag carries in the URL. Not "true"/"on"/"yes": one spelling means a
+#: link built by hand and a link built by this module cannot disagree.
+FLAG_ON = "1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +138,22 @@ class FilterSet:
 
         for spec in specs:
             raw = (params.get(spec.name) or "").strip()
+
+            if spec.kind == "flag":
+                # A checkbox URL is either the marker or absent, so anything else is a
+                # hand-edited or stale link. Recorded rather than coerced: `?attention=0`
+                # and `?attention=banana` mean the same thing to a truthiness test, and
+                # silently reading either as "on" would show a filtered table that the
+                # URL did not ask for. Exactly the failure this module exists to prevent.
+                if not raw or raw == spec.default:
+                    values[spec.name] = spec.default
+                elif raw == FLAG_ON:
+                    values[spec.name] = FLAG_ON
+                else:
+                    values[spec.name] = spec.default
+                    ignored.append(IgnoredValue(spec.name, spec.label, raw))
+                continue
+
             if not raw or spec.kind == "text" or not spec.options:
                 values[spec.name] = raw or spec.default
                 continue
@@ -406,6 +430,16 @@ def recommendation_specs(
         FilterSpec("action", "Action", options=ACTION_OPTIONS),
         FilterSpec("engine", "Engine", options=ENGINE_OPTIONS),
         FilterSpec("horizon_fit", "Suits", options=HORIZON_FIT_OPTIONS),
+        FilterSpec(
+            "attention",
+            "Needs attention",
+            kind="flag",
+            help=(
+                "Instruments whose figures we hold are wrong or incomplete, or that a "
+                "job has recorded it cannot fetch. How strict this is comes from "
+                "app.attention_level in the configuration."
+            ),
+        ),
         FilterSpec("view", "View", options=VIEW_OPTIONS, default="all", kind="none"),
         FilterSpec(
             "horizon",

@@ -176,7 +176,14 @@ class Instrument(Base, TimestampMixin):
     #: `Instrument.updated_at` is the obvious column and the wrong one -- nothing else
     #: in this job touches the instrument row, but plenty of other jobs do, so it would
     #: order the poll by whatever ran last.
-    news_polled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #:
+    #: Indexed because it *is* the poll's sort key: `_instruments_to_poll` orders the
+    #: whole universe by it every run. Migration `0008` created the index and the model
+    #: did not declare it, which `alembic check` reports as an index to remove -- the
+    #: migration was right and the declaration was missing.
+    news_polled_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
 
     exchange_ref: Mapped[Exchange | None] = relationship(back_populates="instruments")
     aliases: Mapped[list[InstrumentAlias]] = relationship(
@@ -378,6 +385,80 @@ class FundamentalPeriod(Base, TimestampMixin):
             "period_type",
             "source",
             name="uq_fundamental_period",
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# instrument-level blockers
+# --------------------------------------------------------------------------- #
+
+
+class InstrumentBlocker(Base, TimestampMixin):
+    """A job that could not do its work for one instrument, and why.
+
+    Advisory tooling has one failure that is worse than a wrong number: a *missing*
+    one that looks like an answer. When `fundamentals` reports "no statements
+    available for ADV.L", the dashboard shows the same em-dash it shows for a company
+    nobody has fetched yet -- and the reader cannot tell "this cannot be had" from
+    "not got round to it". The distinction is the whole point of the "Needs attention"
+    filter, and nothing recorded it.
+
+    **Why not read the run history.** Per-instrument failures *are* in
+    ``IngestRun.detail`` as free text (``failures: ["ADVl_EQ: [yahoo] no statements
+    available for ADV.L"]``), and that is where this started. Measured 2026-10-07:
+    scanning the last 400 runs yielded **5 instruments**, because each job rations
+    itself to a couple of instruments per run and the detail rotates away with
+    ``retention``. A signal that decays is not a record.
+
+    **One row per (instrument, job, stage).** A job fails an instrument for a
+    particular reason at a particular step -- fetching statements, resolving a CIK,
+    downloading a document -- so the same job failing at two steps is two blockers.
+    The row is *upserted*: :func:`~awltux.ingest.blockers.record_blocker` bumps
+    ``occurrences`` and ``last_seen_at`` rather than appending, because the question
+    is "is this still broken", and an append-only log of a nightly failure is a table
+    that grows forever to answer a boolean.
+
+    **Resolved, not deleted.** A success clears ``resolved_at``-style by setting
+    ``resolved_at`` (see :func:`~awltux.ingest.blockers.clear_blocker`), and the
+    attention check reads only rows where it is null. Keeping the row means the
+    history survives -- "this was broken for six weeks and then fixed" is the fact
+    worth having -- and deleting it on success would make a flapping provider
+    invisible.
+    """
+
+    __tablename__ = "instrument_blocker"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    instrument_t212_ticker: Mapped[str] = mapped_column(
+        ForeignKey("instrument.t212_ticker", ondelete="CASCADE"), index=True
+    )
+
+    #: The job that could not proceed, by its registry id (`fundamentals`,
+    #: `xbrl_statements`, `shareholder_reports`).
+    job: Mapped[str] = mapped_column(String(48))
+    #: What it was trying to do when it gave up -- `statements`, `cik`, `document`.
+    #: Part of the key because one job failing at two steps is two different problems.
+    stage: Mapped[str] = mapped_column(String(32))
+    #: The provider's own words, kept verbatim. A paraphrase is a second guess, and
+    #: the whole reason to store this is that the reader may need to believe it.
+    reason: Mapped[str] = mapped_column(String(512))
+
+    first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    #: How many consecutive times the same failure has been seen, so a transient and a
+    #: permanent one are distinguishable without reading the log.
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+    #: When a run last succeeded at this step, so the blocker stops counting.
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_t212_ticker", "job", "stage", name="uq_instrument_blocker"
         ),
     )
 

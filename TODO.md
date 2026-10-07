@@ -50,6 +50,27 @@ invisible to git while `git status` reported a clean tree.
 
 ## Correctness questions still open
 
+### `xbrl_statements` reports success when the payload yields no periods
+
+A fetch that returns a payload we cannot extract anything from is recorded as a
+*succeeding* run. Measured 2026-10-07 against the live database: of the **314**
+in-universe instruments with a resolved SEC CIK, only **40** have a period from
+`xbrl_companyfacts`. The other **274** have nothing, and nothing anywhere says whether
+that is because the rotation has not reached them or because we asked, received a
+payload, and took no figures out of it.
+
+The two cases need different fixes -- waiting versus reading the tags differently -- and
+they are currently indistinguishable. `_write_periods` returns `written == 0` for the
+second case, and `_sync_one` treats it as success: it clears any blocker and moves on.
+
+**Decide:** is "asked, received, extracted nothing" a *blocker* (stage `extract`), or is
+it normal for filers whose statements live in tags `TAG_MAP` does not carry? The honest
+answer is probably both, and the blocker would need to say which. Recording it is the
+cheap half and it is the half that makes the case visible at all; it must **not** be
+inferred from a missing period, because that would flag all 274 including the ones simply
+not yet reached -- which is exactly the mistake the attention filter's level 2 avoids by
+only firing when there is no other route to the accounts.
+
 ### The accounts come from `companyfacts`, not from the filing's own XBRL
 
 Answered for a reader asking whether the tags in the Form 10-K are used. They are not,
@@ -98,6 +119,13 @@ remaining steps are (1) a provider call that resolves `*_cal.xml` from the acces
 directory's `index.json`, (2) an additive column on `filing` to cache
 `Linkbase.as_dict()` with its digest and source URL, (3) a bounded fetch step in the
 `filings_edgar` or `xbrl_statements` job, and (4) routing it into the accounts page.
+
+**And it would give the attention filter its second real signal.** Today the only
+accounting reason `analysis/attention.py` can raise is the equation, because
+`assets_composition` fails for 36 of the 43 instruments holding accounts and most of
+those are our own missing lines. A stored linkbase turns that into
+`reconciliation.contradictions` -- every declared line held and still not summing --
+which is a genuine discrepancy and belongs at level 1 beside the equation.
 
 **The route is now open.** `Filing.period_end` was populated on 0 of 4,958 rows and is
 now set from EDGAR's `reportDate` (4,602 of 4,958 after one `filings_edgar` run; the
@@ -394,6 +422,25 @@ column.
 ---
 
 ## Operations
+
+### Only two jobs record a per-instrument blocker
+
+`instrument_blocker` exists so a *missing* figure is not mistaken for an answer, and
+`fundamentals` and `xbrl_statements` write to it. Every other job that can fail one
+instrument and succeed the rest still records nothing: `shareholder_reports` (a refused
+download is in `download_errors` and nowhere else), `filings_edgar`, `uk_companies`,
+`edgar_events`, `prices` and `symbol_resolution`.
+
+Measured 2026-10-07, which is why this is a queue item and not a hypothetical: parsing
+the per-instrument failure lists out of the last **400** `ingest_run.detail` payloads
+found **5 instruments** in total. The lists are free text, each job words its own
+differently, and `retention` prunes the detail away -- so the evidence exists in the log
+and decays before anyone can act on it.
+
+The add is mechanical: `record_blocker` where a job appends to its failure list,
+`clear_blocker` where it succeeds. `uk_companies` is the one to do first, because the
+level-2 reason for a UK listing is "no Companies House number" and a *rejected* lookup is
+a different and more actionable problem with the same em-dash today.
 
 ### `decision` still sweeps the whole universe, and six jobs have no stopping point
 
