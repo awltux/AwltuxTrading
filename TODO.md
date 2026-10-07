@@ -754,9 +754,10 @@ names the courses, and the videos inside them are what carry the method.
 
 **Ration it.** At the scripts' defaults — 5s spacing, serial — 220 items is well over
 two hours of wall time and 220 caption requests. `--max-per-run 40` means six runs,
-spread over days rather than chained. The scripts enforce a 12-hour cooldown after a
-block and refuse to run again before it expires; that gate is the reason this is a
-background task rather than an afternoon's work.
+spread over days rather than chained. The scripts refuse to run again for 12 hours after
+a block; that gate is the reason this is a background task rather than an afternoon's
+work. **The 12 hours is this project's own conservative default, not YouTube's
+number** — see the state note below.
 
 ### Edge cases that will bite
 
@@ -827,17 +828,52 @@ becomes a citation on it.
 Where FINDINGS lives: `docs/research/FINDINGS.md`, next to the reports it grades
 against, so its claims sit beside the evidence base rather than apart from it.
 
-### Current state: blocked, and the selection is already done
+### Current state: the block has lifted, and the selection is already done
 
-The IP is locked out of YouTube's caption endpoint by an earlier run that retried a
-`429`. Enumeration still works — channels, playlists and titles all read fine — so
-the selection is complete and only the transcripts are outstanding.
+**Re-probed once, 2026-10-07 09:58:40 +01:00, and it succeeded** — one caption request
+(`--max-per-run 1 --attempts 1`), `PRfXq-NlJqo` returned 775 words in 3.96s with no
+`429` and no bot check. Enumeration always worked; the transcripts are what was blocked,
+and they are not any more.
 
-**Tomorrow's run does not need to re-enumerate.** The selected playlists and videos
-are committed to `docs/research/education-sources.json` (42 playlists, 181 videos),
-so the expensive part already survives. Start by expanding the selected playlists
-into videos, then fetch. Re-walking six channels to rebuild a list that is already on
-disk spends ~30 requests against an endpoint that has just banned this address.
+The block began with a run at 2026-10-06 16:52:10 +01:00 that retried a `429`, so the
+next successful request was **17h 06m** later. That does *not* measure the block: the
+local gate is 12 hours, so any block shorter than 12 hours would have produced the same
+result. One probe cannot measure a duration and a second was not made, deliberately —
+the post-mortem in the skill names repeated probing as what caused the ban.
+
+**The 12-hour figure belongs to this project, not to YouTube.** `yt_common.py` has
+`DEFAULT_COOLDOWN_HOURS = 12.0` with the comment *"The measured block outlived the
+process that caused it by more than an hour"* — the measured fact is "> 1 hour", and 12
+is a conservative local default the comment does not derive from anything.
+`TODO.md` had been repeating it as though it were YouTube's behaviour.
+
+What the sources actually say, for the next reader:
+
+- **Official YouTube/Google terms state no duration.** [YouTube ToS](https://www.youtube.com/t/terms)
+  forbids automated access (*"robots, botnets or scrapers"*) and circumventing limits;
+  [YouTube API Services ToS](https://developers.google.com/youtube/terms/api-services-terms-of-service)
+  §15 "Usage and Quotas" lets YouTube set quotas and forbids exceeding them. Neither
+  gives a cooldown, a retry interval or a penalty period. That silence is the finding.
+- **The maintainer's own reading** ([youtube-transcript-api#467](https://github.com/jdepoix/youtube-transcript-api/issues/467)):
+  YouTube *"started to roll out much stricter rate limits on the endpoint needed to
+  fetch the transcripts"*, hit after roughly **2–3 caption requests**, with rotating
+  residential proxies as the only reliable workaround. The vendored README's "Working
+  around IP bans" section gives no retry interval, and its `IpBlocked` text warns that
+  cookie auth risks a *permanent* ban of the account used — so do not reach for
+  credentials to get past a block.
+- Community claims of "a few minutes", "an hour", "12–24 hours" and "permanent" are
+  mutually contradictory and unsourced. Treat them as folklore.
+
+**So the budget is 2–3 requests before a block, which is the number to design around.**
+Proceed at the scripts' defaults (5s spacing, serial, `--max-per-run 40`, six runs over
+days) and, if a run exits 3, wait the local 12 hours before the *next single* probe —
+do not health-check with repeated probes. **The selection is already done and does not
+need re-enumerating:** the playlists and videos are committed to
+`docs/research/education-sources.json` (42 playlists, 181 videos), so re-walking six
+channels would spend ~30 requests against an endpoint that blocks after 2–3. Start by
+expanding the selected playlists into videos, then fetch. The probe left
+`.tmp\probe-out\PRfXq-NlJqo.txt` fetched; move it into the run's transcript directory or
+the next run spends one of its few requests re-fetching it.
 
 ### The channels
 
