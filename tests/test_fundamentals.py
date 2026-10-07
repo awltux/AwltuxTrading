@@ -9,13 +9,32 @@ wins, and about the labels that must *not* be used.
 
 from __future__ import annotations
 
+import datetime as dt
+
+from awltux.analysis import ledger
+from awltux.db import FundamentalPeriod
 from awltux.ingest.fundamentals import (
     STATEMENT_LABELS,
     derive_metrics,
     metrics_from_info,
     metrics_from_statements,
 )
-from awltux.metrics import STATED_METRICS
+from awltux.metrics import OUTFLOW_METRICS, STATED_METRICS
+
+
+def _period(**metrics: float) -> FundamentalPeriod:
+    """An unpersisted period holding exactly these metrics.
+
+    The ledger checks read `period.metrics` and nothing else, so a row does not have
+    to be stored to exercise the sign convention.
+    """
+    return FundamentalPeriod(
+        instrument_t212_ticker="TEST_US_EQ",
+        period_end=dt.date(2026, 6, 30),
+        period_type="annual",
+        source="test",
+        metrics=metrics,
+    )
 
 
 def _statements(**sections: dict[str, float]) -> dict:
@@ -78,6 +97,87 @@ class TestStatementMapping:
     def test_capex_is_normalised_to_a_positive_outflow(self):
         financials = _statements(cashflow={"Capital Expenditure": -40.0})
         assert metrics_from_statements(financials, 0)["capex"] == 40.0
+
+    def test_every_outflow_is_normalised_not_just_capex(self):
+        """The bug this pins down.
+
+        `analysis/ledger.py` subtracts outflows -- ``explained = operating - capex -
+        dividends``, and ``free_cash_flow = operating_cash_flow - capex``. Yahoo reports
+        them with its own sign, and only `capex` was being corrected, because that was
+        the one a check happened to trip over.
+
+        Measured 2026-10-07 on `MSFT_US_EQ`: `dividends_paid` was stored negative in
+        **16** `yahoo_statements` periods against **1** `xbrl_companyfacts` period, and
+        the retained-earnings roll-forward was out by exactly twice the dividend --
+        52.9bn on a 26.4bn dividend. Twice, because the value is subtracted: a negative
+        input turns a minus into a plus.
+        """
+        financials = _statements(
+            cashflow={"Capital Expenditure": -40.0, "Cash Dividends Paid": -25.0}
+        )
+
+        metrics = metrics_from_statements(financials, 0)
+
+        assert metrics["capex"] == 40.0
+        assert metrics["dividends_paid"] == 25.0
+
+    def test_a_positive_outflow_is_left_alone(self):
+        """The other source already stores it this way, so the normalisation has to be
+        a no-op rather than a second flip."""
+        financials = _statements(cashflow={"Cash Dividends Paid": 25.0})
+        assert metrics_from_statements(financials, 0)["dividends_paid"] == 25.0
+
+    def test_every_outflow_key_is_a_real_metric(self):
+        """A name in `OUTFLOW_METRICS` that is not in the vocabulary would normalise
+        nothing, silently -- the same class of typo `STATEMENT_LABELS` is guarded for."""
+        for key in OUTFLOW_METRICS:
+            assert key in STATED_METRICS, key
+
+    def test_the_ledger_subtracts_an_outflow_rather_than_adding_it(self):
+        """Behavioural, not textual: the convention *is* this arithmetic.
+
+        Checking the source text for ``- dividends`` would pass while the arithmetic
+        was wrong, and it broke on the local variable's name the first time it was
+        written -- `dividends_paid` is read into a variable called `dividends`.
+        """
+        previous = _period(retained_earnings=1_000.0)
+        period = _period(retained_earnings=1_050.0, net_income=100.0, dividends_paid=50.0)
+
+        check = ledger.retained_earnings_rollforward(period, previous)
+
+        assert check.residual == 0.0, "a positive dividend must be subtracted"
+
+    def test_a_flipped_dividend_moves_the_residual_by_twice_its_value(self):
+        """The measured signature, and why "out by twice the dividend" identifies a
+        sign error rather than a missing line.
+
+        Measured 2026-10-07 on `MSFT_US_EQ`: the retained-earnings roll-forward was out
+        by 52,890,000,000 on a `dividends_paid` of 26,445,000,000 -- exactly 2x. The
+        value is subtracted, so a negative input turns the minus into a plus and the
+        error doubles rather than reversing.
+        """
+        previous = _period(retained_earnings=1_000.0)
+        correct = _period(retained_earnings=1_050.0, net_income=100.0, dividends_paid=50.0)
+        flipped = _period(retained_earnings=1_050.0, net_income=100.0, dividends_paid=-50.0)
+
+        correct_residual = ledger.retained_earnings_rollforward(correct, previous).residual
+        flipped_residual = ledger.retained_earnings_rollforward(flipped, previous).residual
+
+        assert flipped_residual - correct_residual == -100.0, "twice the dividend, not once"
+
+    def test_cash_movement_subtracts_both_outflows(self):
+        previous = _period(cash_and_equivalents=200.0)
+        period = _period(
+            cash_and_equivalents=170.0,
+            operating_cash_flow=100.0,
+            capex=80.0,
+            dividends_paid=50.0,
+        )
+
+        check = ledger.cash_movement(period, previous)
+
+        assert check.inputs["explained"] == -30.0
+        assert check.residual == 0.0
 
     def test_every_mapped_label_is_a_canonical_name(self):
         """A typo in a key here would write a metric nothing can read."""

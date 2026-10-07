@@ -210,6 +210,22 @@ CANONICAL_METRICS: frozenset[str] = frozenset(STATED_METRICS) | frozenset(DERIVE
 #: them.
 EXTRACTABLE_METRICS: frozenset[str] = frozenset(STATED_METRICS)
 
+#: Metrics stated as a **positive magnitude of outflow**, whatever sign a provider uses.
+#:
+#: The convention is not decoration: `analysis/ledger.py` subtracts these
+#: (``explained = operating - capex - dividends``) and ``free_cash_flow`` is computed as
+#: ``operating_cash_flow - capex``. A provider that reports them negatively -- as a
+#: credit rather than a debit -- therefore flips a *plus* into a *minus* in every check
+#: that reads them, and doubles the error.
+#:
+#: Measured 2026-10-07 on `MSFT_US_EQ`: `capex` is positive in both sources and
+#: ``ocf - capex`` equals the stored ``free_cash_flow`` in all six stored periods, but
+#: `dividends_paid` is stored **negative by `yahoo_statements` and positive by
+#: `xbrl_companyfacts`** -- 16 periods against 1. The retained-earnings roll-forward was
+#: consequently out by exactly twice the dividend, 52.9bn, which is the signature of a
+#: sign error rather than a missing line.
+OUTFLOW_METRICS: frozenset[str] = frozenset({"capex", "dividends_paid"})
+
 
 def prompt_metric_names() -> str:
     """The canonical names, formatted for the extraction prompt.

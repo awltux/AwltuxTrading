@@ -30,7 +30,7 @@ from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument, InstrumentAlias, utcnow
 from awltux.db.session import release_write_lock
 from awltux.ingest.blockers import clear_blocker, record_blocker
-from awltux.metrics import CANONICAL_METRICS  # noqa: F401  (re-exported: the vocabulary is shared)
+from awltux.metrics import CANONICAL_METRICS, OUTFLOW_METRICS  # noqa: F401  (re-exported)
 from awltux.providers.companies_house import CompaniesHouseProvider, normalise_company_number
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import YahooProvider
@@ -171,9 +171,17 @@ def metrics_from_statements(financials: dict[str, Any], column_index: int) -> di
         if value is not None:
             metrics[key] = value
 
-    # Capex is reported negatively by Yahoo; normalise to a positive outflow.
-    if "capex" in metrics and metrics["capex"] < 0:
-        metrics["capex"] = abs(metrics["capex"])
+    # Outflows are stored as positive magnitudes, because `analysis/ledger.py` subtracts
+    # them and `free_cash_flow` is `operating_cash_flow - capex`. Yahoo reports them with
+    # the provider's own sign, which for dividends is a *credit*.
+    #
+    # This used to normalise `capex` alone -- it was the one that a check happened to
+    # trip over -- and `dividends_paid` was left with Yahoo's sign. Measured 2026-10-07:
+    # 16 periods stored it negative against XBRL's 1, and the retained-earnings
+    # roll-forward came out wrong by exactly twice the dividend.
+    for key in OUTFLOW_METRICS:
+        if key in metrics and metrics[key] < 0:
+            metrics[key] = abs(metrics[key])
 
     return metrics
 
