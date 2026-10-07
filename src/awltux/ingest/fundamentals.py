@@ -727,8 +727,8 @@ def resolve_uk_companies(
                 job=UK_JOB,
                 stage="company_number",
                 reason=(
-                    f'no Companies House record matched "{instrument.name}" among '
-                    f"{len(candidates)} candidates"
+                    f'no Companies House record matched "{instrument.name}" '
+                    f"({len(candidates)} candidate(s) searched)"
                 ),
             )
             continue

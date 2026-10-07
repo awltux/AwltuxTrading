@@ -516,6 +516,31 @@ page cannot say anything about them until outcomes accumulate.
 or the limitation is stated on the dashboard rather than only in the model
 column.
 
+### Three UK listings now sit at attention level 1 for ever
+
+Measured 2026-10-16, the first run after `uk_companies` began recording blockers:
+`JELl_EQ` (Jersey Electricity — registered in Jersey, so absent from the UK register by
+construction), `SMIFl_EQ` (TwentyFour Select Monthly Income Fund) and `TBLDl_EQ`
+(Tinybuild) record `no Companies House record matched "…" (20 candidate(s) searched)`,
+and `analysis/attention.py::_blocked` turns any open blocker into a **level-1** "A job
+cannot proceed" reason. Nothing will ever clear them, and `_probe_uk_companies` keeps
+reporting a coverage gap, so the hourly backfill keeps attempting all three and bumping
+`occurrences` — a run that costs 3 Companies House searches an hour to relearn a fact
+that cannot change.
+
+Two questions, and they are separate:
+
+1. **Is "no record exists" a blocker at all, or a stated gap?** A blocker is re-checked
+   and cleared on success; this one can only be cleared by a human writing the number
+   by hand. The alternative is a terminal state that says so.
+2. **Should the level depend on the reason?** Level 1 is right for a provider refusing,
+   which may well work next run. It is misleading for "this company is not on the
+   register", which the reader can neither fix nor wait out.
+
+The evidence for the first is the `occurrences` count after a day of hourly runs; for
+the second, the three rows above are the only level-1 blockers in the live table that no
+run can clear.
+
 ---
 
 ## Operations
