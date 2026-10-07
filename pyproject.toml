@@ -81,7 +81,10 @@ awltux = [
 "awltux.db.migrations" = ["*.mako", "versions/*.py"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# `ingest_youtube` is a top-level tool rather than part of the package, but its tests
+# are the ones that keep YouTube's rate limiting honest, so they belong in the default
+# run: with only "tests" here they are collected by nobody and rot silently.
+testpaths = ["tests", "ingest_youtube"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
 markers = [

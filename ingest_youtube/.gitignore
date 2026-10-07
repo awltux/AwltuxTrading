@@ -1,0 +1,18 @@
+# Local state, deliberately not committed.
+#
+# The selection inventories, the transcripts and the source-of-truth hand-written
+# verdicts (`sources/findings_source.md`) *are* committed -- they are the record the
+# work rests on. Everything below is either machine state that only means something on
+# the machine that produced it, or output that one command rebuilds.
+
+# Acquisition state: the cooldown, the request log, the ledger, the duplicate map.
+#
+# `requests.jsonl` is the log the rate limits are enforced from, and the other files
+# are written from it. Deleting this directory is safe -- it costs no YouTube requests,
+# because nothing here is a transcript -- but it forgets which videos have already been
+# asked for, so a fresh run re-asks them and spends real quota. Do not delete it to
+# "start clean" without meaning to spend the requests again.
+state/
+
+# Extraction output: rebuilt by `run.py distill`, offline, in about a second.
+out/

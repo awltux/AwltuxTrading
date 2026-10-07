@@ -1,7 +1,7 @@
 <!-- BEGIN GENERATED -->
 # Findings: what value-investing YouTube adds, and what it does not
 
-_Populated by `.tmp/ingest_youtube`. Machine-generated facts sit inside the `BEGIN/END GENERATED` sentinels and are safe to regenerate; everything after them is hand-written and is never overwritten._
+_Populated by `ingest_youtube/`. Machine-generated facts sit inside the `BEGIN/END GENERATED` sentinels and are safe to regenerate; everything after them is hand-written and is never overwritten._
 
 This file exists to answer one question: **does the education corpus change any marker the app already uses?** It is graded against `docs/investment-markers.md` and the reports in this directory, not against the channels' own authority. A video is where an idea was **noticed**; the primary source is what the finding rests on, and a video that names no primary source produces no finding.
 
@@ -22,7 +22,7 @@ This file exists to answer one question: **does the education corpus change any 
 |---|---|---|
 | selected | videos + playlists in the tiered inventory | 223 |
 | **acquired** | transcripts on disk | **23** |
-| acquired | still to acquire (core tier) | 89 |
+| acquired | still to acquire (core tier) | 0 |
 | acquired | locatable from a URL (`url_key` recorded) | 23 |
 | **extracted** | transcripts distilled | **23** |
 | extracted | extractor version that wrote them | v1 |
