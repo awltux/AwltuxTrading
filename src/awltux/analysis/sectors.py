@@ -243,6 +243,36 @@ def is_sector(name: str | None) -> bool:
     return name in SECTOR_NAMES
 
 
+#: What to ask a news search for, per sector.
+#:
+#: The sector *name* is a poor query on its own -- "Materials" and "Utilities" are
+#: ordinary English words, and a Google News search for them returns the weather and
+#: the water bill. Each entry names the industries a reader would recognise as that
+#: sector, in the vocabulary journalism uses rather than the register's.
+#:
+#: Every one of :data:`SECTOR_NAMES` has an entry; :func:`query_for` falls back to
+#: ``"<name>" sector`` so a sector added without a query is still polled rather than
+#: silently skipped, which would show up as a page with no news and no reason.
+SECTOR_QUERIES: dict[str, str] = {
+    "Energy": '"oil and gas" OR "energy sector" OR "crude oil" stocks',
+    "Materials": '"mining" OR "chemicals" OR "steel" sector stocks',
+    "Industrials": '"industrial" OR "manufacturing" OR "engineering" sector stocks',
+    "Consumer Discretionary": '"retail" OR "consumer spending" OR "automaker" stocks',
+    "Consumer Staples": '"food and drink" OR "consumer goods" OR "supermarket" stocks',
+    "Health Care": '"pharmaceutical" OR "biotech" OR "healthcare" sector stocks',
+    "Financials": '"banking" OR "insurer" OR "asset manager" sector stocks',
+    "Information Technology": '"software" OR "semiconductor" OR "cloud computing" stocks',
+    "Communication Services": '"telecoms" OR "media" OR "streaming" sector stocks',
+    "Utilities": '"utility" OR "power company" OR "electricity" sector stocks',
+    "Real Estate": '"real estate" OR "property" OR "REIT" sector stocks',
+}
+
+
+def query_for(name: str) -> str:
+    """The news search query for a sector. See :data:`SECTOR_QUERIES`."""
+    return SECTOR_QUERIES.get(name) or f'"{name}" sector'
+
+
 def assign(instrument: Any) -> str | None:
     """Recompute an instrument's ``sector_group`` from its own sector fields.
 

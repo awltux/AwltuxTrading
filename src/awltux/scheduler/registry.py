@@ -196,6 +196,19 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="news_sectors",
+            func=ingest_jobs.ingest_sector_news_job,
+            interval_seconds=schedule.news_sectors,
+            description=(
+                "Poll news for each industry sector, so a sector has stories of its own"
+            ),
+            # No dependency, and that is the point: this polls eleven sector feeds and
+            # does not read the universe at all. Depending on `universe_refresh` would
+            # be a claim about a relationship that does not exist, and would make the
+            # poll wait behind a job that has nothing to do with it.
+            enabled=True,
+        ),
+        JobSpec(
             id="news_analysis",
             # Only has work while its coverage probe reports a gap.
             backfill=True,

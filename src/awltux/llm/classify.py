@@ -34,6 +34,7 @@ from awltux.llm.deepseek import (
 from awltux.llm.prompts import (
     NEWS_CLASSIFICATION_INSTRUCTION,
     NEWS_CLASSIFICATION_SYSTEM,
+    NEWS_SECTOR_INSTRUCTION,
     prompt_fingerprint,
 )
 from awltux.providers.news_rss import RawNewsItem
@@ -41,6 +42,11 @@ from awltux.providers.news_rss import RawNewsItem
 logger = logging.getLogger(__name__)
 
 PURPOSE = "news_classification"
+
+#: A distinct purpose for the sector poll so its spend is separable in `llm_call` --
+#: the two are the same task at the same price, but "how much of the news bill is
+#: sector capture" is a question the operations page should be able to answer.
+SECTOR_PURPOSE = "news_sector_classification"
 
 #: Materiality levels, ordered, for filtering and comparison.
 MATERIALITY_ORDER = ["none", "mild", "moderate", "material", "critical"]
@@ -178,18 +184,62 @@ def classify_headline(
     client: DeepSeekClient | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any] | None:
-    """Classify one headline. Returns ``None`` when it cannot be classified."""
+    """Classify one headline for a company. ``None`` when it cannot be classified."""
+    return _classify(
+        item,
+        subject=f"Company: {company_name}\nTicker: {ticker}",
+        instruction=NEWS_CLASSIFICATION_INSTRUCTION,
+        purpose=PURPOSE,
+        client=client,
+        settings=settings,
+    )
+
+
+def classify_for_sector(
+    item: RawNewsItem,
+    *,
+    sector: str,
+    client: DeepSeekClient | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    """Classify one headline for an industry sector. ``None`` when it cannot be.
+
+    A separate entry point rather than a flag on the one above, because the *subject
+    line* is what the model answers against -- "Ticker: Energy" would be nonsense, and
+    the sector is the only thing a sector feed's stories can be said to be about.
+    """
+    return _classify(
+        item,
+        subject=f"Industry sector: {sector}",
+        instruction=NEWS_SECTOR_INSTRUCTION,
+        purpose=SECTOR_PURPOSE,
+        client=client,
+        settings=settings,
+    )
+
+
+def _classify(
+    item: RawNewsItem,
+    *,
+    subject: str,
+    instruction: str,
+    purpose: str,
+    client: DeepSeekClient | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    """Ask the model about one headline, and nothing else.
+
+    The retry and budget handling lives here so the two subjects cannot drift: the
+    500-token truncation that made 6.7% of calls return an empty body was fixed once,
+    and a second copy of this loop is how that fix gets lost for half the calls.
+    """
     settings = settings or get_settings()
     client = client or DeepSeekClient(settings)
     if not client.configured:
         return None
 
     headline = item.title
-    context = [
-        f"Company: {company_name}",
-        f"Ticker: {ticker}",
-        f"Headline: {headline}",
-    ]
+    context = [subject, f"Headline: {headline}"]
     if item.summary:
         context.append(f"Summary: {item.summary[:800]}")
     if item.source:
@@ -200,7 +250,7 @@ def classify_headline(
     messages = build_messages(
         system=NEWS_CLASSIFICATION_SYSTEM,
         document="\n".join(context),
-        instruction=NEWS_CLASSIFICATION_INSTRUCTION,
+        instruction=instruction,
     )
 
     # Two budgets, and the first one has to cover more than the answer.
@@ -227,12 +277,15 @@ def classify_headline(
     for attempt, budget in enumerate(budgets):
         try:
             completion = client.complete(
-                purpose=PURPOSE,
+                purpose=purpose,
                 messages=messages,
-                model=model_for_purpose(settings, PURPOSE),
+                model=model_for_purpose(settings, purpose),
                 json_mode=True,
                 max_tokens=budget,
-                prompt_hash=prompt_fingerprint(NEWS_CLASSIFICATION_SYSTEM),
+                # The instruction as well as the system: the two subjects share a system
+                # prompt and differ only in the instruction, so hashing the system alone
+                # would give a company call and a sector call the same cache key.
+                prompt_hash=prompt_fingerprint(NEWS_CLASSIFICATION_SYSTEM + instruction),
             )
             payload = completion.json_object()
         except BudgetExceeded as exc:
@@ -289,6 +342,30 @@ def build_classifier(settings: Settings | None = None):
             client=client,
             settings=settings,
         )
+
+    return classifier
+
+
+def build_sector_classifier(settings: Settings | None = None):
+    """A classifier for the sector poll, or ``None`` when there is no key.
+
+    Its ``instrument`` argument is ignored: a sector feed's stories carry no ticker, so
+    the subject comes off the item itself. The signature is the ingest layer's, which
+    is why it is accepted and unused rather than the call site being special-cased.
+    """
+    settings = settings or get_settings()
+    client = DeepSeekClient(settings)
+    if not client.configured:
+        logger.info(
+            "DeepSeek is not configured, so sector headlines will be stored unclassified"
+        )
+        return None
+
+    def classifier(item: RawNewsItem, _instrument: Any = None) -> dict[str, Any] | None:
+        sector = (item.sectors or [None])[0]
+        if not sector:
+            return None
+        return classify_for_sector(item, sector=sector, client=client, settings=settings)
 
     return classifier
 

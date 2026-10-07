@@ -375,6 +375,32 @@ def ingest_news_rss(tickers: list[str] | None = None) -> JobResult:
     )
 
 
+def ingest_sector_news_job() -> JobResult:
+    """Poll news for each of the eleven industry sectors.
+
+    Sector stories are what a sector page has to show and what produces a `sector`
+    appraisal at all: measured 2026-10-07, 19,418 of 19,475 stored stories carried no
+    sector, because every feed this system polls is addressed by ticker.
+    """
+    from awltux.ingest.news import ingest_sector_news
+    from awltux.llm.classify import build_sector_classifier
+
+    classifier = build_sector_classifier()
+    with session_scope() as session:
+        report = ingest_sector_news(session, classifier=classifier)
+
+    return JobResult(
+        items_seen=report.fetched,
+        items_written=report.written,
+        note=(
+            "polled all eleven sectors but every feed returned nothing"
+            if report.fetched == 0
+            else None
+        ),
+        detail=report.as_dict(),
+    )
+
+
 def analyse_news(tickers: list[str] | None = None) -> JobResult:
     """Sceptically appraise recent news: sources, framing, corroboration, claims.
 

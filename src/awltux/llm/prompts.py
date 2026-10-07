@@ -149,10 +149,11 @@ rehashes an old story is "none" or "mild", not "material".
 
 Return JSON only."""
 
-NEWS_CLASSIFICATION_INSTRUCTION = """Classify this headline for the named company.
-
-Return JSON:
-{
+#: The JSON contract, shared by the company and sector instructions. One copy, because
+#: the two differ only in *what they are being asked about* -- and a key added to one
+#: and not the other would not raise, it would parse as a missing field, because
+#: `normalise_classification` drops what it does not recognise.
+_CLASSIFICATION_SCHEMA = """{
   "is_about_this_company": true|false,
   "relevance": 0.0-1.0,
   "materiality": "none | mild | moderate | material | critical",
@@ -164,22 +165,55 @@ Return JSON:
   "metric": "share_price | price_target | revenue | earnings | margin | dividend | valuation | volume | none",
   "period": "the period the claim covers, as stated: 'FY26', 'Q1 2026', '2026-10-05', 'this year'; null if it does not say",
   "magnitude": "the size as stated with units, e.g. '1.65%' or '$7.7bn'; null if it does not say"
-}
+}"""
 
-Guidance on materiality:
+_MATERIALITY_GUIDANCE = """Guidance on materiality:
 - critical: bankruptcy, fraud, halting of operations, a takeover confirmed today
 - material: a profit warning, a large acquisition, a major regulatory decision, results that clearly beat or miss
 - moderate: a meaningful contract, a credible broker upgrade or downgrade, a modest guidance change
 - mild: routine news with some relevance
-- none: the company is mentioned incidentally, or the story is duplicative or speculative
+- none: the company is mentioned incidentally, or the story is duplicative or speculative"""
 
-`metric` is what the story is *about*, not every number it mentions. A broker raising
+#: The one rule the two subjects genuinely share: a value, not a sentence.
+_METRIC_GUIDANCE = """`metric` is what the story is *about*, not every number it mentions. A broker raising
 its target is "price_target"; the share moving in response is "share_price"; a results
 report is "revenue" or "earnings". Use "none" when the story is not about a number at
 all. Two stories about one company on one day are different events when their metric
-differs, so answer this from the story rather than from the ticker.
+differs, so answer this from the story rather than from the ticker."""
 
-If `is_about_this_company` is false, set materiality to "none" and relevance below 0.2."""
+#: `is_about_this_company` is asked of a sector too, where it reads oddly and means
+#: "about that industry". The key is not renamed because it is the contract the parser
+#: and the relevance rule both already understand.
+_ABOUT_FALSE_RULE = """If `is_about_this_company` is false, set materiality to "none" and relevance below 0.2."""
+
+NEWS_CLASSIFICATION_INSTRUCTION = f"""Classify this headline for the named company.
+
+Return JSON:
+{_CLASSIFICATION_SCHEMA}
+
+{_MATERIALITY_GUIDANCE}
+
+{_METRIC_GUIDANCE}
+
+{_ABOUT_FALSE_RULE}"""
+
+#: The same task with an industry sector as the subject, for the sector news poll. It
+#: exists because a sector story has no ticker to be about: `news_item.tickers` is empty
+#: and `news_item.sectors` carries the sector, so a company-shaped classification would
+#: have nothing to answer about and would file every story as not about anything.
+NEWS_SECTOR_INSTRUCTION = f"""Classify this headline for the named industry sector.
+
+Return JSON:
+{_CLASSIFICATION_SCHEMA}
+
+{_MATERIALITY_GUIDANCE}
+
+`is_about_this_company` asks whether the story is about **that sector** -- a piece about
+one company in it qualifies, a piece about an unrelated industry does not.
+
+{_METRIC_GUIDANCE}
+
+{_ABOUT_FALSE_RULE}"""
 
 # --------------------------------------------------------------------------- #
 # news scepticism

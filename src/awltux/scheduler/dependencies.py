@@ -305,6 +305,44 @@ def _probe_news_relevance(session: Session) -> Coverage:
     )
 
 
+def _probe_news_sectors(session: Session) -> Coverage:
+    """How many of the eleven sectors have a *recent* story.
+
+    Counted per sector, not per story, because the failure this job has is a sector
+    whose query returns nothing -- and a page with no news and no reason given looks
+    identical to a sector nobody writes about. Eleven is small enough that the honest
+    coverage is "9 of 11 sectors have stories", not a story total.
+
+    Bounded to the appraisal window rather than walking the whole table: a sector whose
+    last story is a year old is not covered, and the Operations page renders this on
+    every request.
+    """
+    from awltux.analysis.sectors import SECTOR_NAMES
+
+    cutoff = utcnow() - dt.timedelta(days=APPRAISAL_WINDOW_DAYS)
+    seen: set[str] = set()
+    for (sectors,) in session.execute(
+        select(NewsItem.sectors).where(NewsItem.published_at >= cutoff)
+    ).all():
+        seen.update(str(name) for name in (sectors or []))
+    covered = sorted(seen & set(SECTOR_NAMES))
+    total = len(SECTOR_NAMES)
+    if not covered:
+        return Coverage.all_or_nothing(
+            total, f"no sector has a story from the last {APPRAISAL_WINDOW_DAYS} days"
+        )
+    if len(covered) == total:
+        return Coverage.counted(0, total, f"all {total} sectors have recent stories")
+    missing = [name for name in SECTOR_NAMES if name not in seen]
+    return Coverage.counted(
+        len(missing),
+        total,
+        f"{len(covered)} of {total} sectors have recent stories; none for "
+        + ", ".join(missing[:4])
+        + (" and others" if len(missing) > 4 else ""),
+    )
+
+
 def _probe_symbol_resolution(session: Session) -> Coverage:
     """Instruments in the universe carrying an ISIN but no price history.
 
@@ -542,6 +580,7 @@ PROBES = {
     "edgar_events": _probe_edgar_events,
     "uk_companies": _probe_uk_companies,
     "news_rss": _probe_news_rss,
+    "news_sectors": _probe_news_sectors,
     "news_analysis": _probe_news_analysis,
     "news_relevance": _probe_news_relevance,
     "news_embeddings": _probe_news_embeddings,

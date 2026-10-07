@@ -65,6 +65,7 @@ schedule:
   edgar_atom_events: 3600        # was 45 SECONDS; the Atom feed holds hours of events
   companies_house: 3600          # was 15 min
   news_rss: 3600                 # was 5 min
+  news_sectors: 3600             # eleven feeds, same cadence as the instrument poll
   news_finnhub: 3600             # was 20 min
   news_marketaux: 3600           # was 30 min
   news_gdelt: 3600               # was 15 min

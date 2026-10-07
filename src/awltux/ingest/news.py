@@ -550,6 +550,85 @@ def ingest_rss_news(
     return report
 
 
+def gather_for_sector(
+    sector: str,
+    *,
+    settings: Settings,
+    rss: RssNewsProvider,
+) -> list[RawNewsItem]:
+    """Collect headlines about one industry sector.
+
+    Both editions, for the same reason the per-instrument poll takes both: sector
+    coverage surfaces in one and not the other, and the duplicate that costs is one
+    ``url_hash`` lookup rather than a wasted model call.
+
+    The items carry ``sectors`` and **no tickers**, which is the whole difference from
+    an instrument poll: the sector is the subject, so there is no name to attribute the
+    story to and nothing for the per-instrument classifier to be about.
+    """
+    from awltux.analysis.sectors import query_for
+
+    query = query_for(sector)
+    items: list[RawNewsItem] = []
+    for region, language in (("GB", "en"), ("US", "en")):
+        fetched = rss.fetch_feed(rss.google_news_url(query, region=region, language=language))
+        for item in fetched:
+            item.sectors = [sector]
+            item.tickers = []
+        items.extend(fetched)
+    return items
+
+
+def ingest_sector_news(
+    session: Session,
+    *,
+    settings: Settings | None = None,
+    classifier: Classifier | None = None,
+    sectors: list[str] | None = None,
+    rss: RssNewsProvider | None = None,
+) -> NewsIngestReport:
+    """Poll news for each industry sector, and classify what is new.
+
+    A separate walk from the per-instrument poll rather than a branch inside it. The
+    two have different subjects, different keys and different sizes -- eleven sectors
+    against five hundred instruments -- and the instrument poll's cursor, prefilter and
+    lease handling are all about instruments. Sharing the loop would mean every one of
+    those grew an ``if sector`` branch.
+
+    ``rss`` is injectable so a test can supply feeds without a network, the same way
+    ``resolve_uk_companies`` takes its provider.
+    """
+    from awltux.analysis.sectors import SECTOR_NAMES
+
+    settings = settings or get_settings()
+    report = NewsIngestReport()
+    names = list(sectors or SECTOR_NAMES)
+    provider = rss or RssNewsProvider(settings)
+    try:
+        for position, name in enumerate(names, start=1):
+            # The sector boundary is the cheapest place to leave: the previous
+            # sector's articles were committed together, so stopping here costs
+            # nothing -- and it is checked before the fetches, not after.
+            progress.barrier(f"{position - 1} of {len(names)} sectors")
+            progress.note(
+                f"{position} of {len(names)} sectors ({name}): "
+                f"{report.fetched} articles, {report.written} new"
+            )
+            try:
+                items = gather_for_sector(name, settings=settings, rss=provider)
+            except Exception as exc:  # noqa: BLE001 - one sector must not stop the poll
+                report.errors.append(f"{name}: {exc}")
+                continue
+            persist_items(session, items, classifier=classifier, report=report)
+            session.flush()
+    finally:
+        if rss is None:
+            provider.close()
+
+    logger.info("sector news ingest: %s", report.as_dict())
+    return report
+
+
 def ingest_sector_sentiment(
     session: Session,
     *,

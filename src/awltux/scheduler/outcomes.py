@@ -303,6 +303,22 @@ def _news_rss(detail: dict[str, Any]) -> str:
     return line
 
 
+def _news_sectors(detail: dict[str, Any]) -> str:
+    """Sector capture reports articles, not sectors: eleven feeds is not the news."""
+    fetched = _get(detail, "fetched")
+    written = _get(detail, "written")
+    classified = _get(detail, "classified")
+    if not fetched:
+        return "polled all eleven sectors; every feed returned nothing"
+    line = f"{_n(written)} new sector stories from {_n(fetched)} fetched"
+    if classified:
+        line += f", {_n(classified)} classified"
+    errors = detail.get("errors") or []
+    if errors:
+        line += f" ({len(errors)} sector feed(s) failed)"
+    return line
+
+
 def _news_analysis(detail: dict[str, Any]) -> str:
     examined = _get(detail, "examined")
     selected = _get(detail, "selected")
@@ -532,6 +548,7 @@ SUMMARISERS: dict[str, Summariser] = {
     "edgar_events": _edgar_events,
     "uk_companies": _uk_companies,
     "news_rss": _news_rss,
+    "news_sectors": _news_sectors,
     "news_analysis": _news_analysis,
     "news_relevance": _news_relevance,
     "news_embeddings": _news_embeddings,

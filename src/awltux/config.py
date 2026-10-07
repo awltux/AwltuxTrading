@@ -246,6 +246,10 @@ class ScheduleConfig(BaseModel):
     edgar_atom_events: int = 3_600
     companies_house: int = 3_600
     news_rss: int = 3_600
+    #: The sector poll is eleven feeds, so it can afford to run as often as the
+    #: instrument poll without any rate-limit concern. Kept at the same cadence for the
+    #: simpler reason: a sector page should be as fresh as a company page.
+    news_sectors: int = 3_600
     news_finnhub: int = 3_600
     news_marketaux: int = 3_600
     news_gdelt: int = 3_600
