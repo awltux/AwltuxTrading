@@ -87,6 +87,18 @@ plausible check into an authoritative one. Also worth knowing: `companyfacts` is
 undimensioned aggregate, so a figure that exists only per-segment or per-class-of-stock
 is simply absent, and the linkbase path is the only route to it.
 
+**Half of it is built and tested; the wiring is what is left.** `ingest/linkbase.py`
+parses a `_cal.xml` into weighted parent/child declarations (pure; 20 tests in
+`tests/test_linkbase.py` against `tests/fixtures/dfph_20251231_cal.xml`, DFPH's real
+FY2025-12-31 linkbase, pinned by sha256). `analysis/linkbase.py` reconciles a stored
+period against it and returns `ledger.Check`s, separating the three cases below. What
+is *not* done: nothing fetches a linkbase from EDGAR, nothing stores one, and no page
+passes one to `checks()` -- so the reconciliation runs only in tests today. The
+remaining steps are (1) a provider call that resolves `*_cal.xml` from the accession
+directory's `index.json`, (2) an additive column on `filing` to cache
+`Linkbase.as_dict()` with its digest and source URL, (3) a bounded fetch step in the
+`filings_edgar` or `xbrl_statements` job, and (4) routing it into the accounts page.
+
 **The route is now open.** `Filing.period_end` was populated on 0 of 4,958 rows and is
 now set from EDGAR's `reportDate` (4,602 of 4,958 after one `filings_edgar` run; the
 356 without it are S-1s and the forms whose `reportDate` EDGAR leaves empty). So a
