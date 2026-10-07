@@ -36,6 +36,10 @@ class EdgarSyncReport:
     unresolved: list[str] = field(default_factory=list)
     filings_seen: int = 0
     filings_written: int = 0
+    #: Filings already stored whose reported period was missing and has now been
+    #: filled in from EDGAR's ``reportDate``. Separate from ``filings_written``
+    #: because nothing was filed -- the row gained the period it reports on.
+    periods_backfilled: int = 0
     events_written: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -46,6 +50,7 @@ class EdgarSyncReport:
             "unresolved_count": len(self.unresolved),
             "filings_seen": self.filings_seen,
             "filings_written": self.filings_written,
+            "periods_backfilled": self.periods_backfilled,
             "events_written": self.events_written,
             "errors": self.errors[:10],
         }
@@ -103,13 +108,21 @@ def resolve_ciks(
     return report
 
 
-def _existing_filing_urls(session: Session, ticker: str) -> set[str]:
+def _existing_filings(session: Session, ticker: str) -> dict[str, Filing]:
+    """This instrument's stored filings, keyed by URL.
+
+    The rows rather than just the URLs because ``reportDate`` -- and so
+    ``period_end`` -- was not read until now, so every filing stored before that has
+    a null period. EDGAR's submissions window is capped at roughly the last thousand
+    filings, so a period that is skipped today may be unreachable later: the
+    backfill below happens on the same pass that would otherwise ignore the row.
+    """
     return {
-        url
-        for (url,) in session.execute(
-            select(Filing.url).where(Filing.instrument_t212_ticker == ticker)
-        ).all()
-        if url
+        row.url: row
+        for row in session.execute(
+            select(Filing).where(Filing.instrument_t212_ticker == ticker)
+        ).scalars()
+        if row.url
     }
 
 
@@ -148,27 +161,7 @@ def sync_filings(
             continue
 
         report.filings_seen += len(filings)
-        known = _existing_filing_urls(session, instrument.t212_ticker)
-
-        for entry in filings:
-            url = entry.get("url")
-            if not url or url in known:
-                continue
-
-            filed_at = _parse_date(entry.get("filing_date"))
-            session.add(
-                Filing(
-                    instrument_t212_ticker=instrument.t212_ticker,
-                    source="edgar",
-                    filing_type=entry.get("form"),
-                    title=entry.get("description") or entry.get("form"),
-                    filed_at=filed_at,
-                    url=url,
-                    status="pending",
-                )
-            )
-            known.add(url)
-            report.filings_written += 1
+        _store_filings(session, instrument, filings, report)
 
         # SIC is a free, authoritative sector code for US filers.
         if not instrument.sic_code:
@@ -187,6 +180,55 @@ def sync_filings(
     session.flush()
     logger.info("filing sync: %s", report.as_dict())
     return report
+
+
+def _store_filings(
+    session: Session,
+    instrument: Instrument,
+    filings: list[dict[str, Any]],
+    report: EdgarSyncReport,
+) -> None:
+    """Store this instrument's new filings, and date the ones already stored.
+
+    A URL already held is not re-added -- the row is the record of a document, and
+    re-adding it would fight ``uq_filing_url`` -- but a row whose ``period_end`` is
+    blank gains the period it reports on. See :func:`_existing_filings` for why that
+    backfill is here rather than in a separate pass.
+
+    The same URL can appear twice in one submissions payload, because EDGAR's
+    parallel arrays repeat a filing across the recent window and the older pages, so
+    the walk remembers what it has seen rather than trusting the list to be unique.
+    """
+    known = _existing_filings(session, instrument.t212_ticker)
+    seen: set[str] = set()
+
+    for entry in filings:
+        url = entry.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+
+        period_end = _parse_day(entry.get("report_date"))
+        stored = known.get(url)
+        if stored is not None:
+            if stored.period_end is None and period_end is not None:
+                stored.period_end = period_end
+                report.periods_backfilled += 1
+            continue
+
+        session.add(
+            Filing(
+                instrument_t212_ticker=instrument.t212_ticker,
+                source="edgar",
+                filing_type=entry.get("form"),
+                title=entry.get("description") or entry.get("form"),
+                filed_at=_parse_date(entry.get("filing_date")),
+                period_end=period_end,
+                url=url,
+                status="pending",
+            )
+        )
+        report.filings_written += 1
 
 
 def ingest_current_events(
@@ -302,6 +344,18 @@ def _parse_date(value: str | None) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value).replace(tzinfo=dt.UTC)
     except ValueError:
         return None
+
+
+def _parse_day(value: str | None) -> dt.date | None:
+    """A date-only column's value.
+
+    ``Filing.period_end`` is a ``Date``; handing it an aware datetime stores a day
+    and silently drops the rest, and then round-trips as a naive datetime on SQLite,
+    which is exactly the ``offset-naive and offset-aware`` trap this codebase has hit
+    before. So the day is taken here rather than left to the driver.
+    """
+    stamp = _parse_date(value)
+    return stamp.date() if stamp is not None else None
 
 
 def _parse_iso(value: str | None) -> dt.datetime | None:

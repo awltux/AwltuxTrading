@@ -22,7 +22,7 @@ import pytest
 
 from awltux.db import Filing, Instrument, session_scope
 from awltux.ingest import documents
-from awltux.providers.edgar import Document, EdgarProvider
+from awltux.providers.edgar import Document, EdgarProvider, _FilingRow
 from tests.helpers import make_instrument
 
 TICKER = "TEST_US_EQ"
@@ -106,13 +106,13 @@ class TestFilingDiscovery:
         return provider
 
     ROWS = [
-        # form, date, accession, primary document, description
-        ("10-K", "2026-02-01", "000032019326000111", "aapl-20250927.htm", "Annual report"),
-        ("10-Q", "2025-08-01", "000032019325000222", "aapl-20250628.htm", "Quarterly"),
-        ("8-K", "2025-06-01", "000032019325000333", "aapl-8k.htm", "Event"),
-        ("10-K", "2025-02-01", "000032019325000079", "aapl-20240928.htm", "Annual report"),
+        # form, date, accession, primary document, description, period reported on
+        _FilingRow("10-K", "2026-02-01", "000032019326000111", "aapl-20250927.htm", "Annual report", "2025-09-27"),
+        _FilingRow("10-Q", "2025-08-01", "000032019325000222", "aapl-20250628.htm", "Quarterly", "2025-06-28"),
+        _FilingRow("8-K", "2025-06-01", "000032019325000333", "aapl-8k.htm", "Event", None),
+        _FilingRow("10-K", "2025-02-01", "000032019325000079", "aapl-20240928.htm", "Annual report", "2024-09-28"),
         # Older than the window: the point of filtering by date rather than by limit.
-        ("10-K", "2019-02-01", "000032019319000000", "aapl-20180929.htm", "Annual report"),
+        _FilingRow("10-K", "2019-02-01", "000032019319000000", "aapl-20180929.htm", "Annual report", "2018-09-29"),
     ]
 
     def test_only_annual_forms_are_returned(self, monkeypatch):

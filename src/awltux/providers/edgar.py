@@ -23,7 +23,7 @@ import logging
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from awltux.config import Settings, get_settings
 from awltux.providers.http import HttpClient, ProviderError
@@ -120,28 +120,49 @@ def _parse_iso_date(value: str | None) -> dt.date | None:
         return None
 
 
-def _rows_from_page(page: dict[str, Any]) -> Iterator[tuple[str, str, str, str, str | None]]:
+class _FilingRow(NamedTuple):
+    """One entry from EDGAR's parallel-array submissions payload."""
+
+    form: str
+    filed_on: str
+    accession: str
+    primary_document: str
+    description: str | None
+    #: ``reportDate`` -- the period reported on, not the date filed. Often empty.
+    report_date: str | None
+
+
+def _rows_from_page(page: dict[str, Any]) -> Iterator[_FilingRow]:
     """One submissions page's parallel arrays, as rows.
 
     EDGAR returns ``form``/``filingDate``/``accessionNumber`` as parallel lists
     rather than a list of objects, and the arrays can disagree in length, so every
     index is bounds-checked rather than zipped into a silent truncation.
+
+    ``reportDate`` is the period the filing *reports on* -- the fiscal year end for a
+    10-K, the quarter end for a 10-Q -- as distinct from ``filingDate``, when it
+    reached EDGAR. It is the filer's own statement of the period, and it is what
+    lets a stored :class:`~awltux.db.FundamentalPeriod` be traced back to the
+    document that reports it. It is often empty (8-Ks and some forms), so it is
+    carried as ``None`` rather than guessed from the dates that are present.
     """
     forms = page.get("form") or []
     dates = page.get("filingDate") or []
     accessions = page.get("accessionNumber") or []
     documents = page.get("primaryDocument") or []
     descriptions = page.get("primaryDocDescription") or []
+    report_dates = page.get("reportDate") or []
 
     for index, form in enumerate(forms):
         if index >= len(dates) or index >= len(accessions):
             break
-        yield (
-            form,
-            dates[index],
-            accessions[index],
-            documents[index] if index < len(documents) else "",
-            descriptions[index] if index < len(descriptions) else None,
+        yield _FilingRow(
+            form=form,
+            filed_on=dates[index],
+            accession=accessions[index],
+            primary_document=documents[index] if index < len(documents) else "",
+            description=descriptions[index] if index < len(descriptions) else None,
+            report_date=report_dates[index] if index < len(report_dates) else None,
         )
 
 _CIK_RE = re.compile(r"^\d{1,10}$")
@@ -218,6 +239,7 @@ class EdgarProvider:
         accessions = recent.get("accessionNumber") or []
         documents = recent.get("primaryDocument") or []
         descriptions = recent.get("primaryDocDescription") or []
+        report_dates = recent.get("reportDate") or []
 
         out: list[dict[str, Any]] = []
         for index, form in enumerate(forms):
@@ -235,6 +257,7 @@ class EdgarProvider:
                     "accession_number": accession,
                     "primary_document": primary,
                     "description": descriptions[index] if index < len(descriptions) else None,
+                    "report_date": report_dates[index] if index < len(report_dates) else None,
                     "url": self.document_url(payload.get("cik") or cik, accession, primary),
                     "sic": payload.get("sic"),
                     "sic_description": payload.get("sicDescription"),
@@ -278,32 +301,31 @@ class EdgarProvider:
         padded = self._require_cik(cik)
 
         annual: list[dict[str, Any]] = []
-        for form, date, accession, primary, description in self._filing_rows(cik, cache_ttl=cache_ttl):
-            if form not in ANNUAL_FORMS:
+        for row in self._filing_rows(cik, cache_ttl=cache_ttl):
+            if row.form not in ANNUAL_FORMS:
                 continue
-            filed = _parse_iso_date(date)
+            filed = _parse_iso_date(row.filed_on)
             if filed is None or filed < since:
                 continue
             annual.append(
                 {
-                    "form": form,
-                    "category": INTERESTING_FORMS[form],
-                    "filing_date": date,
+                    "form": row.form,
+                    "category": INTERESTING_FORMS[row.form],
+                    "filing_date": row.filed_on,
                     "filed_on": filed,
-                    "accession_number": accession,
-                    "primary_document": primary,
-                    "description": description,
-                    "url": self.document_url(padded, accession, primary),
+                    "accession_number": row.accession,
+                    "primary_document": row.primary_document,
+                    "description": row.description,
+                    "report_date": row.report_date,
+                    "url": self.document_url(padded, row.accession, row.primary_document),
                 }
             )
 
         annual.sort(key=lambda entry: entry["filed_on"], reverse=True)
         return annual[:limit]
 
-    def _filing_rows(
-        self, cik: str | int, *, cache_ttl: float
-    ) -> Iterator[tuple[str, str, str, str, str | None]]:
-        """Every stored filing as ``(form, date, accession, primary, description)``.
+    def _filing_rows(self, cik: str | int, *, cache_ttl: float) -> Iterator[_FilingRow]:
+        """Every stored filing as a :class:`_FilingRow`.
 
         Walks the recent window and then any older pages, newest page first, so a
         caller filtering by date can stop as soon as it is looking at filings older

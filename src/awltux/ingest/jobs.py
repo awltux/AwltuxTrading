@@ -1104,7 +1104,10 @@ def sync_filings() -> JobResult:
 
     return JobResult(
         items_seen=report.filings_seen,
-        items_written=report.filings_written,
+        # A backfilled period is a write: most of the stored filings gained the
+        # period they report on in one pass, and reporting written=0 while 4,958
+        # rows changed is the kind of number that stops being believed.
+        items_written=report.filings_written + report.periods_backfilled,
         detail={**report.as_dict(), "cik_resolution": resolution.as_dict()},
     )
 
