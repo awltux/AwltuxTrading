@@ -175,6 +175,65 @@
   // stored bars rendered a blank panel that was indistinguishable from a chart
   // that had failed to load. The axes and the waiting message are now drawn on the
   // empty canvas, so the panel always says what it is waiting for.
+  //
+  // **The palette and the type size are read from the stylesheet, not written here.**
+  // They were literals, and they drifted: when the interface's text was enlarged and
+  // its greys brightened, the axis labels stayed at 11px in the old grey because they
+  // were the one place the values were typed twice. The custom properties are the
+  // single source now, and the font comes off the root element so it follows the same
+  // `html { font-size }` as everything else.
+  //
+  // The fallbacks live in one map rather than at each call site: they exist only for
+  // the case where a property is missing from `:root`, and four copies of that case
+  // is four chances for two of them to disagree about what `--muted` used to be.
+  var PALETTE_FALLBACK = {
+    "--line": "#39434f",
+    "--muted": "#afb9c6",
+    "--good": "#4fd35f",
+    "--bad": "#ff7b72"
+  };
+
+  // Read once each. `getComputedStyle` forces a style recalculation, and the chart
+  // is drawn on every resize tick, so re-reading the same four colours per frame was
+  // paying for a layout flush to learn something that cannot change: there is no
+  // theme switcher, and the palette is fixed for the life of the page.
+  var paletteCache = {};
+  var rootFontPx = null;
+
+  /** One CSS custom property from `:root`, resolved and cached. */
+  function styleValue(name) {
+    if (!(name in paletteCache)) {
+      var value = getComputedStyle(document.documentElement).getPropertyValue(name);
+      paletteCache[name] = (value || "").trim() || PALETTE_FALLBACK[name] || "";
+    }
+    return paletteCache[name];
+  }
+
+  /** The root font size in pixels -- the one number the whole stylesheet scales from. */
+  function rootFontSize() {
+    if (rootFontPx === null) {
+      rootFontPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    }
+    return rootFontPx;
+  }
+
+  /** A palette hex at an alpha, so the fill under the price line tracks the palette. */
+  function withAlpha(hex, alpha) {
+    var text = String(hex).replace("#", "");
+    if (text.length === 3) {
+      text = text[0] + text[0] + text[1] + text[1] + text[2] + text[2];
+    }
+    var number = parseInt(text, 16);
+    if (isNaN(number)) return hex;
+    return "rgba(" + ((number >> 16) & 255) + "," + ((number >> 8) & 255) + "," +
+      (number & 255) + "," + alpha + ")";
+  }
+
+  /** A size in rem, resolved against the root font size, as a canvas font string. */
+  function chartFont(rem) {
+    return Math.round(rem * rootFontSize()) + "px ui-sans-serif, system-ui, sans-serif";
+  }
+
   function drawChart() {
     var canvas = document.getElementById("price-chart");
     if (!canvas) return;
@@ -184,6 +243,11 @@
     // on the attribute quoting in instrument.html.
     var series = parseList(canvas.dataset.series);
     var dates = parseList(canvas.dataset.dates);
+
+    var line = styleValue("--line");
+    var muted = styleValue("--muted");
+    var up = styleValue("--good");
+    var down = styleValue("--bad");
 
     var ratio = window.devicePixelRatio || 1;
     var width = canvas.clientWidth || 600;
@@ -196,12 +260,14 @@
     ctx.clearRect(0, 0, width, height);
 
     var pad = 8;
+    // Room under the plot for the two date labels, which grew with the type size.
+    var labelSpace = 20;
     var plotWidth = width - pad * 2;
-    var plotHeight = height - pad * 2 - 14;
+    var plotHeight = height - pad * 2 - labelSpace;
 
     // The axes are drawn first and unconditionally, so an empty panel has the
     // same shape as a full one and reads as "nothing yet" rather than "broken".
-    ctx.strokeStyle = "#2a323c";
+    ctx.strokeStyle = line;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(pad, pad);
@@ -232,7 +298,8 @@
 
     // Price line, coloured by whether the period ended up or down.
     var rising = series[series.length - 1] >= series[0];
-    ctx.strokeStyle = rising ? "#3fb950" : "#f85149";
+    var trend = rising ? up : down;
+    ctx.strokeStyle = trend;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     series.forEach(function (value, index) {
@@ -242,7 +309,7 @@
     ctx.stroke();
 
     var gradient = ctx.createLinearGradient(0, pad, 0, pad + plotHeight);
-    gradient.addColorStop(0, rising ? "rgba(63,185,80,.22)" : "rgba(248,81,73,.22)");
+    gradient.addColorStop(0, withAlpha(trend, 0.22));
     gradient.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = gradient;
     ctx.lineTo(x(series.length - 1), pad + plotHeight);
@@ -251,8 +318,8 @@
     ctx.fill();
 
     // Axis labels: only the extremes, so the chart stays readable.
-    ctx.fillStyle = "#8b95a4";
-    ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = muted;
+    ctx.font = chartFont(0.8);
     ctx.fillText(max.toFixed(2), pad + 2, pad + 10);
     ctx.fillText(min.toFixed(2), pad + 2, pad + plotHeight - 2);
     if (dates.length) {
@@ -281,12 +348,12 @@
     // on -- so it sits mid-plot and the sentence below says what it is.
     var textOffset = 4;
     if (series.length === 1) {
-      ctx.fillStyle = "#8b95a4";
+      ctx.fillStyle = styleValue("--muted");
       ctx.beginPath();
       ctx.arc(pad + plotWidth / 2, middle, 2.5, 0, Math.PI * 2);
       ctx.fill();
       // Under the dot, not through it.
-      textOffset = 22;
+      textOffset = 26;
     }
 
     // Only the headline is drawn here. The reason it is waiting belongs in the
@@ -294,8 +361,8 @@
     // screen reader -- none of which canvas text is, so repeating it there would
     // be duplication without the benefit.
     ctx.textAlign = "center";
-    ctx.fillStyle = "#8b95a4";
-    ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = styleValue("--muted");
+    ctx.font = chartFont(0.95);
     ctx.fillText("Waiting for data", width / 2, middle + textOffset);
     ctx.textAlign = "start";
   }

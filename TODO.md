@@ -924,6 +924,31 @@ adding it to `--paths` fails quietly in the wrong direction: the check simply
 stops covering that path, and a modified file in it will not be reported. The
 Dockerfile says so in a comment, which is not a test.
 
+### `icon.svg` names the UI's palette as its own, and two of those colours moved
+
+The icon's comment says it is "built from the same colours as the UI: the panel
+gradient, the divider grey, and the two greens the price sparkline uses". Enlarging
+the interface's text moved two of them, so the comment is now false and the mark is
+subtly off-brand:
+
+| Where in `icon.svg` | Holds | UI now says |
+|---|---|---|
+| line 28 `#3fb950`, line 45 `#3fb950` | `--good`/`--buy` before this | `#4fd35f` |
+| line 37 `#2a323c`, line 40 `#2a323c` | `--line` before this | `#39434f` |
+
+The panel gradient (`#1e242c` → `#0f1216`, lines 24-25) still matches `--panel-2`
+and `--bg`, which did not change. Nothing detects the drift: `tests/test_app_icon.py`
+checks the files exist, are square and are linked, and no test couples the SVG to
+`style.css`.
+
+Not done because the four raster files are regenerated, not edited --
+`tools/render_icons.py` needs `cairosvg` *and* `pillow`, and neither is installed.
+`pip install cairosvg` was attempted in `.venv` and failed, so editing the SVG alone
+would put the SVG and the committed PNGs out of step, which is the failure the
+script's own docstring warns about. **Pay this off with the two packages present:**
+change the four hex values, run `python tools/render_icons.py`, and commit the SVG
+with the regenerated PNGs/ICO together.
+
 ---
 
 ## Ingest Education Videos on Value Investment
