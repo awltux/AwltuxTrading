@@ -307,6 +307,7 @@ def _news_analysis(detail: dict[str, Any]) -> str:
     examined = _get(detail, "examined")
     selected = _get(detail, "selected")
     appraised = _get(detail, "appraised")
+    subjects = _get(detail, "subjects")
     if not appraised:
         if not examined:
             return "no stories in the lookback window to appraise"
@@ -316,7 +317,12 @@ def _news_analysis(detail: dict[str, Any]) -> str:
             f"none of the {_n(selected)} that cleared the interest threshold needed "
             "re-appraising, or none cleared it at all",
         )
-    line = f"{_n(appraised)} stories appraised from {_n(examined)} examined"
+    # "Appraisals", not "stories": one is written per subject, so a story naming three
+    # instruments contributes three and calling that "3 stories" would overstate how
+    # much news was read. The story count is the `examined`/`selected` half.
+    line = f"{_n(appraised)} appraisals across {_n(selected)} stories"
+    if subjects and subjects > appraised:
+        line += f" from {_n(examined)} examined"
     deep = _get(detail, "deep_analysed")
     if deep:
         line += f" ({_n(deep)} with a model, the rest deterministically)"

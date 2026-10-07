@@ -216,7 +216,13 @@ class TestCoverageCounts:
         )
         session.add(item)
         session.flush()
-        session.add(NewsAnalysis(news_item_id=item.id))
+        # A subject is part of the identity of an appraisal now, and the coverage probe
+        # asks whether the *story* has been appraised -- so any subject counts.
+        session.add(
+            NewsAnalysis(
+                news_item_id=item.id, subject_type="instrument", subject_id="TEST_US_EQ"
+            )
+        )
         session.flush()
 
         statuses = {status.id: status for status in job_statuses(session, specs)}

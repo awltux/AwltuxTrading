@@ -13,6 +13,7 @@ exactly the blind spot these tests close.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from awltux.config import Settings
@@ -230,6 +231,122 @@ class TestMigrationPath:
         reset_engine()
         run_migrations(settings)
         assert current_revision() == head_revision()
+
+
+class TestTheSubjectBackfill:
+    """0013 gives every stored appraisal a subject, and it had 2,934 rows to do it to.
+
+    The subject a row was built for was never recorded -- one row per story meant there
+    was nothing to record -- so it is recovered from the story's own first ticker. Exact
+    for the 19,369 single-ticker stories (99.5% of them), a documented guess for the 106
+    multi-ticker ones.
+
+    Tested by calling the backfill rather than by replaying Alembic, because the
+    backfill is where a wrong answer hides and it needs no migration machinery: the
+    tickers arrive from a ``text()`` query as a *string*, with nothing about the column
+    type in play, and that is the parse this pins down.
+    """
+
+    def _module(self):
+        import importlib
+
+        return importlib.import_module("awltux.db.migrations.versions.0013_news_subject")
+
+    def _backfill(self, settings):
+        from awltux.db.session import get_engine
+
+        with get_engine(settings).begin() as connection:
+            self._module()._backfill(connection)
+
+    def _seed(self, settings, *, tickers, sectors, title="Acme warns"):
+        """A story and a placeholder appraisal, as migration 0012 would have left them."""
+        connection = sqlite3.connect(settings.db_path)
+        try:
+            connection.execute(
+                "INSERT INTO news_item (source, url, url_hash, title, tickers, sectors, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "google_news",
+                    "https://x.test/1",
+                    f"hash-{title}",
+                    title,
+                    json.dumps(tickers),
+                    json.dumps(sectors),
+                    "2026-01-01 00:00:00",
+                    "2026-01-01 00:00:00",
+                ),
+            )
+            item_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+            connection.execute(
+                "INSERT INTO news_analysis (news_item_id, source_domain, source_biases, "
+                "credibility, flags, warnings, caveats, claims, omissions, techniques, "
+                "corroboration, factors, analysed_at, created_at, subject_type, subject_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item_id,
+                    "x.test",
+                    "[]",
+                    0.5,
+                    "[]",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "{}",
+                    "{}",
+                    "2026-01-01 00:00:00",
+                    "2026-01-01 00:00:00",
+                    "instrument",
+                    "PLACEHOLDER",
+                ),
+            )
+            connection.commit()
+            return item_id
+        finally:
+            connection.close()
+
+    def _subject(self, settings, item_id):
+        connection = sqlite3.connect(settings.db_path)
+        try:
+            return connection.execute(
+                "SELECT subject_type, subject_id FROM news_analysis WHERE news_item_id = ?",
+                (item_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+
+    def test_the_first_ticker_becomes_the_subject(self, settings: Settings):
+        reset_engine()
+        run_migrations(settings)
+        item_id = self._seed(settings, tickers=["ACME_US_EQ", "BETA_US_EQ"], sectors=[])
+
+        self._backfill(settings)
+
+        assert self._subject(settings, item_id) == ("instrument", "ACME_US_EQ"), (
+            "the first ticker as stored, not the alphabetically smallest"
+        )
+
+    def test_a_story_with_no_ticker_falls_back_to_its_sector(self, settings: Settings):
+        reset_engine()
+        run_migrations(settings)
+        item_id = self._seed(settings, tickers=[], sectors=["Industrials"])
+
+        self._backfill(settings)
+
+        assert self._subject(settings, item_id) == ("sector", "Industrials")
+
+    def test_a_story_with_neither_is_still_given_a_subject(self, settings: Settings):
+        """The columns are NOT NULL, so a row left NULL would fail the migration -- and
+        a NULL is invisible to the unique constraint, because SQLite treats NULLs as
+        distinct, so two such rows would both be accepted."""
+        reset_engine()
+        run_migrations(settings)
+        item_id = self._seed(settings, tickers=[], sectors=[])
+
+        self._backfill(settings)
+
+        assert self._subject(settings, item_id) == ("instrument", "")
 
     def test_the_container_runs_migrations_before_serving(self):
         """A guard on the deployment wiring, not the code.

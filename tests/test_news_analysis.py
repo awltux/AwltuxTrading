@@ -172,11 +172,18 @@ def _stub(**overrides):
     return row
 
 
+#: The subject these appraisals are about. `appraise_item` requires one: whether the
+#: subject is held is the one input that legitimately differs between two appraisals
+#: of the same story, so a caller that cannot say which subject it means cannot call it.
+SUBJECT = news_analysis.Subject("instrument", "TEST_US_EQ")
+
+
 class TestAppraisal:
     def test_the_appraisal_records_source_framing_and_corroboration(self, session, universe, settings):
         item = make_item(session, "Acme warns on profit as demand weakens")
         row = news_analysis.appraise_item(
             item,
+            subject=SUBJECT,
             settings=settings,
             rhetoric=RhetoricReport(score=0.1),
             corroboration=Corroboration(origins=["reuters.com"], carriers=[
@@ -193,7 +200,7 @@ class TestAppraisal:
     def test_the_model_supplies_claims_and_the_code_supplies_the_number(self, session, universe, settings):
         item = make_item(session, "Acme warns on profit as demand weakens")
         row = news_analysis.appraise_item(
-            item, settings=settings, analyser=fake_analyser
+            item, subject=SUBJECT, settings=settings, analyser=fake_analyser
         )
         assert row.claims and row.claims[0]["claim_type"] == "attributed_statement"
         assert row.omissions
@@ -207,13 +214,13 @@ class TestAppraisal:
             raise RuntimeError("model unavailable")
 
         item = make_item(session, "Acme warns on profit")
-        row = news_analysis.appraise_item(item, settings=settings, analyser=exploding)
+        row = news_analysis.appraise_item(item, subject=SUBJECT, settings=settings, analyser=exploding)
         assert row.credibility is not None
         assert row.engine == "deterministic"
 
     def test_an_event_type_routes_the_claim_to_its_register(self, session, universe, settings):
         item = make_item(session, "Acme reports results", event_type="earnings")
-        row = news_analysis.appraise_item(item, settings=settings, analyser=fake_analyser)
+        row = news_analysis.appraise_item(item, subject=SUBJECT, settings=settings, analyser=fake_analyser)
         assert any("Company filings" in caveat for caveat in row.caveats)
 
     def test_a_rumour_has_no_primary_source_and_is_capped(self, session, universe, settings):
@@ -235,7 +242,7 @@ class TestAppraisal:
             url="https://unknown-blog.example/acme",
             materiality="critical",
         )
-        row = news_analysis.appraise_item(item, settings=settings, analyser=rumour_analyser)
+        row = news_analysis.appraise_item(item, subject=SUBJECT, settings=settings, analyser=rumour_analyser)
         assert "no_primary_source" in row.flags
         assert row.credibility <= 0.3
 
@@ -625,3 +632,177 @@ class TestClassifierIdentityKeys:
         row = Row()
         assert not apply_classification(row, None)
         assert row.metric == "share_price", "a failed call must not blank a stored answer"
+
+
+def _bare_item(*, tickers=None, sectors=None) -> NewsItem:
+    """An unpersisted row, for the tests that only exercise the subject arithmetic."""
+    return NewsItem(
+        source="google_news",
+        url="https://x.test/subjects",
+        url_hash="subjects-bare",
+        title="Acme and Beta both warn",
+        tickers=list(tickers or []),
+        sectors=list(sectors or []),
+    )
+
+
+class TestOneAppraisalPerSubject:
+    """A story is one observation; the appraisal is about a *subject*.
+
+    The row count barely moves -- measured 2026-10-07, 19,369 of 19,475 stories name a
+    single ticker -- so the point is not volume. It is that ``is_held`` is a fact about
+    the subject and not about the story, and with one column per story a piece about a
+    held company and an unheld one carried whichever answer happened to be written
+    first. This is where that is pinned down.
+    """
+
+    def test_instruments_come_before_sectors_and_each_group_is_ordered(self):
+        """`primary_subject` takes the first, and the sentiment weighting applies the
+        same rule in SQL, so this order is a contract rather than a preference."""
+        item = _bare_item(tickers=["ZZZ_US_EQ", "AAA_US_EQ"], sectors=["Technology", "Energy"])
+
+        assert news_analysis.subjects_of(item) == [
+            news_analysis.Subject("instrument", "AAA_US_EQ"),
+            news_analysis.Subject("instrument", "ZZZ_US_EQ"),
+            news_analysis.Subject("sector", "Energy"),
+            news_analysis.Subject("sector", "Technology"),
+        ]
+
+    def test_the_primary_subject_is_an_instrument_when_there_is_one(self):
+        item = _bare_item(tickers=["BBB_US_EQ"])
+        assert news_analysis.primary_subject(item) == news_analysis.Subject(
+            "instrument", "BBB_US_EQ"
+        )
+        item.tickers = []
+        item.sectors = ["Utilities"]
+        assert news_analysis.primary_subject(item) == news_analysis.Subject("sector", "Utilities")
+
+    def test_a_story_about_nothing_has_no_primary_subject(self):
+        assert news_analysis.primary_subject(_bare_item()) is None
+
+    def test_a_sector_is_held_when_anything_in_it_is(self):
+        """The one input that differs between two appraisals of one story."""
+        held_tickers = {"ACME_US_EQ"}
+        held_sectors = {"Industrials"}
+
+        assert news_analysis.subject_is_held(
+            news_analysis.Subject("instrument", "ACME_US_EQ"), held_tickers, held_sectors
+        )
+        assert not news_analysis.subject_is_held(
+            news_analysis.Subject("instrument", "OTHER_US_EQ"), held_tickers, held_sectors
+        )
+        assert news_analysis.subject_is_held(
+            news_analysis.Subject("sector", "Industrials"), held_tickers, held_sectors
+        )
+
+    def test_a_run_writes_one_row_per_subject(self, session, universe, settings):
+        """Two instruments and a sector on one story is three appraisals, and the
+        subject each was built for is recorded rather than inferred later."""
+        item = make_item(
+            session, "Acme and Beta both warn", tickers=["ACME_US_EQ", "BETA_US_EQ"]
+        )
+        item.sectors = ["Industrials"]
+        session.flush()
+
+        report = news_analysis.analyse_universe(session, settings=settings)
+
+        assert report["subjects"] == 3
+        assert report["appraised"] == 3
+        stored = session.execute(
+            select(NewsAnalysis).where(NewsAnalysis.news_item_id == item.id)
+        ).scalars().all()
+        assert {(row.subject_type, row.subject_id) for row in stored} == {
+            ("instrument", "ACME_US_EQ"),
+            ("instrument", "BETA_US_EQ"),
+            ("sector", "Industrials"),
+        }
+
+    def test_two_subjects_of_one_story_can_be_appraised_differently(
+        self, session, universe, settings
+    ):
+        """The whole point, and the only thing that makes the split more than
+        bookkeeping: whether the subject is held decides whether the model is asked to
+        read the piece, so the held subject's row carries the model's answer and the
+        unheld one's does not."""
+        calls: list[dict] = []
+
+        def counting(**_kwargs):
+            calls.append(_kwargs)
+            # `engine` is how a row records that the paid half ran, so the fake has to
+            # set it -- without it every row reads "deterministic" and the assertion
+            # below cannot fail.
+            return {"claims": [], "technique_counts": {}, "engine": "fake:model"}
+
+        # "moderate", not the default "material": a material story is read deeply
+        # whatever the subject, which would make the two rows agree and the test prove
+        # nothing. Held-ness is the *only* thing deciding here, which is the point.
+        item = make_item(
+            session,
+            "Acme and Beta both warn",
+            tickers=["ACME_US_EQ", "BETA_US_EQ"],
+            materiality="moderate",
+        )
+        universe.is_held = True
+        session.flush()
+
+        news_analysis.analyse_universe(session, settings=settings, analyser=counting)
+
+        stored = {
+            (row.subject_type, row.subject_id): row
+            for row in session.execute(
+                select(NewsAnalysis).where(NewsAnalysis.news_item_id == item.id)
+            ).scalars().all()
+        }
+        held = stored[("instrument", "ACME_US_EQ")]
+        unheld = stored[("instrument", "BETA_US_EQ")]
+        assert held.engine == "fake:model", "the held subject got the model's reading"
+        assert unheld.engine == "deterministic", "the unheld one did not need it"
+        assert len(calls) == 1, "one model call, for the one subject that warranted it"
+
+    def test_re_appraising_updates_in_place_per_subject(self, session, universe, settings):
+        """Re-running must not accumulate a second row for the same subject -- and must
+        not touch the *other* subject's row, which is what a key on the story alone
+        would have done."""
+        item = make_item(session, "Acme warns", tickers=["ACME_US_EQ", "BETA_US_EQ"])
+        news_analysis.analyse_universe(session, settings=settings)
+        first = session.execute(
+            select(NewsAnalysis).where(NewsAnalysis.news_item_id == item.id)
+        ).scalars().all()
+        assert len(first) == 2
+
+        # Age them past the refresh window so the second run appraises rather than skips.
+        for row in first:
+            row.analysed_at = utcnow() - dt.timedelta(days=30)
+        session.flush()
+
+        news_analysis.analyse_universe(session, settings=settings)
+        second = session.execute(
+            select(NewsAnalysis).where(NewsAnalysis.news_item_id == item.id)
+        ).scalars().all()
+        assert len(second) == 2, "one row per subject, not one more per run"
+
+    def test_the_scoped_lookup_returns_the_subject_asked_for(self, session, universe, settings):
+        """An instrument page must show *its* appraisal, not the story's first."""
+        from awltux.db.news import appraisals_for
+
+        item = make_item(session, "Acme and Beta both warn", tickers=["ACME_US_EQ", "BETA_US_EQ"])
+        news_analysis.analyse_universe(session, settings=settings)
+
+        unscoped = appraisals_for(session, [item])
+        scoped = appraisals_for(session, [item], subject=("instrument", "BETA_US_EQ"))
+
+        assert unscoped[item.id].subject_id == "ACME_US_EQ", "the primary by default"
+        assert scoped[item.id].subject_id == "BETA_US_EQ"
+
+    def test_the_scoped_lookup_is_empty_rather_than_wrong_for_an_unappraised_subject(
+        self, session, universe, settings
+    ):
+        """A sector page whose stories were only appraised per instrument shows no
+        appraisal, which is true. Showing the instrument's would be a different
+        subject's verdict under the sector's heading."""
+        from awltux.db.news import appraisals_for
+
+        item = make_item(session, "Acme warns", tickers=["ACME_US_EQ"])
+        news_analysis.analyse_universe(session, settings=settings)
+
+        assert appraisals_for(session, [item], subject=("sector", "Industrials")) == {}

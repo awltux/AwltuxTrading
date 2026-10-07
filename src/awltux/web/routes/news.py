@@ -163,24 +163,43 @@ def format_comment(text: str) -> bytes:
     return f": {text}\n\n".encode()
 
 
-def _analyses_for(item_ids: list[int]) -> dict[int, NewsAnalysis]:
-    """Appraisals for a batch of items, keyed by item id."""
-    if not item_ids:
+def _primary(items: list[NewsItem]) -> dict[int, tuple[str, str]]:
+    """Each story's primary subject, as ``(type, id)``. See `primary_subject`."""
+    from awltux.analysis.news_analysis import primary_subject
+
+    out: dict[int, tuple[str, str]] = {}
+    for item in items:
+        subject = primary_subject(item)
+        if subject is not None:
+            out[item.id] = (subject.type, subject.id)
+    return out
+
+
+def _pick(rows, wanted: dict[int, tuple[str, str]]) -> dict[int, NewsAnalysis]:
+    """The row for each story's primary subject, from every subject's rows."""
+    chosen: dict[int, NewsAnalysis] = {}
+    for row in rows:
+        if wanted.get(row.news_item_id) == (row.subject_type, row.subject_id):
+            chosen[row.news_item_id] = row
+    return chosen
+
+
+def _analyses_in(session, items: list[NewsItem]) -> dict[int, NewsAnalysis]:
+    """One appraisal per story: its primary subject's.
+
+    The list pages key on the story and have no subject of their own, so they show the
+    same appraisal the sentiment weighting uses. An instrument or sector page passes
+    the subject it is about and gets that one -- see `queries.instrument_detail`.
+    """
+    if not items:
         return {}
-    with session_scope() as session:
-        rows = session.execute(
-            select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(item_ids))
-        ).scalars().all()
-        return {row.news_item_id: row for row in rows}
-
-
-def _analyses_in(session, item_ids: list[int]) -> dict[int, NewsAnalysis]:
-    if not item_ids:
+    wanted = _primary(items)
+    if not wanted:
         return {}
     rows = session.execute(
-        select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(item_ids))
+        select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(list(wanted)))
     ).scalars().all()
-    return {row.news_item_id: row for row in rows}
+    return _pick(rows, wanted)
 
 
 def _ranked(session, *, window: int, limit: int) -> list[tuple[NewsItem, NewsAnalysis | None]]:
@@ -203,7 +222,7 @@ def _ranked(session, *, window: int, limit: int) -> list[tuple[NewsItem, NewsAna
             .limit(window)
         ).scalars().all()
     )
-    analyses = _analyses_in(session, [row.id for row in rows])
+    analyses = _analyses_in(session, list(rows))
 
     def sort_key(row: NewsItem) -> tuple[int, float, int]:
         # Assessed-relevant first, then unassessed, each by priority, then newest.
@@ -275,7 +294,7 @@ def _fetch_since(item_id: int, limit: int) -> list[dict[str, object]]:
             .order_by(NewsItem.id)
             .limit(limit)
         ).scalars().all()
-        analyses = _analyses_in(session, [row.id for row in rows])
+        analyses = _analyses_in(session, list(rows))
         return [_serialise(row, analyses.get(row.id)) for row in rows]
 
 
@@ -303,7 +322,7 @@ def recent_news(
             rows = queries.recent_news(
                 session, limit=limit, min_materiality=materiality, ticker=ticker
             )
-            analyses = _analyses_in(session, [item.id for item in rows])
+            analyses = _analyses_in(session, list(rows))
             items = [_serialise(row, analyses.get(row.id)) for row in rows]
             clustering = "filtered view: one entry per story"
         return {
@@ -344,9 +363,10 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
         item = session.get(NewsItem, item_id)
         if item is None:
             raise HTTPException(status_code=404, detail="no such news item")
-        analysis = session.execute(
-            select(NewsAnalysis).where(NewsAnalysis.news_item_id == item_id).limit(1)
-        ).scalar_one_or_none()
+        # The story's *primary* subject, not `.limit(1)`. That worked only while an
+        # item had exactly one appraisal; a story naming two instruments now has two,
+        # and an unordered LIMIT 1 would show a different one run to run.
+        analysis = _analyses_in(session, [item]).get(item.id)
         payload = _serialise(item, analysis)
 
         # The instruments named by this story, resolved to their stored rows so the

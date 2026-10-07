@@ -96,17 +96,45 @@ def news_for_ticker(
     return list(session.execute(statement).scalars().all()), int(total)
 
 
-def appraisals_for(session: Session, items: list[NewsItem]) -> dict[int, Any]:
+def appraisals_for(
+    session: Session, items: list[NewsItem], *, subject: tuple[str, str] | None = None
+) -> dict[int, Any]:
     """The sceptical appraisals for exactly these stories, keyed by news item id.
 
     Keyed so the template pairs them without a second lookup, and scoped to the page
     so a page of 25 does not load appraisals for a thousand.
+
+    ``subject`` is ``(type, id)`` when the caller knows what the stories are being read
+    *for* -- an instrument page passes its ticker, a sector page its sector, and those
+    are the appraisals it must show. Without it each story falls back to its primary
+    subject, which is the right answer only for a list that has no subject of its own.
     """
+    from awltux.analysis.news_analysis import primary_subject
     from awltux.db.models import NewsAnalysis
 
     if not items:
         return {}
-    rows = session.execute(
-        select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_([item.id for item in items]))
-    ).scalars().all()
-    return {row.news_item_id: row for row in rows}
+    statement = select(NewsAnalysis).where(
+        NewsAnalysis.news_item_id.in_([item.id for item in items])
+    )
+    if subject is not None:
+        statement = statement.where(
+            NewsAnalysis.subject_type == subject[0], NewsAnalysis.subject_id == subject[1]
+        )
+    rows = session.execute(statement).scalars().all()
+
+    if subject is not None:
+        return {row.news_item_id: row for row in rows}
+
+    # No subject given: pick each story's primary one. A story can have several
+    # appraisals and they differ only where the subject's held-ness differs, but the
+    # choice still has to be deterministic rather than whichever row came back first.
+    wanted = {
+        item.id: primary_subject(item) for item in items
+    }
+    chosen: dict[int, Any] = {}
+    for row in rows:
+        primary = wanted.get(row.news_item_id)
+        if primary is not None and (row.subject_type, row.subject_id) == (primary.type, primary.id):
+            chosen[row.news_item_id] = row
+    return chosen

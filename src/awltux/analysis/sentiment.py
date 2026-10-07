@@ -318,18 +318,38 @@ def _appraisals(
     One query for the whole batch rather than one per instrument: every instrument
     reads from the same recent window, so a per-instrument lookup would rescan the
     same rows hundreds of times.
+
+    **One appraisal per article, not per subject.** An article can now carry several --
+    one per instrument and sector it names -- and the arithmetic below wants a single
+    weight per story, so each item contributes its *primary* subject's appraisal, the
+    same one the news list shows. The alternatives are worse: summing would double-count
+    a story that names two tickers, and averaging would let a sector statement dilute a
+    company one. This is a weighting, not a verdict, and the appraisal differs between
+    subjects only in whether the paid half ran at all.
     """
     if not item_ids:
         return {}, set()
+    from awltux.analysis.news_analysis import INSTRUMENT
     from awltux.db import NewsAnalysis
 
     rows = session.execute(
         select(NewsAnalysis).where(NewsAnalysis.news_item_id.in_(item_ids))
     ).scalars().all()
 
+    # Reduced in Python rather than with `DISTINCT ON`, which SQLite does not have --
+    # the same portability reason the ticker membership test above is a Python filter.
+    # The key matches `primary_subject`: instruments before sectors, then by id, so the
+    # weight used here is the appraisal the news list shows.
+    chosen: dict[int, tuple[tuple[int, str], Any]] = {}
+    for row in rows:
+        key = (0 if row.subject_type == INSTRUMENT else 1, row.subject_id or "")
+        held = chosen.get(row.news_item_id)
+        if held is None or key < held[0]:
+            chosen[row.news_item_id] = (key, row)
+
     credibility: dict[int, float] = {}
     unconfirmed: set[int] = set()
-    for row in rows:
+    for _key, row in chosen.values():
         if row.credibility is not None:
             credibility[row.news_item_id] = float(row.credibility)
         if "unconfirmed" in (row.flags or []):

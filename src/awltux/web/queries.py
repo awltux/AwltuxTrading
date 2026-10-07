@@ -815,7 +815,9 @@ def instrument_detail(
     related_news, news_total = news_for_ticker(
         session, ticker, limit=news_per_page, offset=(news_page - 1) * news_per_page
     )
-    appraisals = appraisals_for(session, related_news)
+    # Scoped to *this* instrument: `related_news` can name several companies, and the
+    # appraisal the page must show is the one built for the page it is on.
+    appraisals = appraisals_for(session, related_news, subject=("instrument", ticker))
 
     # One entry per *event*, the same grouping the flash banner uses. A profit warning
     # reaches this system five or six times, and this list used to show all of them --

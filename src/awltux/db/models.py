@@ -639,9 +639,22 @@ class NewsAnalysis(Base):
     __tablename__ = "news_analysis"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: The story this appraises. **Not unique, and that is the point.** A story naming
+    #: three instruments and a sector has four appraisals, and they are not the same
+    #: appraisal: whether the *subject* is held is what decides whether the model is
+    #: asked to read the piece deeply, and a sector is held when any instrument in it
+    #: is. One row per story was one row too few.
     news_item_id: Mapped[int] = mapped_column(
-        ForeignKey("news_item.id", ondelete="CASCADE"), unique=True, index=True
+        ForeignKey("news_item.id", ondelete="CASCADE"), index=True
     )
+
+    #: What this appraisal is *about* -- ``instrument`` with a T212 ticker, or
+    #: ``sector`` with one of the eleven names from ``analysis/sectors.py``. Together
+    #: with ``news_item_id`` this is the identity of the row; a reader looking at one
+    #: company's page sees the appraisal for *that* company, not whichever subject
+    #: happened to be written first.
+    subject_type: Mapped[str] = mapped_column(String(16), index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
 
     # --- who published it, and what that is worth ---------------------------
     source_domain: Mapped[str | None] = mapped_column(String(96), index=True)
@@ -697,6 +710,14 @@ class NewsAnalysis(Base):
 
     __table_args__ = (
         Index("ix_news_analysis_grade_credibility", "evidence_grade", "credibility"),
+        # One appraisal per story per subject. Named, because a violation of this is
+        # how "the same event was appraised twice for the same company" would present
+        # -- and the ingest path re-appraises in place rather than inserting, so a
+        # conflict here means that lookup missed rather than that a second opinion
+        # was wanted.
+        UniqueConstraint(
+            "news_item_id", "subject_type", "subject_id", name="uq_news_analysis_subject"
+        ),
     )
 
 

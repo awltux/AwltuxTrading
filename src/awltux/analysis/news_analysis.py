@@ -65,6 +65,11 @@ _NEEDS_CHECKING = {"press_release", "aggregator", "opinion", "unknown"}
 class AnalysisReport:
     examined: int = 0
     selected: int = 0
+    #: Stories appraised for at least one subject. ``appraised`` counts *rows*, which
+    #: is what the run actually wrote: a story naming three instruments contributes
+    #: three, and the two numbers are the difference between "how much news was read"
+    #: and "how much work was done".
+    subjects: int = 0
     appraised: int = 0
     deep_analysed: int = 0
     skipped_not_interesting: int = 0
@@ -74,6 +79,7 @@ class AnalysisReport:
         return {
             "examined": self.examined,
             "selected": self.selected,
+            "subjects": self.subjects,
             "appraised": self.appraised,
             "deep_analysed": self.deep_analysed,
             "skipped_not_interesting": self.skipped_not_interesting,
@@ -108,13 +114,89 @@ def is_interesting(
     return False, ""
 
 
-def _held_tickers(session: Session) -> set[str]:
-    return {
-        row.t212_ticker
-        for row in session.execute(
-            select(Instrument).where(Instrument.is_held.is_(True))
-        ).scalars().all()
-    }
+@dataclass(frozen=True, slots=True)
+class Subject:
+    """What an appraisal is *about*: one instrument, or one sector.
+
+    A story is a single observation and can concern several things at once, and the
+    appraisal is not the same for each -- ``is_held`` is what decides whether the model
+    is asked to read a piece deeply, and "the reader holds this" is a fact about the
+    subject, not about the story. Storing one appraisal per story made a story about a
+    held company and an unheld one carry whichever answer was written first.
+    """
+
+    type: str  # "instrument" | "sector"
+    id: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"subject_type": self.type, "subject_id": self.id}
+
+
+INSTRUMENT = "instrument"
+SECTOR = "sector"
+
+
+def subjects_of(item: NewsItem) -> list[Subject]:
+    """Every subject a story is about, instruments first, each group in id order.
+
+    Instruments before sectors because a reader's own company is the more specific
+    answer, and :func:`primary_subject` takes the first -- so this order decides which
+    appraisal a list page shows. Sorted rather than left in the order the feed supplied
+    because the same rule is applied in SQL by the sentiment weighting, and the two
+    have to agree about which appraisal is *the* one for a story. A story's tickers
+    arrive in provider order, which is not a property either side can sort on.
+    """
+    out = [Subject(INSTRUMENT, str(ticker)) for ticker in sorted(item.tickers or [])]
+    out.extend(Subject(SECTOR, str(sector)) for sector in sorted(item.sectors or []))
+    return out
+
+
+def primary_subject(item: NewsItem) -> Subject | None:
+    """The one subject a page shows when it has room for one.
+
+    Used by the scoring and list paths, which predate per-subject appraisals and key
+    on the story. The *specific* subject is passed explicitly wherever it is known --
+    an instrument page, a sector page -- because that is the whole point of the split;
+    this is the answer for callers that genuinely have no subject to hand.
+    """
+    subjects = subjects_of(item)
+    return subjects[0] if subjects else None
+
+
+def _held(session: Session) -> tuple[set[str], set[str]]:
+    """What the reader holds: ``(tickers, sector groups)``.
+
+    One query rather than two, and the sector side is derived from the instrument's
+    own ``sector_group`` with the mapping as a fallback -- an instrument that has not
+    been through the backfill yet still counts, because "the reader holds something in
+    this industry" is the fact being established and a missing column is not evidence
+    against it.
+    """
+    from awltux.analysis.sectors import group_for
+
+    tickers: set[str] = set()
+    sectors: set[str] = set()
+    rows = session.execute(
+        select(Instrument).where(Instrument.is_held.is_(True))
+    ).scalars().all()
+    for row in rows:
+        tickers.add(row.t212_ticker)
+        group = row.sector_group or group_for(row.sic_code, row.sector)
+        if group:
+            sectors.add(group)
+    return tickers, sectors
+
+
+def subject_is_held(subject: Subject, tickers: set[str], sectors: set[str]) -> bool:
+    """Whether the reader holds the thing an appraisal is about."""
+    if subject.type == INSTRUMENT:
+        return subject.id in tickers
+    return subject.id in sectors
+
+
+def any_is_held(subjects: list[Subject], tickers: set[str], sectors: set[str]) -> bool:
+    """Whether the reader holds anything a story is about. Selection is per story."""
+    return any(subject_is_held(subject, tickers, sectors) for subject in subjects)
 
 
 def _recent_coverage(
@@ -141,13 +223,14 @@ def appraise_item(
     item: NewsItem,
     *,
     settings: Settings,
+    subject: Subject,
     analyser: DeepAnalyser | None = None,
     rhetoric: RhetoricReport | None = None,
     corroboration: Corroboration | None = None,
     is_held: bool = False,
     known_context: str | None = None,
 ) -> NewsAnalysis:
-    """Build the appraisal row for one item.
+    """Build the appraisal row for one item, about one subject.
 
     Deterministic first: the publisher, the rhetoric and the corroboration count
     are all computed here, and the credibility arithmetic runs on them. The model
@@ -158,6 +241,11 @@ def appraise_item(
     ``rhetoric`` and ``corroboration`` may be supplied by the caller when it has
     already computed them for selection; recomputing them here keeps the function
     usable on its own.
+
+    ``is_held`` is about the **subject**, not the story: an instrument is held when
+    the reader owns it, a sector when they own anything in it. It is the one input
+    that legitimately differs between two appraisals of the same story, so a caller
+    that cannot say which subject it means cannot call this.
     """
     config = settings.news.scepticism
     domain = domain_of(item.url)
@@ -201,6 +289,8 @@ def appraise_item(
 
     row = NewsAnalysis(
         news_item_id=item.id,
+        subject_type=subject.type,
+        subject_id=subject.id,
         source_domain=domain or "unknown",
         source_name=publisher.name,
         source_kind=publisher.kind,
@@ -376,6 +466,116 @@ def _carry_forward(prior: NewsAnalysis, fresh: NewsAnalysis) -> None:
         setattr(prior, column, getattr(fresh, column))
 
 
+@dataclass(slots=True)
+class _Run:
+    """What every appraisal in one run shares.
+
+    Bundled rather than passed as eight arguments, because they travel together: the
+    holdings, the corroboration window, the model ration and the counters the caller
+    reports. The one thing that varies per appraisal -- the subject -- is a parameter.
+    """
+
+    settings: Settings
+    analyser: DeepAnalyser | None
+    held: set[str]
+    held_sectors: set[str]
+    stale_before: dt.datetime
+    existing: dict[tuple[int, str, str], NewsAnalysis]
+    limit: int
+    report: AnalysisReport
+
+
+def _analyser_for(run: _Run) -> DeepAnalyser | None:
+    """The analyser this appraisal may use, or ``None`` once the ration is spent.
+
+    The deterministic appraisal still runs either way; the paid half is what is
+    rationed, because an unbounded sweep after a quiet period would run into the
+    spend ceiling and leave the rest unappraised with no explanation.
+    """
+    if run.report.deep_analysed >= run.limit and run.analyser is not None:
+        return None
+    return run.analyser
+
+
+def _store_appraisal(session: Session, prior: NewsAnalysis | None, row: NewsAnalysis) -> None:
+    """Upsert onto the row already stored for this subject, or insert one."""
+    if prior is not None:
+        _carry_forward(prior, row)
+        session.add(prior)
+    else:
+        session.add(row)
+
+
+def _appraise_subject(
+    session: Session,
+    run: _Run,
+    item: NewsItem,
+    subject: Subject,
+    *,
+    rhetoric: RhetoricReport,
+    corroboration: Corroboration,
+    reason: str,
+) -> None:
+    """One appraisal, or a decision not to make one.
+
+    Three outcomes and all of them are normal: the subject was appraised recently
+    enough that re-running would reproduce a conclusion nothing has changed, the model
+    ration is spent so only the deterministic half runs, or it is appraised properly.
+    Counting them is the point -- ``appraised`` is rows written, ``deep_analysed`` is
+    the part that cost money, and a run that writes rows without spending is working.
+    """
+    report = run.report
+    report.subjects += 1
+
+    prior = run.existing.get((item.id, subject.type, subject.id))
+    prior_analysed = _as_utc(prior.analysed_at) if prior is not None else None
+    if prior_analysed is not None and prior_analysed > run.stale_before:
+        report.appraised += 1
+        return
+
+    analyser = _analyser_for(run)
+
+    # Release the write lock before appraising. The appraisal is where the model call
+    # happens, and the release at the end of the caller's loop body comes too late: the
+    # transaction opened by the previous subject's flush would otherwise be held across
+    # this subject's model call, locking out every other writer for the duration.
+    release_write_lock(session)
+    try:
+        row = appraise_item(
+            item,
+            settings=run.settings,
+            subject=subject,
+            analyser=analyser,
+            rhetoric=rhetoric,
+            corroboration=corroboration,
+            is_held=subject_is_held(subject, run.held, run.held_sectors),
+        )
+    except Exception as exc:  # noqa: BLE001 - one subject must not stop the run
+        report.errors.append(f"{item.id}/{subject.type}:{subject.id}: {exc}")
+        return
+
+    if analyser is not None:
+        report.deep_analysed += 1
+
+    _store_appraisal(session, prior, row)
+    report.appraised += 1
+    logger.info(
+        "news appraisal: %s %s [%s %s] -> %s (%s)",
+        item.source,
+        item.title[:60],
+        subject.type,
+        subject.id,
+        row.evidence_grade,
+        reason,
+    )
+
+    # Released between subjects: each appraisal can involve a model call taking
+    # seconds, and holding a transaction across dozens of those would lock out every
+    # other writer for minutes.
+    session.flush()
+    release_write_lock(session)
+
+
 def analyse_universe(
     session: Session,
     *,
@@ -387,6 +587,12 @@ def analyse_universe(
     refresh_after_days: int = 7,
 ) -> dict[str, Any]:
     """Appraise recent, interesting news for the analysed universe.
+
+    One appraisal per *subject* per story: a story naming two instruments and a sector
+    produces three rows, because whether the subject is held is what decides whether
+    the model is asked to read the piece. The decision to appraise at all is the
+    story's, so a piece interesting only because one of its companies is held is
+    appraised for all of them.
 
     ``limit`` caps how many model calls one run can make. The callers are scheduled
     jobs with a spend ceiling above them, and an unbounded sweep after a quiet
@@ -407,28 +613,40 @@ def analyse_universe(
 
     stale_before = utcnow() - dt.timedelta(days=refresh_after_days)
     existing = {
-        row.news_item_id: row
+        (row.news_item_id, row.subject_type, row.subject_id): row
         for row in session.execute(select(NewsAnalysis)).scalars().all()
     }
 
-    held = _held_tickers(session)
+    held, held_sectors = _held(session)
+    run = _Run(
+        settings=settings,
+        analyser=analyser,
+        held=held,
+        held_sectors=held_sectors,
+        stale_before=stale_before,
+        existing=existing,
+        limit=limit,
+        report=report,
+    )
     pool = _recent_coverage(session, days=days)
     index = _coverage_index(pool)
 
     total = len(items)
     for item in items:
         # Between stories, and on the committed side of the previous one: this loop
-        # spends one model call per item, so it is the longest run in the pipeline
+        # spends one model call per subject, so it is the longest run in the pipeline
         # (measured at 14-39 minutes for a bounded 40 calls) and the one an upgrade most
         # needs to be able to end.
         progress.barrier(f"{report.examined} of {total} examined")
 
         report.examined += 1
-        # One model call per selected story, so this run is measured in tens of
+        # One model call per selected subject, so this run is measured in tens of
         # minutes. The counted line is what turns "running" into "at 24 of 40".
         progress.note(f"{report.examined} of {total} examined, {report.selected} selected")
-        if not item.tickers:
-            # Untagged news cannot be attributed to a name, so it cannot inform one.
+        subjects = subjects_of(item)
+        if not subjects:
+            # Untagged news cannot be attributed to a name or an industry, so it
+            # cannot inform either.
             report.skipped_not_interesting += 1
             continue
 
@@ -439,13 +657,15 @@ def analyse_universe(
             coverage_of(item, index),
             window_hours=settings.news.scepticism.corroboration_window_hours,
         )
-        is_held = bool(set(item.tickers or []) & held)
-
+        # Selection is about the *story*, so "held" here means "the reader holds
+        # something this story is about". Whether each subject is itself held is
+        # decided per appraisal, which is the one input that differs between two
+        # appraisals of the same story.
         interesting, reason = is_interesting(
             item,
             rhetoric=rhetoric,
             publisher_kind=publisher.kind,
-            held=is_held,
+            held=any_is_held(subjects, held, held_sectors),
             carrier_count=corroboration.carrier_count,
             settings=settings,
         )
@@ -454,62 +674,16 @@ def analyse_universe(
             continue
 
         report.selected += 1
-        prior = existing.get(item.id)
-        prior_analysed = _as_utc(prior.analysed_at) if prior is not None else None
-        if prior_analysed is not None and prior_analysed > stale_before:
-            # Already appraised recently. Re-appraising would spend a model call to
-            # reproduce a conclusion nothing has changed.
-            report.appraised += 1
-            continue
-
-        if report.deep_analysed >= limit and analyser is not None:
-            # Deterministic appraisal still runs; the paid half is what is rationed.
-            analyser_for_item: DeepAnalyser | None = None
-        else:
-            analyser_for_item = analyser
-
-        # Release the write lock before appraising. The appraisal is where the
-        # model call happens, and the release at the end of this loop body comes
-        # too late: the transaction opened by the previous item's flush would
-        # otherwise be held across this item's model call, locking out every
-        # other writer for the duration.
-        release_write_lock(session)
-        try:
-            row = appraise_item(
+        for subject in subjects:
+            _appraise_subject(
+                session,
+                run,
                 item,
-                settings=settings,
-                analyser=analyser_for_item,
+                subject,
                 rhetoric=rhetoric,
                 corroboration=corroboration,
-                is_held=is_held,
+                reason=reason,
             )
-        except Exception as exc:
-            report.errors.append(f"{item.id}: {exc}")
-            continue
-
-        if analyser_for_item is not None:
-            report.deep_analysed += 1
-
-        if prior is not None:
-            _carry_forward(prior, row)
-            session.add(prior)
-        else:
-            session.add(row)
-
-        report.appraised += 1
-        logger.info(
-            "news appraisal: %s %s -> %s (%s)",
-            item.source,
-            item.title[:60],
-            row.evidence_grade,
-            reason,
-        )
-
-        # The write lock is released between items: each appraisal can involve a
-        # model call taking seconds, and holding a transaction across dozens of
-        # those would lock out every other writer for minutes.
-        session.flush()
-        release_write_lock(session)
 
     session.flush()
     logger.info("news scepticism: %s", report.as_dict())
