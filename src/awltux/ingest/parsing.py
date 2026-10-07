@@ -194,8 +194,58 @@ def extract_held_filings(
         report["events"] += len(result.filing_events)
         session.flush()
 
+        _note_discoveries(session, filing.instrument_t212_ticker, result, report)
+
     logger.info("filing extraction: %s", {k: v for k, v in report.items() if k != "errors"})
     return report
+
+
+def _note_discoveries(session: Session, ticker: str, result: Any, report: dict[str, Any]) -> None:
+    """Let a filing's own captions close the gaps its own subtotals expose.
+
+    This is the loop the dynamic vocabulary exists for. The extractor reports the lines
+    a filing presents that the prompt did not name; the ledger says how far the
+    components we hold fall short of each stated subtotal; and a caption is *proved* to
+    belong on the list when its value closes that residual exactly.
+
+    Arithmetic rather than the model's opinion, and that is the whole safeguard: a
+    caption that closes a gap to the pound is the missing line, and one that does not is
+    not -- which is why the vocabulary can be allowed to grow on its own.
+
+    The composition checks are reused rather than re-implemented. They run on an
+    unpersisted period built from just-extracted figures, so the reading the discovery
+    is based on is the same code that will later judge the stored period.
+    """
+    from awltux.analysis import gap, ledger
+    from awltux.analysis.metric_fields import BALANCE, record
+    from awltux.db import FundamentalPeriod
+
+    if not result.unlisted:
+        return
+    candidates = {metric.name: metric.value for metric in result.unlisted.values()}
+    if not candidates:
+        return
+
+    probe = FundamentalPeriod(
+        instrument_t212_ticker=ticker,
+        period_end=None,
+        period_type=None,
+        source="extraction_probe",
+        # `metric_values`, not `metrics_for_storage`: a stored period holds plain
+        # numbers and keeps its provenance in the separate `metric_sources` column, and
+        # `metrics.value_of` does `float(raw)` -- so the provenance map reads as *no
+        # value at all* and every check would come back "not computable".
+        metrics=result.metric_values,
+    )
+    for check in ledger.composition(probe):
+        if not check.failed or check.residual is None:
+            continue
+        found = gap.best(check.residual, candidates)
+        if found is None:
+            continue
+        for label in found.labels:
+            if record(session, label, group=BALANCE, reason=found.describe(), discovered_for=ticker):
+                report["discovered"] = report.get("discovered", 0) + 1
 
 
 def _company_name(session: Session, ticker: str) -> str:

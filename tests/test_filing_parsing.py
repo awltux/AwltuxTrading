@@ -251,3 +251,105 @@ class TestReadingTheHeldFilings:
 
         assert report["parsed"] == 1
         assert len(read) == 1, "only the named instrument's filing is read"
+
+
+class TestLearningACaption:
+    """The loop the dynamic vocabulary exists for.
+
+    The extractor reports the lines a filing presents that the prompt did not name; the
+    ledger says how far the components we hold fall short of a stated subtotal; and a
+    caption is *proved* to belong on the list when its value closes that residual. The
+    numbers are MSFT's, which is where this was measured: current assets of
+    151,802 against a stated 207,710, the difference being exactly its short-term
+    investments.
+    """
+
+    def _result(self, *, unlisted: dict, metrics: dict) -> ExtractionResult:
+        return ExtractionResult(metrics=metrics, unlisted=unlisted, confidence=0.8)
+
+    def _metric(self, name: str, value: float) -> ExtractedMetric:
+        return ExtractedMetric(
+            name=name,
+            value=value,
+            span=f"{name} {value:,.0f}",
+            location="Consolidated balance sheets",
+        )
+
+    def test_a_caption_that_closes_the_gap_is_recorded(self, settings, session, monkeypatch):
+        from awltux.analysis import metric_fields
+
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Short-term investments 55,908</p>")
+        _filing(session, url="https://sec.test/msft.htm", raw_path=raw)
+        session.commit()
+
+        # Assets we hold sum to 151,802 against a stated 207,710 -- out by 55,908.
+        metrics = {
+            "cash_and_equivalents": self._metric("cash_and_equivalents", 20_935.0),
+            "receivables": self._metric("receivables", 80_876.0),
+            "inventory": self._metric("inventory", 1_397.0),
+            "other_current_assets": self._metric("other_current_assets", 48_594.0),
+            "current_assets": self._metric("current_assets", 207_710.0),
+        }
+        unlisted = {"short_term_investments": self._metric("short_term_investments", 55_908.0)}
+        monkeypatch.setattr(
+            parsing,
+            "extract_filing",
+            lambda document, **kwargs: self._result(unlisted=unlisted, metrics=metrics),
+        )
+
+        report = parsing.extract_held_filings(session, settings=settings)
+
+        assert report.get("discovered") == 1
+        assert "short_term_investments" in metric_fields.names(session)
+        assert metric_fields.load(session)["short_term_investments"].origin == "discovered"
+
+    def test_a_caption_that_does_not_close_the_gap_is_not_recorded(
+        self, settings, session, monkeypatch
+    ):
+        """The safeguard. A model asked which line is missing will always answer, and
+        only the arithmetic can tell a right answer from a confident one."""
+        from awltux.analysis import metric_fields
+
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Something 12</p>")
+        _filing(session, url="https://sec.test/other.htm", raw_path=raw)
+        session.commit()
+
+        metrics = {
+            "cash_and_equivalents": self._metric("cash_and_equivalents", 20_935.0),
+            "current_assets": self._metric("current_assets", 207_710.0),
+        }
+        unlisted = {"plausible_but_wrong": self._metric("plausible_but_wrong", 12.0)}
+        monkeypatch.setattr(
+            parsing,
+            "extract_filing",
+            lambda document, **kwargs: self._result(unlisted=unlisted, metrics=metrics),
+        )
+
+        report = parsing.extract_held_filings(session, settings=settings)
+
+        assert not report.get("discovered")
+        assert "plausible_but_wrong" not in metric_fields.names(session)
+        assert set(metric_fields.load(session)) == set(metric_fields.seed())
+
+    def test_no_unlisted_captions_is_the_ordinary_answer(self, settings, session, monkeypatch):
+        from awltux.analysis import metric_fields
+
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Revenue 1</p>")
+        _filing(session, url="https://sec.test/plain.htm", raw_path=raw)
+        session.commit()
+
+        monkeypatch.setattr(
+            parsing,
+            "extract_filing",
+            lambda document, **kwargs: self._result(
+                unlisted={}, metrics={"revenue": self._metric("revenue", 1.0)}
+            ),
+        )
+
+        report = parsing.extract_held_filings(session, settings=settings)
+
+        assert not report.get("discovered")
+        assert len(metric_fields.load(session)) == len(metric_fields.seed())

@@ -69,6 +69,14 @@ class ExtractedMetric:
 @dataclass(slots=True)
 class ExtractionResult:
     metrics: dict[str, ExtractedMetric] = field(default_factory=dict)
+    #: Statement captions the filing presents that the vocabulary does not name.
+    #:
+    #: Reported separately from `metrics` because they are *candidates*: a caption here
+    #: has survived the citation discipline but not the vocabulary gate, and whether it
+    #: belongs on the list is a question the arithmetic answers, not the model. Nothing
+    #: reads them into a period until `analysis/gap.py` finds one that closes a
+    #: composition residual exactly.
+    unlisted: dict[str, ExtractedMetric] = field(default_factory=dict)
     quality_notes: list[str] = field(default_factory=list)
     risk_factors: list[str] = field(default_factory=list)
     accounting_policy_changes: list[str] = field(default_factory=list)
@@ -181,6 +189,37 @@ def _event_flags(
     return {**stated, "span": span[:500]}
 
 
+def _cited_metric(
+    name: str, entry: Any, discarded: list[str]
+) -> ExtractedMetric | None:
+    """One metric, if it carries a value, a quoted span and a location.
+
+    Shared by the canonical and the unlisted halves so the two cannot drift: an
+    uncited figure is worth no more for being unlisted, and a relaxation applied to
+    only one of them is exactly how a fabricated number gets stored.
+    """
+    if not isinstance(entry, dict):
+        discarded.append(f"{name}: malformed entry")
+        return None
+    value = _as_float(entry.get("value"))
+    span = _text(entry.get("span")) or ""
+    location = _text(entry.get("location")) or ""
+
+    if value is None:
+        discarded.append(f"{name}: no numeric value")
+        return None
+    if len(span.strip()) < MIN_SPAN_CHARS:
+        discarded.append(f"{name}: missing or too-short source span")
+        return None
+    if not location:
+        discarded.append(f"{name}: no location given")
+        return None
+
+    return ExtractedMetric(
+        name=name, value=value, span=span.strip()[:500], location=location[:200]
+    )
+
+
 def validate_extraction(
     payload: dict[str, Any], *, allowed: frozenset[str] | None = None
 ) -> ExtractionResult:
@@ -216,26 +255,19 @@ def validate_extraction(
             if name not in allowed:
                 result.discarded.append(f"{name}: not a metric name offered in the prompt")
                 continue
-            if not isinstance(entry, dict):
-                result.discarded.append(f"{name}: malformed entry")
-                continue
-            value = _as_float(entry.get("value"))
-            span = _text(entry.get("span")) or ""
-            location = _text(entry.get("location")) or ""
+            parsed = _cited_metric(name, entry, result.discarded)
+            if parsed is not None:
+                result.metrics[name] = parsed
 
-            if value is None:
-                result.discarded.append(f"{name}: no numeric value")
-                continue
-            if len(span.strip()) < MIN_SPAN_CHARS:
-                result.discarded.append(f"{name}: missing or too-short source span")
-                continue
-            if not location:
-                result.discarded.append(f"{name}: no location given")
-                continue
-
-            result.metrics[name] = ExtractedMetric(
-                name=name, value=value, span=span.strip()[:500], location=location[:200]
-            )
+    unlisted = payload.get("unlisted_metrics")
+    if isinstance(unlisted, dict):
+        for label, entry in unlisted.items():
+            # Deliberately *not* gated on the vocabulary -- being outside it is the
+            # whole reason a caption is here. The citation discipline still applies,
+            # because an uncited figure is worth no more for being unlisted.
+            parsed = _cited_metric(str(label), entry, result.discarded)
+            if parsed is not None:
+                result.unlisted[parsed.name] = parsed
 
     result.quality_notes = _string_list(payload.get("quality_notes"))
     result.risk_factors = _string_list(payload.get("risk_factors"))

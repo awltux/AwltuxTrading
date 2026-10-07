@@ -63,6 +63,9 @@ Return a JSON object with these keys:
   "metrics": {
     "<canonical_name>": {"value": <number>, "span": "<quoted text>", "location": "<page or note>"}
   },
+  "unlisted_metrics": {
+    "<the document's own caption, snake_cased>": {"value": <number>, "span": "<quoted text>", "location": "<page or note>"}
+  },
   "quality_notes": ["short factual observations about margins, returns or cash conversion, each grounded in the document"],
   "risk_factors": ["the most material risks as stated, in the company's own terms"],
   "accounting_policy_changes": ["any change in accounting policy or estimate, with its effect if stated"],
@@ -81,6 +84,18 @@ than a component, report the subtotal and omit the component:
 """
 
 _FILING_EXTRACTION_TAIL = """
+
+`unlisted_metrics` is the list that lets this system learn. The names above are what it
+knows to ask for today, and a set of accounts presents lines they do not cover --
+short-term investments, an investment in associates, unearned revenue, taxes payable.
+For every line on the primary statements you can see that is **not** one of the names
+above, report it here under its own caption, snake_cased ("Short-term investments" ->
+`short_term_investments`). Give it the same value, span and location as any other.
+
+Report a line here only if it is on a primary statement and you can quote it. Do not
+invent a name for something the document does not present, do not repeat a name from the
+list above, and leave this empty where the statements present nothing further -- an
+empty object is the ordinary answer and a fuller one is not better.
 
 Report a positive `capex` for cash spent, even where the document shows it as a
 deduction. `depreciation_amortisation` is the income-statement charge for the
