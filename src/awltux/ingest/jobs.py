@@ -569,7 +569,7 @@ def assess_news_relevance(tickers: list[str] | None = None) -> JobResult:
     from awltux.config import get_settings
     from awltux.db import Instrument, NewsItem
     from awltux.db.session import release_write_lock
-    from awltux.llm.classify import build_classifier
+    from awltux.llm.classify import apply_classification, build_classifier
     from awltux.providers.news_rss import RawNewsItem
 
     settings = get_settings()
@@ -660,16 +660,7 @@ def assess_news_relevance(tickers: list[str] | None = None) -> JobResult:
                     errors.append(f"{item.id}: {exc}")
                     updates = None
                 if updates:
-                    item.materiality = updates.get("materiality")
-                    item.direction = updates.get("direction")
-                    item.horizon = updates.get("horizon")
-                    item.sentiment_score = updates.get("sentiment_score")
-                    item.relevance = updates.get("relevance")
-                    item.engine = updates.get("engine")
-                    item.event_type = updates.get("event_type")
-                    reasoning = updates.get("reasoning")
-                    if reasoning:
-                        item.relevance_reason = str(reasoning)[:1000]
+                    apply_classification(item, updates)
                     about = updates.get("is_about_this_company")
                     classified += 1
             else:

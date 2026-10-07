@@ -65,6 +65,36 @@ VALID_EVENT_TYPES = {
     "other",
 }
 
+#: What a story's numbers are *of*. ``event_type`` says what kind of fact this is and
+#: this says what the fact is about; they come apart on the pairs that broke the
+#: same-event grouping, where one company's share moving and a broker changing its
+#: target on it share an ``event_type``. Unlike ``VALID_EVENT_TYPES`` nothing routes a
+#: claim by this, but the grouping compares it, so an invented label vetoes real joins.
+#:
+#: ``"none"`` is a stated answer -- the story is not about a number -- and is kept
+#: distinct from an absent value, which means the field was never assessed.
+VALID_METRICS = {
+    "share_price",
+    "price_target",
+    "revenue",
+    "earnings",
+    "margin",
+    "dividend",
+    "valuation",
+    "volume",
+    "none",
+}
+
+#: Longest ``period`` or ``magnitude`` kept. Both are shown beside a headline rather
+#: than parsed, so a value longer than a few words is the model writing a sentence
+#: into a field that holds one -- and it would then be rendered as one.
+_DETAIL_LIMIT = 32
+
+#: What the model writes when it means "the story does not say". Treated as absent:
+#: storing the literal string would put a fake value in a field the grouping compares,
+#: where two stories would then agree on the word "unknown" and be joined by it.
+_ABSENT = {"", "null", "none", "unknown", "n/a", "not stated", "unspecified"}
+
 
 def _clamp(value: Any, low: float, high: float) -> float | None:
     try:
@@ -74,6 +104,14 @@ def _clamp(value: Any, low: float, high: float) -> float | None:
     if number != number:  # NaN
         return None
     return max(low, min(high, number))
+
+
+def _short_text(value: Any) -> str | None:
+    """A stated detail, or ``None``. Empty and "unknown" alike mean the story did not say."""
+    text = str(value or "").strip()
+    if text.lower() in _ABSENT:
+        return None
+    return text[:_DETAIL_LIMIT]
 
 
 def normalise_classification(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -109,6 +147,10 @@ def normalise_classification(payload: dict[str, Any]) -> dict[str, Any] | None:
     if event_type not in VALID_EVENT_TYPES:
         event_type = "other"
 
+    metric = str(payload.get("metric") or "").strip().lower()
+    if metric not in VALID_METRICS:
+        metric = "none"
+
     return {
         "materiality": materiality,
         "direction": direction,
@@ -117,6 +159,9 @@ def normalise_classification(payload: dict[str, Any]) -> dict[str, Any] | None:
         "relevance": relevance if relevance is not None else (0.2 if is_about is False else 0.5),
         "reasoning": payload.get("reasoning"),
         "event_type": event_type,
+        "metric": metric,
+        "period": _short_text(payload.get("period")),
+        "magnitude": _short_text(payload.get("magnitude")),
         # Kept, not just used to force materiality to "none". The ticker on a news
         # item usually comes from the feed it was fetched by rather than from the
         # article, so "this is not about that company" is what distinguishes a
@@ -256,3 +301,34 @@ def is_material_enough(materiality: str | None, *, threshold: str = "mild") -> b
         return MATERIALITY_ORDER.index(materiality) >= MATERIALITY_ORDER.index(threshold)
     except ValueError:
         return False
+
+
+def apply_classification(row: Any, updates: dict[str, Any] | None) -> bool:
+    """Copy a classification onto a news row. Says whether there was one to copy.
+
+    One place rather than one per caller. The ingest path and the relevance backfill
+    each assigned these fields by hand, so a field added to
+    :func:`normalise_classification` reached whichever of the two its author happened
+    to be looking at -- and the backfill job exists precisely to fill in rows the
+    ingest path missed, which is the worst pair of callers to let drift apart.
+
+    ``relevance_reason`` is set only when the model supplied one. The backfill runs
+    over rows that already carry a rule-derived reason, and overwriting that with
+    ``None`` would trade an explanation for a blank.
+    """
+    if not updates:
+        return False
+    row.materiality = updates.get("materiality")
+    row.direction = updates.get("direction")
+    row.horizon = updates.get("horizon")
+    row.sentiment_score = updates.get("sentiment_score")
+    row.relevance = updates.get("relevance")
+    row.engine = updates.get("engine")
+    row.event_type = updates.get("event_type")
+    row.metric = updates.get("metric")
+    row.period = updates.get("period")
+    row.magnitude = updates.get("magnitude")
+    reasoning = updates.get("reasoning")
+    if reasoning:
+        row.relevance_reason = str(reasoning)[:1000]
+    return True

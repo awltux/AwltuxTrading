@@ -17,6 +17,14 @@ requirement, because a local endpoint needs none -- so this is usable without
 signing up for anything. Unset means the feature is off and the lexical comparison
 is used, exactly as before, with no pretence that clustering happened.
 
+**Two questions, two tools.** "Is this the same kind of thing?" is exact: the story's
+event type, direction and metric are stated by the classifier that already read it, and
+:class:`Identity` compares them. "Is this the same instance of it?" is fuzzy: two wire
+copies of one profit warning share no words, and only a vector can see that. The
+similarity is therefore a tie-break inside a set the keys have already agreed on, not
+the decision itself -- which is what it was when the threshold was the whole rule, and
+what made 65% of its joins contradict the story's own stored direction or event type.
+
 **Thresholds are asymmetric on purpose.** Joining two different events tells a
 reader one thing happened when two did. Missing a join shows two entries instead
 of one. The second is a nuisance and the first is a lie, so ``same_event_threshold``
@@ -274,11 +282,67 @@ class Event:
         return {"members": list(self.members), "size": self.size, "similarity": self.similarity}
 
 
+#: The fields :class:`Identity` compares. Named here so the dataclass and the
+#: comparison cannot drift apart.
+IDENTITY_FIELDS = ("event_type", "direction", "metric")
+
+
+@dataclass(frozen=True, slots=True)
+class Identity:
+    """What a story says it is about, in the fields a comparison can be exact on.
+
+    A vector measures how much two texts *resemble* each other, and on real stories
+    that is not the same as describing one event. Measured 2026-10-07 over the 1,000
+    embedded stories at the threshold then in force: of the 672 joins the similarity
+    made, **439 (65%) disagreed with their group on the stored event type or the stored
+    direction** -- "Canadian National Railway stock falls Wednesday" grouped with the
+    same headline saying "rises", and one Claritev margin story grouped with an insider
+    share sale, a buyback and a DOJ probe. A cosine cannot see any of that, because
+    all four are the same company on the same day written in the same register.
+
+    These fields can, and the model already fills them in on the call that classifies
+    every story -- so the filter costs nothing to run and its decision is exact rather
+    than a threshold.
+
+    **An absent value is not a disagreement.** Rows classified before these fields
+    existed carry ``None``, and the backfill is rationed, so reading "no metric
+    recorded" as "a different metric" would veto every join until it caught up -- a
+    worse failure than the one this exists to fix, and an invisible one.
+    """
+
+    event_type: str | None = None
+    direction: str | None = None
+    metric: str | None = None
+
+    def conflicts(self, other: Identity) -> tuple[str, ...]:
+        """The fields where both stories state a value and the values differ."""
+        differing = []
+        for name in IDENTITY_FIELDS:
+            mine = getattr(self, name)
+            theirs = getattr(other, name)
+            if mine and theirs and mine != theirs:
+                differing.append(name)
+        return tuple(differing)
+
+    def agrees(self, other: Identity) -> bool:
+        return not self.conflicts(other)
+
+
+def identity_of(item: Any) -> Identity:
+    """The identity keys of a story row, or of anything shaped like one."""
+    return Identity(
+        event_type=getattr(item, "event_type", None),
+        direction=getattr(item, "direction", None),
+        metric=getattr(item, "metric", None),
+    )
+
+
 def cluster(
     item_ids: list[int],
     vectors: dict[int, Any],
     *,
     threshold: float,
+    identities: dict[int, Identity] | None = None,
 ) -> list[Event]:
     """Group stories describing the same event, best-first order preserved.
 
@@ -293,15 +357,26 @@ def cluster(
     keeps membership explainable -- every member is one comparison away from
     something a reader can be shown.
 
+    ``identities`` adds the exact half of the comparison: a story may only join a
+    cluster whose anchor it does not contradict on the keys it states. The similarity
+    is then a tie-break inside a set the model has already agreed is the same kind of
+    thing, which is the only question a cosine is equipped to answer. Passed as a
+    mapping rather than read off rows so that the rule stays testable on its own.
+
     Order is preserved: callers pass stories best-first, so each cluster's first
     member is the best story in it.
     """
     np = numpy()
+    identities = identities or {}
     events: list[Event] = []
-    anchors: list[Any] = []
+    #: The anchor of each event, paired with the keys it stated. One list rather than
+    #: two kept in step by hand: they are appended in the same two places, and a third
+    #: place that appended only one of them would mis-attribute every event after it.
+    anchors: list[tuple[Any, Identity] | None] = []
 
     for item_id in item_ids:
         vector = vectors.get(item_id)
+        mine = identities.get(item_id) or Identity()
         if vector is None:
             # No vector means no basis for comparison, so the story stands alone
             # rather than being merged on a guess.
@@ -314,7 +389,10 @@ def cluster(
         for index, anchor in enumerate(anchors):
             if anchor is None:
                 continue
-            score = _cosine(np, vector, anchor)
+            anchored_vector, anchored_keys = anchor
+            if not mine.agrees(anchored_keys):
+                continue
+            score = _cosine(np, vector, anchored_vector)
             if score >= threshold and score > best_score:
                 best_index, best_score = index, score
 
@@ -326,7 +404,7 @@ def cluster(
             )
         else:
             events.append(Event(members=[item_id], similarity=None))
-            anchors.append(vector)
+            anchors.append((vector, mine))
 
     return events
 
@@ -359,7 +437,12 @@ def cluster_items(
             "no stored vectors for these stories yet",
         )
     return (
-        cluster([item.id for item in items], vectors, threshold=config.same_event_threshold),
+        cluster(
+            [item.id for item in items],
+            vectors,
+            threshold=config.same_event_threshold,
+            identities={item.id: identity_of(item) for item in items},
+        ),
         None,
     )
 

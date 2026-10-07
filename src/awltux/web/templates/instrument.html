@@ -550,15 +550,30 @@
             {{ item.source }}
           {% endif %}
           · {{ item.published_at | ago }}
+          {# The keys the grouping compares, shown so the reader can check the grouping
+             instead of trusting it. `metric` is what the story's number is *of*, and it
+             is what separates a share moving from a broker changing its target on it --
+             two different events with the same company, the same day and the same words. #}
+          {% if item.event_type %} · {{ item.event_type | replace('_', ' ') }}{% endif %}
+          {% if item.metric and item.metric != 'none' %} · {{ item.metric | replace('_', ' ') }}{% endif %}
           {% if item.direction %} · {{ item.direction }}{% endif %}
+          {% if item.period %} · {{ item.period }}{% endif %}
+          {% if item.magnitude %} · {{ item.magnitude }}{% endif %}
           {% if item.materiality %} · {{ item.materiality }}{% endif %}
         </span>
 
         {% if event.others %}
           <details class="event-members">
-            <summary class="muted small">
-              {{ event.others | length }} other report{{ '' if event.others | length == 1 else 's' }}
-              of this event{% if event.similarity %} · weakest match {{ event.similarity | number(2) }}{% endif %}
+            {# "Similar", not "of this event". Membership now requires that a report not
+               contradict the lead on event type, direction or metric, so these agree about
+               what kind of thing happened. That is still not the same as being one
+               instance of it, and the sentence is what the system can support: the true
+               EasyJet takeover pair scores 0.7925 while the false Golar pair scores
+               0.7599, so similarity orders them wrongly and only the metric splits them. #}
+            <summary class="muted small"
+                     title="Grouped by the event type, direction and metric the classifier recorded, then by how similar the text is. Two headlines can agree on all three and still be different days.">
+              {{ event.others | length }} similar report{{ '' if event.others | length == 1 else 's' }}
+              {%- if event.similarity %} · weakest match {{ event.similarity | number(2) }}{% endif %}
             </summary>
             <ul class="muted small">
               {% for other in event.others %}

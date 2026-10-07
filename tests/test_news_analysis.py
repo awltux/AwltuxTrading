@@ -556,3 +556,72 @@ class TestClassifierEventTypes:
     def test_a_missing_event_type_is_other_not_none(self, settings):
         result = normalise_classification({"materiality": "mild"})
         assert result["event_type"] == "other"
+
+
+class TestClassifierIdentityKeys:
+    """The three fields the same-event grouping compares and shows.
+
+    ``metric`` is the one that was missing, and the failure it fixes is specific: on
+    2026-10-07 the grouping joined "Golar LNG stock gains 1.65 percent in October 5
+    trading" with "BTIG raises Golar LNG stock price target to $75" at 0.7599, and a
+    genuine EasyJet takeover pair at 0.7925 -- so the false pair and the true pair were
+    not separable by any threshold. They differ in exactly this field.
+    """
+
+    def test_a_known_metric_is_kept(self):
+        result = normalise_classification({"metric": "price_target"})
+        assert result["metric"] == "price_target"
+
+    def test_an_invented_metric_becomes_none(self):
+        result = normalise_classification({"metric": "vibes"})
+        assert result["metric"] == "none"
+
+    def test_metric_none_is_a_stated_answer_not_an_absent_one(self):
+        """The grouping reads a falsy value as "not stated" and abstains. A story that
+        was read and found to be about no number is a different state, and the literal
+        string is what distinguishes them -- the same reason `news_item.relevant` is
+        nullable rather than defaulting to false."""
+        assert normalise_classification({"metric": "none"})["metric"] == "none"
+        assert normalise_classification({})["metric"] == "none"
+
+    def test_period_and_magnitude_are_kept_as_written(self):
+        result = normalise_classification({"period": "FY26", "magnitude": "$7.7bn"})
+        assert result["period"] == "FY26"
+        assert result["magnitude"] == "$7.7bn"
+
+    def test_an_unstated_period_is_absent_rather_than_a_word(self):
+        """"unknown" stored literally would be a value two stories could agree on, and
+        the grouping would then join them *by* the word."""
+        for written in ("", "unknown", "n/a", "null", None):
+            result = normalise_classification({"period": written, "magnitude": written})
+            assert result["period"] is None, written
+            assert result["magnitude"] is None, written
+
+    def test_a_sentence_in_a_detail_field_is_truncated(self):
+        """They are rendered beside a headline, not parsed, so a paragraph would be
+        printed as a paragraph."""
+        result = normalise_classification({"magnitude": "x" * 200})
+        assert len(result["magnitude"]) == 32
+
+    def test_the_classification_reaches_the_row_through_one_helper(self):
+        """Both callers -- the ingest path and the relevance backfill -- assign through
+        `apply_classification`, so a field added here reaches both."""
+        from awltux.llm.classify import apply_classification
+
+        class Row:
+            pass
+
+        row = Row()
+        assert apply_classification(row, normalise_classification({"metric": "revenue"}))
+        assert row.metric == "revenue"
+        assert row.event_type == "other"
+
+    def test_an_absent_classification_is_not_applied(self):
+        from awltux.llm.classify import apply_classification
+
+        class Row:
+            metric = "share_price"
+
+        row = Row()
+        assert not apply_classification(row, None)
+        assert row.metric == "share_price", "a failed call must not blank a stored answer"

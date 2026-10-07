@@ -334,37 +334,43 @@ news:
     # is the only one where neither number is a guess.
     model: baai/bge-large-en-v1.5
     auth_scheme: Key
-    # Cosine similarity at or above which two stories are the same event. High on
-    # purpose: joining two different events asserts something false, while missing
-    # a join only shows two entries instead of one.
+    # Cosine similarity at or above which two stories may be shown as the same event.
+    # **This is a tie-break, not the decision.** Since 0011 the grouping first requires
+    # that the stories not contradict each other on event type, direction or metric --
+    # the exact fields the classifier already writes -- and similarity only decides
+    # which of several compatible anchors a story belongs to.
     #
-    # Measured for this model on 18 headlines across 10 events -- four real events each
-    # phrased three ways by different outlets, plus six singletons -- through the
-    # application's own client (`EmbeddingClient`) and `cluster()`. That set includes the
-    # case that actually breaks a threshold and which unrelated headlines do not: the
-    # same company reporting two different things.
+    # Measured twice, and the second measurement is why the rule changed rather than
+    # the number.
     #
-    #   within-event            0.7228 .. 0.9154
-    #   across-event            0.2226 .. 0.6869
-    #   same company, different event   0.5967 .. 0.6869
+    # The synthetic set -- 18 headlines across 10 events, four real events phrased three
+    # ways plus six singletons -- put within-event pairs at 0.7228..0.9154 and
+    # across-event pairs at 0.2226..0.6869, a separable band of (0.6869, 0.7228].
     #
-    # The separable band is (0.6869, 0.7228] -- narrow, and much narrower than a
-    # three-pair smoke test suggests (that reported a +0.28 gap; this reports +0.0359).
-    # Clustering all 18 at each threshold:
+    # That band does not hold on real data. Measured 2026-10-07 against 400 real
+    # embedded stories and 79,800 same-instrument pairs:
     #
-    #   0.60  2 false joins, 0 missed     <- merging different events: a lie
-    #   0.65  0 false joins, 0 missed
-    #   0.70  0 false joins, 0 missed     <- shipped
-    #   0.75  0 false joins, 1 missed
-    #   0.86  0 false joins, 2 missed     <- what this file used to ship
+    #   score   0.70   0.75   0.80   0.85   0.90
+    #   pairs    579    460    275    139     92   (same-instrument pairs at or above)
     #
-    # 0.70 is the measured point that is clean on both counts. It sits 0.0131 above the
-    # closest across-event pair and 0.0228 below the closest within-event pair, so it is
-    # not centred -- centred is 0.705 -- and the bias is toward the false-join side, which
-    # is the wrong way round for this feature. It is kept anyway because it is the grid
-    # point that was measured rather than an interpolation between two, and the miss it
-    # avoids (a duplicate entry) is the cheap failure. 0.65 is the more cautious point and
-    # is also clean; raising the value to 0.75 or beyond trades a duplicate for nothing.
+    #   true join   0.7925  "EasyJet Shares Jump As Apollo Launches Higher $7.7bn Bid"
+    #                       "EasyJet stock weighs Apollo's 715p cash takeover offer"
+    #   false join  0.7599  "Golar LNG stock gains 1.65 percent in October 5 trading"
+    #                       "BTIG raises Golar LNG stock price target to $75"
+    #   false join  0.8578  "Canadian National Railway stock falls Wednesday, underperforms"
+    #                       "Canadian National Railway stock rises Wednesday, outperforms"
+    #
+    # The distributions **overlap**: the false CN pair is the highest-scoring pair in
+    # the set. No threshold separates them, and moving the number only chooses which
+    # error to make -- 0.85, which this file briefly shipped, drops the true EasyJet
+    # join and keeps the worst false one.
+    #
+    # 0.70 is kept because it is the measured point and because the asymmetry above
+    # only applies once the keys have run. What made 0.70 look wrong was never the
+    # number: at 0.70 the grouping made 672 joins and **439 of them (65%) contradicted
+    # the stored event type or direction of their own group**. Those are now vetoed
+    # before the cosine is consulted, 0.70 is a tie-break among stories that agree, and
+    # a low threshold that admits duplicates is the cheap failure.
     same_event_threshold: 0.70
     batch_size: 64
     max_per_run: 1000

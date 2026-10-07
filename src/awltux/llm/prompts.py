@@ -160,7 +160,10 @@ Return JSON:
   "horizon": "days | weeks | months | years",
   "sentiment_score": -1.0 to 1.0,
   "reasoning": "one sentence, no more",
-  "event_type": "earnings | guidance | m_and_a | capital_raise | regulatory | legal | management_change | product | macro | analyst | other"
+  "event_type": "earnings | guidance | m_and_a | capital_raise | regulatory | legal | management_change | product | macro | analyst | other",
+  "metric": "share_price | price_target | revenue | earnings | margin | dividend | valuation | volume | none",
+  "period": "the period the claim covers, as stated: 'FY26', 'Q1 2026', '2026-10-05', 'this year'; null if it does not say",
+  "magnitude": "the size as stated with units, e.g. '1.65%' or '$7.7bn'; null if it does not say"
 }
 
 Guidance on materiality:
@@ -169,6 +172,12 @@ Guidance on materiality:
 - moderate: a meaningful contract, a credible broker upgrade or downgrade, a modest guidance change
 - mild: routine news with some relevance
 - none: the company is mentioned incidentally, or the story is duplicative or speculative
+
+`metric` is what the story is *about*, not every number it mentions. A broker raising
+its target is "price_target"; the share moving in response is "share_price"; a results
+report is "revenue" or "earnings". Use "none" when the story is not about a number at
+all. Two stories about one company on one day are different events when their metric
+differs, so answer this from the story rather than from the ticker.
 
 If `is_about_this_company` is false, set materiality to "none" and relevance below 0.2."""
 

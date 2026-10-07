@@ -569,6 +569,26 @@ class NewsItem(Base, TimestampMixin):
     #: results story has a filing behind it, a rumour has nothing.
     event_type: Mapped[str | None] = mapped_column(String(24), index=True)
 
+    #: Which number the story is *about*. ``event_type`` says what kind of fact this
+    #: is; this says what the fact is about, and the two come apart exactly where the
+    #: same-event grouping was failing: "Golar LNG gains 1.65% in October 5 trading"
+    #: and "BTIG raises its Golar price target to $75" are both one company, one day
+    #: and no news; only the metric separates a share moving from a broker changing
+    #: its mind. ``"none"`` is a stated answer -- the story is not about a number --
+    #: and is a different state from ``NULL``, which means this was never assessed.
+    metric: Mapped[str | None] = mapped_column(String(24))
+
+    #: The period the claim covers, as the story states it: "FY26", "Q1 2026",
+    #: "2026-10-05", "this year". Free text on purpose, and **shown, not compared**.
+    #: A "CN Rail falls Monday" story and a "CN Rail rises Wednesday" story differ
+    #: here as well as in ``direction``, but normalising the two spellings into a
+    #: comparable form is a job of its own, and a wrong comparison silently vetoes a
+    #: real join -- the failure this grouping exists to prevent.
+    period: Mapped[str | None] = mapped_column(String(32))
+
+    #: The size as the story states it, units included: "1.65%", "$7.7bn".
+    magnitude: Mapped[str | None] = mapped_column(String(32))
+
     #: Whether this story is a claim about a share price: it names an instrument
     #: or a sector *and* carries a direction. See ``analysis/relevance.py`` for the
     #: rule and the reasoning behind the conjunction.

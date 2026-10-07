@@ -15,10 +15,13 @@ design, so it is what is tested.
 from __future__ import annotations
 
 from awltux.analysis.embeddings import (
+    IDENTITY_FIELDS,
     Event,
+    Identity,
     cluster,
     embed_text,
     group_events,
+    identity_of,
     text_fingerprint,
 )
 
@@ -33,6 +36,58 @@ def _unit(np, *values):
     """A unit vector, so cosine similarity is just the dot product."""
     array = np.asarray(values, dtype=np.float32)
     return array / np.linalg.norm(array)
+
+
+def _items(session, titles: list[str], *, ticker: str | None = None, fields=None):
+    """Real rows, because vectors are stored against `news_item.id` by foreign key.
+
+    ``fields`` is one dict of extra columns per title, for the tests that need the
+    rows to *differ* in the keys the grouping compares.
+    """
+    from awltux.db import NewsItem, utcnow
+
+    overrides = fields or [{} for _ in titles]
+    rows = []
+    for index, title in enumerate(titles):
+        row = NewsItem(
+            source="google_news",
+            url=f"https://news.test/{index}",
+            url_hash=f"hash-{index}-{title[:40]}",
+            title=title,
+            published_at=utcnow(),
+            tickers=[ticker] if ticker else [],
+            sectors=[],
+            created_at=utcnow(),
+            **overrides[index],
+        )
+        session.add(row)
+        rows.append(row)
+    session.commit()
+    return rows
+
+
+def _store(session, rows, settings, vectors):
+    """Vectors under the model the *code* will look them up by.
+
+    Not a name of the test's choosing: `queries.instrument_detail` groups without
+    passing settings, so `embeddings.get_settings()` resolves the application's own
+    configuration and a made-up model name would store vectors nothing ever finds --
+    which is exactly the failure this test would then be reporting as a feature bug.
+    """
+    from awltux.analysis.embeddings import store_vectors
+
+    store_vectors(
+        [row.id for row in rows],
+        [embed_text(row) for row in rows],
+        vectors,
+        settings.news.embeddings.model,
+    )
+    # Committed, not flushed. `session_scope` is re-entrant per thread, so
+    # `store_vectors` joined this test's transaction and only the outermost scope
+    # commits -- and a page is served on its own thread in another session, so a
+    # flushed-but-uncommitted vector is invisible to it. The same trap `AGENTS.md`
+    # records for a seeded page test.
+    session.commit()
 
 
 class TestClustering:
@@ -114,6 +169,124 @@ class TestClustering:
         assert payload == {"members": [1, 2], "size": 2, "similarity": 0.91}
 
 
+class TestTheIdentityVeto:
+    """Similarity says two stories resemble each other; it cannot say they are one event.
+
+    Measured 2026-10-07 over the 1,000 embedded stories at the threshold then in force:
+    of the 672 joins the cosine made, **439 (65%) contradicted their own group on the
+    stored event type or direction** -- "Canadian National Railway stock falls Wednesday"
+    grouped with the identical headline saying "rises", and one Claritev margin story
+    grouped with an insider share sale, a buyback launch and a DOJ probe. Those pairs
+    score high precisely because they are the same company on the same day in the same
+    register, which is the one thing a cosine cannot see past.
+
+    These tests assert the veto, and the veto's own limit: it may only refuse a join on
+    a field the story actually states.
+    """
+
+    def test_the_measured_pair_is_split_by_direction(self):
+        """The pair that broke the threshold: two near-identical headlines for CN Rail,
+        one saying the shares fell and one saying they rose. Their vectors are close
+        enough to clear any threshold a duplicate-detector would ship."""
+        np = __import__("numpy")
+        a, b = _unit(np, 1.0, 0.0), _unit(np, 1.0, 0.02)
+        identities = {
+            1: Identity(event_type="other", direction="negative", metric="share_price"),
+            2: Identity(event_type="other", direction="positive", metric="share_price"),
+        }
+        assert len(cluster([1, 2], {1: a, 2: b}, threshold=0.70)) == 1, "the vector joins them"
+        assert len(cluster([1, 2], {1: a, 2: b}, threshold=0.70, identities=identities)) == 2
+
+    def test_a_different_event_type_is_refused(self):
+        """A share moving and a broker changing its target on it: one company, one day,
+        two events the classifier already labelled differently."""
+        np = __import__("numpy")
+        a, b = _unit(np, 1.0, 0.0), _unit(np, 1.0, 0.01)
+        identities = {
+            1: Identity(event_type="analyst", direction="positive", metric="price_target"),
+            2: Identity(event_type="macro", direction="positive", metric="share_price"),
+        }
+        events = cluster([1, 2], {1: a, 2: b}, threshold=0.70, identities=identities)
+        assert [event.members for event in events] == [[1], [2]]
+
+    def test_a_story_the_classifier_agrees_with_still_joins(self):
+        """The veto must not be a blanket refusal, or it is just a tighter threshold
+        wearing a different name."""
+        np = __import__("numpy")
+        a, b = _unit(np, 1.0, 0.0), _unit(np, 1.0, 0.02)
+        identities = {
+            1: Identity(event_type="m_and_a", direction="positive", metric="share_price"),
+            2: Identity(event_type="m_and_a", direction="positive", metric="share_price"),
+        }
+        events = cluster([1, 2], {1: a, 2: b}, threshold=0.70, identities=identities)
+        assert [event.members for event in events] == [[1, 2]]
+
+    def test_an_unstated_key_abstains_rather_than_disagreeing(self):
+        """The rows classified before 0011 carry NULL, and the backfill is rationed.
+        Reading "no metric recorded" as "a different metric" would veto every join
+        until it caught up -- a silent regression caused by having no data, which is
+        the worst kind."""
+        np = __import__("numpy")
+        a, b = _unit(np, 1.0, 0.0), _unit(np, 1.0, 0.02)
+        half = {1: Identity(direction="positive"), 2: Identity()}
+        assert len(cluster([1, 2], {1: a, 2: b}, threshold=0.70, identities=half)) == 1
+
+    def test_no_identities_leaves_the_grouping_as_it_was(self):
+        """`cluster` is called directly by the API layer and by these tests; the
+        argument has to be optional or every existing caller acquires the rule."""
+        np = __import__("numpy")
+        a, b = _unit(np, 1.0, 0.0), _unit(np, 1.0, 0.02)
+        assert len(cluster([1, 2], {1: a, 2: b}, threshold=0.70)) == 1
+
+    def test_the_conflicting_fields_are_named(self):
+        left = Identity(event_type="earnings", direction="positive", metric="revenue")
+        right = Identity(event_type="earnings", direction="negative", metric="share_price")
+        assert left.conflicts(right) == ("direction", "metric")
+        assert not left.agrees(right)
+        assert left.agrees(Identity(event_type="earnings"))
+
+    def test_identity_is_read_off_a_row(self):
+        class Row:
+            event_type = "guidance"
+            direction = "negative"
+            metric = "earnings"
+
+        assert identity_of(Row()) == Identity("guidance", "negative", "earnings")
+        assert identity_of(object()) == Identity()
+
+    def test_the_compared_fields_are_the_fields_the_identity_holds(self):
+        """`IDENTITY_FIELDS` is what makes `conflicts` complete. A field added to the
+        dataclass and not to it would be stored, shown on the page, and silently
+        ignored by the only rule that reads it."""
+        import dataclasses
+
+        assert set(IDENTITY_FIELDS) == {field.name for field in dataclasses.fields(Identity)}
+
+    def test_the_veto_reaches_the_page(self, session, settings):
+        """The instrument page groups through `group_events`, so a rule wired only into
+        `cluster` would be a rule the reader never sees."""
+        rows = _items(
+            session,
+            [
+                "Canadian National Railway stock falls Wednesday, underperforms",
+                "Canadian National Railway stock rises Wednesday, outperforms",
+            ],
+            ticker="CNI_US_EQ",
+            fields=[
+                {"event_type": "other", "direction": "negative", "metric": "share_price"},
+                {"event_type": "other", "direction": "positive", "metric": "share_price"},
+            ],
+        )
+        _store(session, rows, settings, [[1.0, 0.0, 0.0], [1.0, 0.01, 0.0]])
+
+        groups, note = group_events(list(rows), settings=settings)
+
+        assert note is None
+        assert [group.size for group in groups] == [1, 1], (
+            "opposite directions are two events however alike the headlines read"
+        )
+
+
 class TestTheEmbeddedText:
     def test_the_headline_leads(self):
         class Row:
@@ -157,53 +330,11 @@ class TestThePageFacingGrouping:
     clustering again with its own rule.
     """
 
-    def _items(self, session, titles: list[str], *, ticker: str | None = None):
-        """Real rows, because vectors are stored against `news_item.id` by foreign key."""
-        from awltux.db import NewsItem, utcnow
-
-        rows = []
-        for index, title in enumerate(titles):
-            row = NewsItem(
-                source="google_news",
-                url=f"https://news.test/{index}",
-                url_hash=f"hash-{title}-{index}",
-                title=title,
-                published_at=utcnow(),
-                tickers=[ticker] if ticker else [],
-                sectors=[],
-                created_at=utcnow(),
-            )
-            session.add(row)
-            rows.append(row)
-        session.commit()
-        return rows
-
-    def _store(self, session, rows, settings, vectors):
-        """Vectors under the model the *code* will look them up by.
-
-        Not a name of the test's choosing: `queries.instrument_detail` groups without
-        passing settings, so `embeddings.get_settings()` resolves the application's own
-        configuration and a made-up model name would store vectors nothing ever finds --
-        which is exactly the failure this test would then be reporting as a feature bug.
-        """
-        from awltux.analysis.embeddings import store_vectors
-
-        store_vectors(
-            [row.id for row in rows],
-            [embed_text(row) for row in rows],
-            vectors,
-            settings.news.embeddings.model,
-        )
-        # Committed, not flushed. `session_scope` is re-entrant per thread, so
-        # `store_vectors` joined this test's transaction and only the outermost scope
-        # commits -- and a page is served on its own thread in another session, so a
-        # flushed-but-uncommitted vector is invisible to it. The same trap
-        # `AGENTS.md` records for a seeded page test.
-        session.commit()
-
     def test_it_groups_rows_and_leads_with_the_first_member(self, session, settings):
-        rows = self._items(session, ["Acme warns on profit", "Acme cuts its outlook", "Acme wins a contract"])
-        self._store(
+        rows = _items(
+            session, ["Acme warns on profit", "Acme cuts its outlook", "Acme wins a contract"]
+        )
+        _store(
             session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0], [0.0, 1.0, 0.0]]
         )
 
@@ -218,7 +349,7 @@ class TestThePageFacingGrouping:
     def test_without_vectors_every_story_stands_alone_and_it_says_so(self, session, settings):
         """`no stored vectors` and `one entry per event` look identical on a page, so
         the note is the only thing that tells the reader which one they are seeing."""
-        rows = self._items(session, ["one", "two"])
+        rows = _items(session, ["one", "two"])
 
         groups, note = group_events(list(rows), settings=settings)
 
@@ -232,18 +363,51 @@ class TestThePageFacingGrouping:
 
         session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
         session.flush()
-        rows = self._items(
+        rows = _items(
             session,
             ["Acme warns on profit", "Acme cuts its outlook", "Acme wins a contract"],
             ticker="TEST_US_EQ",
         )
-        self._store(
+        _store(
             session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0], [0.0, 1.0, 0.0]]
         )
 
         body = client.get("/instrument/TEST_US_EQ").text
 
-        assert "1 other report" in body
+        assert "1 similar report" in body
         assert "Acme cuts its outlook" in body, "the member is shown, not hidden"
         assert "weakest match" in body, "a wrong join has to be visible"
+        assert "of this event" not in body, (
+            "measured on real stories the similarity cannot tell one event reported twice "
+            "from one company on two days, so the page must not assert that it can"
+        )
         assert text_fingerprint("a") != text_fingerprint("b")
+
+    def test_the_keys_are_shown_beside_the_headline(self, client, session, settings):
+        """The keys are the evidence for the grouping, so they have to be readable --
+        otherwise a reader is asked to trust a rule they cannot see. `metric` especially:
+        it is the field that separates a share moving from a broker changing its target
+        on it, and no amount of similarity can show that."""
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("KEY_US_EQ", sec_cik="0000000002"))
+        session.flush()
+        keys = {
+            "event_type": "earnings",
+            "direction": "positive",
+            "metric": "revenue",
+            "period": "FY26",
+            "magnitude": "3.1%",
+        }
+        rows = _items(
+            session,
+            ["Acme reports 3.1% FY26 sales growth", "Acme posts FY26 sales growth"],
+            ticker="KEY_US_EQ",
+            fields=[dict(keys), dict(keys)],
+        )
+        _store(session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0]])
+
+        body = client.get("/instrument/KEY_US_EQ").text
+
+        for shown in ("earnings", "revenue", "positive", "FY26", "3.1%"):
+            assert shown in body, f"{shown} is a key the grouping compared and must be visible"

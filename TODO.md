@@ -309,58 +309,57 @@ cannot change stops being asked daily, or a review queue: there are **no** manua
 aliases at all (`is_manual` count is 0), and the only place one surfaces is the
 instrument page, one ticker at a time. A reviewer has no list to work from.
 
-### `same_event_threshold` is 0.70, measured on hard cases -- and two usage questions are open
+### The identity keys are stored, but 5,800 existing rows do not carry them
 
-**Corrected 2026-10-07.** This entry used to say the constant was 0.86 and had never been
-exercised, because `news_embedding` was empty. The model was replaced (the `openai/*`
-family is refused by this route) and the threshold is now **0.70**, from the measurement
-below rather than from a value measured to be wrong for the model shipped.
+The same-event grouping used to be one cosine threshold and nothing else. Measured
+2026-10-07 through the deployed container against the 1,000 embedded stories, of the
+**672 joins** it made at 0.70, **439 (65%) contradicted their own group on the stored
+`event_type` or `direction`** -- 374 on event type, 173 on direction:
 
-Measured 2026-10-07 through the application's own `EmbeddingClient` and `cluster()`, on
-**18 headlines across 10 events** — four real events each phrased three ways, plus six
-singletons — which includes the case that actually breaks a threshold and which unrelated
-headlines do not: the same company reporting two different things.
+    "Claritev (CTEV) Stock Jumps On Margin Strength Despite Ongoi..."    joined with
+      "...Douglas Michael Garis Sells 9,025 Shares of Claritev"
+      "...Claritev (CTEV) Is Down 42.1% After Launching $75 Million Bu..."
+      "Claritev drops on report DOJ expanding antitrust probe (CTEV..."
+    "Canadian National Railway stock falls Wednesday, underperforms"    joined with
+      "Canadian National Railway stock rises Wednesday, outperforms"      (0.8578)
 
-| model | within-event | across-event | gap | same company, diff event | 0 false / 0 missed at |
-|---|---|---|---|---|---|
-| `baai/bge-large-en-v1.5` | 0.7228–0.9154 | 0.2226–0.6869 | +0.0359 | 0.5967–0.6869 | **0.65, 0.70** |
-| `baai/bge-m3` | 0.6848–0.9460 | 0.2144–0.6211 | +0.0637 | 0.5372–0.6211 | 0.65 |
-| `google/gemini-embedding-001` | 0.8204–0.9737 | 0.4503–0.7376 | +0.0829 | 0.6549–0.7376 | 0.70–0.85 |
-| `qwen/qwen3-embedding-8b` | 0.7827–0.9698 | 0.3630–0.7411 | +0.0416 | 0.6145–0.7411 | 0.70, 0.75 |
+Every one of those pairs scores high *because* it is one company on one day in one
+register, which is the one thing a cosine cannot see past.
 
-Full clustering at each threshold for the shipped model: 0.60 → **2 false joins**; 0.65 →
-clean; **0.70 → clean (shipped)**; 0.75 → 1 missed join; 0.86 → 2 missed joins.
+`analysis/embeddings.Identity` and migration `0011` now require that a story not
+contradict its group's lead on event type, direction or metric before the similarity is
+consulted, and `same_event_threshold` went back to **0.70**: it is a tie-break among
+stories that already agree on what kind of thing happened, not the decision.
+`event_type` and `direction` are populated on every embedded row, so that half is live
+and vetoes 439 of those 672 joins today.
 
-**Two corrections to what this entry first recorded.** The gap is **+0.036 here, not the
-+0.28** that a three-pair smoke test reported — the earlier figure was an artefact of easy
-cases, and the separable band is (0.6869, 0.7228], which is narrow. And 0.75, this
-entry's first replacement, would have left a missed join; 0.70 is the measured grid point
-that is clean on both counts. It is *not* centred (centred is 0.705) and it biases toward
-false joins, which is the wrong way round for this feature; it is kept because it is a
-measured grid point rather than an interpolation, and the miss it avoids is the cheap
-failure. `0.65` is the more cautious measured point and is also clean.
+**What is missing is the third key.** `metric`, `period` and `magnitude` are new columns
+and **every existing row is NULL**. The veto reads an absent key as "not stated" rather
+than "different" -- the alternative would veto every join until the data caught up,
+silently -- so the metric half is inert until rows are re-classified. `news_relevance`
+backfills at **200 model calls per run** (`news.relevance_backfill_per_run`) against
+5,800 rows, so roughly 29 runs.
 
-**Open, and both need the live job's own output rather than more synthetic pairs:**
+`metric` is the one that matters and the reason the columns exist at all. On the five
+pairs that decided the threshold, the *true* EasyJet takeover pair scores **0.7925** and
+the *false* Golar pair **0.7599**, so similarity orders them wrongly, and the two differ
+in exactly this field (`share_price` against `price_target`). Same shape for Expedia (a
+raised target against "up 60% this year") and Dunelm (FY26 sales growth against a pre-open
+slip).
 
-1. **Truncation near the context limit.** `bge-large-en-v1.5` has a **512-token** context,
-   the smallest of the candidates. The truncation test — two documents sharing a ~380-char
-   prefix and differing only in the ending — returned cosine 0.918, so the ending *is*
-   read, and the model does not truncate at that length. But `embed_text()` sends the
-   headline plus `summary[:600]`, roughly 1,400 characters, which is much closer to 512
-   tokens than anything the test exercised. A model that silently drops the tail would
-   make two different events look identical, which is the one failure this feature must
-   not have. Re-test at the real input length, or cap `embed_text` explicitly.
-2. **Batch size.** `batch_size: 64` was only ever exercised with 7 texts. Whether this
-   model accepts 64 in one request — and whether the *total* token count per request is
-   bounded by the provider — has not been measured.
-3. The probes that produced the table are scratch under `.tmp/poc_embeddings/`
-   (`probe9.py` → `vector-quality.json`). They will not survive; the numbers are restated
-   here so nothing depends on them.
+`period` and `magnitude` are stored and shown beside the headline but **deliberately not
+compared**. The period that separates "falls Wednesday" from "rises Friday" is free text
+exactly as the story writes it, and comparing "2026-10-05" against an absent value vetoes
+a real join -- the failure this whole rule exists to prevent. Normalising it into
+something comparable is its own job.
 
-**Also worth knowing for the next model change:** only the `openai/*` embedding family is
-refused by this route; every other name tried answers 200 on the same URL with the same
-key. A name that does not exist returns `400 Model ... does not exist`, so names do reach
-resolution and the 401 is a per-model entitlement.
+**The question this leaves open.** With the veto running, is 0.70 still the right
+tie-break? The measurement that made 0.70 look wrong was taken *without* it. Re-measure
+once the metric backfill has run: if the surviving joins are genuine, the threshold can
+be loosened to catch the duplicates it is currently missing.
+
+The probes are scratch under `.tmp/probe_keys.py` and `.tmp/probe_keyed.py`, and will not
+survive; the numbers are restated here and in the `same_event_threshold` comment.
 
 ### The news-to-fundamentals weighting is an assumption, not a finding
 

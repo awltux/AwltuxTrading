@@ -33,6 +33,7 @@ from awltux.analysis.relevance import assess
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, utcnow
 from awltux.db.session import release_write_lock
+from awltux.llm.classify import apply_classification
 from awltux.providers.news_rss import (
     FinnhubNewsProvider,
     GdeltProvider,
@@ -317,17 +318,7 @@ def persist_items(
             if updates:
                 report.classified += 1
                 about = updates.get("is_about_this_company")
-                row.materiality = updates.get("materiality")
-                row.direction = updates.get("direction")
-                row.horizon = updates.get("horizon")
-                row.sentiment_score = updates.get("sentiment_score")
-                row.relevance = updates.get("relevance")
-                row.engine = updates.get("engine")
-                row.event_type = updates.get("event_type")
-                # The classifier's own justification. It was produced on every
-                # call and thrown away here, which left "relevant" unarguable.
-                reasoning = updates.get("reasoning")
-                row.relevance_reason = str(reasoning)[:1000] if reasoning else None
+                apply_classification(row, updates)
                 if updates.get("tickers"):
                     row.tickers = list({*row.tickers, *updates["tickers"]})
                 if updates.get("sectors"):
