@@ -222,9 +222,6 @@ def _note_discoveries(session: Session, ticker: str, result: Any, report: dict[s
 
     if not result.unlisted:
         return
-    candidates = {metric.name: metric.value for metric in result.unlisted.values()}
-    if not candidates:
-        return
 
     probe = FundamentalPeriod(
         instrument_t212_ticker=ticker,
@@ -240,12 +237,34 @@ def _note_discoveries(session: Session, ticker: str, result: Any, report: dict[s
     for check in ledger.composition(probe):
         if not check.failed or check.residual is None:
             continue
+        # Only captions from the statement the residual is *on*. The first run of this
+        # had no such filter and promoted a pair made of a balance-sheet line and a
+        # revenue line, whose total happened to land on the residual -- two unrelated
+        # statements summing to a number is a coincidence, and it would have gone into
+        # the prompt for every later filing.
+        candidates = {
+            metric.name: metric.value
+            for metric in result.unlisted.values()
+            if _on_balance_sheet(metric.location)
+        }
         found = gap.best(check.residual, candidates)
         if found is None:
             continue
         for label in found.labels:
             if record(session, label, group=BALANCE, reason=found.describe(), discovered_for=ticker):
                 report["discovered"] = report.get("discovered", 0) + 1
+
+
+def _on_balance_sheet(location: str | None) -> bool:
+    """Whether a caption was found on the balance sheet.
+
+    By the model's own ``location``, which the prompt requires it to give. Loose on
+    purpose -- filers and the model between them write "Balance Sheets", "Consolidated
+    balance sheets", "Statement of financial position" -- but not so loose that an
+    income-statement line passes, which is the false positive it exists to stop.
+    """
+    text = (location or "").lower()
+    return "balance sheet" in text or "financial position" in text
 
 
 def _company_name(session: Session, ticker: str) -> str:

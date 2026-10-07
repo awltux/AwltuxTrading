@@ -353,3 +353,74 @@ class TestLearningACaption:
 
         assert not report.get("discovered")
         assert len(metric_fields.load(session)) == len(metric_fields.seed())
+
+    def test_a_caption_from_another_statement_cannot_close_a_balance_sheet_gap(
+        self, settings, session, monkeypatch
+    ):
+        """The false positive the first live run produced.
+
+        A pair made of a balance-sheet line and a *revenue* line summed to the residual
+        and was promoted -- two unrelated statements adding up to a number is a
+        coincidence, and it would have gone into the prompt for every later filing. Only
+        captions the model found on the balance sheet may close a balance-sheet residual.
+        """
+        from awltux.analysis import metric_fields
+
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Revenue 79,728</p>")
+        _filing(session, url="https://sec.test/mixed.htm", raw_path=raw)
+        session.commit()
+
+        # Out by 79,728 -- and a revenue line happens to equal it.
+        metrics = {
+            "cash_and_equivalents": self._metric("cash_and_equivalents", 20_935.0),
+            "current_assets": self._metric("current_assets", 100_663.0),
+        }
+        income_line = ExtractedMetric(
+            name="product_revenue",
+            value=79_728.0,
+            span="Product revenue 79,728",
+            location="Income statements",
+        )
+        monkeypatch.setattr(
+            parsing,
+            "extract_filing",
+            lambda document, **kwargs: self._result(
+                unlisted={"product_revenue": income_line}, metrics=metrics
+            ),
+        )
+
+        report = parsing.extract_held_filings(session, settings=settings)
+
+        assert not report.get("discovered"), "an income line must not close a balance-sheet gap"
+        assert "product_revenue" not in metric_fields.names(session)
+
+    def test_a_caption_found_on_the_balance_sheet_still_qualifies(
+        self, settings, session, monkeypatch
+    ):
+        """The other direction, so the filter is not simply refusing everything."""
+        from awltux.analysis import metric_fields
+
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Short-term investments 55,908</p>")
+        _filing(session, url="https://sec.test/bs.htm", raw_path=raw)
+        session.commit()
+
+        metrics = {
+            "cash_and_equivalents": self._metric("cash_and_equivalents", 20_935.0),
+            "current_assets": self._metric("current_assets", 76_843.0),
+        }
+        # `_metric` files everything under "Consolidated balance sheets".
+        bs_line = self._metric("short_term_investments", 55_908.0)
+        monkeypatch.setattr(
+            parsing,
+            "extract_filing",
+            lambda document, **kwargs: self._result(
+                unlisted={"short_term_investments": bs_line}, metrics=metrics
+            ),
+        )
+
+        report = parsing.extract_held_filings(session, settings=settings)
+
+        assert report.get("discovered") == 1
+        assert "short_term_investments" in metric_fields.names(session)

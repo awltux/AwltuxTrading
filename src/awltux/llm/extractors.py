@@ -130,6 +130,12 @@ class ExtractionResult:
     def as_dict(self) -> dict[str, Any]:
         return {
             "metrics": self.metrics_for_storage,
+            # Kept, because it is the evidence a discovery rests on: which captions a
+            # filing offered, and where each was found. Without it a promoted name has
+            # no recorded reason beyond the registry's one-line note.
+            "unlisted_metrics": {
+                name: metric.as_dict() for name, metric in self.unlisted.items()
+            },
             "quality_notes": self.quality_notes,
             "risk_factors": self.risk_factors,
             "accounting_policy_changes": self.accounting_policy_changes,
