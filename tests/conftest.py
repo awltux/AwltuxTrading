@@ -56,8 +56,56 @@ def temp_dir() -> Iterator[Path]:
         shutil.rmtree(path, ignore_errors=True)
 
 
+@pytest.fixture(scope="session")
+def schema_template(config_file: Path) -> Iterator[Path]:
+    """A database with the whole schema already in it, built **once** for the session.
+
+    ``init_db`` is ``Base.metadata.create_all``, which measures **0.24s** -- it walks
+    every table and index and asks ``sqlite_master`` about each one before deciding to
+    do nothing. The ``settings`` fixture ran it once per test, so at 1,700-odd tests
+    the suite spent most of its wall clock creating a schema that is identical every
+    time. Copying a prepared file is three orders of magnitude cheaper.
+
+    Copied with an explicit ``wal_checkpoint(TRUNCATE)`` before a plain file copy,
+    and **the template has to already be in WAL mode**. Both halves matter:
+
+    * A plain copy of a WAL database can miss commits still in the write-ahead log, so
+      the log is emptied into the main file first. Nothing but the schema is ever
+      committed here, but "nothing is in the WAL" is not a thing to assume.
+    * ``VACUUM INTO`` was the first attempt and it writes a *rollback-journal* database.
+      The engine's connect listener then runs ``PRAGMA journal_mode=WAL`` on every new
+      connection, and converting a rollback-journal database needs a brief exclusive
+      lock. ``test_write_lock.py`` holds exactly that lock on purpose to prove a blocked
+      checkpoint cannot fail a job, so it failed on connect instead -- a fixture that
+      silently changed what an unrelated test was testing.
+    """
+    scratch = TMP_ROOT / f"template-{uuid.uuid4().hex[:12]}"
+    scratch.mkdir(parents=True, exist_ok=False)
+    template = scratch / "schema.db"
+    env = EnvSettings(
+        _env_file=None,
+        data_dir=scratch / "data",
+        config_file=config_file,
+        log_level="WARNING",
+        scheduler_enabled=False,
+    )
+    resolved = build_settings(env)
+    reset_engine()
+    try:
+        engine = init_db(resolved)
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        reset_engine()
+    shutil.copyfile(resolved.db_path, template)
+    yield template
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
 @pytest.fixture
-def settings(temp_dir: Path, config_file: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
+def settings(
+    temp_dir: Path, config_file: Path, schema_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> Settings:
     """Isolated settings pointing at a temporary data directory.
 
     Two independent guarantees, because a test suite that quietly reaches a live
@@ -78,6 +126,9 @@ def settings(temp_dir: Path, config_file: Path, monkeypatch: pytest.MonkeyPatch)
     """
     data_dir = temp_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
+    # The schema, from the session's template rather than from `create_all`. See
+    # `schema_template`: this one line is most of the suite's runtime.
+    shutil.copyfile(schema_template, data_dir / "awltux.db")
 
     env = EnvSettings(
         _env_file=None,
@@ -107,6 +158,15 @@ def settings(temp_dir: Path, config_file: Path, monkeypatch: pytest.MonkeyPatch)
         # and the scheduler thread outlived the temporary database it was writing
         # to. The dashboard is still the real application; only the timers are off.
         scheduler_enabled=False,
+        # One second rather than the shipped twenty. Several tests deliberately leave
+        # an `ingest_run` row open to assert that a *running* job renders as running,
+        # and the lifespan's shutdown drain then waits for it to finish -- which it
+        # never can, because it is a row and not a job. Measured: five teardowns at
+        # 20.2s each, ~100s or a fifth of the suite, spent waiting for nothing. One
+        # rather than zero so the budget is still passed through and the branch is
+        # still exercised; the drain's own behaviour is tested directly in
+        # `test_scheduler.py`, which passes its own timeouts.
+        shutdown_drain_seconds=1,
     )
     resolved = build_settings(env)
 
@@ -119,7 +179,6 @@ def settings(temp_dir: Path, config_file: Path, monkeypatch: pytest.MonkeyPatch)
     _patch_get_settings(monkeypatch, resolved)
 
     reset_engine()
-    init_db(resolved)
     yield resolved
     reset_engine()
 
