@@ -301,20 +301,35 @@ def _unattributed(facts: _Facts) -> Reason | None:
     )
 
 
+#: What each stage was trying to do, in words.
+#:
+#: The stored value is a slug because it is part of a unique key, and a sentence built
+#: straight from it reads as "fundamentals could not statements" -- which is what the
+#: live tooltip said the first time a blocker was written. The fallback is the raw slug,
+#: so a stage added by a job that has not been described here is still reported rather
+#: than dropped.
+STAGE_LABELS = {
+    "statements": "fetch the statements",
+    "xbrl": "read the filing's XBRL",
+    "cik": "resolve an SEC CIK",
+    "document": "download the document",
+    "prices": "fetch prices",
+}
+
+
 def _blocked(facts: _Facts) -> Reason | None:
     """A job that has recorded it cannot do its work for this instrument."""
     if not facts.blockers:
         return None
     worst = max(facts.blockers, key=lambda row: row.last_seen_at)
-    repeats = (
-        f", {worst.occurrences} times running" if worst.occurrences > 1 else ""
-    )
+    repeats = f", {worst.occurrences} times running" if worst.occurrences > 1 else ""
     extra = f" (+{len(facts.blockers) - 1} more)" if len(facts.blockers) > 1 else ""
+    doing = STAGE_LABELS.get(worst.stage, worst.stage)
     return Reason(
         code="blocked",
         label="A job cannot proceed",
         level=1,
-        detail=f"{worst.job} could not {worst.stage}: {worst.reason}{repeats}{extra}",
+        detail=f"{worst.job} could not {doing}: {worst.reason}{repeats}{extra}",
     )
 
 
@@ -416,6 +431,7 @@ def assess(
 __all__ = [
     "HEADLINE_METRICS",
     "MAX_LEVEL",
+    "STAGE_LABELS",
     "STALE_AFTER_DAYS",
     "UNPARSED_STATUS",
     "Attention",

@@ -253,6 +253,39 @@ class TestLevelOne:
         assert "HTTP 403" in blocked.detail
         assert "4 times running" in blocked.detail
 
+    def test_the_stage_reads_as_a_phrase_not_as_a_key(self, session):
+        """The stored stage is part of a unique key, so it is a slug.
+
+        The first live tooltip said *"fundamentals could not statements"*, which reads as
+        a bug in the dashboard rather than as a fact about the company.
+        """
+        _seed(session, "BLOCKED_US_EQ")
+        _add_blocker(session, "BLOCKED_US_EQ", stage="statements")
+        session.commit()
+
+        reasons = reasons_for(_facts(session, "BLOCKED_US_EQ"), today=dt.date(2026, 1, 5))
+
+        detail = next(r for r in reasons if r.code == "blocked").detail
+        assert "could not fetch the statements" in detail
+        assert "could not statements" not in detail
+
+    def test_an_undescribed_stage_is_still_reported(self, session):
+        """A stage added by a job nobody has described here must not be dropped."""
+        _seed(session, "ODDSTAGE_US_EQ")
+        _add_blocker(session, "ODDSTAGE_US_EQ", stage="quantum")
+        session.commit()
+
+        reasons = reasons_for(_facts(session, "ODDSTAGE_US_EQ"), today=dt.date(2026, 1, 5))
+
+        assert "could not quantum" in next(r for r in reasons if r.code == "blocked").detail
+
+    def test_every_stage_a_job_writes_has_a_label(self):
+        """The two jobs that record blockers, checked against the map, so a new stage
+        cannot be added silently and read as a slug in a tooltip."""
+        from awltux.analysis.attention import STAGE_LABELS
+
+        assert {"statements", "xbrl", "cik", "document", "prices"} <= set(STAGE_LABELS)
+
     def test_a_resolved_blocker_does_not_count(self, session):
         """Otherwise the filter becomes a list of things that used to be broken."""
         _seed(session, "FIXED_US_EQ")
