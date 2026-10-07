@@ -87,6 +87,42 @@ plausible check into an authoritative one. Also worth knowing: `companyfacts` is
 undimensioned aggregate, so a figure that exists only per-segment or per-class-of-stock
 is simply absent, and the linkbase path is the only route to it.
 
+**The route is now open.** `Filing.period_end` was populated on 0 of 4,958 rows and is
+now set from EDGAR's `reportDate` (4,602 of 4,958 after one `filings_edgar` run; the
+356 without it are S-1s and the forms whose `reportDate` EDGAR leaves empty). So a
+stored `FundamentalPeriod` can be matched to the annual filing that reports it on
+`period_end`, and `Filing.url` already carries the CIK and accession the linkbase path
+is built from. Probed on DFPH's 10-K for FY2025-12-31
+(`.../1799191/000179919126000007/toi-20251231.htm`): the accession directory's
+`index.json` lists `toi-20251231_cal.xml`, 91,210 bytes, and it parses into 14 roles
+with 28 arcs on the balance sheet alone -- including `us-gaap_Assets` as exactly six
+declared children. Two things that probe settled: the filer also declares its *own*
+extension tags (DFPH has `toi_DerivativeWarrantLiabilitiesNoncurrent`), which no
+hand-maintained `TAG_MAP` can know, and the filer states subtotals we do not model at
+all (`us-gaap_OperatingCostsAndExpenses`). So the check has to separate "the filer
+declares a line we do not hold" from "we hold every declared line and it still does
+not sum" -- only the second is a contradiction.
+
+**Use `metric_sources`, not a reversed `TAG_MAP`.** `FundamentalPeriod.metric_sources`
+already records, per metric, the exact tag the figure came from
+(`span = "us-gaap:Assets"`, plus the accession and form), so the mapping from a
+declared linkbase tag to the value we hold needs no guessing at all -- and it is the
+*right* tag rather than the preferred one, which matters for exactly the filers whose
+`TAG_MAP` entry is the unusual case. Verified on DFPH's FY2025-12-31 period: 27 of its
+metrics carry provenance and every tag matches the linkbase's declared tag verbatim.
+Linkbase `xlink:href` fragments are `us-gaap_Assets` (underscore), so the join key is
+the fragment with its first `_` replaced by `:`.
+
+**What the failures actually look like, before blaming the tags.** Re-measured
+2026-10-07: DFPH's equation itself is `ok` (180,376,000 liabilities less 15,720,000
+equity reconciles to 164,656,000 of assets). What fails is `composition` -- and the
+stored period holds no `cash`, no `other_current_assets`, no `operating_lease_assets`
+and no `other_noncurrent_assets` at all, while the linkbase declares each of them. A
+component check that fails because we hold four lines fewer than the filer declares is
+reporting our own coverage, not a filer error, and the current wording ("Components sum
+to stated total assets") does not say which. That is the first thing the linkbase makes
+sayable.
+
 ### A manual Run now executes outside the scheduler's one-worker limit
 
 `SchedulerService.run_now` calls `execute_job(spec)` **directly** rather than

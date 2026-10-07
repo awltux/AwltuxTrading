@@ -201,6 +201,12 @@ def deepen_annual_history(
                     filing_type=entry.get("form"),
                     title=entry.get("description") or entry.get("form"),
                     filed_at=_as_datetime(entry.get("filing_date")),
+                    # The period the report covers, which for an annual report is
+                    # its fiscal year end. Set here as well as in the filings sync
+                    # because this is the path that exists to hold annual reports,
+                    # and the period is how a reader gets from the document to the
+                    # figures taken from it.
+                    period_end=_as_day(entry.get("report_date")),
                     url=url,
                     status="pending",
                 )
@@ -358,3 +364,14 @@ def _as_datetime(value: str | None) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value[:10]).replace(tzinfo=dt.UTC)
     except ValueError:
         return None
+
+
+def _as_day(value: str | None) -> dt.date | None:
+    """The day of an ISO timestamp, for a ``Date`` column.
+
+    ``period_end`` is a ``Date``: an aware datetime would be stored as a day and read
+    back naive, which is the naive/aware trap this codebase has hit before. Take the
+    day at the boundary rather than leaving it to the driver.
+    """
+    stamp = _as_datetime(value)
+    return stamp.date() if stamp is not None else None

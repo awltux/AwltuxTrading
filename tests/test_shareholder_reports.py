@@ -507,6 +507,43 @@ class TestDiscoveringTheHistory:
             ).all()
             assert len(stored) == 2, "the known filing must not be inserted twice"
 
+    def test_an_annual_filing_records_the_year_it_covers(self, settings, monkeypatch):
+        """The period, not the filing date: an annual report is *for* a year.
+
+        Measured before this was written: 0 of 4,958 stored filings had a period.
+        The discovery entries carry EDGAR's ``reportDate``, which for a 10-K is the
+        fiscal year end -- the citation link from a document to the figures taken
+        from it.
+        """
+        self._patch(
+            monkeypatch,
+            None,
+            entries=[
+                {
+                    "form": "10-K",
+                    "filing_date": "2026-02-01",
+                    "report_date": "2025-09-27",
+                    "accession_number": ACCESSIONS[2026],
+                    "description": "Annual report",
+                    "url": _url(ACCESSIONS[2026]),
+                }
+            ],
+        )
+
+        with session_scope() as session:
+            session.add(make_instrument(TICKER, sec_cik="0000320193"))
+            session.flush()
+
+            documents.deepen_annual_history(session, years=2, settings=settings)
+
+            stored = session.execute(
+                Filing.__table__.select().where(Filing.instrument_t212_ticker == TICKER)
+            ).all()
+
+        assert len(stored) == 1
+        assert stored[0].period_end == dt.date(2025, 9, 27)
+        assert stored[0].filed_at.date() == dt.date(2026, 2, 1)
+
     def test_the_window_is_read_from_the_configuration(self, settings, monkeypatch):
         """Two years for now; the request was six, and this is the one knob."""
         from awltux.config import ReportsConfig
