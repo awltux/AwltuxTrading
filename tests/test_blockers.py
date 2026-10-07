@@ -25,8 +25,9 @@ from awltux.ingest.blockers import clear_blocker, record_blocker
 from tests.helpers import make_instrument
 
 
-def _seed(session, ticker: str = "TEST_US_EQ") -> None:
-    session.add(make_instrument(ticker, sec_cik="0000000001"))
+def _seed(session, ticker: str = "TEST_US_EQ", **overrides) -> None:
+    overrides.setdefault("sec_cik", "0000000001")
+    session.add(make_instrument(ticker, **overrides))
     session.flush()
 
 
@@ -210,6 +211,224 @@ class TestWhatTheAttentionRuleSees:
         session.commit()
 
         assert "OUT_US_EQ" not in attention.assess(session, level=1, settings=settings)
+
+
+class TestTheJobsThatRecordThem:
+    """The wiring, per job, through its own entry point rather than the record.
+
+    Six jobs were named as recording nothing, and five of them can fail one instrument
+    and succeed the rest. Measured 2026-10-07: scanning the last 400 `ingest_run.detail`
+    payloads for per-instrument failures found **5 instruments**, because the lists are
+    free text, each job words its own differently, and `retention` prunes the detail
+    away. These tests are what stops a job being unwired again by a refactor.
+    """
+
+    def _blockers(self, session) -> dict[tuple[str, str], InstrumentBlocker]:
+        return {
+            (row.job, row.stage): row
+            for row in session.query(InstrumentBlocker).order_by(InstrumentBlocker.id)
+        }
+
+    def test_filings_edgar(self, session, settings):
+        from awltux.ingest.edgar import sync_filings
+        from awltux.providers.http import ProviderError
+
+        _seed(session, "TEST_US_EQ", sec_cik="0000000001")
+        session.commit()
+
+        class Refusing:
+            def get_recent_filings(self, cik, *, limit: int = 40):
+                raise ProviderError("edgar", "HTTP 503", status=503)
+
+            def get_sic(self, cik):
+                return None, None
+
+        sync_filings(session, settings=settings, provider=Refusing())
+
+        blocker = self._blockers(session)[("filings_edgar", "filings")]
+        assert blocker.resolved_at is None
+        assert "HTTP 503" in blocker.reason
+
+        class Answering(Refusing):
+            def get_recent_filings(self, cik, *, limit: int = 40):
+                return []
+
+        sync_filings(session, settings=settings, provider=Answering())
+
+        assert self._blockers(session)[("filings_edgar", "filings")].resolved_at is not None
+
+    def test_shareholder_reports_records_both_of_its_stages(self, session, settings):
+        """The walk and the download are separate steps, so they are separate blockers
+        -- a company whose annual forms EDGAR will not list has not had a download
+        refused, and the reader is owed the distinction."""
+        from awltux.db import Filing
+        from awltux.ingest import documents
+        from awltux.providers.http import ProviderError
+
+        _seed(session, "TEST_US_EQ", sec_cik="0000000001")
+        session.add(
+            Filing(
+                instrument_t212_ticker="TEST_US_EQ",
+                source="edgar",
+                filing_type="10-K",
+                url="https://sec.test/report.htm",
+                status="pending",
+            )
+        )
+        session.commit()
+
+        class Refusing:
+            def get_annual_filings(self, cik, *, since, limit: int = 6):
+                raise ProviderError("edgar", "HTTP 503", status=503)
+
+            def fetch_document(self, url):
+                raise ProviderError("edgar", "connection reset", status=None)
+
+        documents.deepen_annual_history(session, settings=settings, provider=Refusing())
+        documents.fetch_annual_reports(session, settings=settings, provider=Refusing())
+
+        blockers = self._blockers(session)
+        assert set(blockers) == {
+            ("shareholder_reports", "discovery"),
+            ("shareholder_reports", "document"),
+        }
+        assert all(row.resolved_at is None for row in blockers.values())
+
+    def test_shareholder_reports_clears_the_download_when_any_document_arrives(
+        self, session, settings
+    ):
+        """One company has up to `years` reports in the queue, so a blocker recorded and
+        cleared inside the same run would depend on which of them was processed last --
+        and the honest question is whether *a* document arrived, not whether every one
+        did."""
+        from awltux.db import Filing
+        from awltux.ingest import documents
+        from awltux.providers.edgar import Document
+
+        _seed(session, "TEST_US_EQ", sec_cik="0000000001")
+        for number in ("1", "2"):
+            session.add(
+                Filing(
+                    instrument_t212_ticker="TEST_US_EQ",
+                    source="edgar",
+                    filing_type="10-K",
+                    url=f"https://sec.test/report{number}.htm",
+                    status="pending",
+                )
+            )
+        record_blocker(
+            session,
+            "TEST_US_EQ",
+            job="shareholder_reports",
+            stage="document",
+            reason="connection reset",
+        )
+        session.commit()
+
+        class HalfWorking:
+            """The first document refuses, the second arrives."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def fetch_document(self, url):
+                self.calls += 1
+                if self.calls == 1:
+                    return Document(url, 403, "text/html", b"")
+                return Document(url, 200, "text/html", b"<html><body>10-K</body></html>")
+
+        report = documents.fetch_annual_reports(
+            session, settings=settings, provider=HalfWorking()
+        )
+
+        assert report.fetched == 1 and report.failed == 1
+        assert self._blockers(session)[("shareholder_reports", "document")].resolved_at is not None
+
+    def test_uk_companies(self, session, settings):
+        from awltux.ingest.fundamentals import resolve_uk_companies
+
+        _seed(
+            session,
+            "TEST_US_EQ",
+            exchange_name="LSE",
+            yahoo_symbol="TEST.L",
+            ch_company_number=None,
+        )
+        session.commit()
+
+        class NoMatch:
+            configured = True
+
+            def search_companies(self, name, **kwargs):
+                return [{"title": "Something Else", "company_number": "00000001"}]
+
+        resolve_uk_companies(session, settings=settings, provider=NoMatch())
+
+        blocker = self._blockers(session)[("uk_companies", "company_number")]
+        assert blocker.resolved_at is None
+        assert "no Companies House record matched" in blocker.reason
+
+        class Match:
+            configured = True
+
+            def search_companies(self, name, **kwargs):
+                return [
+                    {
+                        "title": "Apple Inc",
+                        "company_number": "00000002",
+                        "company_status": "active",
+                    }
+                ]
+
+        resolve_uk_companies(session, settings=settings, provider=Match())
+
+        assert (
+            self._blockers(session)[("uk_companies", "company_number")].resolved_at
+            is not None
+        )
+
+    def test_prices(self, session):
+        """Per instrument even though the provider call is per batch: a batch that
+        fails at the HTTP level is one fact about the provider, and recording it against
+        forty instruments would report a rate limit as forty broken companies."""
+        from awltux.ingest.prices import PriceIngestReport, persist_batch
+
+        _seed(session, "TEST_US_EQ", yahoo_symbol="TEST")
+        session.commit()
+
+        persist_batch(session, ["TEST"], {}, report=PriceIngestReport())
+
+        blocker = self._blockers(session)[("price_eod", "prices")]
+        assert blocker.resolved_at is None
+        assert "no bars for TEST" in blocker.reason
+
+    def test_symbol_resolution(self, session, monkeypatch):
+        from awltux.ingest import jobs
+        from awltux.ingest.identity import SymbolCandidate
+        from awltux.providers.http import ProviderError
+
+        _seed(session, "TEST_US_EQ", isin="US0378331005")
+        session.commit()
+
+        def refuse(provider, query, instrument, *, by_isin):
+            raise ProviderError("yahoo", "HTTP 429", status=429)
+
+        monkeypatch.setattr(jobs, "_lookup_symbol", refuse)
+        jobs.resolve_symbols()
+
+        session.expire_all()
+        blocker = self._blockers(session)[("symbol_resolution", "symbol")]
+        assert blocker.resolved_at is None
+        assert "HTTP 429" in blocker.reason
+
+        def resolve(provider, query, instrument, *, by_isin):
+            return SymbolCandidate(symbol="AAPL", name="Apple Inc", confidence=0.9, method="isin")
+
+        monkeypatch.setattr(jobs, "_lookup_symbol", resolve)
+        jobs.resolve_symbols()
+
+        session.expire_all()
+        assert self._blockers(session)[("symbol_resolution", "symbol")].resolved_at is not None
 
 
 def test_the_model_carries_a_first_and_last_seen_stamp():

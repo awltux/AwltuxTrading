@@ -280,11 +280,33 @@ class TestLevelOne:
         assert "could not quantum" in next(r for r in reasons if r.code == "blocked").detail
 
     def test_every_stage_a_job_writes_has_a_label(self):
-        """The two jobs that record blockers, checked against the map, so a new stage
-        cannot be added silently and read as a slug in a tooltip."""
+        """Read out of the tree, not listed here, so a new stage cannot be added
+        silently and read as a slug in a tooltip.
+
+        Written as a scan because the alternative is a hand-maintained list of the
+        stages jobs record -- which is the same second-source-of-truth problem the
+        label map exists to avoid, one level up. Four of the ten stages were unwritten
+        when this replaced the literal check, which is the drift it catches.
+        """
+        import re
+        from pathlib import Path
+
         from awltux.analysis.attention import STAGE_LABELS
 
-        assert {"statements", "xbrl", "cik", "document", "prices"} <= set(STAGE_LABELS)
+        repo = Path(__file__).resolve().parent.parent
+        written = {
+            match.group(1)
+            for path in sorted((repo / "src").rglob("*.py"))
+            for match in re.finditer(
+                r'stage\s*=\s*"([a-z_]+)"', path.read_text(encoding="utf-8")
+            )
+        }
+
+        assert written, "the scan found no stage at all, so it is not reading the tree"
+        assert written <= set(STAGE_LABELS), (
+            "a job records a blocker under a stage the attention check has no words for, "
+            f"so the tooltip shows the slug: {sorted(written - set(STAGE_LABELS))}"
+        )
 
     def test_a_resolved_blocker_does_not_count(self, session):
         """Otherwise the filter becomes a list of things that used to be broken."""

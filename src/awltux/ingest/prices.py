@@ -25,12 +25,18 @@ from awltux.analysis import fx
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, PriceBar, Quote, utcnow
 from awltux.db.session import release_write_lock
+from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import BarSeries, YahooProvider
 from awltux.scheduler import progress
 from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
+
+#: This job's registry id, used to key the blockers it records. Named rather than
+#: repeated, because a blocker keyed by a misspelt job id is a blocker the attention
+#: check never reports.
+JOB = "price_eod"
 
 #: Tickers per batch download call. Large enough to be efficient, small enough
 #: that one bad symbol does not lose the whole batch.
@@ -193,15 +199,28 @@ def persist_batch(
     written = 0
     for symbol in symbols:
         series = series_map.get(symbol)
-        if series is None or not series.bars:
-            report.tickers_failed.append(symbol)
-            continue
         instrument = session.execute(
             select(Instrument).where(Instrument.yahoo_symbol == symbol).limit(1)
         ).scalar_one_or_none()
         if instrument is None:
             report.tickers_failed.append(symbol)
             continue
+        if series is None or not series.bars:
+            report.tickers_failed.append(symbol)
+            # Recorded per instrument even though the call was per batch: "the provider
+            # returned nothing for this symbol" is a fact about one company, and a
+            # blocker on all forty when the *batch* call raised would report a rate limit
+            # as forty broken instruments -- which is why the batch-level failure above
+            # is not recorded here.
+            record_blocker(
+                session,
+                instrument.t212_ticker,
+                job=JOB,
+                stage="prices",
+                reason=f"the provider returned no bars for {symbol}",
+            )
+            continue
+        clear_blocker(session, instrument.t212_ticker, job=JOB, stage="prices")
         report.tickers_returned += 1
         written += store_bar_series(session, instrument, series, report=report)
         # Commit per instrument. A batch of 40 is roughly 20,000 bars, and writing

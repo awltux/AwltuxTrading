@@ -24,11 +24,17 @@ from awltux.analysis.sectors import assign
 from awltux.config import Settings, get_settings
 from awltux.db import Filing, Instrument, NewsItem, utcnow
 from awltux.db.session import release_write_lock
+from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.ingest.symbols import is_uk_listing
 from awltux.providers.edgar import EdgarProvider, normalise_cik, parse_atom_entries
 from awltux.providers.http import ProviderError
 
 logger = logging.getLogger(__name__)
+
+#: This job's registry id, used to key the blockers it records. Named rather than
+#: repeated, because a blocker keyed by a misspelt job id is a blocker the attention
+#: check never reports.
+JOB = "filings_edgar"
 
 
 @dataclass(slots=True)
@@ -171,10 +177,22 @@ def sync_filings(
             )
         except ProviderError as exc:
             report.errors.append(f"{instrument.t212_ticker}: {exc}")
+            # Recorded as a blocker as well as a failure: the report's list is for the
+            # run's log and expires with it, while a filer whose submissions EDGAR keeps
+            # refusing is a reading that stays missing.
+            record_blocker(
+                session,
+                instrument.t212_ticker,
+                job=JOB,
+                stage="filings",
+                reason=str(exc),
+            )
             continue
 
         report.filings_seen += len(filings)
         _store_filings(session, instrument, filings, report)
+        # The fetch happened, so whatever was recorded against this step is stale.
+        clear_blocker(session, instrument.t212_ticker, job=JOB, stage="filings")
 
         # SIC is a free, authoritative sector code for US filers.
         if not instrument.sic_code:

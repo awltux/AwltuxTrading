@@ -314,7 +314,11 @@ STAGE_LABELS = {
     "extract": "read a period out of the payload",
     "cik": "resolve an SEC CIK",
     "document": "download the document",
+    "discovery": "find the annual reports",
+    "filings": "fetch the filing history",
+    "company_number": "resolve a Companies House number",
     "prices": "fetch prices",
+    "symbol": "resolve a provider symbol",
 }
 
 

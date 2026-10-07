@@ -1061,12 +1061,11 @@ def resolve_symbols(tickers: list[str] | None = None) -> JobResult:
     "below the 0.70 floor, names share 40% of their words" is a request for a human;
     an instrument with no alias at all is one nobody will ever look at.
     """
-    from sqlalchemy import select
 
     from awltux.config import get_settings
-    from awltux.db import Instrument, InstrumentAlias, utcnow
     from awltux.db.session import release_write_lock
-    from awltux.ingest.identity import APPLY_FLOOR, describe
+    from awltux.ingest.blockers import record_blocker
+    from awltux.ingest.identity import APPLY_FLOOR
     from awltux.providers.http import ProviderError
     from awltux.providers.yahoo import YahooProvider
 
@@ -1128,52 +1127,25 @@ def resolve_symbols(tickers: list[str] | None = None) -> JobResult:
                     resolution = by_name
         except ProviderError as exc:
             errors.append(f"{instrument.t212_ticker}: {exc}")
+            # The alias row records this too, but only for a reader who opens this
+            # instrument: the blocker is what puts it in front of one.
+            with session_scope() as session:
+                record_blocker(
+                    session,
+                    instrument.t212_ticker,
+                    job="symbol_resolution",
+                    stage="symbol",
+                    reason=str(exc),
+                )
             continue
 
-        with session_scope() as session:
-            row = session.get(Instrument, instrument.t212_ticker)
-            if row is None:
-                continue
-            alias = session.execute(
-                select(InstrumentAlias).where(
-                    InstrumentAlias.instrument_t212_ticker == row.t212_ticker,
-                    InstrumentAlias.provider == "yahoo",
-                )
-            ).scalar_one_or_none()
-            if alias is None:
-                alias = InstrumentAlias(
-                    instrument_t212_ticker=row.t212_ticker, provider="yahoo", symbol=""
-                )
-                session.add(alias)
-
-            # A human's correction is never overwritten -- the same rule the
-            # universe sync follows, for the same reason.
-            if alias.is_manual:
-                continue
-
-            applied = resolution is not None and resolution.usable
-            if resolution is not None:
-                alias.symbol = resolution.symbol
-                alias.confidence = resolution.confidence
-                alias.method = resolution.method
-                alias.note = describe(resolution, instrument_name=instrument.name)
-            else:
-                alias.confidence = 0.0
-                alias.method = "isin" if by_isin else "name"
-                alias.note = describe(None)
-            alias.verified_at = utcnow()
-
-            if applied and resolution is not None:
-                row.yahoo_symbol = resolution.symbol
-                row.mapping_confidence = resolution.confidence
-                resolved.append(f"{row.t212_ticker}->{resolution.symbol}")
-            elif resolution is not None:
-                # Recorded but not trusted. Left unresolved on purpose: attaching
-                # another company's prices would be worse than a visible gap.
-                rejected.append(f"{row.t212_ticker}->{resolution.symbol}")
-            else:
-                unresolved.append(row.t212_ticker)
-            session.flush()
+        outcome, symbol = _store_symbol_verdict(instrument, resolution, by_isin=by_isin)
+        if outcome == "resolved":
+            resolved.append(f"{instrument.t212_ticker}->{symbol}")
+        elif outcome == "rejected":
+            rejected.append(f"{instrument.t212_ticker}->{symbol}")
+        elif outcome == "unresolved":
+            unresolved.append(instrument.t212_ticker)
 
     if errors:
         note = f"{len(errors)} lookups failed and will retry: {errors[0]}"
@@ -1201,6 +1173,91 @@ def resolve_symbols(tickers: list[str] | None = None) -> JobResult:
             "errors": errors[:10],
         },
     )
+
+
+def _store_symbol_verdict(
+    instrument: Any, resolution: Any, *, by_isin: bool
+) -> tuple[str, str | None]:
+    """Write the candidate to the alias, and say what the run made of it.
+
+    Returns ``(outcome, symbol)``, where the outcome is ``"resolved"``, ``"rejected"``,
+    ``"unresolved"`` or ``"manual"`` -- a human's correction is never overwritten, which
+    is the same rule the universe sync follows.
+
+    A named step because the outcome *is* the blocker: every answer except a trusted
+    symbol records why this instrument still has no provider to fetch prices from, and
+    the attention filter reads that instead of a run's log. Its own session, like every
+    other database phase in this job -- the searches that produced the candidate are
+    network calls and must not be inside a transaction.
+    """
+    from sqlalchemy import select
+
+    from awltux.db import Instrument, InstrumentAlias, session_scope, utcnow
+    from awltux.ingest.blockers import clear_blocker, record_blocker
+    from awltux.ingest.identity import describe
+
+    ticker = instrument.t212_ticker
+    with session_scope() as session:
+        row = session.get(Instrument, ticker)
+        if row is None:
+            return "manual", None
+        alias = session.execute(
+            select(InstrumentAlias).where(
+                InstrumentAlias.instrument_t212_ticker == ticker,
+                InstrumentAlias.provider == "yahoo",
+            )
+        ).scalar_one_or_none()
+        if alias is None:
+            alias = InstrumentAlias(
+                instrument_t212_ticker=ticker, provider="yahoo", symbol=""
+            )
+            session.add(alias)
+        if alias.is_manual:
+            return "manual", None
+
+        if resolution is not None:
+            alias.symbol = resolution.symbol
+            alias.confidence = resolution.confidence
+            alias.method = resolution.method
+            alias.note = describe(resolution, instrument_name=instrument.name)
+        else:
+            alias.confidence = 0.0
+            alias.method = "isin" if by_isin else "name"
+            alias.note = describe(None)
+        alias.verified_at = utcnow()
+
+        if resolution is not None and resolution.usable:
+            row.yahoo_symbol = resolution.symbol
+            row.mapping_confidence = resolution.confidence
+            clear_blocker(session, ticker, job="symbol_resolution", stage="symbol")
+            session.flush()
+            return "resolved", resolution.symbol
+
+        if resolution is not None:
+            # Recorded but not trusted. Left unresolved on purpose: attaching another
+            # company's prices would be worse than a visible gap.
+            record_blocker(
+                session,
+                ticker,
+                job="symbol_resolution",
+                stage="symbol",
+                reason=alias.note or "no candidate above the confidence floor",
+            )
+            session.flush()
+            return "rejected", resolution.symbol
+
+        record_blocker(
+            session,
+            ticker,
+            job="symbol_resolution",
+            stage="symbol",
+            reason=(
+                "no Yahoo listing matched the ISIN or the company name, so this "
+                "instrument has no provider symbol to fetch prices with"
+            ),
+        )
+        session.flush()
+        return "unresolved", None
 
 
 def ingest_edgar_events() -> JobResult:

@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 #: This job's registry id, used to key the blockers it records.
 JOB = "fundamentals"
 
+#: The other job this module serves: `resolve_uk_companies` is the `uk_companies` job's
+#: whole body, so a blocker it records under `JOB` would be attributed to the wrong job
+#: and reported by the attention check as `fundamentals` failing to do something it
+#: never attempted.
+UK_JOB = "uk_companies"
+
 #: Yahoo ``income_stmt`` / ``balance_sheet`` / ``cashflow`` row labels mapped onto
 #: canonical keys. Order matters: the first label present wins, and later entries
 #: act as fallbacks for the different names Yahoo uses between sectors.
@@ -700,13 +706,34 @@ def resolve_uk_companies(
             candidates = provider.search_companies(instrument.name)
         except ProviderError as exc:
             logger.debug("CH search failed for %s: %s", instrument.name, exc)
+            # The level-2 reason for a UK listing used to be "no Companies House
+            # number", which is the *symptom*: this says which company could not be
+            # matched and why, and outlives the run's log.
+            record_blocker(
+                session,
+                instrument.t212_ticker,
+                job=UK_JOB,
+                stage="company_number",
+                reason=str(exc),
+            )
             continue
 
         match = match_company(instrument, candidates)
         if match is None:
             summary["unmatched"] += 1
+            record_blocker(
+                session,
+                instrument.t212_ticker,
+                job=UK_JOB,
+                stage="company_number",
+                reason=(
+                    f'no Companies House record matched "{instrument.name}" among '
+                    f"{len(candidates)} candidates"
+                ),
+            )
             continue
 
+        clear_blocker(session, instrument.t212_ticker, job=UK_JOB, stage="company_number")
         instrument.ch_company_number = match.company_number
         summary["matched"] += 1
         if match.confidence >= 0.8:

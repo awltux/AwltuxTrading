@@ -540,27 +540,6 @@ and `cost_usd` from the model's published per-million rate. It needs the rates i
 `config.yaml` beside `news.embeddings`, because they are per model and the parser already
 knows which model answered.
 
-### Two jobs record a per-instrument failure and six do not
-
-`instrument_blocker` exists so a *missing* figure is not mistaken for an answer, and only
-`fundamentals` and `xbrl_statements` write to it. Every other job that can fail one
-instrument and succeed the rest records nothing: `shareholder_reports` (a refused download
-is in `download_errors` and nowhere else), `filings_edgar`, `uk_companies`, `edgar_events`,
-`prices` and `symbol_resolution`.
-
-Measured 2026-10-07, which is why this is a queue item and not a hypothetical: parsing the
-per-instrument failure lists out of the last **400** `ingest_run.detail` payloads found
-**5 instruments** in total. The lists are free text, each job words its own differently,
-and `retention` prunes the detail away — so the evidence exists in the log and decays
-before anyone can act on it.
-
-The add is mechanical: `record_blocker` where a job appends to its failure list,
-`clear_blocker` where it succeeds. `uk_companies` was the one to do first — the level-2
-reason for a UK listing is "no Companies House number" — and it is less pressing on its
-own account now that 115 of the 118 UK listings resolve. The case for it is the general
-one: `xbrl_statements` and `fundamentals` are the only jobs whose per-instrument failures
-are visible at all.
-
 ### `decision` still sweeps the whole universe, and six jobs have no stopping point
 
 Two jobs, one conclusion, and the second was found by being blocked twice in a row.
@@ -1115,6 +1094,16 @@ the next run spends one of its few requests re-fetching it.
 ---
 
 ## Deliberately not doing
+
+### A per-instrument blocker for `edgar_events`
+
+Re-measured 2026-10-16, when blockers were wired into the other five jobs that were
+missing them. `edgar_events` has no per-instrument failure to record: its only failure
+path is the current-events request itself (`edgar.py::ingest_current_events` catches
+`ProviderError` once, before the loop, and returns), which fails for every instrument at
+once and is not a fact about one company. Entries whose CIK matches no instrument are
+dropped rather than guessed at, and those CIKs are by definition not instruments we hold.
+A blocker here would have to invent a per-instrument failure for a feed-level fact.
 
 ### Day trading / intraday horizon
 

@@ -46,10 +46,16 @@ from sqlalchemy.orm import Session
 from awltux.config import Settings, get_settings
 from awltux.db import Filing, Instrument, utcnow
 from awltux.db.session import release_write_lock
+from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.providers.edgar import ANNUAL_FORMS
 from awltux.providers.http import ProviderError
 
 logger = logging.getLogger(__name__)
+
+#: This job's registry id, used to key the blockers it records. Named rather than
+#: repeated, because a blocker keyed by a misspelt job id is a blocker the attention
+#: check never reports.
+JOB = "shareholder_reports"
 
 #: Subdirectory of ``data/raw`` holding filing documents.
 DOCUMENT_DIR = "filings"
@@ -189,7 +195,15 @@ def deepen_annual_history(
             )
         except ProviderError as exc:
             report.errors.append(f"{instrument.t212_ticker}: {exc}")
+            record_blocker(
+                session,
+                instrument.t212_ticker,
+                job=JOB,
+                stage="discovery",
+                reason=str(exc),
+            )
             continue
+        clear_blocker(session, instrument.t212_ticker, job=JOB, stage="discovery")
 
         known = {
             url
@@ -327,21 +341,37 @@ def fetch_annual_reports(
     provider = provider or EdgarProvider(settings)
     report = DocumentReport()
 
+    #: Held per instrument, not per document: one company has up to `years` reports in
+    #: this queue, so a blocker recorded and cleared inside the same run would depend on
+    #: which of its reports happened to be processed last.
+    failures: dict[str, str] = {}
     for filing in pending_annual_reports(session, limit=limit, tickers=tickers):
         written = fetch_document(session, filing, settings=settings, provider=provider)
+        ticker = filing.instrument_t212_ticker
         if written is None:
             report.failed += 1
+            failures[ticker] = filing.error or "the document could not be downloaded"
             if filing.error:
-                report.errors.append(f"{filing.instrument_t212_ticker}: {filing.error}")
+                report.errors.append(f"{ticker}: {filing.error}")
         else:
             report.fetched += 1
             report.bytes_written += written
-            report.instruments.add(filing.instrument_t212_ticker)
+            report.instruments.add(ticker)
 
         session.flush()
         # One request per document, and a document can be megabytes: the lock is
         # released between them so the dashboard stays readable during a run.
         release_write_lock(session)
+
+    # One document in hand is enough to have downloaded this company's report, so the
+    # blocker is cleared by the set of instruments it succeeded for and recorded only
+    # where nothing arrived at all.
+    for ticker in report.instruments:
+        clear_blocker(session, ticker, job=JOB, stage="document")
+    for ticker, reason in failures.items():
+        if ticker not in report.instruments:
+            record_blocker(session, ticker, job=JOB, stage="document", reason=reason)
+    session.flush()
 
     logger.info("document fetch: %s", report.as_dict())
     return report
