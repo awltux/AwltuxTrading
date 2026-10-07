@@ -406,10 +406,42 @@ shown — and if it blocks, make the refusal reason name the flag.
 
 ### News ingested before this change has no event type
 
-`news_item.event_type` was always computed by the classifier and thrown away, so
-rows written before migration `0004` are `NULL`. Primary-source routing falls back
-to nothing for them. Re-classifying the last 30 days would fix it; nothing does so
-automatically.
+`news_item.event_type` was always computed by the classifier and thrown away, so rows
+written before migration `0004` are `NULL`, and primary-source routing falls back to
+nothing for them.
+
+**Re-measured 2026-10-07: 16,512 of 19,919 stories (83%) carry one**, so this is much
+smaller than it was and much smaller than it reads. The 3,407 without are the sector
+stories `news_sectors` captures -- a sector feed has no company to classify against, so
+the classifier was never asked -- plus older rows. Worth correcting the framing rather
+than the code.
+
+### The sector attribution of a Yahoo feed is taken on trust
+
+A Yahoo per-symbol feed returns a *shared pool* of announcements, not the symbol's own
+news. Measured 2026-10-07: 21 `yahoo_rss` rows carry more than three tickers and 49 carry
+more than one, because the same article arrived from several instruments' feeds and
+`news.merge_duplicate` appends a ticker for each one that returned it.
+
+    id=6572  tickers=8  feed=s=PET.L
+      "Fidelity Asian Values Plc - Transaction in Own Shares"
+      PETl_EQ, ARRl_EQ, PMPl_EQ, AVGl_EQ, SCFl_EQ, PENl_EQ, BGFDl_EQ, CYNl_EQ
+    id=6573  tickers=8  feed=s=PET.L
+      "Capital Gearing Trust P.l.c. - Transaction in Own Shares"
+
+Neither article is about any of those eight instruments, and the feed's own symbol is not
+the subject either -- it is a Petrofac feed carrying investment-trust announcements. Every
+ticker after the first is an artefact of merging, and the first is unverified.
+
+**This is not the cache-key bug.** That was one response answering every query; this is
+Yahoo genuinely returning the same articles for many symbols. The cache fix changes
+nothing here.
+
+Damage is bounded: both rows are already `relevant=False`, and relevance is item-level, so
+the wrongness is limited to which instrument pages list them. The fix is not to clear the
+tickers -- the first one may be honest -- but to stop *accumulating* them without asking
+whether the story names the instrument. `analysis/relevance.py` already decides exactly
+that per item; nothing consults it at merge time.
 
 ### Sentiment aggregation loads the whole news window per run
 
@@ -691,35 +723,64 @@ headlines and records where it got to finishes *and reports success*, which is w
 makes it eligible for catch-up. The loop also needs the `progress.note` above it before
 either can be observed.
 
-### The accounting equation does not hold for several stored periods
+### The accounting checks fail on most stored periods, and the cause is the vocabulary
 
-Found by the trial balance on the accounts page (`analysis/ledger.py`) the first time it
-was run over the live data, on 2026-10-06. Of the 22 instruments with a computable
-equation, **14 agree and 4 are out**; the rest cannot be attempted because the filing
-does not state one of the three totals.
+First found by the trial balance on the accounts page (`analysis/ledger.py`) on 2026-10-06,
+when the entry said "of the 22 instruments with a computable equation, 14 agree and 4 are
+out". **Re-measured 2026-10-07 against 187 stored periods**, and the equation turned out
+to be the smallest part of it:
 
-The equation is a fact about the filing -- a published balance sheet balances by
-construction -- so a residual here is **our extraction, not the company**. Measured:
+    187 fundamental periods
+     23 fail the equation          (12%)   -- our extraction contradicts the filing
+    166 fail a composition check   (89%)   -- a stated subtotal vs the parts we hold
+    117 fail profit articulation   (63%)   -- profit, which every ratio divides by
+
+The equation is still the sharpest signal, because a published balance sheet balances by
+construction:
 
 | ticker | period | out by | share of assets |
 |---|---|---|---|
 | DFPH_US_EQ | 2020-12-31 | 219,756,050 | **+95.0%** |
 | AMBQ_US_EQ | 2024-12-31 | 378,150,000 | **+362.6%** |
-| AMWL_US_EQ | 2024-12-31 | 11,472,000 | +2.6% |
-| ACM_US_EQ | 2020-09-30 | 120,986,000 | +0.9% |
-| AREC_US_EQ | 2024-12-31 | -1,561,666 | -0.8% |
+| ACM_US_EQ | 2025-09-30 | 203,600,000 | +1.7% |
 
-DFPH and AMBQ are gross: DFPH reports 231m of assets against 11.6m of liabilities and
-equity, and AMBQ reports -292m of equity against 104m of assets. Both look like a
-figure taken from the wrong XBRL concept or the wrong period rather than a rounding
-difference. ACM, AMWL and AREC are under 3% and are more likely a missing component
-(AMWL's intangibles are 101m of 436m of assets, so a concept landing in the wrong year
-would explain it).
+ACM is out on **six consecutive years** by 0.9–1.7% of assets, which is a systematically
+missing caption rather than a one-off.
 
-**Next:** the four gross cases are worth tracing to the `xbrl_companyfacts` tag that
-produced them, because a wrong `total_equity` is not only a broken equation -- `roe`,
-`debt_to_equity` and the Altman Z'' input all divide by it. The check is the tool for
-finding them; this is the list to work through.
+**The composition failures are the bigger and more tractable population, and they are
+exactly attributable.** `MSFT_US_EQ` passes the equation with a residual of 0 and still
+fails four checks. Adding up its own 10-K balance sheet:
+
+    current assets      20,935 + [55,908] + 80,876 + 1,397 + 48,594 = 207,710  = stated
+    total assets        ... + 313,076 + 24,177 + [36,348] + 119,651 + 18,609 + 38,805 = 758,376
+    current liabilities 42,416 + 9,227 + 14,945 + [2,534] + [72,965] + 26,738 = 168,825  = stated
+
+`current_assets_composition` is out by **exactly 55,908** -- that bracketed line -- and
+`assets_composition` by **exactly 92,256 = 55,908 + 36,348**. The residual is the sum of
+the captions we do not extract, and nothing about it is approximate.
+
+**The cause is that the field vocabulary is frozen at 46 names.** `metrics.STATED_METRICS`
+feeds both `prompt_metric_names()` -- which generates the extraction prompt -- and the
+`validate_extraction` gate, so the model can only ever answer questions we already knew
+to ask. A caption outside those 46 is discarded with `"<name>: not a canonical metric
+name"`. MSFT's 2026 10-K returned exactly 43 metrics with cited spans; there was nothing
+else it was permitted to return.
+
+**Next:** make the field set dynamic -- a registry seeded from the 46 and grown at
+runtime -- so a filing's own captions can be asked for and remembered. The gap gives the
+test: a candidate field is right when it closes a composition residual *exactly*, which
+makes discovery verifiable rather than a judgement call. `short_term_investments` and the
+non-current investment line are MSFT's first two.
+
+Two things settled while measuring this, so they are not re-opened:
+
+* **The outflow sign convention.** `capex` and `dividends_paid` are positive magnitudes;
+  the Yahoo adapter had normalised `capex` alone and left `dividends_paid` negative in 16
+  periods, which put the retained-earnings roll-forward out by exactly twice the dividend.
+  Fixed in `metrics.OUTFLOW_METRICS` and migration `0014`. Both sources now agree.
+* **Which source is authoritative.** With the sign settled, the XBRL row is the better
+  base -- 53 keys against Yahoo's 47, and all nine asset components -- so the merge target
+  is no longer ambiguous.
 
 ### Three pagers still reload the whole page
 
