@@ -924,6 +924,45 @@ adding it to `--paths` fails quietly in the wrong direction: the check simply
 stops covering that path, and a modified file in it will not be reported. The
 Dockerfile says so in a comment, which is not a test.
 
+### An image built from a dirty `src/` recorded `dirty: false`, so the Info page can name the wrong commit
+
+The evidence, measured 2026-10-07 against the image `awltux-trading:local` created at
+`20:36:28Z`, whose provenance artifact was written at `20:35:15Z`:
+
+- The baked `/opt/venv/lib/python3.12/site-packages/awltux/build_info.json` holds
+  `"head": 23a6ee0…`, `"dirty": false`, `"version": "0.15.17"`.
+- That image's own installed `.../web/static/style.css` is 21336 bytes and contains
+  `html { font-size: 17px; }`. It does not contain `--chip-tint`.
+- `git log --all -S 'font-size: 17px' -- src/awltux/web/static/style.css` returns only
+  `7128f78`, the commit that resolved it. No earlier commit ever contained that text.
+- `git show 23a6ee0:src/awltux/web/static/style.css` is 19831 bytes and does not
+  contain it, and `git reflog` shows no reset between `23a6ee0` (21:30:03) and the
+  build.
+
+So the build consumed a working tree that differed from its own `head` under `src/`
+and recorded the tree as clean — the one case the flag exists to catch, and the case
+AGENTS.md §1 leans on when it says the Info page must not read *has uncommitted
+changes*. The running container was therefore asserting `23a6ee0` while serving code
+that was never in it.
+
+Ruled out, each measured rather than assumed:
+
+- **The check works on the host.** `snapshot(paths=[...])` with an untracked file
+  under `src/` returns `dirty=True`, and the underlying
+  `git status --porcelain -- src pyproject.toml README.md config alembic.ini` lists it.
+- **No source bind mount.** `docker inspect` shows only the `awltux-data` volume at
+  `/data`, so the stylesheet is the image's own and not the host's.
+- **Not a whole-tree status artifact.** The invocation already passes `--paths`, and
+  `.git`, `.gitignore` and `.gitattributes` are all copied into the builder before it
+  runs (Dockerfile lines 49-60).
+
+**Not isolated.** Reproduce it deliberately next: build with a known uncommitted edit
+under `src/`, read `dirty` back out of the image, then bisect with
+`docker compose build --no-cache` to separate a stale-cache explanation from a
+checking one. Until that is done, the `/info` running-commit check should not be
+trusted alone — what actually caught this was comparing the image's own files against
+the commit, which is worth doing in the deploy verification regardless.
+
 ### `icon.svg` names the UI's palette as its own, and two of those colours moved
 
 The icon's comment says it is "built from the same colours as the UI: the panel
