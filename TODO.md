@@ -57,6 +57,53 @@ invisible to git while `git status` reported a clean tree.
 
 ## Correctness questions still open
 
+### Not one decision in 1,495 has been allowed, and it is a data gap rather than a verdict
+
+Measured 2026-10-07. `decision_run` holds **1,495** rows and `gate_allowed` is **0** on
+every one. 1,344 are `avoid`, 146 `hold`, 4 `reduce`, 1 `buy`. The question was whether
+the gate is too strict or the universe is genuinely unattractive; the answer is neither.
+
+**What binds.** Two rules, and almost nothing else:
+
+    982  confidence_below_floor   "confidence 25% is below the 55% floor"
+    499  price_stale              "price data is 37h old (limit for long term is 36h)"
+     13  (none)                   `avoid` produces no suggestion anyway
+      1  probability_below_floor
+
+**The scores are not being suppressed -- there is nothing to suppress.** Across the whole
+universe the composite score runs 0.6 to **63.5**, median 32, and only **6 decisions
+clear 60**. A gate refusing good opportunities would leave a pile of them at the door;
+there is no pile.
+
+**The cause is that most decisions are made with no accounts at all.**
+
+    482 instruments have a decision;  59 of them have a fundamental period
+    WITH fundamentals      n=59   mean confidence 0.52   median 0.50   23 at/above the floor
+    WITHOUT fundamentals   n=423  mean confidence 0.42   median 0.40   83 at/above the floor
+    376 instruments sit below the floor, and 340 of them have no fundamentals
+
+    500 in-universe instruments, 60 with any fundamental period
+    314 in-universe instruments with a resolved SEC CIK, 53 with a period
+
+So `avoid` for 423 instruments says nothing about those businesses -- the model was asked
+to judge them without their accounts. That is the coverage failure in the entry below,
+and it is *upstream* of the gate: the gate is refusing decisions that rest on nothing,
+which is the behaviour it exists for.
+
+**And coverage alone will not fix it.** The 59 instruments that *do* have accounts still
+show a median confidence of 0.50 against a 0.55 floor -- 36 of the 59 are below it. The
+floor was presumably set against an expectation the model does not meet even when given
+the figures, so the threshold and the coverage need looking at together rather than one
+after the other.
+
+**Next:** raise fundamental coverage first (see the `xbrl_statements` coverage entry),
+then re-measure the confidence distribution *with* accounts before touching the floor.
+Raising the floor's headroom without the coverage would only make the two failure modes
+harder to tell apart.
+
+`price_stale` is separate and mechanical: 499 decisions refused for data one hour past a
+36-hour limit, which is a refresh cadence question rather than a judgement.
+
 ### `xbrl_statements` reports success when the payload yields no periods
 
 A fetch that returns a payload we cannot extract anything from is recorded as a
