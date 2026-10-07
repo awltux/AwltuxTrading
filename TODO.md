@@ -19,86 +19,16 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ---
 
-## Bugs
-
-### The configured embeddings model is refused, so nothing has ever been grouped by event
-
-Measured 2026-10-07 against the live endpoint with the credentials in `.env`.
-`data/awltux.db` — 13.7 MB, the live database — holds **0 rows** in
-`news_embedding`. The feature has never produced a single vector, so no duplicate story
-has ever been collapsed and every one still renders as its own entry.
-
-The request is right; the model is not. `config/config.yaml` ships
-`news.embeddings.model: openai/text-embedding-3-small`, and that whole family is
-refused:
-
-    401  openai/text-embedding-3-small        <- what config.yaml ships
-    401  openai/text-embedding-3-large
-    401  openai/text-embedding-ada-002
-    200  google/gemini-embedding-001          dim=3072
-    200  baai/bge-large-en-v1.5               dim=1024
-    200  baai/bge-m3                          dim=1024
-    200  qwen/qwen3-embedding-8b              dim=4096
-    200  intfloat/e5-large-v2                 dim=1024
-    200  thenlper/gte-large                   dim=1024
-    200  perplexity/pplx-embed-v1-0.6b        dim=1024
-
-Only the `openai/*` embedding family fails. Non-OpenAI embedding models answer on the
-same URL, with the same key, in the same request body.
-
-One variable at a time, all ruled out: the header scheme (`Key`, `Bearer`, and no
-header — the last gives a *different*, Fal-level error), the URL (`fal.run` vs the
-`fal.ai/models/...` page, which returns 200 **HTML**; a 200 that is not JSON is the
-"invalid response" a hand test sees), the vendor prefix, the queue host
-(`queue.fal.run` accepts the POST and then returns the same 401 in the result body),
-and eight OpenRouter routing knobs (`provider.order`, `allow_fallbacks`,
-`require_parameters`, `data_collection`, `encoding_format`, `dimensions`) — every one
-still 401. And the credential: two keys, one in each of Fal's formats (`fal_sk_...` and
-the legacy `<uuid>:<secret>`), behave **identically in every row**, refusals and
-successes alike. A newly created key fails the same way, because the refusal is not
-credential-shaped.
-
-**This corrects what this file used to record.** The entry it replaces concluded that
-the refusal happened *before* model selection, because "four model names fail
-identically, including one that does not exist on OpenRouter", and that no model name
-could change it. Both halves are false: `openai/definitely-not-a-model` returns
-`400 Model ... does not exist`, and a real non-OpenAI name returns `200` with vectors.
-A name that does not exist is rejected as such, so names *do* reach resolution and the
-401 is a per-model entitlement reached after it. `analysis/embeddings.py:137-150`
-repeats the mistake to the operator — on this exact error it appends *"trying a
-different model name does not change it"*, which points away from the fix. That
-sentence and the comment above it go in the same commit as the model change.
-
-**Fix:** change `news.embeddings.model`. Suggested `baai/bge-m3` — 1024-dim,
-8,194-token context, $0.0100/M tokens, which covers `embed_text()`'s headline plus
-600-character summary and costs a fifteenth of Gemini's $0.1500/M. No migration is
-needed: `vectors_for()` and the job's `already` subquery both filter on `model`, so a
-new model re-embeds everything, and there is nothing stored to orphan.
-
-**The entitlement itself is upstream and not ours.** Fal's OpenAPI schema for the
-endpoint says authoritative behaviour "is defined by OpenRouter's implementation", and
-OpenRouter's BYOK documentation describes blocking a provider from shared capacity.
-Worth asking Fal support whether that can be enabled, but not worth blocking the fix
-on — a reachable model works today. Neither Fal's 3.5 MB of documentation nor
-OpenRouter's contains the string `invalid_organization`, and Fal's docs never mention
-`text-embedding` or `/embeddings` at all, which is why this needed measuring rather
-than reading.
-
-**One thing that is Fal's doing and worth knowing:** the passthrough injects a hashed
-caller id as `user`, and `mistralai/mistral-embed-2312` rejects the request outright
-with `422 extra_forbidden` because of it. Which models are reachable here therefore
-depends partly on whether the upstream tolerates a field the client never sent.
-
-The probes that produced all of the above are scratch under `.tmp/poc_embeddings/` and
-will not survive; the measurements are restated here so nothing depends on them.
-
 ---
 
-The eight earlier bugs — `serve` not migrating, silent DeepSeek
+## Bugs
+
+None open. The nine before this one — `serve` not migrating, silent DeepSeek
 truncation, the `universe_refresh` startup race, CLI/server write-lock contention, the
 unhelpful blank dashboard, a stale container being indistinguishable from a code bug,
-SQLite's write lock being held across model calls, and a rate-limit counter failing the
-job it was counting — are in the commit log.
+SQLite's write lock being held across model calls, a rate-limit counter failing the job
+it was counting, and the refused embeddings model that meant no two stories were ever
+grouped — are in the commit log.
 
 Two of them were not a bug at all, and are worth remembering. The missing Info
 menu item and the `engine_label` template error were both the running container
@@ -379,37 +309,58 @@ cannot change stops being asked daily, or a review queue: there are **no** manua
 aliases at all (`is_manual` count is 0), and the only place one surfaces is the
 instrument page, one ticker at a time. A reviewer has no list to work from.
 
-### `same_event_threshold` has never been exercised, and 0.86 is wrong for most reachable models
+### `same_event_threshold` is 0.70, measured on hard cases -- and two usage questions are open
 
-`news.embeddings.same_event_threshold` is **0.86**. It has never run — `news_embedding`
-is empty (see the Bugs entry above), so the number has never been checked against any
-model's output, let alone tuned. It is a constant that was never exercised.
+**Corrected 2026-10-07.** This entry used to say the constant was 0.86 and had never been
+exercised, because `news_embedding` was empty. The model was replaced (the `openai/*`
+family is refused by this route) and the threshold is now **0.70**, from the measurement
+below rather than from a value measured to be wrong for the model shipped.
 
-Measured 2026-10-07 through `EmbeddingClient` itself, on three headlines describing one
-event and four describing unrelated ones; within-event pairs against cross-event pairs:
+Measured 2026-10-07 through the application's own `EmbeddingClient` and `cluster()`, on
+**18 headlines across 10 events** — four real events each phrased three ways, plus six
+singletons — which includes the case that actually breaks a threshold and which unrelated
+headlines do not: the same company reporting two different things.
 
-| model | same event | across events | gap | 0.86 |
-|---|---|---|---|---|
-| `qwen/qwen3-embedding-8b` | 0.8694–0.8865 | 0.3850–0.5869 | +0.2825 | works |
-| `google/gemini-embedding-001` | 0.8358–0.8478 | 0.4372–0.5511 | +0.2847 | **too high** |
-| `baai/bge-large-en-v1.5` | 0.8214–0.8566 | 0.2269–0.5373 | +0.2841 | **too high** |
+| model | within-event | across-event | gap | same company, diff event | 0 false / 0 missed at |
+|---|---|---|---|---|---|
+| `baai/bge-large-en-v1.5` | 0.7228–0.9154 | 0.2226–0.6869 | +0.0359 | 0.5967–0.6869 | **0.65, 0.70** |
+| `baai/bge-m3` | 0.6848–0.9460 | 0.2144–0.6211 | +0.0637 | 0.5372–0.6211 | 0.65 |
+| `google/gemini-embedding-001` | 0.8204–0.9737 | 0.4503–0.7376 | +0.0829 | 0.6549–0.7376 | 0.70–0.85 |
+| `qwen/qwen3-embedding-8b` | 0.7827–0.9698 | 0.3630–0.7411 | +0.0416 | 0.6145–0.7411 | 0.70, 0.75 |
 
-The separation is large and consistent — about +0.28 for all three — so a threshold
-exists for each. It is simply not 0.86 for two of them, and **0.86 would put every story
-into its own event**, which is the exact failure the feature exists to prevent. A
-threshold too high and a provider that refuses everything look identical in the UI.
+Full clustering at each threshold for the shipped model: 0.60 → **2 false joins**; 0.65 →
+clean; **0.70 → clean (shipped)**; 0.75 → 1 missed join; 0.86 → 2 missed joins.
 
-**Caveat, and it matters:** three same-event pairs is a smoke test, not a calibration.
-The spread is wide enough to be informative about direction, not about the number.
-Re-measure on real ingested pairs before settling a value — in particular on the
-"different event, same company" case, a profit warning and a contract win from one
-issuer, which is what actually breaks a threshold and which four unrelated headlines
-do not exercise.
+**Two corrections to what this entry first recorded.** The gap is **+0.036 here, not the
++0.28** that a three-pair smoke test reported — the earlier figure was an artefact of easy
+cases, and the separable band is (0.6869, 0.7228], which is narrow. And 0.75, this
+entry's first replacement, would have left a missed join; 0.70 is the measured grid point
+that is clean on both counts. It is *not* centred (centred is 0.705) and it biases toward
+false joins, which is the wrong way round for this feature; it is kept because it is a
+measured grid point rather than an interpolation, and the miss it avoids is the cheap
+failure. `0.65` is the more cautious measured point and is also clean.
 
-**Decide:** the model and the threshold together, in one change. `qwen/qwen3-embedding-8b`
-is the only candidate measured to keep 0.86, at 4096 dimensions — four times the storage
-of the 1024-dim alternatives. `baai/bge-m3` is the cheaper default but needs its own
-threshold, from real data rather than from the three pairs above.
+**Open, and both need the live job's own output rather than more synthetic pairs:**
+
+1. **Truncation near the context limit.** `bge-large-en-v1.5` has a **512-token** context,
+   the smallest of the candidates. The truncation test — two documents sharing a ~380-char
+   prefix and differing only in the ending — returned cosine 0.918, so the ending *is*
+   read, and the model does not truncate at that length. But `embed_text()` sends the
+   headline plus `summary[:600]`, roughly 1,400 characters, which is much closer to 512
+   tokens than anything the test exercised. A model that silently drops the tail would
+   make two different events look identical, which is the one failure this feature must
+   not have. Re-test at the real input length, or cap `embed_text` explicitly.
+2. **Batch size.** `batch_size: 64` was only ever exercised with 7 texts. Whether this
+   model accepts 64 in one request — and whether the *total* token count per request is
+   bounded by the provider — has not been measured.
+3. The probes that produced the table are scratch under `.tmp/poc_embeddings/`
+   (`probe9.py` → `vector-quality.json`). They will not survive; the numbers are restated
+   here so nothing depends on them.
+
+**Also worth knowing for the next model change:** only the `openai/*` embedding family is
+refused by this route; every other name tried answers 200 on the same URL with the same
+key. A name that does not exist returns `400 Model ... does not exist`, so names do reach
+resolution and the 401 is a per-model entitlement.
 
 ### The news-to-fundamentals weighting is an assumption, not a finding
 

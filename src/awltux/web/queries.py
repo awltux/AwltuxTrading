@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from awltux.analysis import attention as attention_rules
 from awltux.analysis import macro
 from awltux.analysis.attention import Reason
+from awltux.analysis.embeddings import group_events
 from awltux.db import (
     DecisionOutcome,
     DecisionRun,
@@ -683,6 +684,14 @@ def instrument_detail(
     )
     appraisals = appraisals_for(session, related_news)
 
+    # One entry per *event*, the same grouping the flash banner uses. A profit warning
+    # reaches this system five or six times, and this list used to show all of them --
+    # so the reader's own company page was the one place the duplicates were certain to
+    # appear. Grouping happens inside the page rather than in SQL because the page is
+    # already the unit: `news_total` still counts stories, so paging is unchanged and a
+    # page of twenty shows however many events those twenty describe.
+    news_events, news_clustering = group_events(list(related_news))
+
     outcomes = []
     if decision is not None:
         outcomes = [
@@ -703,6 +712,8 @@ def instrument_detail(
         "filings": filings,
         "fundamentals": fundamentals,
         "news": related_news,
+        "news_events": news_events,
+        "news_clustering": news_clustering,
         "news_analysis": appraisals,
         "news_total": news_total,
         "news_page": news_page,

@@ -308,12 +308,53 @@ news:
   # the banner says rather than implying stories were grouped when they were not.
   embeddings:
     base_url: https://fal.run/openrouter/router/openai/v1
-    model: openai/text-embedding-3-small
+    # The `openai/*` embedding family is refused by this route with a 401 naming the
+    # organization behind the key, while non-OpenAI models answer on the same URL with
+    # the same key and the same body. Measured 2026-10-07, one variable at a time --
+    # header scheme, URL, vendor prefix, queue host, eight routing knobs and two
+    # credentials -- and only the model changed the answer:
+    #   401  openai/text-embedding-3-small   <- what this file used to ship
+    #   200  baai/bge-large-en-v1.5          dim=1024
+    #   200  baai/bge-m3                     dim=1024
+    #   200  google/gemini-embedding-001     dim=3072
+    # `baai/bge-m3` is cheaper per token, but its same-event separation has never been
+    # measured, so shipping it would mean inventing `same_event_threshold` below.
+    # `bge-large-en-v1.5` has been measured (see the threshold comment), so this pair
+    # is the only one where neither number is a guess.
+    model: baai/bge-large-en-v1.5
     auth_scheme: Key
     # Cosine similarity at or above which two stories are the same event. High on
     # purpose: joining two different events asserts something false, while missing
     # a join only shows two entries instead of one.
-    same_event_threshold: 0.86
+    #
+    # Measured for this model on 18 headlines across 10 events -- four real events each
+    # phrased three ways by different outlets, plus six singletons -- through the
+    # application's own client (`EmbeddingClient`) and `cluster()`. That set includes the
+    # case that actually breaks a threshold and which unrelated headlines do not: the
+    # same company reporting two different things.
+    #
+    #   within-event            0.7228 .. 0.9154
+    #   across-event            0.2226 .. 0.6869
+    #   same company, different event   0.5967 .. 0.6869
+    #
+    # The separable band is (0.6869, 0.7228] -- narrow, and much narrower than a
+    # three-pair smoke test suggests (that reported a +0.28 gap; this reports +0.0359).
+    # Clustering all 18 at each threshold:
+    #
+    #   0.60  2 false joins, 0 missed     <- merging different events: a lie
+    #   0.65  0 false joins, 0 missed
+    #   0.70  0 false joins, 0 missed     <- shipped
+    #   0.75  0 false joins, 1 missed
+    #   0.86  0 false joins, 2 missed     <- what this file used to ship
+    #
+    # 0.70 is the measured point that is clean on both counts. It sits 0.0131 above the
+    # closest across-event pair and 0.0228 below the closest within-event pair, so it is
+    # not centred -- centred is 0.705 -- and the bias is toward the false-join side, which
+    # is the wrong way round for this feature. It is kept anyway because it is the grid
+    # point that was measured rather than an interpolation between two, and the miss it
+    # avoids (a duplicate entry) is the cheap failure. 0.65 is the more cautious point and
+    # is also clean; raising the value to 0.75 or beyond trades a duplicate for nothing.
+    same_event_threshold: 0.70
     batch_size: 64
     max_per_run: 1000
   # Headline-level prefilter before spending an LLM call.

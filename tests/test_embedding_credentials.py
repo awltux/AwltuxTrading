@@ -223,13 +223,17 @@ class TestARejectedCredentialSaysSo:
         assert result.fatal is False
         assert result.errors
 
-    def test_an_entitlement_refusal_says_no_request_shape_will_fix_it(
-        self, settings, monkeypatch
-    ):
-        """Fal's OpenRouter passthrough accepts the key and refuses upstream. The
-        obvious next move is to try another model, and that was measured: four model
-        names, two of them nonexistent, return this identically -- so the message
-        says so rather than sending the reader round the same loop."""
+    def test_an_entitlement_refusal_points_at_the_model(self, settings, monkeypatch):
+        """Fal's OpenRouter passthrough accepts the key and refuses upstream.
+
+        The message used to say that trying a different model could not help, on the
+        evidence that "four model names, including two that do not exist, all return it
+        identically". Both halves of that were false, measured 2026-10-07: a name that
+        does not exist returns `400 Model ... does not exist`, so names do reach
+        resolution, and every non-`openai/*` embedding model returns 200 on the same URL
+        with the same key. The refusal is a per-model entitlement, so the old sentence
+        sent the operator away from the one thing that fixes it.
+        """
         from awltux.providers.http import ProviderError
 
         monkeypatch.setattr(settings.env, "falai_key", SecretStr("k"), raising=False)
@@ -249,4 +253,7 @@ class TestARejectedCredentialSaysSo:
         assert result.fatal is True
         message = " ".join(result.errors)
         assert "entitlement" in message
-        assert "different model name does not change it" in message
+        assert "news.embeddings.model" in message, "it must name the setting that fixes it"
+        assert "does not change it" not in message, (
+            "the old wording told the operator the fix could not work"
+        )

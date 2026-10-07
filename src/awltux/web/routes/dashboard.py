@@ -180,6 +180,13 @@ def instrument_page(
             "filings": detail["filings"],
             "fundamentals": detail["fundamentals"],
             "news": detail["news"],
+            # The news list renders **events**, not stories, and the grouping happens in
+            # `queries.instrument_detail`. Both keys have to be named here: Jinja's
+            # default undefined iterates as empty, so a key the query returns and the
+            # route forgets does not raise -- it renders an empty list, which is exactly
+            # how this was found.
+            "news_events": detail["news_events"],
+            "news_clustering": detail["news_clustering"],
             "news_analysis": detail["news_analysis"],
             "news_total": detail["news_total"],
             "news_page": detail["news_page"],

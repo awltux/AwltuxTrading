@@ -526,8 +526,18 @@
   story is true, which this system cannot know.
 </p>
 {% if news %}
+  {# One entry per event, not per story. A profit warning reaches this system five or six
+     times -- the release, a wire copy, two aggregator rewrites -- and this list used to
+     show all of them, which made the reader's own company page the one place the
+     duplicates were certain to appear. The other reports are kept and shown rather than
+     hidden: `Similarity` is the weakest link holding the group together, and a wrong
+     join has to be visible rather than asserted. #}
+  {% if news_clustering %}
+    <p class="notice small">{{ news_clustering | capitalize }} &mdash; one entry per story.</p>
+  {% endif %}
   <ul class="news-list sceptic">
-    {% for item in news %}
+    {% for event in news_events %}
+      {% set item = event.lead %}
       {% set analysis = news_analysis.get(item.id) %}
       <li class="mat-{{ item.materiality | materiality_class }}">
         <a href="{{ item.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>
@@ -543,6 +553,23 @@
           {% if item.direction %} · {{ item.direction }}{% endif %}
           {% if item.materiality %} · {{ item.materiality }}{% endif %}
         </span>
+
+        {% if event.others %}
+          <details class="event-members">
+            <summary class="muted small">
+              {{ event.others | length }} other report{{ '' if event.others | length == 1 else 's' }}
+              of this event{% if event.similarity %} · weakest match {{ event.similarity | number(2) }}{% endif %}
+            </summary>
+            <ul class="muted small">
+              {% for other in event.others %}
+                <li>
+                  <a href="{{ other.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ other.title }}</a>
+                  <span class="muted">— {{ other.source }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
 
         {% if analysis %}
           <div class="sceptic-badges">

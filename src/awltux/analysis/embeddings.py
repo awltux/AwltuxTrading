@@ -134,19 +134,24 @@ class EmbeddingClient:
                     f"{scheme} ...`). Check the key, and that this account can use "
                     f"`{self.config.model}`. Upstream said: {text[:200]}"
                 )
-                # Fal's OpenRouter passthrough answers this exact sentence when the
-                # key is fine but the organization behind it has no access to the
-                # route. It is worth saying plainly that no request shape fixes it,
-                # because the obvious next move -- trying a different model -- was
-                # measured and changes nothing: four model names, including two that
-                # do not exist on OpenRouter, all return it identically.
+                # Fal's OpenRouter passthrough answers this sentence when the key is
+                # fine but the organization behind it has no access to *that model*.
+                # The wording matters and was wrong: it used to say that trying a
+                # different model name could not change it, because "four model names,
+                # including two that do not exist on OpenRouter, all return it
+                # identically". Measured 2026-10-07 and both halves of that were false:
+                # a name that does not exist returns `400 Model ... does not exist`, so
+                # names *do* reach resolution, and every non-`openai/*` embedding model
+                # answers `200` on the same URL with the same key. The refusal is a
+                # per-model entitlement, so the model is exactly what to change -- and
+                # the old sentence pointed the operator away from the fix.
                 if "organization tied to the api key" in text.lower():
                     result.errors.append(
                         "the provider says the organization behind the key has no "
-                        "access to this route. For a routed passthrough the key is "
-                        "accepted and then refused upstream, so this is an account "
-                        "entitlement rather than a request problem -- and trying a "
-                        "different model name does not change it."
+                        "access to this model. The key is accepted and then refused "
+                        "upstream, so this is a per-model entitlement rather than a "
+                        "request problem -- changing `news.embeddings.model` is the "
+                        "fix, and the `openai/*` family is the one refused here."
                     )
             else:
                 result.errors.append(text)
@@ -357,3 +362,50 @@ def cluster_items(
         cluster([item.id for item in items], vectors, threshold=config.same_event_threshold),
         None,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class EventGroup:
+    """One event as a *page* shows it: a lead story and the other reports of it.
+
+    The clustering above speaks in story ids, which is right for the banner's JSON and
+    wrong for a template that has to render a headline, a publisher and a grade. This
+    is the same grouping with the rows attached, and it exists so the banner and the
+    news list on an instrument page cannot disagree about what one event is.
+    """
+
+    lead: NewsItem
+    others: tuple[NewsItem, ...] = ()
+    #: The weakest similarity holding the group together, or ``None`` for a singleton.
+    similarity: float | None = None
+
+    @property
+    def size(self) -> int:
+        return 1 + len(self.others)
+
+    @property
+    def members(self) -> tuple[NewsItem, ...]:
+        return (self.lead, *self.others)
+
+
+def group_events(
+    items: list[NewsItem], *, settings: Settings | None = None
+) -> tuple[list[EventGroup], str | None]:
+    """``items`` as one entry per event, in the order given.
+
+    Order is the caller's, and the lead of each group is the first of its members, so a
+    caller that passes stories best-first gets the best story leading each event --
+    which is the same guarantee :func:`cluster` documents, moved up to rows.
+    """
+    events, note = cluster_items(items, settings=settings)
+    by_id = {item.id: item for item in items}
+
+    groups: list[EventGroup] = []
+    for event in events:
+        members = [by_id[item_id] for item_id in event.members if item_id in by_id]
+        if not members:
+            continue
+        groups.append(
+            EventGroup(lead=members[0], others=tuple(members[1:]), similarity=event.similarity)
+        )
+    return groups, note

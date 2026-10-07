@@ -18,6 +18,7 @@ from awltux.analysis.embeddings import (
     Event,
     cluster,
     embed_text,
+    group_events,
     text_fingerprint,
 )
 
@@ -146,4 +147,103 @@ class TestTheEmbeddedText:
 
     def test_the_fingerprint_is_stable_and_sensitive(self):
         assert text_fingerprint("a") == text_fingerprint("a")
+
+
+class TestThePageFacingGrouping:
+    """`group_events` speaks in rows, because a template has to render a headline.
+
+    The banner's JSON wants story ids; a news list wants the stories. Both must agree
+    about what one event is, so the second is derived from the first rather than
+    clustering again with its own rule.
+    """
+
+    def _items(self, session, titles: list[str], *, ticker: str | None = None):
+        """Real rows, because vectors are stored against `news_item.id` by foreign key."""
+        from awltux.db import NewsItem, utcnow
+
+        rows = []
+        for index, title in enumerate(titles):
+            row = NewsItem(
+                source="google_news",
+                url=f"https://news.test/{index}",
+                url_hash=f"hash-{title}-{index}",
+                title=title,
+                published_at=utcnow(),
+                tickers=[ticker] if ticker else [],
+                sectors=[],
+                created_at=utcnow(),
+            )
+            session.add(row)
+            rows.append(row)
+        session.commit()
+        return rows
+
+    def _store(self, session, rows, settings, vectors):
+        """Vectors under the model the *code* will look them up by.
+
+        Not a name of the test's choosing: `queries.instrument_detail` groups without
+        passing settings, so `embeddings.get_settings()` resolves the application's own
+        configuration and a made-up model name would store vectors nothing ever finds --
+        which is exactly the failure this test would then be reporting as a feature bug.
+        """
+        from awltux.analysis.embeddings import store_vectors
+
+        store_vectors(
+            [row.id for row in rows],
+            [embed_text(row) for row in rows],
+            vectors,
+            settings.news.embeddings.model,
+        )
+        # Committed, not flushed. `session_scope` is re-entrant per thread, so
+        # `store_vectors` joined this test's transaction and only the outermost scope
+        # commits -- and a page is served on its own thread in another session, so a
+        # flushed-but-uncommitted vector is invisible to it. The same trap
+        # `AGENTS.md` records for a seeded page test.
+        session.commit()
+
+    def test_it_groups_rows_and_leads_with_the_first_member(self, session, settings):
+        rows = self._items(session, ["Acme warns on profit", "Acme cuts its outlook", "Acme wins a contract"])
+        self._store(
+            session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0], [0.0, 1.0, 0.0]]
+        )
+
+        groups, note = group_events(list(rows), settings=settings)
+
+        assert note is None
+        assert [group.lead.id for group in groups] == [rows[0].id, rows[2].id]
+        assert [other.id for other in groups[0].others] == [rows[1].id]
+        assert groups[0].size == 2
+        assert groups[1].others == ()
+
+    def test_without_vectors_every_story_stands_alone_and_it_says_so(self, session, settings):
+        """`no stored vectors` and `one entry per event` look identical on a page, so
+        the note is the only thing that tells the reader which one they are seeing."""
+        rows = self._items(session, ["one", "two"])
+
+        groups, note = group_events(list(rows), settings=settings)
+
+        assert len(groups) == 2
+        assert note == "no stored vectors for these stories yet"
+
+    def test_grouping_reaches_the_instrument_page(self, client, session, settings):
+        """The reader's own company page was where the duplicates were certain to show:
+        a profit warning arrives five or six times and this list showed all of them."""
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
+        session.flush()
+        rows = self._items(
+            session,
+            ["Acme warns on profit", "Acme cuts its outlook", "Acme wins a contract"],
+            ticker="TEST_US_EQ",
+        )
+        self._store(
+            session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0], [0.0, 1.0, 0.0]]
+        )
+
+        body = client.get("/instrument/TEST_US_EQ").text
+
+        assert "1 other report" in body
+        assert "Acme cuts its outlook" in body, "the member is shown, not hidden"
+        assert "weakest match" in body, "a wrong join has to be visible"
         assert text_fingerprint("a") != text_fingerprint("b")
