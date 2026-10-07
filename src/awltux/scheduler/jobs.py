@@ -363,11 +363,13 @@ def _invoke(spec: JobSpec) -> _Outcome:
         raw = spec.func()
     except progress.Stopped as exc:
         where = str(exc)
-        error = f"stopped: a stop was requested at {where}" if where else (
-            "stopped: a stop was requested"
-        )
+        # The reason is the exception's, because a stop is not always a deploy: a run
+        # that ran out of a daily provider quota leaves at the same boundary and must
+        # not be reported as something somebody asked for.
+        error = f"stopped: {exc.reason} at {where}" if where else f"stopped: {exc.reason}"
         result = JobResult(note=error)
         result.detail["stopped"] = True
+        result.detail["stopped_reason"] = exc.reason
         if where:
             result.detail["stopped_at"] = where
         logger.info("job %s: %s", spec.id, error)

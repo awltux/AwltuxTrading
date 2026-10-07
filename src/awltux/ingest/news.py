@@ -34,6 +34,7 @@ from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, utcnow
 from awltux.db.session import release_write_lock
 from awltux.llm.classify import apply_classification
+from awltux.providers.http import BudgetExhausted
 from awltux.providers.news_rss import (
     FinnhubNewsProvider,
     GdeltProvider,
@@ -43,6 +44,7 @@ from awltux.providers.news_rss import (
     company_query,
 )
 from awltux.scheduler import progress
+from awltux.timezones import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,11 @@ class NewsIngestReport:
     #: the leaving has to happen *after* the commit: abandoning the batch would discard
     #: the articles already classified, and each one of those was a model call.
     stopped_early: bool = False
+    #: Instruments this run was allowed to spend the marketaux quota on, so the run's
+    #: detail says how much of the day's ration it used. Zero when the provider is not
+    #: configured, which is the same number as "configured but the day is spent" and is
+    #: why the detail also carries the provider's own remaining count.
+    marketaux_allowance: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +81,7 @@ class NewsIngestReport:
             "by_source": self.by_source,
             "errors": self.errors[:10],
             "stopped_early": self.stopped_early,
+            "marketaux_allowance": self.marketaux_allowance,
         }
 
 
@@ -432,6 +440,50 @@ class _Feeds(NamedTuple):
         self.marketaux.close()
 
 
+def _marketaux_slice(
+    instruments: list[Instrument], *, allowance: int
+) -> set[str]:
+    """Which instruments this run spends the marketaux allowance on.
+
+    **The day's allowance is a fraction of the book, so the choice has to rotate.** 100
+    requests a day, one request per instrument, 500 instruments: any pass covers a fifth.
+    Spending it on whatever the poll reached first gave the quota to an arbitrary fifth,
+    and spent it inside the first couple of hours of the window, so the rest of the day
+    had no marketaux at all.
+
+    Ordering by `marketaux_polled_at` -- never asked first, then longest-waiting -- makes
+    the quota itself the rotation: at three an hour the book comes round in about a week,
+    and yesterday's names are not today's. Ties break on the ticker so "which three this
+    hour" is answerable rather than whatever order the poll loaded.
+    """
+    if allowance <= 0:
+        return set()
+    ordered = sorted(instruments, key=_marketaux_age)
+    return {row.t212_ticker for row in ordered[:allowance]}
+
+
+def _marketaux_age(row: Instrument) -> tuple[int, float, str]:
+    """Sort key for the rotation: never asked first, then the longest wait."""
+    stamp = row.marketaux_polled_at
+    if stamp is None:
+        return (0, 0.0, row.t212_ticker)
+    # `as_utc`, because SQLite hands back a naive datetime whatever the column declares
+    # and a naive/aware comparison raises rather than sorting.
+    return (1, as_utc(stamp).timestamp(), row.t212_ticker)
+
+
+def _marketaux_allowance(settings: Settings, marketaux: Any) -> int:
+    """How many marketaux requests this run may spend.
+
+    A day's quota divided by the runs in a day, so the allowance lasts the day instead
+    of being spent by the first run after midnight. Derived from the budget rule and the
+    poll's interval rather than configured separately: two numbers that must agree is
+    one number too many.
+    """
+    runs_per_day = max(1, int(86400 // max(1, settings.schedule.news_rss)))
+    return marketaux.requests_this_run(runs_per_day=runs_per_day)
+
+
 def _poll_instrument(
     session: Session,
     instrument: Instrument,
@@ -441,6 +493,7 @@ def _poll_instrument(
     prefilter: Prefilter,
     classifier: Classifier | None,
     report: NewsIngestReport,
+    ask_marketaux: bool = True,
 ) -> None:
     """Gather one instrument's feeds and store what survives the prefilter.
 
@@ -448,6 +501,8 @@ def _poll_instrument(
     the cursor, so that a crash cannot save one without the other. Raises nothing -- a
     provider failure is recorded on the report and the walk continues, because one dead
     feed is not a reason to abandon the universe.
+
+    ``ask_marketaux`` is False for every instrument outside the day's rationed slice.
     """
     try:
         gathered = gather_for_instrument(
@@ -455,8 +510,13 @@ def _poll_instrument(
             settings=settings,
             rss=feeds.rss,
             finnhub=feeds.finnhub,
-            marketaux=feeds.marketaux,
+            marketaux=feeds.marketaux if ask_marketaux else None,
         )
+    except BudgetExhausted:
+        # Not a provider failure: the *allowance* is gone. Raised to the sweep, which
+        # ends with the cursor where it is rather than walking the rest of the universe
+        # fetching nothing and stamping each instrument as polled.
+        raise
     except Exception as exc:
         report.errors.append(f"{instrument.t212_ticker}: {exc}")
         return
@@ -484,6 +544,7 @@ def _finish_instrument(
     *,
     position: int,
     total: int,
+    asked_marketaux: bool = False,
 ) -> None:
     """Commit this instrument's articles together with its cursor, or leave instead.
 
@@ -510,6 +571,12 @@ def _finish_instrument(
         )
 
     instrument.news_polled_at = utcnow()
+    if asked_marketaux:
+        # The rationed provider's own cursor, stamped in the same transaction: the
+        # articles it returned and the record that it was asked travel together, so a
+        # rollback cannot mark a day's allowance as spent on an instrument whose news
+        # was never stored.
+        instrument.marketaux_polled_at = utcnow()
     release_write_lock(session)
 
 
@@ -535,6 +602,15 @@ def ingest_rss_news(
         finnhub=FinnhubNewsProvider(settings),
         marketaux=MarketauxNewsProvider(settings),
     )
+    marketaux_slice = (
+        _marketaux_slice(
+            instruments,
+            allowance=_marketaux_allowance(settings, feeds.marketaux),
+        )
+        if feeds.marketaux.configured
+        else set()
+    )
+    report.marketaux_allowance = len(marketaux_slice)
 
     try:
         for position, instrument in enumerate(instruments, start=1):
@@ -556,18 +632,35 @@ def ingest_rss_news(
                     f"{report.fetched} articles, {report.written} new"
                 )
 
-            _poll_instrument(
-                session,
-                instrument,
-                feeds,
-                settings=settings,
-                prefilter=prefilter,
-                classifier=classifier,
-                report=report,
-            )
+            asked_marketaux = instrument.t212_ticker in marketaux_slice
+            try:
+                _poll_instrument(
+                    session,
+                    instrument,
+                    feeds,
+                    settings=settings,
+                    prefilter=prefilter,
+                    classifier=classifier,
+                    report=report,
+                    ask_marketaux=asked_marketaux,
+                )
+            except BudgetExhausted as exc:
+                # A spent *feed* allowance ends the sweep here rather than walking the
+                # rest of the universe fetching nothing. This instrument keeps its old
+                # cursor, so the next run resumes at it -- which is the whole point of
+                # the cursor. Reported with its own reason, because nobody asked for
+                # this and a deploy is what the wording usually means.
+                raise progress.Stopped(
+                    f"{position} of {len(instruments)} instruments", reason=str(exc)
+                ) from exc
 
             _finish_instrument(
-                session, instrument, report, position=position, total=len(instruments)
+                session,
+                instrument,
+                report,
+                position=position,
+                total=len(instruments),
+                asked_marketaux=asked_marketaux,
             )
     finally:
         feeds.close()
@@ -642,6 +735,13 @@ def ingest_sector_news(
             )
             try:
                 items = gather_for_sector(name, settings=settings, rss=provider)
+            except BudgetExhausted as exc:
+                # The same clean exit as the instrument poll: the feed allowance is
+                # spent, so the remaining sectors would each be asked, refused and
+                # reported as "no news" for a sector nothing actually fetched.
+                raise progress.Stopped(
+                    f"{position} of {len(names)} sectors", reason=str(exc)
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - one sector must not stop the poll
                 report.errors.append(f"{name}: {exc}")
                 continue

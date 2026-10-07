@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import quote_plus, urlparse, urlunparse
 
 from awltux.config import Settings, get_settings
-from awltux.providers.http import HttpClient, ProviderError
+from awltux.providers.http import BudgetExhausted, HttpClient, ProviderError
 from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
@@ -175,9 +175,16 @@ class RssNewsProvider:
 
         A single dead feed among hundreds must not fail the whole poll, so parse
         and transport failures are logged and swallowed here.
+
+        **A spent budget is not a dead feed, and is the one exception.** Swallowing it
+        would return "no news" for every remaining instrument while the sweep stamped
+        each of them as polled -- coverage claimed that was never fetched. It is
+        re-raised so the caller can end the sweep with the cursor where it is.
         """
         try:
             result = self._client.get(url, cache_ttl=cache_ttl, expect_json=False)
+        except BudgetExhausted:
+            raise
         except ProviderError as exc:
             logger.debug("feed fetch failed (%s): %s", url, exc)
             return []
@@ -326,6 +333,19 @@ class MarketauxNewsProvider:
     @property
     def configured(self) -> bool:
         return bool(self.settings.env.marketaux_api_key)
+
+    def requests_this_run(self, *, runs_per_day: int) -> int:
+        """How much of the day's quota this run may spend.
+
+        Asked by the ingest loop before it chooses the slice, so the day's allowance is
+        divided across the runs rather than spent by whichever one follows midnight. See
+        :meth:`~awltux.providers.http.BudgetGuard.per_run`.
+        """
+        return self._client.budget.per_run(runs_per_day=runs_per_day)
+
+    def remaining_today(self) -> int:
+        """Requests left in the current day, for the run's detail."""
+        return self._client.budget.remaining()
 
     def close(self) -> None:
         self._client.close()

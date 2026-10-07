@@ -77,6 +77,10 @@ _local = threading.local()
 #: threads and there is no lock either should have to hold.
 _stop = threading.Event()
 
+#: What a `Stopped` says when nobody asked for it -- the default, because "a stop was
+#: requested" is what `quiet()` and `drain()` produce and what a reader expects.
+REQUESTED_STOP = "a stop was requested"
+
 
 class Stopped(Exception):
     """A job returned early because a stop was requested.
@@ -86,7 +90,18 @@ class Stopped(Exception):
     exception rather than a sentinel because the loops it interrupts are nested inside
     provider calls and batch writes, and unwinding is the only way to leave all of them
     without threading a return value through every layer.
+
+    **``reason`` is not always a deploy.** The common case is a stop request, and the run
+    row says so because that is what a reader needs to know about an upgrade. A run can
+    also stop because it ran out of a *daily* provider quota, which is not something
+    anyone asked for and must not be reported as one -- a job that ends at its quota
+    every day would otherwise make every day look like a deployment.
     """
+
+    def __init__(self, where: str = "", *, reason: str = REQUESTED_STOP) -> None:
+        super().__init__(where)
+        self.where = where
+        self.reason = reason
 
 
 def request_stop() -> None:

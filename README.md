@@ -44,7 +44,7 @@ computes. Code owns all arithmetic, thresholds and permissions.
 | Constraint | Consequence |
 |---|---|
 | JEV caps `state` at ~32k tokens and cannot read a 200-page report | DeepSeek compresses filings into a compact, cited state first |
-| Trading 212 has **no quote or candle endpoint** | Prices come from Yahoo Finance, with Stooq as fallback |
+| Trading 212 has **no quote or candle endpoint** | Prices come from Yahoo Finance, through `yfinance` |
 | Free tiers are licensed for personal, non-commercial use | Local storage, source attribution, no redistribution |
 | A language model's "probability" is not a calibrated frequency | Fallback decisions are labelled and held to a stricter confidence floor |
 
@@ -557,14 +557,24 @@ licensed feeds.
 | Yahoo Finance (`yfinance`) | US + LSE prices, history, profiles | Unofficial scrape; personal use |
 | SEC EDGAR | US filings and XBRL financials | Public domain |
 | Companies House | UK company filings | Open Government Licence |
-| Stooq | EOD prices, US + UK | Free, unofficial |
 | Marketaux / Finnhub | News, sentiment | Free tier, personal use |
 | GDELT | News tone | Open |
 | Google News / Yahoo RSS | Headlines | Personal, non-commercial |
 
 `yfinance` is a scrape of an undocumented API and **will break eventually**. It
-sits behind a provider interface with a Stooq fallback, a disk cache, and a
-staleness gate that suppresses decisions rather than acting on old prices.
+sits behind a provider interface with a disk cache and a staleness gate that
+suppresses decisions rather than acting on old prices.
+
+**Every source above is rate-limited locally**, because several of them enforce
+undocumented quotas and answer a breach with a block rather than a 429. The rules
+live in `config/config.yaml` under `budgets`, and `tests/test_rate_limit.py` fails
+if a provider in the tree has no rule. Two shapes matter: a *pace*
+(`min_interval_seconds`) for a provider that also keeps an unnumbered per-minute
+limit, and `reset: utc_day` for one whose quota is counted against the calendar day.
+
+That table used to list Stooq as a price fallback. It is not one: **there is no
+Stooq adapter in this tree**, and since 2026 the endpoint needs an API key and
+answers a plain HTTP client with a browser-verification page.
 
 ### Known limitations
 

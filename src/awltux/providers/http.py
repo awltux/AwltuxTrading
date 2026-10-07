@@ -35,7 +35,7 @@ import httpx
 
 from awltux.config import BudgetRule, Settings, get_settings
 from awltux.db import ProviderBudget, release_before_network, session_scope, utcnow
-from awltux.timezones import utc_today
+from awltux.timezones import utc_day_start, utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,10 @@ class _BudgetState:
     last_error: str | None = None
     dirty: bool = False
     last_flushed: float = 0.0
+    #: When the last request went out, for a rule that sets `min_interval_seconds`.
+    #: Not persisted: spacing across a restart is worth nothing, and this is not a count
+    #: anybody reads back.
+    last_request_at: dt.datetime | None = None
 
 
 #: Process-wide budget state, keyed by provider.
@@ -107,6 +111,21 @@ _budget_registry_lock = threading.Lock()
 #: How often dirty state is written back, in seconds.
 BUDGET_FLUSH_INTERVAL = 30.0
 
+#: What a caller gets when a provider has no configured rule.
+#:
+#: **Written down rather than unlimited, because "no rule" is how a host gets hammered.**
+#: `HttpClient` used to leave `budget` as `None` when `budgets` had no entry for the
+#: provider, so a provider nobody had configured -- or one whose name was misspelt --
+#: was called with no local limit at all. That is exactly the state the news feeds were
+#: found in: Google News and Yahoo's per-ticker feeds, roughly a thousand requests per
+#: sweep, unthrottled, against hosts that ban an IP rather than answer 429 forever.
+#:
+#: One request a second is a ceiling no documented free tier objects to, and it is slow
+#: enough that a burst cannot happen. `tests/test_repo_hygiene.py` asserts that every
+#: provider named in the tree *does* have a rule, so this is a backstop for the case a
+#: test cannot see -- a name built at runtime.
+DEFAULT_RULE = BudgetRule(requests=60, window_seconds=60.0)
+
 
 class BudgetGuard:
     """Fixed-window request budget, held in memory and checkpointed to SQLite.
@@ -115,11 +134,35 @@ class BudgetGuard:
     onto how these providers describe their limits ("N requests per M seconds"),
     and it is cheap to persist. The cost is a possible burst across a window
     boundary, so the configured limits are set slightly below the real ones.
+
+    **Where the window starts is part of the rule.** A daily quota anchored to the first
+    call of the day is a rolling day, and the provider's day is not; see
+    :class:`~awltux.config.BudgetRule`.
     """
 
     def __init__(self, provider: str, rule: BudgetRule) -> None:
         self.provider = provider
         self.rule = rule
+
+    def _expired(self, now: dt.datetime, state: _BudgetState) -> bool:
+        """Whether the window ``state`` describes has already been counted and spent.
+
+        Two questions, because "how long ago did it start" is the wrong one for a
+        day-anchored rule. A window that began at 23:00 yesterday is 19 hours old and is
+        nevertheless over -- the provider has reset its quota at midnight, and carrying
+        yesterday's count into today would spend the day's allowance twice.
+        """
+        started = _as_utc(state.window_started_at)
+        if self.rule.reset == "utc_day":
+            return utc_day_start(now) > started
+        return (now - started).total_seconds() >= self.rule.window_seconds
+
+    def _seconds_left(self, now: dt.datetime, state: _BudgetState) -> float:
+        """How long until this window turns over."""
+        started = _as_utc(state.window_started_at)
+        if self.rule.reset == "utc_day":
+            return max(0.0, (utc_day_start(now) + dt.timedelta(days=1) - now).total_seconds())
+        return max(0.0, self.rule.window_seconds - (now - started).total_seconds())
 
     # ------------------------------------------------------------- lifecycle
     def _state_locked(self) -> _BudgetState:
@@ -210,18 +253,35 @@ class BudgetGuard:
                     wait_for = (state.blocked_until - now).total_seconds()
                 else:
                     state.blocked_until = None
-                    elapsed = (now - _as_utc(state.window_started_at)).total_seconds()
 
-                    if elapsed >= self.rule.window_seconds:
+                    if self._expired(now, state):
                         state.requests_used = 1
                         state.window_started_at = now
                         state.consecutive_failures = 0
                         state.dirty = True
                     elif state.requests_used >= self.rule.requests:
-                        wait_for = self.rule.window_seconds - elapsed
+                        wait_for = self._seconds_left(now, state)
                     else:
                         state.requests_used += 1
                         state.dirty = True
+
+                    if wait_for is None and self.rule.min_interval_seconds:
+                        # A second limiter several providers keep and none of them
+                        # numbers: space the calls out, because a burst of three inside a
+                        # second is what "too many requests in the past 60 seconds"
+                        # counts even when the day's allowance is barely touched.
+                        last = _as_utc(state.last_request_at) if state.last_request_at else None
+                        quiet_for = (
+                            last + dt.timedelta(seconds=self.rule.min_interval_seconds)
+                            if last is not None
+                            else None
+                        )
+                        if quiet_for is not None and quiet_for > now:
+                            wait_for = (quiet_for - now).total_seconds()
+                        else:
+                            state.last_request_at = now
+                    elif wait_for is None:
+                        state.last_request_at = now
 
                 self._flush(state)
 
@@ -240,6 +300,49 @@ class BudgetGuard:
                 wait_for,
             )
             time.sleep(wait_for + 0.05)
+
+    def remaining(self, *, now: dt.datetime | None = None) -> int:
+        """Requests left in the current window, without consuming one.
+
+        The reader a *run* needs before it decides how much of a rationed quota to
+        spend: a daily allowance has to be divided across the runs in a day, or the
+        first run of the day spends all of it and the next twenty-three go without.
+        """
+        with _budget_registry_lock:
+            state = self._state_locked()
+            moment = now or dt.datetime.now(dt.UTC)
+            if state.blocked_until is not None and state.blocked_until > moment:
+                return 0
+            if self._expired(moment, state):
+                return self.rule.requests
+            return max(0, self.rule.requests - state.requests_used)
+
+    def seconds_until_reset(self, *, now: dt.datetime | None = None) -> float:
+        """How long until the window (or the provider's day) turns over.
+
+        The backoff a provider's own "you have spent your quota" answer deserves: a
+        retry inside the same window is a wasted request and, at a provider that bans for
+        it, a wasted account.
+        """
+        moment = now or dt.datetime.now(dt.UTC)
+        with _budget_registry_lock:
+            state = self._state_locked()
+            return self._seconds_left(moment, state)
+
+    def per_run(self, *, runs_per_day: int) -> int:
+        """How much of a daily quota one run of ``runs_per_day`` may spend.
+
+        Only a day-anchored rule is divided: a per-minute allowance is not a daily
+        ration, so a run may use all of it and the guard refills within the minute.
+
+        At least one, or a run could never make progress, and never more than what is
+        actually left -- so the quota is spread across the day rather than spent in the
+        first hour and missed for the other twenty-three.
+        """
+        if self.rule.reset != "utc_day" or runs_per_day <= 1:
+            return self.remaining()
+        share = max(1, self.rule.requests // runs_per_day)
+        return max(0, min(share, self.remaining()))
 
     def note_success(self) -> None:
         with _budget_registry_lock:
@@ -482,7 +585,19 @@ class HttpClient:
         self.provider = provider
         self.base_url = base_url
         rule = self.settings.budget.get(provider)
-        self.budget = BudgetGuard(provider, rule) if rule else None
+        if rule is None:
+            # Not unlimited, deliberately. See `DEFAULT_RULE`: an unconfigured provider
+            # used to mean an unthrottled one, which is how the news feeds were found
+            # calling Google and Yahoo a thousand times a sweep with no ceiling at all.
+            rule = DEFAULT_RULE
+            logger.warning(
+                "%s: no budget in `budgets` (config.yaml), so the %d per %.0fs default "
+                "applies -- name a rule for it",
+                provider,
+                rule.requests,
+                rule.window_seconds,
+            )
+        self.budget = BudgetGuard(provider, rule)
         self.cache = ResponseCache(self.settings.cache_dir, raw_root=self.settings.raw_dir)
         self._owns_client = client is None
 
@@ -515,10 +630,12 @@ class HttpClient:
 
     # ------------------------------------------------------------------ core
     # One request pipeline, in the order the steps must happen: cache lookup, budget,
-    # conditional validators, retry loop, archive. Each step consumes the previous
-    # one's state, so helpers would pass six values between them and read *less*
-    # clearly than the sequence they were cut out of.
-    def request(  # noqa: C901
+    # conditional validators, retry loop, archive. Each step consumes the previous one's
+    # state. It used to need a complexity exemption, and needed it for one reason: the
+    # four `if self.budget is not None` branches an unconfigured provider used to require.
+    # The budget is unconditional now -- an unlisted provider gets `DEFAULT_RULE` rather
+    # than no limit -- and the function is back under the ceiling without it.
+    def request(
         self,
         method: str,
         url: str,
@@ -571,8 +688,7 @@ class HttpClient:
             # here for seconds, and a job holding the write lock across that
             # blocks every other writer until busy_timeout expires.
             release_before_network()
-            if self.budget is not None:
-                self.budget.acquire()
+            self.budget.acquire()
             try:
                 response = self._client.request(
                     method,
@@ -588,8 +704,7 @@ class HttpClient:
                 continue
 
             if response.status_code == 304 and cached is not None:
-                if self.budget is not None:
-                    self.budget.note_success()
+                self.budget.note_success()
                 # Refresh the cached entry's freshness stamp.
                 self.cache.write(
                     self.provider,
@@ -619,10 +734,27 @@ class HttpClient:
                     f"HTTP {response.status_code}: {body_snippet}",
                     status=response.status_code,
                 )
-                if self.budget is not None and response.status_code == 429:
+                if response.status_code == 429:
                     self.budget.note_failure(str(last_error), block_seconds=retry_after)
                 self._backoff(attempt, attempts, self.provider, str(last_error), retry_after)
                 continue
+
+            if response.status_code == 402:
+                # "Payment Required", which is what a **spent daily quota** looks like:
+                # Marketaux answers 402 `usage_limit_reached` once the day's requests are
+                # gone. Not retryable and not a failure of the request -- the allowance
+                # comes back when their day turns over, so that is what we wait for
+                # rather than a retry interval.
+                block = self.budget.seconds_until_reset()
+                self.budget.note_failure(
+                    f"HTTP 402 (quota spent): {response.text[:200]}", block_seconds=block
+                )
+                raise ProviderError(
+                    self.provider,
+                    f"HTTP 402 (quota spent; not asked again for {block / 3600:.1f}h): "
+                    f"{response.text[:200]}",
+                    status=402,
+                )
 
             if response.status_code == 403:
                 # The SEC (and some vendors) answer 403 for undeclared clients.
@@ -641,8 +773,7 @@ class HttpClient:
                 )
 
             body = response.content
-            if self.budget is not None:
-                self.budget.note_success()
+            self.budget.note_success()
             self.cache.write(
                 self.provider,
                 key,

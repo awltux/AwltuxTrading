@@ -24,6 +24,14 @@ from awltux.timezones import as_utc
 
 
 class _NoProvider:
+    """A provider that answers nothing, and has no key.
+
+    ``configured`` is part of the interface: the poll asks before it spends a rationed
+    quota, and a provider without a credential has nothing to spend.
+    """
+
+    configured = False
+
     def __init__(self, *args, **kwargs) -> None:
         pass
 
@@ -61,6 +69,154 @@ def _instrument(ticker: str, *, polled_at: dt.datetime | None = None):
     instrument = make_instrument(ticker, name=ticker)
     instrument.news_polled_at = polled_at
     return instrument
+
+
+class _MarketauxStub:
+    """A marketaux provider with a spendable allowance, recording who it was asked for."""
+
+    configured = True
+
+    def __init__(self, allowance: int) -> None:
+        self.allowance = allowance
+        self.asked: list[str] = []
+
+    def requests_this_run(self, *, runs_per_day: int) -> int:
+        return self.allowance
+
+    def remaining_today(self) -> int:
+        return self.allowance
+
+    def news(self, symbols, **kwargs):
+        self.asked.extend(symbols)
+        return []
+
+    def close(self) -> None:
+        pass
+
+
+class TestTheMarketauxRation:
+    """The day's allowance is a fraction of the book, so the choice has to rotate.
+
+    Marketaux's free plan allows 100 requests a day and one request carries one symbol,
+    so a pass covers a fifth of a 500-name universe. Before this the quota went to
+    whichever instruments the *news poll* reached first -- an arbitrary fifth, the same
+    one whenever the window turned over, and spent inside the first couple of hours of it.
+    Measured 2026-10-07: `provider_budget` held `marketaux used=100`, window started
+    17:49, and the provider emailed that the daily request limit had been reached.
+    """
+
+    def _run(self, session, monkeypatch, *, allowance: int):
+        from awltux.config import get_settings
+
+        stub = _MarketauxStub(allowance)
+        asked_with_quota: list[str] = []
+
+        def gather(instrument, **kwargs):
+            if kwargs.get("marketaux") is not None:
+                asked_with_quota.append(instrument.t212_ticker)
+            return []
+
+        monkeypatch.setattr(news, "gather_for_instrument", gather)
+        monkeypatch.setattr(news, "RssNewsProvider", _NoProvider)
+        monkeypatch.setattr(news, "FinnhubNewsProvider", _NoProvider)
+        monkeypatch.setattr(news, "MarketauxNewsProvider", lambda *a, **k: stub)
+
+        report = news.ingest_rss_news(session, settings=get_settings(), classifier=None)
+        return stub, asked_with_quota, report
+
+    def _seed(self, session, tickers, stamps: dict[str, dt.datetime] | None = None) -> None:
+        stamps = stamps or {}
+        for ticker in tickers:
+            row = _instrument(ticker, polled_at=dt.datetime.now(dt.UTC))
+            row.marketaux_polled_at = stamps.get(ticker)
+            session.add(row)
+        session.flush()
+
+    def test_the_never_asked_come_first(self, session, monkeypatch):
+        """A name the quota has never reached must not wait behind one it saw yesterday."""
+        now = dt.datetime.now(dt.UTC)
+        self._seed(
+            session,
+            ["ASKED_US_EQ", "NEVER_US_EQ", "OLD_US_EQ"],
+            {
+                "ASKED_US_EQ": now - dt.timedelta(hours=1),
+                "OLD_US_EQ": now - dt.timedelta(days=6),
+                "NEVER_US_EQ": None,
+            },
+        )
+        session.commit()
+
+        _, asked, _ = self._run(session, monkeypatch, allowance=2)
+
+        assert sorted(asked) == ["NEVER_US_EQ", "OLD_US_EQ"]
+
+    def test_the_stamp_moves_only_for_the_slice(self, session, monkeypatch):
+        """The ration's cursor is its own: the poll stamps every instrument it walks, and
+        sharing that stamp would put the quota back on the poll's cursor."""
+        self._seed(session, ["ONE_US_EQ", "TWO_US_EQ", "THREE_US_EQ"])
+        session.commit()
+
+        _, asked, _ = self._run(session, monkeypatch, allowance=1)
+
+        from sqlalchemy import select
+
+        from awltux.db import Instrument
+
+        stamped = {
+            row.t212_ticker: row.marketaux_polled_at is not None
+            for row in session.execute(select(Instrument)).scalars()
+        }
+        assert sum(stamped.values()) == 1
+        assert stamped[asked[0]] is True
+
+    def test_the_run_reports_the_allowance_it_used(self, session, monkeypatch):
+        self._seed(session, ["ONE_US_EQ", "TWO_US_EQ"])
+        session.commit()
+
+        _, _, report = self._run(session, monkeypatch, allowance=2)
+
+        assert report.as_dict()["marketaux_allowance"] == 2
+
+    def test_an_unconfigured_provider_costs_no_requests(self, session):
+        """The ordinary case in a deployment with no marketaux key."""
+        assert news._marketaux_slice([_instrument("ONE_US_EQ")], allowance=0) == set()
+
+
+class TestASpentFeedAllowance:
+    """A spent budget ends the sweep; a dead feed does not.
+
+    The distinction matters because `fetch_feed` swallows provider errors by design -- one
+    dead feed among hundreds must not fail the poll. Swallowing an exhausted *allowance*
+    would return "no news" for every remaining instrument while the walk stamped each of
+    them as polled, which claims coverage that was never fetched.
+    """
+
+    def test_the_walk_stops_with_the_cursor_where_it_is(self, session, monkeypatch):
+        from awltux.config import get_settings
+        from awltux.providers.http import BudgetExhausted
+        from awltux.scheduler import progress
+
+        for ticker in ("ONE_US_EQ", "TWO_US_EQ"):
+            session.add(_instrument(ticker))
+        session.flush()
+        session.commit()
+
+        def gather(instrument, **kwargs):
+            raise BudgetExhausted("rss", "budget spent (2000 per 86400s)")
+
+        monkeypatch.setattr(news, "gather_for_instrument", gather)
+        monkeypatch.setattr(news, "RssNewsProvider", _NoProvider)
+        monkeypatch.setattr(news, "FinnhubNewsProvider", _NoProvider)
+        monkeypatch.setattr(news, "MarketauxNewsProvider", _NoProvider)
+
+        with pytest.raises(progress.Stopped) as caught:
+            news.ingest_rss_news(session, settings=get_settings(), classifier=None)
+
+        assert "budget spent" in caught.value.reason
+        assert caught.value.reason != progress.REQUESTED_STOP
+        assert str(caught.value) == "1 of 2 instruments"
+        session.rollback()
+        assert session.get(news.Instrument, "ONE_US_EQ").news_polled_at is None
 
 
 class TestStoppingTheWalk:

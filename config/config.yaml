@@ -88,33 +88,96 @@ schedule:
 # --- provider rate-limit budgets (requests per window) ------------------------
 # Scopes mirror each provider's own per-endpoint limits, because a single shared
 # budget would let a fast endpoint starve a slow one.
+#
+# Two rules for reading these:
+#
+# * **Every provider this app calls must have an entry.** A provider with no entry
+#   used to mean *no limit at all*, which is how the keyless news feeds ended up
+#   calling Google and Yahoo a thousand times a sweep with no ceiling;
+#   `tests/test_repo_hygiene.py` now fails if a name in the tree has no rule, and an
+#   unlisted name falls back to a conservative default rather than to infinity.
+# * **A daily quota sets `reset: utc_day`.** A "N per 86400s" window anchored to
+#   whenever this process first asked is a *rolling* day, which does not line up with
+#   the provider's: 90 requests in the last hours of their Monday and 90 more after
+#   our window turns over is up to 180 inside their Tuesday. `utc_day` makes our
+#   counter reset when theirs does.
 budgets:
-  # Trading 212 -- limits are per endpoint, per account.
-  t212_instruments: { requests: 1,  window_seconds: 50 }
-  t212_exchanges:   { requests: 1,  window_seconds: 30 }
-  t212_account:     { requests: 1,  window_seconds: 5 }
-  t212_positions:   { requests: 1,  window_seconds: 1 }
-  t212_orders:      { requests: 1,  window_seconds: 2 }
-  t212_history:     { requests: 18, window_seconds: 60 }
-  yahoo:        { requests: 1800, window_seconds: 3600 }
-  stooq:        { requests: 60,   window_seconds: 3600 }
-  # One CSV per day changes; the budget only exists so a retry loop cannot hammer
-  # the Treasury's site.
-  treasury:     { requests: 12,   window_seconds: 3600 }
-  # One request returns all three gilt pillars. Same reasoning as the Treasury:
-  # the budget exists so a retry loop cannot hammer the BoE's site.
-  gilt:         { requests: 12,   window_seconds: 3600 }
-  edgar:        { requests: 5,    window_seconds: 1 }     # SEC allows 10/s; use half
-  companies_house: { requests: 500, window_seconds: 300 } # CH allows 600/5min
-  finnhub:      { requests: 55,   window_seconds: 60 }
-  marketaux:    { requests: 100,  window_seconds: 86400 }
-  gdelt:        { requests: 1,    window_seconds: 5 }
+  # Trading 212 -- limits are per endpoint and per *account* ("regardless of which API
+  # key is used or which IP address the request originates from"), so a second key buys
+  # nothing. Paced at about 1.5x the documented period: a 429 refuses the endpoint for
+  # the *remainder of the window*, which costs more than the extra wait does.
+  # Documented: instruments 1/50s, exchanges 1/30s, summary 1/5s, positions 1/1s,
+  # history 20/60s.
+  t212_instruments: { requests: 1,  window_seconds: 75 }
+  t212_exchanges:   { requests: 1,  window_seconds: 45 }
+  t212_account:     { requests: 1,  window_seconds: 8 }
+  t212_positions:   { requests: 1,  window_seconds: 2 }
+  t212_orders:      { requests: 1,  window_seconds: 3 }
+  t212_history:     { requests: 16, window_seconds: 60 }
+  # 30 a minute sits well under what Yahoo's undocumented endpoints tolerate, and the
+  # real request count is two to four times this because yfinance makes several HTTP
+  # calls per method call. Yahoo rate-limits by IP and answers a burst with 429s that
+  # look like "no data" once yfinance has swallowed them. The day's ceiling is ours:
+  # only a community figure exists for it, and no quota is published at all.
+  yahoo:        { requests: 4000, window_seconds: 86400, reset: utc_day, min_interval_seconds: 2 }
+  # One CSV per business day, so anything beyond a handful of requests is waste. The
+  # only published guidance is none at all: robots.txt explicitly allows everything.
+  treasury:     { requests: 50,   window_seconds: 86400, reset: utc_day, min_interval_seconds: 10 }
+  # One request returns all three gilt pillars, and the series move once a business day.
+  # Same reasoning as the Treasury, and the same absence of a published limit.
+  gilt:         { requests: 50,   window_seconds: 86400, reset: utc_day, min_interval_seconds: 10 }
+  # The SEC allows 10 requests/second per *IP address* ("regardless of the number of
+  # machines used to submit requests"), and a breach limits the address for ten minutes.
+  # Half of it, and the User-Agent declares a contact because an undeclared client is
+  # refused outright.
+  edgar:        { requests: 5,    window_seconds: 1 }
+  # Companies House allows 600 per 5 minutes per application and says it "reserve[s] the
+  # right to ban without notice applications that regularly exceed" it, so this is the
+  # one that gets real headroom -- 1 a second. There is no separately documented limit
+  # for the Document API, and it is not in the sandbox.
+  companies_house: { requests: 300, window_seconds: 300 }
+  # --- news feeds --------------------------------------------------------------
+  # Google News RSS and Yahoo's per-ticker feed: keyless, limit undocumented (Google's
+  # own forum calls it an undefined "fair use" quota and warns that a 10k-a-day scraper
+  # "might get blocked"), and the reported failure is a 503 "automated queries" page or a
+  # flat IP block rather than a polite 429. So both knobs are ours: a pace of one request
+  # every 5 seconds and a day's ceiling. The volume is the real problem and `TODO.md`
+  # carries it -- a full 500-name sweep is about 1,200 requests, which is not feed-reader
+  # traffic, and the fix is to ask for several companies per query rather than one.
+  rss:          { requests: 2000, window_seconds: 86400, reset: utc_day, min_interval_seconds: 5 }
+  # Finnhub documents 60 calls a minute, plus a global 30-a-second ceiling it says sits
+  # "on top of all plan's limit". 30 a minute is half the first and far under the second.
+  finnhub:      { requests: 30,   window_seconds: 60 }
+  # Marketaux's free plan is 100 requests/day with at most 3 articles a request, and one
+  # request carries one symbol -- so the allowance is a *day's*, 80 leaves room for a
+  # retry inside it, and the spacing respects the per-60-second limiter it also keeps
+  # ("too many requests in the past 60 seconds") whose number is not documented. A spent
+  # day answers HTTP 402, which stops us until the day turns over rather than retrying.
+  # The quota is spent on a rotating slice of the universe -- see `ingest/news.py` and
+  # `Instrument.marketaux_polled_at`.
+  marketaux:    { requests: 80,   window_seconds: 86400, reset: utc_day, min_interval_seconds: 3 }
+  # GDELT's own error text asks for "one request every 5 seconds"; the datasets are
+  # otherwise offered "unlimited and unrestricted", so the 400-a-day ceiling is ours.
+  # It also wants a real User-Agent, which this client always sends.
+  gdelt:        { requests: 400,  window_seconds: 86400, reset: utc_day, min_interval_seconds: 6 }
+  # --- models ------------------------------------------------------------------
   # Embeddings, batched 64 headlines a request, so this is generous in request
   # terms and the real cost is tokens. Named for the capability rather than the
   # vendor, because the endpoint is whatever `news.embeddings.base_url` points at.
+  # Both fal's model APIs and this endpoint are limited by *concurrency* rather than by
+  # rate (2 in flight on a new account, 40 self-served), which a budget cannot express;
+  # this bounds the burst, and the batch loop is what bounds concurrency.
   embeddings:   { requests: 60,   window_seconds: 60 }
+  # DeepSeek publishes concurrency limits and no requests-per-minute figure at all
+  # (2500 in flight for `deepseek-flash`). This is a burst bound, not the real control:
+  # the engine makes one call at a time and answers a 429 or a 503 with a retry.
   deepseek:     { requests: 200,  window_seconds: 60 }
-  typesafe:     { requests: 60,   window_seconds: 1 }
+  # TypeSafe documents 80 requests/second but also says the limits "are adjusting
+  # dynamically ... can change without notice", so this sits far below it.
+  typesafe:     { requests: 5,    window_seconds: 1 }
+  # fal's *platform* API (the billing read) rather than its inference endpoint: one
+  # call an hour, and the rule exists so a retry loop cannot turn that into a burst.
+  fal:          { requests: 30,   window_seconds: 60 }
 
 # --- horizons -----------------------------------------------------------------
 # Two independent verdicts, because they answer different questions from

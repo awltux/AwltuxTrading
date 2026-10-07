@@ -170,7 +170,14 @@ class TestTheInstrumentThrottle:
 
 
 class _stub_provider:
-    """A provider that answers nothing and needs no credential."""
+    """A provider that answers nothing and needs no credential.
+
+    ``configured`` is part of the interface the poll asks about before it spends a
+    rationed quota, and it is False here for the same reason it is False on a real
+    provider with no key.
+    """
+
+    configured = False
 
     def __init__(self, *args, **kwargs) -> None:
         pass

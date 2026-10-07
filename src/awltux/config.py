@@ -279,8 +279,30 @@ class ScheduleConfig(BaseModel):
 
 
 class BudgetRule(BaseModel):
+    """One provider's request allowance, as a count per period.
+
+    ``reset`` says **what the period is anchored to**, and for a daily quota that is
+    not a detail. A rule of "100 requests per 86400s" counted from whenever this process
+    first called the provider is a *rolling* day, and a rolling day does not line up with
+    the provider's own: 100 requests spent between 17:00 and 19:00 on Monday and another
+    100 after the window turns over at 17:00 on Tuesday is up to 200 inside Tuesday by
+    their calendar, which is how a local budget of exactly the published limit still
+    earns "you have reached your daily request limit".
+
+    ``utc_day`` anchors the window to midnight UTC, which is what every one of these
+    quotas is documented against. The counter then resets when *they* reset it.
+
+    ``min_interval_seconds`` is the second limit several of these providers keep and
+    nobody writes down: Marketaux answers "too many requests in the past 60 seconds"
+    alongside its daily cap, and the honest way to respect an unnumbered burst limiter
+    is to space the calls out. Zero means no spacing, which is right for a provider whose
+    window already implies it (`requests: 1` per window *is* a spacing).
+    """
+
     requests: int
     window_seconds: float
+    reset: Literal["window", "utc_day"] = "window"
+    min_interval_seconds: float = 0.0
 
 
 class ValuationConfig(BaseModel):

@@ -23,6 +23,57 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
+### The news feed volume is not feed-reader traffic, and the daily ceiling now shows it
+
+Added 2026-10-16 with the rate-limit work, and it is the *real* fix for the Google News
+side rather than a rate limit. A full sweep of 500 instruments asks Google News for one
+company per query, twice for a UK listing (GB and US editions) plus Yahoo's feed — about
+**1,200 requests**, which is not what a feed reader does. Google publishes no quota, calls
+it "fair use" in its own forum, and answers 4-digit automated volume with a 503
+"automated queries" page or a flat IP block rather than a 429.
+
+The new budget paces that at one request every five seconds with a 2,000-a-day ceiling, so
+a full sweep now takes about two hours and competes for the same day's allowance as the
+eleven-sector poll (~530 requests/day). **The consequence is coverage**: at 2,000/day the
+instrument poll cannot complete a sweep and a sector poll every day.
+
+The fix is volume, not pacing: Google's `q=` accepts OR'd phrases, so twenty companies
+could go in one query and the results be attributed by the classifier that already decides
+what a story is about. That would take a sweep from ~1,200 requests to ~60. `analysis/
+relevance.py` and the classifier already exist; what is missing is batching in
+`company_query` and a decision on how to attribute a pooled result.
+
+### `robots.txt` disallows three of the sources this app reads (a policy decision, not a rate limit)
+
+Fetched 2026-10-16, verbatim:
+
+| host | robots.txt | what we fetch |
+|---|---|---|
+| `news.google.com` | `User-agent: * / Disallow: /` with an allow-list that does **not** include `/rss/` | the per-company news query |
+| `feeds.finance.yahoo.com` | `User-agent: * / Disallow: /` | the per-ticker feed |
+| `query1.finance.yahoo.com` | `User-agent: * / Disallow: /` | every price, statement and search, through `yfinance` |
+| `www.bankofengland.co.uk` | disallows `/boeapps/database/_iadb-FromShowColumns.asp` | exactly that path, for the gilt curve |
+| `stooq.com` | allows only `Googlebot` and `Bingbot`; no longer keyless | nothing: no Stooq provider exists in the tree |
+
+Two more findings from the same pass, both already true and neither a rate limit:
+
+* **The README claims a Stooq fallback that is not implemented.** `stooq` had a budget
+  entry in `config.yaml` and a mention in `providers/http.py`'s docstring; there is no
+  adapter. The budget entry is gone; the README claim is still there.
+* **`macro_rates` and `gilt` may be better served by a different endpoint** — the Treasury
+  publishes the same par curve as an XML feed, which is allowed (`Allow: /`), and the BoE's
+  disallowed path is only its CSV export.
+
+**This is a decision, not a bug to fix silently**, which is why it is written here rather
+than worked around. Nothing has been done to evade any of it: the client sends one honest,
+declared User-Agent and no browser impersonation. The options are to accept the position in
+writing, or to move off the endpoint — and moving off Google News RSS for company coverage
+means the batched-query entry above becomes the only route to it.
+
+The two bugs before the above — a cache key that ignored the query string, and a
+`uk_companies` walk that attempted the same eleven instruments on every run — were found
+together in 2026-10-07 and are in the commit log.
+
 ### `SOURCE_PREFERENCE` ranks a source nothing writes, so Yahoo beats the filer's own tags
 
 Found 2026-10-16 while wiring `llm_extraction`. `analysis/fundamental.py:36` ranks
@@ -1115,10 +1166,15 @@ or two, and none of them grew materially for it -- the point is that they are th
 reader reaches for when asking where a job can be left, so they are the ones worth
 splitting.
 
-The enforced gate is complexity at 15 and all of these pass it (the largest is 14). The
-two functions the stop logic *did* grow materially -- `ingest_rss_news` (77 → 99, then
-split back to 62 via `_poll_instrument` / `_finish_instrument` / `_Feeds`) and
-`_execute_captured` (60 → 85, split back via `_invoke` / `_Outcome`) -- were paid off in
-that same commit. `persist_items` is the one to do first, since it is the loop the stop
-checks most often and it carries the per-article prefilter, dedup and classification
-inline.
+`ingest/news.py::ingest_rss_news` joins them, re-measured 2026-10-16 at **87 lines** after
+the rate-limit work: the marketaux ration added the slice, the allowance and the
+translate-an-exhausted-budget-into-a-clean-stop branch. It had been split to 62 for the
+cooperative stop, so this is the second time it has grown past 70, and the honest next
+move is a walk-context object (`session`, `feeds`, `settings`, `prefilter`, `classifier`,
+`report`, `total`) rather than a nine-argument helper -- `_Feeds` is already the first half
+of that idea. `persist_items` is still the one to do first.
+
+The enforced gate is complexity at 15 and all of these pass it. The two functions the stop
+logic *did* grow materially -- `ingest_rss_news` (77 → 99, then split back to 62 via
+`_poll_instrument` / `_finish_instrument` / `_Feeds`) and `_execute_captured` (60 → 85,
+split back via `_invoke` / `_Outcome`) -- were paid off in that same commit.

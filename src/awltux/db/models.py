@@ -191,6 +191,21 @@ class Instrument(Base, TimestampMixin):
         DateTime(timezone=True), index=True
     )
 
+    #: When the *marketaux* quota was last spent on this instrument, which is a different
+    #: question from `news_polled_at` and needs its own answer.
+    #:
+    #: The poll asks RSS for every instrument in the universe; marketaux is rationed to a
+    #: hundred requests a **day**, which is one request for one instrument's news, so a
+    #: pass covers a fifth of the book. Sharing the poll's stamp would make the quota
+    #: follow the poll's cursor -- the same fifth of the universe every day, because the
+    #: cursor moves far faster than the quota. Its own stamp makes the quota itself the
+    #: rotation: today's names are the ones it has waited longest to see.
+    #:
+    #: Indexed because it is the sort key that picks the day's slice.
+    marketaux_polled_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+
     exchange_ref: Mapped[Exchange | None] = relationship(back_populates="instruments")
     aliases: Mapped[list[InstrumentAlias]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"
