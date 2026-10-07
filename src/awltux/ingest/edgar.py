@@ -154,6 +154,11 @@ def sync_filings(
     )
     if tickers:
         statement = statement.where(Instrument.t212_ticker.in_(tickers))
+    else:
+        # A sweep skips instruments a scoped refresh holds. See `ingest/lease.py`.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     instruments = session.execute(statement).scalars().all()
     if not instruments:
         return report

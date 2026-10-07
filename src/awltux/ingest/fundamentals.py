@@ -684,6 +684,11 @@ def resolve_uk_companies(
     )
     if tickers is not None:
         statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    else:
+        # A sweep skips instruments a scoped refresh holds. See `ingest/lease.py`.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     if limit:
         statement = statement.limit(limit)
     instruments = list(session.execute(statement).scalars().all())

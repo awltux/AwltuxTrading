@@ -173,6 +173,12 @@ def deepen_annual_history(
     )
     if tickers is not None:
         statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    else:
+        # A sweep skips instruments a scoped refresh holds, so the two cannot file the
+        # same company's reports at once. Not applied to `tickers`: that *is* the refresh.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     instruments = session.execute(statement).scalars().all()
 
     for instrument in instruments:
@@ -248,6 +254,13 @@ def pending_annual_reports(
     )
     if tickers is not None:
         statement = statement.where(Filing.instrument_t212_ticker.in_(list(tickers)))
+    else:
+        # The download half of the same sweep, narrowed on the column these rows carry.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(
+            statement, session, Filing.instrument_t212_ticker
+        )
     return list(session.execute(statement).scalars().all())
 
 

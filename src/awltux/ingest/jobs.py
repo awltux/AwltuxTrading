@@ -566,6 +566,46 @@ def embed_news() -> JobResult:
     )
 
 
+def _pending_relevance_verdicts(session, tickers: list[str] | None) -> list[Any]:
+    """The stories this run may judge: the backlog window, minus other people's work.
+
+    A named step because the two narrowings are different questions asked of one window,
+    and only one of them applies per run. A scoped run asks about *this* instrument. A
+    sweep asks about everything except the instruments a one-instrument refresh is
+    working on -- both processes write the verdict to the same story row.
+
+    Both are answered in Python, because a story's instruments are a JSON list and
+    `json_each` cannot use an index: matched in SQL it would cost a table scan to skip
+    a handful of rows.
+    """
+    from sqlalchemy import select
+
+    from awltux.db import NewsItem
+
+    pending = list(
+        session.execute(
+            select(NewsItem)
+            .where(NewsItem.relevant.is_(None))
+            .order_by(NewsItem.id)
+            .limit(RELEVANCE_BACKFILL_ROWS if not tickers else None)
+        ).scalars().all()
+    )
+    if tickers:
+        # Scoped to a manual refresh, so the window is the instrument rather than a
+        # rationed slice of the backlog -- for one instrument over a deliberate button
+        # press that is the right trade, and for the scheduled sweep the rationed window
+        # above is what keeps it bounded.
+        wanted = set(tickers)
+        return [item for item in pending if wanted & set(item.tickers or [])]
+
+    from awltux.ingest.lease import locked_tickers, touches_locked
+
+    locked = locked_tickers(session)
+    if not locked:
+        return pending
+    return [item for item in pending if not touches_locked(item.tickers, locked)]
+
+
 def assess_news_relevance(tickers: list[str] | None = None) -> JobResult:
     """Decide whether stored stories are claims about a share price.
 
@@ -593,7 +633,7 @@ def assess_news_relevance(tickers: list[str] | None = None) -> JobResult:
 
     from awltux.analysis.relevance import assess
     from awltux.config import get_settings
-    from awltux.db import Instrument, NewsItem
+    from awltux.db import Instrument
     from awltux.db.session import release_write_lock
     from awltux.llm.classify import apply_classification, build_classifier
     from awltux.providers.news_rss import RawNewsItem
@@ -608,24 +648,7 @@ def assess_news_relevance(tickers: list[str] | None = None) -> JobResult:
     classifier = build_classifier(settings)
 
     with session_scope() as session:
-        pending = list(
-            session.execute(
-                select(NewsItem)
-                .where(NewsItem.relevant.is_(None))
-                .order_by(NewsItem.id)
-                .limit(RELEVANCE_BACKFILL_ROWS if not tickers else None)
-            ).scalars().all()
-        )
-        if tickers:
-            # Scoped to a manual refresh, so the window is the instrument rather than a
-            # rationed slice of the backlog. Matched in Python because `tickers` is a
-            # JSON column and `json_each` cannot use an index -- for one instrument over
-            # a deliberate button press that is the right trade, and for the scheduled
-            # sweep the rationed window above is what keeps it bounded.
-            wanted = set(tickers)
-            pending = [
-                item for item in pending if wanted & set(item.tickers or [])
-            ]
+        pending = _pending_relevance_verdicts(session, tickers)
         if not pending:
             return JobResult(note="every stored story already has a relevance verdict")
 

@@ -610,6 +610,15 @@ def analyse_universe(
     if tickers:
         wanted = set(tickers)
         items = [item for item in items if wanted & set(item.tickers or [])]
+    else:
+        # A sweep skips stories about an instrument a scoped refresh holds. Applied to
+        # the loaded window rather than the query because a story's instruments are a
+        # JSON list and there is no column to narrow on -- see `lease.touches_locked`.
+        from awltux.ingest.lease import locked_tickers, touches_locked
+
+        locked = locked_tickers(session)
+        if locked:
+            items = [item for item in items if not touches_locked(item.tickers, locked)]
 
     stale_before = utcnow() - dt.timedelta(days=refresh_after_days)
     existing = {

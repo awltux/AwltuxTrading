@@ -202,6 +202,207 @@ class TestExcludingTheLockedInstrument:
 
         assert load_price_targets(session, only=["LOCKED_US_EQ"]).symbols == ["LOCKED"]
 
+    def test_a_story_is_locked_when_any_of_its_instruments_is(self, session):
+        """The JSON list, where there is no column to narrow on."""
+        assert lease.touches_locked(["A_US_EQ", "B_US_EQ"], {"B_US_EQ"}) is True
+        assert lease.touches_locked(["A_US_EQ"], {"B_US_EQ"}) is False
+        assert lease.touches_locked(None, {"B_US_EQ"}) is False
+        assert lease.touches_locked(["A_US_EQ"], set()) is False
+
+    def test_the_filings_sweep_never_asks_the_provider_about_a_locked_instrument(
+        self, session, settings
+    ):
+        """Through the real selection. The provider call is the cost this saves, so the
+        assertion is on the CIKs asked for rather than on a row count."""
+        from awltux.ingest.edgar import sync_filings
+
+        _seed(session, "FREE_US_EQ", sec_cik="0000000002")
+        _seed(session, "LOCKED_US_EQ", sec_cik="0000000001")
+        acquire(session, "LOCKED_US_EQ")
+        session.commit()
+        asked: list[str] = []
+
+        class Provider:
+            def get_recent_filings(self, cik, *, limit: int = 40):
+                asked.append(str(cik))
+                return []
+
+            def get_sic(self, cik):
+                return None, None
+
+        sync_filings(session, settings=settings, provider=Provider())
+
+        assert asked == ["0000000002"]
+
+    def test_the_report_download_skips_a_locked_instrument(self, session, settings):
+        """Both halves of `shareholder_reports`: the discovery walk and the download. The
+        download half is the one that writes `Filing.raw_path`, so it is the sharper of
+        the two -- the query carries `Filing.instrument_t212_ticker`, not `Instrument`."""
+        from awltux.db import Filing
+        from awltux.ingest.documents import deepen_annual_history, pending_annual_reports
+
+        _seed(session, "FREE_US_EQ", sec_cik="0000000002")
+        _seed(session, "LOCKED_US_EQ", sec_cik="0000000001")
+        for ticker in ("FREE_US_EQ", "LOCKED_US_EQ"):
+            session.add(
+                Filing(
+                    instrument_t212_ticker=ticker,
+                    source="edgar",
+                    filing_type="10-K",
+                    url=f"https://sec.test/{ticker}.htm",
+                    status="pending",
+                )
+            )
+        acquire(session, "LOCKED_US_EQ")
+        session.commit()
+        asked: list[str] = []
+
+        class Provider:
+            def get_annual_filings(self, cik, *, since, limit: int = 6):
+                asked.append(str(cik))
+                return []
+
+        deepen_annual_history(session, settings=settings, provider=Provider())
+        queued = pending_annual_reports(session)
+
+        assert asked == ["0000000002"]
+        assert [row.instrument_t212_ticker for row in queued] == ["FREE_US_EQ"]
+
+    def test_the_uk_walk_never_asks_about_a_locked_instrument(self, session, settings):
+        from awltux.ingest.fundamentals import resolve_uk_companies
+
+        _seed(
+            session,
+            "FREE_US_EQ",
+            exchange_name="LSE",
+            yahoo_symbol="FREE.L",
+            ch_company_number=None,
+        )
+        _seed(
+            session,
+            "LOCKED_US_EQ",
+            exchange_name="LSE",
+            yahoo_symbol="LOCKED.L",
+            ch_company_number=None,
+        )
+        acquire(session, "LOCKED_US_EQ")
+        session.commit()
+        asked: list[str] = []
+
+        class Provider:
+            configured = True
+
+            def search_companies(self, name: str, **kwargs):
+                asked.append(name)
+                return []
+
+        resolve_uk_companies(session, settings=settings, provider=Provider())
+
+        assert asked == ["Apple Inc"]
+
+    def test_the_sentiment_sweep_leaves_the_locked_instrument_out(self, session, settings):
+        """No news and no bars, so nothing is written -- but the *count* is the instrument
+        list the sweep built, and that is what the lease narrows."""
+        from awltux.analysis.sentiment import aggregate_all
+
+        _seed(session, "FREE_US_EQ")
+        _seed(session, "LOCKED_US_EQ")
+        acquire(session, "LOCKED_US_EQ")
+        session.commit()
+
+        stats = aggregate_all(session, settings=settings, tickers=None)
+
+        assert stats["instruments_seen"] == 1
+
+    def test_the_appraisal_sweep_skips_a_locked_instrument_story(self, session, settings):
+        """Through `analyse_universe`, whose selection is a news window rather than an
+        instrument query -- so the instrument list is a JSON column and the filter is a
+        predicate over what was loaded."""
+        from awltux.analysis import news_analysis
+        from awltux.db import NewsItem
+
+        _seed(session, "FREE_US_EQ")
+        _seed(session, "LOCKED_US_EQ")
+        session.add(
+            NewsItem(
+                source="test",
+                url="https://news.test/free",
+                url_hash="free",
+                title="Free Co wins a contract",
+                published_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=2),
+                tickers=["FREE_US_EQ"],
+                sectors=[],
+                direction="positive",
+                materiality="high",
+            )
+        )
+        session.add(
+            NewsItem(
+                source="test",
+                url="https://news.test/locked",
+                url_hash="locked",
+                title="Locked Co wins a contract",
+                published_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=2),
+                tickers=["LOCKED_US_EQ"],
+                sectors=[],
+                direction="positive",
+                materiality="high",
+            )
+        )
+        acquire(session, "LOCKED_US_EQ")
+        session.commit()
+
+        report = news_analysis.analyse_universe(session, settings=settings)
+
+        assert report["examined"] == 1, "the locked story is not even examined"
+
+    def test_the_relevance_backfill_skips_a_locked_instrument_story(self, session, monkeypatch):
+        """Through the job, which opens its own session -- so the row has to be committed
+        before it runs, for the reason `AGENTS.md` gives about page tests."""
+        from awltux.db import NewsItem
+        from awltux.ingest import jobs
+
+        _seed(session, "FREE_US_EQ")
+        _seed(session, "LOCKED_US_EQ")
+        session.add(
+            NewsItem(
+                source="test",
+                url="https://news.test/free",
+                url_hash="free",
+                title="Free Co wins a contract",
+                published_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=2),
+                tickers=["FREE_US_EQ"],
+                sectors=[],
+                direction="positive",
+                materiality="high",
+            )
+        )
+        session.add(
+            NewsItem(
+                source="test",
+                url="https://news.test/locked",
+                url_hash="locked",
+                title="Locked Co wins a contract",
+                published_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=2),
+                tickers=["LOCKED_US_EQ"],
+                sectors=[],
+                direction="positive",
+                materiality="high",
+            )
+        )
+        acquire(session, "LOCKED_US_EQ")
+        session.commit()
+
+        jobs.assess_news_relevance()
+
+        session.expire_all()
+        verdicts = {
+            item.url_hash: item.relevant
+            for item in session.query(NewsItem).all()
+        }
+        assert verdicts["free"] is True
+        assert verdicts["locked"] is None
+
 
 class TestTheSequence:
     def test_it_contains_the_pipeline_stages_that_need_a_company(self):

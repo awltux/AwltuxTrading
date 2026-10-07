@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -86,6 +87,22 @@ def exclude_locked(statement, session: Session, column=None, *, now: dt.datetime
     if not locked:
         return statement
     return statement.where((column if column is not None else Instrument.t212_ticker).not_in(locked))
+
+
+def touches_locked(tickers: Iterable[str] | None, locked: set[str]) -> bool:
+    """Whether a row that names several instruments names one a refresh holds.
+
+    The lease applied to a **news** row, which carries a JSON *list* of tickers rather
+    than one column. `exclude_locked` narrows a query by column, and there is nothing
+    here to narrow on: `json_each` cannot use an index (see `TODO.md`), so a sweep would
+    trade a table scan for the one instrument it wanted to skip. The rule is therefore
+    stated once, as a predicate, and the callers filter what they have already loaded --
+    they have to load the window anyway to decide what a story is about.
+
+    ``locked`` is :func:`locked_tickers` taken **once per run**, for the reason the
+    module docstring gives.
+    """
+    return bool(locked & set(tickers or ()))
 
 
 def acquire(
@@ -251,4 +268,5 @@ __all__ = [
     "new_token",
     "record_step",
     "release",
+    "touches_locked",
 ]

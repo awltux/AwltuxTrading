@@ -378,6 +378,12 @@ def aggregate_all(
     statement = select(Instrument).where(Instrument.in_universe.is_(True))
     if tickers is not None:
         statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    else:
+        # A sweep skips instruments a scoped refresh holds, so the two cannot write the
+        # same company's series. See `ingest/lease.py`.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     instruments = session.execute(statement).scalars().all()
 
     stats = {"instruments_seen": 0, "rows_written": 0, "skipped_no_data": 0}

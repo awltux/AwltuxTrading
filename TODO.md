@@ -540,36 +540,13 @@ and `cost_usd` from the model's published per-million rate. It needs the rates i
 `config.yaml` beside `news.embeddings`, because they are per model and the parser already
 knows which model answered.
 
-### The per-instrument mechanisms are half-wired: leases on six sweeps, blockers on two
+### Two jobs record a per-instrument failure and six do not
 
-Two mechanisms that protect one instrument from another, each adopted by some jobs and not
-others. Merged because a reader fixing either wants the other's list.
-
-**Leases.** The one-instrument refresh takes a lease (`ingest/lease.py`) and the sweeps
-consult it so the two cannot write the same company at once. Six do not yet:
-`filings_edgar`, `shareholder_reports`, `uk_companies`, `news_relevance`, `news_analysis`
-and `sentiment`. Wired: `price_eod`, `fundamentals`, `xbrl_statements`, `news_rss`,
-`valuation` and `decision` — the six that call `lease.exclude_locked(...)` on their
-instrument selection.
-
-The add is one line each, and it must go on the *selection*, not inside the loop: a job
-that has already loaded its instrument list would re-ask per item at best, and at worst
-an instrument fetched before the lease was taken sails past a check placed after the load.
-`decide_universe` is the worked example — it slices an in-memory list by `limit`
-afterwards, so a post-load check would still spend one of the sweep's slots on an
-instrument it must not touch.
-
-Cost of the gap, measured rather than assumed: a collision is a *wait*, not a corrupted
-figure, because SQLite serialises the writes either way — so this is worth doing and is
-not an emergency. `refresh.py` does not pause the scheduler for its duration, which would
-close the window completely, because a thread that died while holding the pause would
-leave the whole scheduler stopped; the lease expires and that failure mode does not exist.
-
-**Blockers.** `instrument_blocker` exists so a *missing* figure is not mistaken for an
-answer, and only `fundamentals` and `xbrl_statements` write to it. Every other job that can
-fail one instrument and succeed the rest records nothing: `shareholder_reports` (a refused
-download is in `download_errors` and nowhere else), `filings_edgar`, `uk_companies`,
-`edgar_events`, `prices` and `symbol_resolution`.
+`instrument_blocker` exists so a *missing* figure is not mistaken for an answer, and only
+`fundamentals` and `xbrl_statements` write to it. Every other job that can fail one
+instrument and succeed the rest records nothing: `shareholder_reports` (a refused download
+is in `download_errors` and nowhere else), `filings_edgar`, `uk_companies`, `edgar_events`,
+`prices` and `symbol_resolution`.
 
 Measured 2026-10-07, which is why this is a queue item and not a hypothetical: parsing the
 per-instrument failure lists out of the last **400** `ingest_run.detail` payloads found
