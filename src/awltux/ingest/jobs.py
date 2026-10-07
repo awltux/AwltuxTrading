@@ -507,7 +507,14 @@ def embed_news() -> JobResult:
             return JobResult(note="every relevant story already has a vector")
 
         batch_size = max(1, config.batch_size)
+        batch_count = (len(pending) + batch_size - 1) // batch_size
         for start in range(0, len(pending), batch_size):
+            # Between batches, on the committed side of the previous one: one model call
+            # per batch and `max_per_run` of them, so without this a quiet waits for the
+            # whole ration.
+            progress.checkpoint(
+                f"batch {start // batch_size + 1} of {batch_count} ({len(pending)} stories)"
+            )
             batch = pending[start : start + batch_size]
             texts = [embed_text(item) for item in batch]
             # Vector maths is ours; the provider only turns text into numbers.
@@ -671,7 +678,13 @@ def assess_news_relevance(tickers: list[str] | None = None) -> JobResult:
         structural = 0
         errors: list[str] = []
 
-        for item in pending:
+        for position, item in enumerate(pending, start=1):
+            # Checked on every story, reported every hundredth: the row window is
+            # thousands of rows and most of them cost nothing, so a line each would bury
+            # the log it exists to make readable. `progress.py` names this split.
+            if position % 100 == 1:
+                progress.note(f"{position} of {len(pending)} stories")
+            progress.barrier(f"{position} of {len(pending)} stories")
             instrument = next(
                 (instruments.get(ticker) for ticker in (item.tickers or []) if instruments.get(ticker)),
                 None,
@@ -1090,8 +1103,10 @@ def resolve_symbols(tickers: list[str] | None = None) -> JobResult:
 
     for position, instrument in enumerate(stuck, start=1):
         # Two provider searches per instrument, each rate-limited, so this run is
-        # minutes long and silent without a counted line.
-        progress.note(f"{position} of {len(stuck)}: {instrument.t212_ticker}")
+        # minutes long and silent without a counted line -- and it is a *checkpoint*
+        # rather than a note, because a loop that can say how far it has got is a loop
+        # that can be left. Each phase below is its own committed scope.
+        progress.checkpoint(f"{position} of {len(stuck)}: {instrument.t212_ticker}")
         # Release before the search, like every other network call in this codebase.
         with session_scope() as session:
             release_write_lock(session)
@@ -1419,12 +1434,30 @@ def run_valuations(tickers: list[str] | None = None) -> JobResult:
 
 
 def run_decisions(tickers: list[str] | None = None) -> JobResult:
-    """Produce a fresh decision for every instrument whose inputs changed."""
+    """Decide for a rotated slice of instruments, least recently decided first.
+
+    Bounded like every other paid job here. Measured 2026-10-07: about **4.1 decisions a
+    minute**, so the whole universe in one call is a 110-minute job -- longer than the
+    interval it runs on, killed by every deploy, and the reason `decision` had 6 runs and
+    0 successes. The per-day rotation is divided across the 24 hourly runs, the shape
+    `sync_fundamentals_job` uses; a scoped refresh is one instrument and is not rationed.
+
+    A bounded run is only honest because the selection rotates: `decide_universe` orders
+    by least recently decided, so successive runs walk the whole universe rather than
+    deciding the same names every hour.
+    """
     from awltux.decision.service import decide_universe
 
+    settings = get_settings()
+    per_run = (
+        None
+        if tickers
+        else max(1, settings.schedule.decision_rotation_per_day // 24)
+    )
     with session_scope() as session:
-        stats = decide_universe(session, tickers=tickers)
+        stats = decide_universe(session, tickers=tickers, limit=per_run)
 
+    stats["per_run_limit"] = per_run if per_run is not None else "scoped"
     return JobResult(
         items_seen=stats.get("attempted", 0),
         items_written=stats.get("decided", 0),

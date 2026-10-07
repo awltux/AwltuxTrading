@@ -204,6 +204,86 @@ class TestDecisionRun:
         assert any(issue.kind == "hash_mismatch" for issue in issues)
 
 
+class TestTheRotation:
+    """The per-run bound and the ordering are one change, and each is useless alone.
+
+    Measured 2026-10-07: `decision` wrote **52 decisions in 12.8 minutes** -- 4.1 a
+    minute against a universe of 500, so a full sweep is about 110 minutes, longer than
+    the daily interval it ran on and killed by every deploy. A limit alone would starve
+    the tail instead, because the sweep took whatever order SQLite returned; so the
+    selection orders by least recently decided and the limit cuts a rotation that walks
+    the whole universe over a day.
+    """
+
+    def _seed(self, session, ticker: str, decided_at: dt.datetime | None = None):
+        session.add(make_instrument(ticker, yahoo_symbol=ticker))
+        session.flush()
+        if decided_at is not None:
+            session.add(
+                DecisionRun(
+                    instrument_t212_ticker=ticker,
+                    state_sha256="a" * 64,
+                    engine="offline",
+                    created_at=decided_at,
+                )
+            )
+            session.flush()
+
+    def test_never_decided_first_then_the_oldest(self, session, settings):
+        from awltux.decision.service import _rotation_candidates
+
+        now = dt.datetime.now(dt.UTC)
+        self._seed(session, "NEWER_US_EQ", now - dt.timedelta(minutes=5))
+        self._seed(session, "OLDEST_US_EQ", now - dt.timedelta(days=3))
+        self._seed(session, "NEVER_US_EQ")
+
+        order = [
+            row.t212_ticker
+            for row in _rotation_candidates(session, settings=settings)
+        ]
+
+        assert order == ["NEVER_US_EQ", "OLDEST_US_EQ", "NEWER_US_EQ"]
+
+    def test_the_limit_takes_the_least_recently_decided(self, session, settings):
+        """The property the bound depends on: raising the ration must not decide the
+        same two names every hour while the rest of the universe waits."""
+        from awltux.decision.service import _rotation_candidates
+
+        now = dt.datetime.now(dt.UTC)
+        self._seed(session, "DECIDED_US_EQ", now - dt.timedelta(minutes=5))
+        self._seed(session, "STALE_US_EQ", now - dt.timedelta(days=3))
+        self._seed(session, "NEVER_US_EQ")
+
+        picked = [
+            row.t212_ticker
+            for row in _rotation_candidates(session, settings=settings, limit=2)
+        ]
+
+        assert picked == ["NEVER_US_EQ", "STALE_US_EQ"]
+
+    def test_the_job_rations_a_sweep_and_not_a_scoped_refresh(
+        self, session, settings, monkeypatch
+    ):
+        """A one-instrument refresh asked for this instrument; rationing it out of the
+        run that was requested would be an answer of "come back next hour"."""
+        from awltux.ingest import jobs
+
+        calls: list[dict] = []
+
+        def capture(session, *, settings=None, tickers=None, limit=None):
+            calls.append({"tickers": tickers, "limit": limit})
+            return {}
+
+        monkeypatch.setattr("awltux.decision.service.decide_universe", capture)
+
+        jobs.run_decisions()
+        jobs.run_decisions(tickers=["ONE_US_EQ"])
+
+        expected = max(1, settings.schedule.decision_rotation_per_day // 24)
+        assert calls[0]["limit"] == expected
+        assert calls[1] == {"tickers": ["ONE_US_EQ"], "limit": None}
+
+
 class TestReplay:
     def test_replay_reproduces_a_deterministic_decision(self, session, seeded):
         run_valuations(session, tickers=["TEST_US_EQ"])

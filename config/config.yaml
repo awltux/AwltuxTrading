@@ -61,6 +61,12 @@ schedule:
   prices_eod: 86400              # once after the close
   quotes_held: 3600              # was 5 min
   fundamentals_rotation_per_day: 70
+  # The decision sweep is bounded and rotated, for the same reason fundamentals is:
+  # at 4.1 decisions a minute the whole universe in one call is a 110-minute job that
+  # cannot finish inside any interval, and every deploy killed it mid-sweep. Each
+  # hourly run decides the least recently decided names, so a day still covers the
+  # universe. Raising this multiplies the model spend, not just the run length.
+  decision_rotation_per_day: 500
   edgar_submissions: 3600
   edgar_atom_events: 3600        # was 45 SECONDS; the Atom feed holds hours of events
   companies_house: 3600          # was 15 min
@@ -71,7 +77,7 @@ schedule:
   news_gdelt: 3600               # was 15 min
   sentiment_aggregate: 3600
   valuation: 86400               # full sweep nightly; event-driven otherwise
-  decision: 86400
+  decision: 3600                  # hourly, a rotated slice; was a daily full sweep
   calibration: 86400
   retention: 604800
   macro_rates: 21600             # Treasury publishes once a business day

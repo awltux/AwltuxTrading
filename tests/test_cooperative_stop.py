@@ -26,6 +26,7 @@ from awltux.db import IngestRun
 from awltux.scheduler import progress
 from awltux.scheduler.jobs import JobSpec, execute_job
 from awltux.scheduler.service import SchedulerService
+from tests.helpers import make_instrument
 
 
 def _job(func, job_id: str = "probe") -> JobSpec:
@@ -208,6 +209,125 @@ class TestTheRequestItself:
         service.start()
 
         assert progress.stop_requested() is False
+
+
+class TestTheLoopsThatCouldNotBeLeft:
+    """The six jobs that had no boundary to check, driven with a stop already asked for.
+
+    Found by being blocked twice in a row: `quiet` reports itself done only when nothing
+    is running, so a job with no checkpoint inside its per-item loop makes every deploy
+    wait for the whole of it. Measured 2026-10-07, `quiet` reported `idle` while
+    `decision` ran -- it stops on request -- but `sentiment`, `shareholder_reports`,
+    `symbol_resolution`, `filings_edgar`, `news_relevance` and `news_embeddings` had no
+    boundary at all.
+
+    Each of these asserts the *job* leaves, not that a helper exists: the stop is
+    requested before the call, so the first boundary reached raises. A loop that reports
+    progress without looking at the flag passes `progress.note` and fails here.
+    """
+
+    def setup_method(self) -> None:
+        progress.request_stop()
+
+    def test_sentiment(self, session, settings):
+        from awltux.analysis.sentiment import aggregate_all
+
+        session.add(make_instrument("TEST_US_EQ", yahoo_symbol="TEST"))
+        session.flush()
+
+        with pytest.raises(progress.Stopped):
+            aggregate_all(session, settings=settings)
+
+    def test_the_annual_report_walk(self, session, settings):
+        from awltux.ingest.documents import deepen_annual_history
+
+        session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
+        session.flush()
+
+        with pytest.raises(progress.Stopped):
+            deepen_annual_history(session, settings=settings, provider=object())
+
+    def test_the_annual_report_download(self, session, settings):
+        from awltux.db import Filing
+        from awltux.ingest.documents import fetch_annual_reports
+
+        session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
+        session.flush()
+        session.add(
+            Filing(
+                instrument_t212_ticker="TEST_US_EQ",
+                source="edgar",
+                filing_type="10-K",
+                url="https://sec.test/report.htm",
+                status="pending",
+            )
+        )
+        session.flush()
+
+        with pytest.raises(progress.Stopped):
+            fetch_annual_reports(session, settings=settings, provider=object())
+
+    def test_filings_edgar(self, session, settings):
+        from awltux.ingest.edgar import sync_filings
+
+        session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
+        session.flush()
+
+        with pytest.raises(progress.Stopped):
+            sync_filings(session, settings=settings, provider=object())
+
+    def test_symbol_resolution(self, session):
+        from awltux.ingest import jobs
+
+        session.add(
+            make_instrument("TEST_US_EQ", isin="US0378331005", yahoo_symbol="TEST")
+        )
+        session.commit()
+
+        with pytest.raises(progress.Stopped):
+            jobs.resolve_symbols()
+
+    def test_news_relevance(self, session):
+        from awltux.db import NewsItem
+        from awltux.ingest import jobs
+
+        session.add(make_instrument("TEST_US_EQ", yahoo_symbol="TEST"))
+        session.add(
+            NewsItem(
+                source="test",
+                url="https://news.test/story",
+                url_hash="story",
+                title="Test Industries wins a contract",
+                tickers=["TEST_US_EQ"],
+            )
+        )
+        session.commit()
+
+        with pytest.raises(progress.Stopped):
+            jobs.assess_news_relevance()
+
+    def test_news_embeddings(self, session, monkeypatch):
+        from awltux.analysis.embeddings import EmbeddingClient
+        from awltux.db import NewsItem
+        from awltux.ingest import jobs
+
+        session.add(make_instrument("TEST_US_EQ", yahoo_symbol="TEST"))
+        session.add(
+            NewsItem(
+                source="test",
+                url="https://news.test/story",
+                url_hash="story",
+                title="Test Industries wins a contract",
+                tickers=["TEST_US_EQ"],
+                relevant=True,
+            )
+        )
+        session.commit()
+        # Not configured in tests, and the job returns before its loop when it is not.
+        monkeypatch.setattr(EmbeddingClient, "configured", property(lambda self: True))
+
+        with pytest.raises(progress.Stopped):
+            jobs.embed_news()
 
 
 class _InertScheduler:

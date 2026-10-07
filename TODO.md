@@ -565,80 +565,35 @@ and `cost_usd` from the model's published per-million rate. It needs the rates i
 `config.yaml` beside `news.embeddings`, because they are per model and the parser already
 knows which model answered.
 
-### `decision` still sweeps the whole universe, and six jobs have no stopping point
+### One worker means a 39-minute job delays every other job
 
-Two jobs, one conclusion, and the second was found by being blocked twice in a row.
+Re-measured 2026-10-16, after the two changes the previous version of this entry asked
+for. The worse half was `decision`, and that half is answered: measured 2026-10-07 it
+wrote **52 decisions in 12.8 minutes** — 4.1 a minute against a universe of 500, so a
+full sweep is about 110 minutes, longer than the daily interval that asked for it and
+killed by every deploy (`decision` had 6 runs and 0 successes). It now decides 20 an
+hour, ordered by least recently decided, and every long job has a `progress.barrier`
+inside its per-item loop, so `awltux quiet` no longer waits for the whole of one.
 
-**`decision` has no batch limit at all.** Measured on the live container: run #127
-started 12:37:47, wrote **52 decisions in 12.8 minutes** — 4.1 per minute against a
-universe of 500, so roughly **110 minutes remaining**. Every other expensive job
-here is bounded for the same reason: `fundamentals` rotates
-`fundamentals_rotation_per_day`, `symbol_resolution` takes `symbol_resolution_per_run`,
-shareholder reports take `reports.per_run`, `refresh_prices_eod` chunks at 40.
-`decision` sweeps the whole universe in one call.
+What is left is not about stopping.
 
-**`news_analysis` is bounded and still far too long.** It appraises at most
-`news.scepticism.max_deep_per_run`, which is **40** — and at a model call per story
-that is **14 to 39 minutes**: the three runs on record took 826s, 1831s and 2351s.
+`news_analysis` is bounded at `news.scepticism.max_deep_per_run` = **40** model calls, and
+at one call per story that is **14 to 39 minutes** — the three runs on record took 826s,
+1831s and 2351s. `MAX_CONCURRENT_JOBS` is **1**, so while it runs no other job starts: an
+hourly job whose trigger falls inside that window does not queue, it waits for the next
+interval, which is a two-hour gap in prices, news or sentiment for no reason other than
+one job's length. Lowering `max_deep_per_run` is not a fix — 40 stories is already a
+rationed batch and cutting it only grows the backlog — and the per-story work is already
+persisted, so a *stopped* run loses nothing.
 
-All three of those are recorded `ok=False` with *"interrupted: the process restarted
-while this run was in progress"*, and that is the evidence, not a coincidence. Each
-one was killed by a redeploy. Two of them were killed by deployments for this very
-objective, after `awltux quiet --timeout 300` returned exit 3 and the rebuild went
-ahead anyway.
+That is the thing to decide: whether the answer is a second worker for jobs that make
+model calls rather than CPU (see the entry below for why more CPU cannot help), or a
+per-run time budget rather than a call budget. Both are bigger than a fix, so this stays
+here with the measurement.
 
-Re-measured 2026-10-06 18:1x, and the pattern is now total rather than occasional:
-**`decision` has 6 runs and 0 successes, `news_analysis` 5 and 0, `news_rss` 7 and 0.**
-Every attempt at all three has failed, and the failures are interruptions rather than
-logic errors. Two consequences worth stating, because both were inferred wrongly before
-this was measured:
-
-- The 184 decisions in the ledger were written by runs that never reported success.
-  `decision` writes incrementally, so a killed run is a partial run and not an empty
-  one -- which is also why "0 successes" is not evidence that nothing works.
-- Catch-up (`AGENTS.md` §1) keys on the last **successful** run, so these three read as
-  "never succeeded" and are deliberately not caught up at start. They keep the ordinary
-  randomised first run, which lands within the hour. That is adequate, but it means the
-  job that most needs restart resilience is the one job the restart rule does not
-  cover -- if a restart ever lands inside the hour, one interval is lost.
-
-What catch-up changed: an interrupted run is no longer *lost work*, because an
-unsuccessful run does not count and the job is repeated at the next start. What it
-costs is the provider and model budget of doing the work twice, which for these two is
-the expensive part.
-
-**A running job can now be asked to leave at its next item boundary**, which is the
-first of the two changes this entry wanted and is described in `AGENTS.md` §1
-(`progress.checkpoint` / `progress.barrier`, and the process-global stop request that
-`quiet()` and `drain()` set). Correcting what this entry used to claim: `quiet` *can*
-report `idle` while `decision` or `news_analysis` is running -- those two stop on
-request now, as does `news_rss`. The claim that it never could is stale.
-
-**Still owed, and the stop settles neither:**
-
-1. **Bound `decision`** with a per-run limit and a least-recently-decided rotation, the
-   shape `fundamentals` already uses. At 4.1/min, 500 instruments cannot complete inside
-   one daily interval, so the daily cadence is not honest either. A job that can be
-   asked to leave is not a job that finishes.
-2. **Six jobs have no boundary to check.** `sentiment`, `shareholder_reports`,
-   `symbol_resolution`, `filings_edgar`, `news_relevance` and `news_embeddings` have no
-   `progress.note` inside their per-item loops at all, so a `quiet` still waits for the
-   whole of them. Fixing it is two changes each -- add the note (itself owed, since a
-   long job with no line in its log cannot be told from a hung one) and make it a
-   `progress.barrier`. `fundamentals`, `xbrl_statements` and `refresh_prices_eod` do note
-   per item and were left alone deliberately: each is rationed to a per-run limit of 2,
-   60 and 40 batches, so the exposure is minutes rather than hours.
-
-Lowering `max_deep_per_run` is not a fix: 40 stories is already a rationed batch,
-and cutting it further only means the backlog grows instead.
-
-**Not merged with *A CPU-bound job still starves the web UI*, and it is the only pair the
-clean-down left apart.** Both are consequences of one process running the scheduler, but
-they are different failures with different fixes: this one is that jobs are unbounded and
-some have no boundary to be asked to leave at, and that one is that a running job holds
-`/dashboard` at 14 seconds because CPython runs one thread at a time. Merging them would
-produce an entry whose first half a per-run limit answers and whose second half a second
-process does. **See also** the other entry for why more CPU cannot help.
+**Correcting what the entry this replaces used to claim:** `quiet` *can* report `idle`
+while `decision` or `news_analysis` is running — those two stop on request, as do all six
+jobs that had no boundary before 2026-10-16. The claim that it never could is stale.
 
 ### A CPU-bound job still starves the web UI, and one worker only halves it
 
@@ -1144,15 +1099,26 @@ treated as a source of record.
 
 ### Splitting the long functions the cooperative stop had to reach into
 
-`python tools/refactor_report.py --diff` after that change, 2026-10-07:
-`decision/service.py::decide_instrument` 185 lines, `news_analysis.py::
-analyse_universe` 138, `ingest/news.py::persist_items` 112, `news_analysis.py::
-appraise_item` 106, `decision/service.py::decide_universe` 87. All five were already
-over the 70-line report before the change; the two this work *grew* materially --
-`ingest_rss_news` (77 → 99 with the stop logic, then split back to 62 via
-`_poll_instrument` / `_finish_instrument` / `_Feeds`) and `_execute_captured` (60 → 85
-with the stopped branch, split back via `_invoke` / `_Outcome`) -- were paid off in the
-same commit. The five above are a separate pass with its own reason, and the enforced
-gate is complexity at 15, which they pass: the largest is 14. `persist_items` is the
-one to do first, since it is the loop the stop checks most often and it carries the
-per-article prefilter, dedup and classification inline.
+`python tools/refactor_report.py`, re-measured 2026-10-16 after the boundary checks were
+added to the last six jobs: `decision/service.py::decide_instrument` 185 lines,
+`analysis/news_analysis.py::analyse_universe` 121, `analysis/news_analysis.py::
+appraise_item` 114, `ingest/news.py::persist_items` 102, `decision/service.py::
+decide_universe` 78. The numbers moved since this was written and only downward for the
+first and last of them (`analyse_universe` was 138 and `decide_universe` 87, both split
+partly in the meantime); `appraise_item` grew by 8.
+
+The six loops the boundary work touched are the same family and belong in the same pass:
+`ingest/jobs.py::assess_news_relevance` 171 lines, `ingest/jobs.py::resolve_symbols` 135,
+`ingest/jobs.py::embed_news` 116, `analysis/sentiment.py::aggregate_all` 116,
+`ingest/documents.py::deepen_annual_history` 112. Each gained one `progress.checkpoint`
+or two, and none of them grew materially for it -- the point is that they are the loops a
+reader reaches for when asking where a job can be left, so they are the ones worth
+splitting.
+
+The enforced gate is complexity at 15 and all of these pass it (the largest is 14). The
+two functions the stop logic *did* grow materially -- `ingest_rss_news` (77 → 99, then
+split back to 62 via `_poll_instrument` / `_finish_instrument` / `_Feeds`) and
+`_execute_captured` (60 → 85, split back via `_invoke` / `_Outcome`) -- were paid off in
+that same commit. `persist_items` is the one to do first, since it is the loop the stop
+checks most often and it carries the per-article prefilter, dedup and classification
+inline.

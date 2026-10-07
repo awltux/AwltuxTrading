@@ -242,6 +242,13 @@ class ScheduleConfig(BaseModel):
     symbol_resolution_per_run: int = 120
     quotes_held: int = 3_600
     fundamentals_rotation_per_day: int = 70
+    #: Instruments the decision job decides in one day, divided across its hourly runs.
+    #:
+    #: Measured 2026-10-07: a decision takes about 4.1 per minute, so the whole 500-name
+    #: universe in one call is a **110-minute** job that cannot finish inside a daily
+    #: interval and is killed by every deploy. The rotation is by *least recently
+    #: decided*, so a bounded run still reaches the whole universe over a day.
+    decision_rotation_per_day: int = 500
     edgar_submissions: int = 3_600
     edgar_atom_events: int = 3_600
     companies_house: int = 3_600

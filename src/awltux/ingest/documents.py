@@ -49,6 +49,7 @@ from awltux.db.session import release_write_lock
 from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.providers.edgar import ANNUAL_FORMS
 from awltux.providers.http import ProviderError
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +188,12 @@ def deepen_annual_history(
         statement = exclude_locked(statement, session)
     instruments = session.execute(statement).scalars().all()
 
-    for instrument in instruments:
+    for position, instrument in enumerate(instruments, start=1):
         assert instrument.sec_cik is not None
+        # Between companies, on the committed side of the previous one: this loop makes
+        # one provider request per filer and releases the write lock after each, so a
+        # stop here keeps the filings already stored.
+        progress.checkpoint(f"{position} of {len(instruments)}: {instrument.t212_ticker}")
         try:
             annual = provider.get_annual_filings(
                 instrument.sec_cik, since=cutoff, limit=limit_per_company
@@ -345,7 +350,12 @@ def fetch_annual_reports(
     #: this queue, so a blocker recorded and cleared inside the same run would depend on
     #: which of its reports happened to be processed last.
     failures: dict[str, str] = {}
-    for filing in pending_annual_reports(session, limit=limit, tickers=tickers):
+    pending = pending_annual_reports(session, limit=limit, tickers=tickers)
+    for position, filing in enumerate(pending, start=1):
+        # Between documents, on the committed side of the previous one: a document can
+        # be megabytes and the lock is released after each, so a stop here costs the
+        # one in flight and no more.
+        progress.checkpoint(f"{position} of {len(pending)}: {filing.instrument_t212_ticker}")
         written = fetch_document(session, filing, settings=settings, provider=provider)
         ticker = filing.instrument_t212_ticker
         if written is None:

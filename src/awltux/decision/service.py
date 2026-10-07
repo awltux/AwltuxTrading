@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from awltux import __version__
@@ -617,6 +617,70 @@ def _narrative(
     return "\n".join(line for line in lines if line)
 
 
+def _rotation_candidates(
+    session: Session,
+    *,
+    settings: Settings,
+    tickers: list[str] | None = None,
+    limit: int | None = None,
+) -> list[Instrument]:
+    """The instruments this run may decide, least recently decided first.
+
+    **The rotation is the bound's other half.** A limit alone would starve the tail: the
+    sweep used to load the universe in whatever order SQLite returned and slice it in
+    memory, so a rationed run would have decided the same names every hour for ever.
+    Ordering by *least recently decided* -- never decided first, then oldest -- makes a
+    bounded run cover the whole universe over a day, the same shape
+    `sync_fundamentals` uses with `Instrument.updated_at`.
+
+    Its own function because the ordering, the lease and the limit are one decision:
+    which names this run owns. `limit` is a SQL clause rather than a slice of a loaded
+    list, so an instrument a scoped refresh holds does not consume one of the run's
+    slots.
+    """
+    # The last decision per instrument, as a join rather than a correlated subquery per
+    # instrument: `decision_run` never updates a row, so the maximum is also the newest.
+    last_decided = (
+        select(
+            DecisionRun.instrument_t212_ticker.label("ticker"),
+            func.max(DecisionRun.created_at).label("decided_at"),
+        )
+        .group_by(DecisionRun.instrument_t212_ticker)
+        .subquery()
+    )
+
+    statement = (
+        select(Instrument)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .outerjoin(last_decided, last_decided.c.ticker == Instrument.t212_ticker)
+        .order_by(
+            # `IS NULL` first, the portable idiom `load_price_targets` and the filing
+            # walk already use: an instrument nothing has ever decided must not wait
+            # behind one that was decided an hour ago. The ticker breaks ties so "which
+            # names this hour" is answerable and the rotation advances in a stated order
+            # rather than in whatever rowid order SQLite returns.
+            last_decided.c.decided_at.is_(None).desc(),
+            last_decided.c.decided_at.asc(),
+            Instrument.t212_ticker.asc(),
+        )
+    )
+    if tickers:
+        statement = statement.where(Instrument.t212_ticker.in_(tickers))
+    else:
+        # A sweep skips instruments a scoped refresh holds.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
+    if settings.app.require_resolved_mapping:
+        statement = statement.where(Instrument.yahoo_symbol.is_not(None))
+    # A scoped run is one instrument and must not be rationed out of the run it was
+    # asked for, so its caller passes no limit.
+    if limit:
+        statement = statement.limit(limit)
+    return list(session.execute(statement).scalars().all())
+
+
 def decide_universe(
     session: Session,
     *,
@@ -624,30 +688,13 @@ def decide_universe(
     tickers: list[str] | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Decide for every instrument in the universe (or an explicit list)."""
+    """Decide for a rotated slice of the universe, or for an explicit list."""
     settings = settings or get_settings()
     stats = DecisionStats()
 
-    statement = (
-        select(Instrument)
-        .where(Instrument.in_universe.is_(True))
-        .where(Instrument.excluded.is_(False))
+    instruments = _rotation_candidates(
+        session, settings=settings, tickers=tickers, limit=limit
     )
-    if tickers:
-        statement = statement.where(Instrument.t212_ticker.in_(tickers))
-    else:
-        # A sweep skips instruments a scoped refresh holds. Placing it here rather than
-        # inside the loop matters: `limit` below slices a list already in memory, so a
-        # check after the load would still consume one of the sweep's slots on an
-        # instrument it must not touch.
-        from awltux.ingest.lease import exclude_locked
-
-        statement = exclude_locked(statement, session)
-    if settings.app.require_resolved_mapping:
-        statement = statement.where(Instrument.yahoo_symbol.is_not(None))
-    instruments = list(session.execute(statement).scalars().all())
-    if limit:
-        instruments = instruments[:limit]
 
     # Build the engines once: constructing a client per instrument would create
     # an HTTP connection pool per decision.

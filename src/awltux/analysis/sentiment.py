@@ -29,6 +29,7 @@ from awltux.analysis.technical import volatility
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, PriceBar, SentimentSeries, utcnow
 from awltux.db.session import release_write_lock
+from awltux.scheduler import progress
 from awltux.timezones import utc_today
 
 logger = logging.getLogger(__name__)
@@ -401,7 +402,11 @@ def aggregate_all(
     stats["articles_appraised"] = len(credibility)
     stats["articles_unconfirmed"] = len(unconfirmed)
 
-    for instrument in instruments:
+    for position, instrument in enumerate(instruments, start=1):
+        # Between instruments, on the committed side of the previous one: the loop
+        # releases the write lock per instrument below, so a stop here keeps everything
+        # already written rather than unwinding a 500-instrument transaction.
+        progress.checkpoint(f"{position} of {len(instruments)} instruments")
         stats["instruments_seen"] += 1
 
         bars = list(
@@ -449,9 +454,12 @@ def aggregate_all(
 
     # Sector score is the mean of its constituents' scores: a breadth-weighted
     # read, so one very negative name cannot define a whole sector.
-    for sector, scores in sector_accumulator.items():
+    for position, (sector, scores) in enumerate(sector_accumulator.items(), start=1):
         if not scores:
             continue
+        # The roll-up is short, but it is still a boundary: a stop that landed inside it
+        # would otherwise be noticed only after the run had finished.
+        progress.checkpoint(f"sector {position} of {len(sector_accumulator)}")
         _upsert_series(
             session,
             scope_type="sector",

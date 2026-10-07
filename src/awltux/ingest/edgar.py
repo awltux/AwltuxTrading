@@ -28,6 +28,7 @@ from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.ingest.symbols import is_uk_listing
 from awltux.providers.edgar import EdgarProvider, normalise_cik, parse_atom_entries
 from awltux.providers.http import ProviderError
+from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
 
@@ -169,8 +170,12 @@ def sync_filings(
     if not instruments:
         return report
 
-    for instrument in instruments:
+    for position, instrument in enumerate(instruments, start=1):
         assert instrument.sec_cik is not None
+        # Between filers, on the committed side of the previous one: each iteration makes
+        # several provider calls and releases the write lock, so a stop here keeps the
+        # filings already stored rather than unwinding the run.
+        progress.checkpoint(f"{position} of {len(instruments)}: {instrument.t212_ticker}")
         try:
             filings = provider.get_recent_filings(
                 instrument.sec_cik, limit=limit_per_company
