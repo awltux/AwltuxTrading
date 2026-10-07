@@ -176,6 +176,35 @@ class TestComposition:
         assert checks["assets_composition"].status == ledger.OK
         assert checks["liabilities_composition"].status == ledger.OK
         assert checks["current_assets_composition"].status == ledger.OK
+        assert checks["current_liabilities_composition"].status == ledger.OK
+
+    def test_the_current_liability_subtotal_is_audited_too(self):
+        """The mirror of `current_assets_composition`, and it was missing.
+
+        Measured 2026-10-07 on `MSFT_US_EQ`: the balance sheet states current
+        liabilities of 168,825 against the 93,326 we hold, and the 75,499 difference is
+        *exactly* two captions -- short-term income taxes 2,534 and short-term unearned
+        revenue 72,965. Both were offered by the 10-K extraction and neither could be
+        promoted, because a gap that is never measured is a caption never discovered.
+        """
+        held = ledger.CURRENT_LIABILITY_KEYS
+        metrics = {
+            **{key: 10.0 for key in held},
+            "current_liabilities": 10.0 * len(held) + 40.0,
+        }
+        checks = {c.key: c for c in ledger.composition(_year(**metrics))}
+
+        check = checks["current_liabilities_composition"]
+
+        assert check.status == ledger.IMBALANCE
+        assert check.residual == pytest.approx(40.0)
+
+    def test_a_current_liability_gap_with_no_stated_subtotal_is_unknown(self):
+        """Not a pass and not a failure: a filing that states no current-liability
+        subtotal is one the check cannot speak about."""
+        checks = {c.key: c for c in ledger.composition(_year(payables=10.0))}
+
+        assert checks["current_liabilities_composition"].status == ledger.UNKNOWN
 
     def test_a_missing_side_is_unknown_rather_than_a_pass(self):
         checks = {c.key: c for c in ledger.composition(_year(net_ppe=300.0))}
@@ -529,6 +558,7 @@ class TestEveryCheckIsReported:
             "assets_composition",
             "liabilities_composition",
             "current_assets_composition",
+            "current_liabilities_composition",
             "retained_earnings_rollforward",
             "cash_movement",
         }

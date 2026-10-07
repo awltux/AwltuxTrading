@@ -819,6 +819,20 @@ def composition(period: FundamentalPeriod) -> list[Check]:
             _composition(metrics).current_assets,
             "current asset lines we hold against current assets",
         ),
+        # The mirror of the line above, and it was missing. Measured 2026-10-07 on
+        # `MSFT_US_EQ`: its balance sheet states current liabilities of 168,825 against
+        # the 93,326 we hold, and the 75,499 difference is *exactly* two captions --
+        # short-term income taxes 2,534 and short-term unearned revenue 72,965. Both
+        # were offered by the 10-K extraction and neither could be promoted, because
+        # nothing was checking this subtotal. A gap that is never measured is a caption
+        # that is never discovered.
+        _agree(
+            "current_liabilities_composition",
+            "Components sum to stated current liabilities",
+            _stated(metrics, "current_liabilities"),
+            _composition(metrics).current_liabilities,
+            "current liability lines we hold against current liabilities",
+        ),
     ]
     return checks
 
