@@ -417,6 +417,12 @@ def analyse_universe(
 
     total = len(items)
     for item in items:
+        # Between stories, and on the committed side of the previous one: this loop
+        # spends one model call per item, so it is the longest run in the pipeline
+        # (measured at 14-39 minutes for a bounded 40 calls) and the one an upgrade most
+        # needs to be able to end.
+        progress.barrier(f"{report.examined} of {total} examined")
+
         report.examined += 1
         # One model call per selected story, so this run is measured in tens of
         # minutes. The counted line is what turns "running" into "at 24 of 40".

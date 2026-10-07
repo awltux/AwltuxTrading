@@ -152,6 +152,24 @@ def session(settings: Settings) -> Iterator:
         yield scope
 
 
+@pytest.fixture(autouse=True)
+def _no_stop_outstanding() -> Iterator[None]:
+    """Withdraw any cooperative stop around every test.
+
+    The flag is process-global -- that is the point of it, since the thread asking is
+    not the thread reading -- so it survives the test that set it. A test which calls
+    ``SchedulerService.quiet()`` therefore leaves every later run in the session
+    stopping at its first checkpoint, which presents as six unrelated jobs breaking
+    rather than one fixture leaking. Measured: exactly that, on the news poll cursor
+    tests, which passed alone and failed in company.
+    """
+    from awltux.scheduler import progress
+
+    progress.clear_stop()
+    yield
+    progress.clear_stop()
+
+
 @pytest.fixture
 def client(settings, monkeypatch):
     """A TestClient whose lifespan resolves to the test configuration.

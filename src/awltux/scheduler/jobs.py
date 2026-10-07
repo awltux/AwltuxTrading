@@ -327,6 +327,64 @@ def execute_job(spec: JobSpec, cause: str | None = None) -> JobResult | None:
         return _execute_captured(spec, started, run_id, run_log, cause)
 
 
+@dataclass(slots=True)
+class _Outcome:
+    """How a job's body ended, before anything is recorded about it."""
+
+    result: JobResult | None
+    #: ``None`` means the job succeeded. Anything else is what the run row's ``error``
+    #: column carries and what makes the run unsuccessful.
+    error: str | None
+    #: ``ok``, ``failed`` or ``stopped`` -- the word the progress log closes with.
+    word: str
+
+    @property
+    def stopped(self) -> bool:
+        return self.word == "stopped"
+
+
+def _invoke(spec: JobSpec) -> _Outcome:
+    """Call the job's body and describe how it ended. Records and logs nothing.
+
+    Three endings, and the difference between the last two is the whole reason this is
+    a named step rather than two branches inline:
+
+    * **ok** -- it returned.
+    * **failed** -- it raised.
+    * **stopped** -- it left because a stop was requested, at a boundary of its own
+      choosing, with everything it had finished committed. Recorded as *unsuccessful*
+      anyway, and deliberately: "successful" is what catch-up reads to decide a job is
+      up to date, and this run did not finish its work -- counting it as done would
+      silently skip the rest until the next interval. The wording is what separates it
+      from a failure, exactly as the restart sweep's "interrupted: ..." does for a
+      killed run.
+    """
+    try:
+        raw = spec.func()
+    except progress.Stopped as exc:
+        where = str(exc)
+        error = f"stopped: a stop was requested at {where}" if where else (
+            "stopped: a stop was requested"
+        )
+        result = JobResult(note=error)
+        result.detail["stopped"] = True
+        if where:
+            result.detail["stopped_at"] = where
+        logger.info("job %s: %s", spec.id, error)
+        return _Outcome(result=result, error=error, word="stopped")
+    except Exception as exc:
+        logger.exception("job %s failed", spec.id)
+        return _Outcome(result=None, error=f"{type(exc).__name__}: {exc}", word="failed")
+
+    if isinstance(raw, JobResult):
+        result = raw
+    elif isinstance(raw, dict):
+        result = JobResult(detail=raw)
+    else:
+        result = JobResult()
+    return _Outcome(result=result, error=None, word="ok")
+
+
 def _execute_captured(
     spec: JobSpec,
     started: dt.datetime,
@@ -362,19 +420,8 @@ def _execute_captured(
         return skipped
 
     logger.info("job %s: start", spec.id)
-    result: JobResult | None = None
-    error: str | None = None
-    try:
-        raw = spec.func()
-        if isinstance(raw, JobResult):
-            result = raw
-        elif isinstance(raw, dict):
-            result = JobResult(detail=raw)
-        else:
-            result = JobResult()
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        logger.exception("job %s failed", spec.id)
+    outcome = _invoke(spec)
+    result, error = outcome.result, outcome.error
 
     elapsed = (dt.datetime.now(dt.UTC) - started).total_seconds()
     if result is not None:
@@ -391,7 +438,7 @@ def _execute_captured(
         f" note={result.note}" if result and result.note else "",
         f" error={error}" if error else "",
     )
-    _close(run_log, started, "failed" if error else "ok", error or (result.note if result else None))
+    _close(run_log, started, outcome.word, error or (result.note if result else None))
     return result
 
 

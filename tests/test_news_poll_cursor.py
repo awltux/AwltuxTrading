@@ -63,6 +63,115 @@ def _instrument(ticker: str, *, polled_at: dt.datetime | None = None):
     return instrument
 
 
+class TestStoppingTheWalk:
+    """`awltux quiet` has to reach inside a walk that is already running.
+
+    The walk is hours long, so a `quiet` that only paused scheduling waited for the
+    whole of it and the rebuild killed the run anyway. These pin where it leaves and
+    what it leaves behind: the instrument it finished is stamped and committed, the
+    ones it never started are not stamped, and no provider request is spent on an
+    instrument the walk was never going to poll.
+    """
+
+    def _walk(self, monkeypatch, session, *, stop_after: int, early_persist: bool = False):
+        """Run the poll, requesting a stop once ``stop_after`` instruments are gathered."""
+        from awltux.config import get_settings
+        from awltux.scheduler import progress
+
+        walked: list[str] = []
+
+        def gather(instrument, **kwargs):
+            walked.append(instrument.t212_ticker)
+            if len(walked) >= stop_after:
+                progress.request_stop()
+            return []
+
+        monkeypatch.setattr(news, "gather_for_instrument", gather)
+        monkeypatch.setattr(news, "RssNewsProvider", _NoProvider)
+        monkeypatch.setattr(news, "FinnhubNewsProvider", _NoProvider)
+        monkeypatch.setattr(news, "MarketauxNewsProvider", _NoProvider)
+
+        if early_persist:
+            # The mid-feed case: `persist_items` leaves without raising so that the
+            # articles already classified are still committed by the caller.
+            def persist(session_, items, *, classifier=None, report=None, instrument=None):
+                report.stopped_early = True
+                return report
+
+            monkeypatch.setattr(news, "persist_items", persist)
+
+        with pytest.raises(progress.Stopped):
+            news.ingest_rss_news(session, settings=get_settings(), classifier=None)
+
+        return walked
+
+    def _stamps(self, session, tickers) -> dict[str, dt.datetime | None]:
+        from awltux.db import Instrument
+
+        rows = (
+            session.query(Instrument)
+            .filter(Instrument.t212_ticker.in_(list(tickers)))
+            .all()
+        )
+        return {row.t212_ticker: row.news_polled_at for row in rows}
+
+    def test_it_leaves_at_the_instrument_boundary_and_spends_nothing_further(
+        self, session, monkeypatch
+    ):
+        from awltux.scheduler import progress
+
+        for ticker in ("A_US_EQ", "B_US_EQ", "C_US_EQ"):
+            session.add(_instrument(ticker))
+        session.flush()
+
+        walked = self._walk(monkeypatch, session, stop_after=1)
+
+        assert walked == ["A_US_EQ"], "no request is spent on an instrument it will not poll"
+        assert progress.stop_requested() is True
+
+    def test_the_instrument_it_finished_is_stamped_and_the_rest_are_not(
+        self, session, monkeypatch
+    ):
+        """The cursor must advance over exactly what was polled, no more.
+
+        A stamp is the record that an instrument was polled. Stamping one the walk never
+        reached would drop its stories until the sweep came round -- an hour on an
+        hourly interval, and up to a full pass over the universe.
+        """
+        for ticker in ("A_US_EQ", "B_US_EQ", "C_US_EQ"):
+            session.add(_instrument(ticker))
+        session.flush()
+
+        self._walk(monkeypatch, session, stop_after=1)
+
+        stamps = self._stamps(session, ("A_US_EQ", "B_US_EQ", "C_US_EQ"))
+
+        assert stamps["A_US_EQ"] is not None, "the instrument that was polled is stamped"
+        assert stamps["B_US_EQ"] is None
+        assert stamps["C_US_EQ"] is None
+
+    def test_leaving_part_way_through_a_feed_does_not_stamp_that_instrument(
+        self, session, monkeypatch
+    ):
+        """The half-read feed is polled again first next run.
+
+        `stopped_early` means the rest of that instrument's articles were never read, so
+        the cursor must not claim it was done -- the articles already written are
+        committed either way, and re-polling costs nothing because a stored story is
+        recognised by its `url_hash` and is not classified twice.
+        """
+        for ticker in ("A_US_EQ", "B_US_EQ"):
+            session.add(_instrument(ticker))
+        session.flush()
+
+        self._walk(monkeypatch, session, stop_after=1, early_persist=True)
+
+        stamps = self._stamps(session, ("A_US_EQ", "B_US_EQ"))
+
+        assert stamps["A_US_EQ"] is None, "a half-read feed is not a polled instrument"
+        assert stamps["B_US_EQ"] is None, "and the walk never reached this one"
+
+
 class TestTheOrder:
     def test_never_polled_instruments_go_first(self, session, poll):
         """A universe that has never been polled is all nulls, and the first run is the

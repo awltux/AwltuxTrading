@@ -395,7 +395,7 @@ column.
 
 ## Operations
 
-### The longest jobs outlast any deploy window, so no upgrade is ever quiet
+### `decision` still sweeps the whole universe, and six jobs have no stopping point
 
 Two jobs, one conclusion, and the second was found by being blocked twice in a row.
 
@@ -432,28 +432,32 @@ this was measured:
   job that most needs restart resilience is the one job the restart rule does not
   cover -- if a restart ever lands inside the hour, one interval is lost.
 
-The consequence is the same for both and it is not that the jobs are slow: **`awltux
-quiet` can never report *idle* while either is running.** The step introduced for
-exactly this purpose returns "waiting for decision" or "waiting for news_analysis",
-and the operator chooses between holding a deploy for half an hour and accepting the
-interruption quiet exists to prevent. The 60-second `stop_grace_period` and the
-20-second drain budget are two orders of magnitude short of either job.
-
 What catch-up changed: an interrupted run is no longer *lost work*, because an
 unsuccessful run does not count and the job is repeated at the next start. What it
 costs is the provider and model budget of doing the work twice, which for these two is
 the expensive part.
 
-**Next:** two changes, in order of how much they help.
+**A running job can now be asked to leave at its next item boundary**, which is the
+first of the two changes this entry wanted and is described in `AGENTS.md` §1
+(`progress.checkpoint` / `progress.barrier`, and the process-global stop request that
+`quiet()` and `drain()` set). Correcting what this entry used to claim: `quiet` *can*
+report `idle` while `decision` or `news_analysis` is running -- those two stop on
+request now, as does `news_rss`. The claim that it never could is stale.
 
-1. **Make a run respect the drain budget.** A job should be able to see that the
-   process is shutting down and stop at a batch boundary, rather than being killed
-   mid-call. That converts a 39-minute interrupt into a clean partial run, and it
-   helps every long job at once instead of one.
-2. **Then bound `decision`** with a per-run limit and a least-recently-decided
-   rotation, the shape `fundamentals` already uses. At 4.1/min, 500 instruments
-   cannot complete inside one daily interval, so the daily cadence is not honest
-   either.
+**Still owed, and the stop settles neither:**
+
+1. **Bound `decision`** with a per-run limit and a least-recently-decided rotation, the
+   shape `fundamentals` already uses. At 4.1/min, 500 instruments cannot complete inside
+   one daily interval, so the daily cadence is not honest either. A job that can be
+   asked to leave is not a job that finishes.
+2. **Six jobs have no boundary to check.** `sentiment`, `shareholder_reports`,
+   `symbol_resolution`, `filings_edgar`, `news_relevance` and `news_embeddings` have no
+   `progress.note` inside their per-item loops at all, so a `quiet` still waits for the
+   whole of them. Fixing it is two changes each -- add the note (itself owed, since a
+   long job with no line in its log cannot be told from a hung one) and make it a
+   `progress.barrier`. `fundamentals`, `xbrl_statements` and `refresh_prices_eod` do note
+   per item and were left alone deliberately: each is rationed to a per-run limit of 2,
+   60 and 40 batches, so the exposure is minutes rather than hours.
 
 Lowering `max_deep_per_run` is not a fix: 40 stories is already a rationed batch,
 and cutting it further only means the backlog grows instead.
@@ -859,3 +863,18 @@ day swing. An intraday horizon is only worth adding behind a paid real-time feed
 `yfinance` is an unofficial scrape and will break; UK iXBRL coverage from Companies
 House is roughly 60–75%. Both are labelled in the UI, and neither should be
 treated as a source of record.
+
+### Splitting the long functions the cooperative stop had to reach into
+
+`python tools/refactor_report.py --diff` after that change, 2026-10-07:
+`decision/service.py::decide_instrument` 185 lines, `news_analysis.py::
+analyse_universe` 138, `ingest/news.py::persist_items` 112, `news_analysis.py::
+appraise_item` 106, `decision/service.py::decide_universe` 87. All five were already
+over the 70-line report before the change; the two this work *grew* materially --
+`ingest_rss_news` (77 → 99 with the stop logic, then split back to 62 via
+`_poll_instrument` / `_finish_instrument` / `_Feeds`) and `_execute_captured` (60 → 85
+with the stopped branch, split back via `_invoke` / `_Outcome`) -- were paid off in the
+same commit. The five above are a separate pass with its own reason, and the enforced
+gate is complexity at 15, which they pass: the largest is 14. `persist_items` is the
+one to do first, since it is the loop the stop checks most often and it carries the
+per-article prefilter, dedup and classification inline.

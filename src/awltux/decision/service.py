@@ -647,6 +647,12 @@ def decide_universe(
     total = len(instruments)
     try:
         for instrument in instruments:
+            # Between instruments, on the committed side of the previous one. This is
+            # the two-hour sweep, so without this check `awltux quiet` waits two hours
+            # and every deploy kills it -- which is what the cooperative stop exists to
+            # stop happening. The engines still close in the `finally` below.
+            progress.barrier(f"{stats.attempted} of {total} instruments")
+
             stats.attempted += 1
             # This is the two-hour sweep. Without a line per instrument the progress
             # panel would show a start and then nothing for two hours, which is

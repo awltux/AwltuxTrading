@@ -17,6 +17,7 @@ from typing import Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from awltux.scheduler import progress
 from awltux.scheduler.catchup import CatchUp, catch_ups, next_run_time_for
 from awltux.scheduler.jobs import JobSpec, execute_job, last_successful_runs
 from awltux.timezones import as_utc
@@ -135,6 +136,12 @@ class SchedulerService:
     def start(self) -> None:
         if self._scheduler.running:
             return
+        # A new process starts with no stop outstanding. The flag lives in the module
+        # and a fresh import clears it, but `start` is also reached by a service that
+        # was quieted and then restarted in-process, and that one must not inherit a
+        # request nobody remembered making -- the same reason `_quiet_since` is not
+        # persisted.
+        progress.clear_stop()
         # Read once, before anything is scheduled: the answer is a fact about how long
         # the process was away, and a job that fires during this loop would otherwise
         # change the history the remaining jobs are judged against.
@@ -221,16 +228,31 @@ class SchedulerService:
         never work again: :meth:`unquiet`. State lives in this process only, so a
         restart clears it -- a restart is itself the upgrade, and the new process
         should not inherit a pause nobody remembered asking for.
+
+        **It also asks the jobs already running to stop**, at their next checkpoint
+        (``progress.checkpoint``). Pausing stops new runs starting; it does nothing for
+        the walk over thousands of rows that is already halfway through, and that walk
+        is the thing the rebuild has to wait for. Without the ask, `news_rss` runs for
+        hours and the wait is as long as the job -- so quiet was never actually quiet,
+        it was just early. Jobs that have no checkpoint still run to the end, and this
+        announcement cannot promise otherwise.
         """
         self.pause()
         self._quiet_since = self._quiet_since or dt.datetime.now(dt.UTC)
+        progress.request_stop()
         running = self.running()
-        logger.info("quieted; %d job(s) still running", len(running))
+        logger.info("quieted; asking %d running job(s) to stop", len(running))
         return self.quiet_status()
 
     def unquiet(self) -> dict[str, object]:
-        """Undo :meth:`quiet` -- resume scheduling."""
+        """Undo :meth:`quiet` -- resume scheduling, and withdraw the stop request.
+
+        Withdrawing it is not tidiness. A job left holding a stop request stops at the
+        first checkpoint of its next run and every run after it, so an upgrade that was
+        called off would leave a process that does no work and says nothing about why.
+        """
         self._quiet_since = None
+        progress.clear_stop()
         self.resume()
         logger.info("resumed; scheduling is live again")
         return self.quiet_status()
@@ -252,6 +274,11 @@ class SchedulerService:
             "quiet_since": (
                 self._quiet_since.isoformat() if self._quiet_since is not None else None
             ),
+            # Whether the running jobs have been asked to leave at their next
+            # checkpoint. Distinct from `quiet`, which is about new work: a reader
+            # watching a long job wants to know the ask was made, because that is what
+            # says the wait is bounded by the job's next item rather than by its end.
+            "stopping": progress.stop_requested(),
             "running": running,
             "idle": self._quiet_since is not None and not running,
         }
@@ -304,8 +331,13 @@ class SchedulerService:
         This is the last line of defence, for a SIGTERM nobody warned the process
         about. The intended path is :meth:`quiet` beforehand, which leaves nothing
         for this to interrupt.
+
+        It asks as well as waits, which is the same ask :meth:`quiet` makes: a drain
+        that only waited would spend its whole budget on a job that would have stopped
+        in seconds had anyone asked it to.
         """
         self.pause()
+        progress.request_stop()
         return self.wait_for_idle(timeout)
 
     # -------------------------------------------------------------- internals

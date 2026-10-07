@@ -18,10 +18,20 @@ docker compose build && docker compose up -d
 **Quiet before you rebuild, and let it wait.** `up -d` sends SIGTERM and the
 lifespan drains, but that drain is *bounded* (it must be — the container is going
 regardless), so a long job is killed mid-batch and its run closes as *interrupted*
-next boot. `awltux quiet` pauses scheduling and waits, with **no timeout by default**.
+next boot. `awltux quiet` pauses scheduling, **asks the running jobs to stop**, and
+waits, with **no timeout by default**.
 Do not pass one: a deadline shorter than the job you are waiting for is not a safety
 valve, it is the failure on a timer. `news_analysis` is bounded at 40 model calls and
 still runs 14–39 minutes; `decision` runs about two hours.
+
+**The ask is what makes the wait short**, and it is why a long job is no longer a
+reason to skip quieting. `progress.checkpoint` is `progress.note` plus a look at a
+process-global stop request, so a job leaves at its next item boundary — where the
+previous item is committed — and its run is closed as *stopped* rather than
+*interrupted*: same `ok=False`, because the work is not done, but the reason says it
+was asked for. A job with no checkpoint still runs to the end; `TODO.md` lists which
+ones those are. The stop is withdrawn by `unquiet` and by a restart, so an upgrade
+called off leaves a working container.
 
 Exit 3 means you passed `--timeout` and it expired. **That is not permission to
 rebuild** — it is the tool telling you a job is still writing. Re-run without the

@@ -23,7 +23,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -58,6 +58,10 @@ class NewsIngestReport:
     classified: int = 0
     by_source: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    #: Set when the walk left because a stop was requested. The caller needs it because
+    #: the leaving has to happen *after* the commit: abandoning the batch would discard
+    #: the articles already classified, and each one of those was a model call.
+    stopped_early: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +72,7 @@ class NewsIngestReport:
             "classified": self.classified,
             "by_source": self.by_source,
             "errors": self.errors[:10],
+            "stopped_early": self.stopped_early,
         }
 
 
@@ -250,6 +255,15 @@ def persist_items(
     report = report or NewsIngestReport()
 
     for item in items:
+        # Checked *between* articles, because that is where a story ends: the flag is
+        # read here rather than raised on so that the articles already classified for
+        # this instrument are still committed by the caller. Leaving by exception here
+        # would throw away up to a feed's worth of model calls, which is the one thing a
+        # stop must not do -- it is meant to save work, not repeat it.
+        if progress.stop_requested():
+            report.stopped_early = True
+            return report
+
         report.fetched += 1
         # Every tenth article, and the count is the one that has just been reached --
         # this is the only place it advances per article, because every new story costs
@@ -381,6 +395,100 @@ def _instruments_to_poll(
     return instruments
 
 
+class _Feeds(NamedTuple):
+    """The three news providers, opened once per run and closed together."""
+
+    rss: Any
+    finnhub: Any
+    marketaux: Any
+
+    def close(self) -> None:
+        self.rss.close()
+        self.finnhub.close()
+        self.marketaux.close()
+
+
+def _poll_instrument(
+    session: Session,
+    instrument: Instrument,
+    feeds: _Feeds,
+    *,
+    settings: Settings,
+    prefilter: Prefilter,
+    classifier: Classifier | None,
+    report: NewsIngestReport,
+) -> None:
+    """Gather one instrument's feeds and store what survives the prefilter.
+
+    Leaves the instrument's articles uncommitted: the caller commits them together with
+    the cursor, so that a crash cannot save one without the other. Raises nothing -- a
+    provider failure is recorded on the report and the walk continues, because one dead
+    feed is not a reason to abandon the universe.
+    """
+    try:
+        gathered = gather_for_instrument(
+            instrument,
+            settings=settings,
+            rss=feeds.rss,
+            finnhub=feeds.finnhub,
+            marketaux=feeds.marketaux,
+        )
+    except Exception as exc:
+        report.errors.append(f"{instrument.t212_ticker}: {exc}")
+        return
+
+    kept = []
+    for item in gathered:
+        if prefilter.keep(item, instrument):
+            kept.append(item)
+        else:
+            report.prefiltered_out += 1
+
+    persist_items(
+        session,
+        kept[: settings.news.max_items_per_feed_poll],
+        classifier=classifier,
+        report=report,
+        instrument=instrument,
+    )
+
+
+def _finish_instrument(
+    session: Session,
+    instrument: Instrument,
+    report: NewsIngestReport,
+    *,
+    position: int,
+    total: int,
+) -> None:
+    """Commit this instrument's articles together with its cursor, or leave instead.
+
+    Stamped before the release, so the cursor and the commit that makes the articles
+    durable are the same transaction: a crash between them would either re-poll an
+    instrument whose stories were saved (cheap) or skip one whose were not (a lost gap),
+    and this order makes it the cheap one.
+
+    The release is also where SQLite's write lock is given up between instruments. This
+    loop makes roughly a thousand HTTP requests for a 500-instrument universe, and
+    holding one transaction across all of them locked every other writer out for minutes.
+
+    **A half-read feed is not stamped.** `stopped_early` means the rest of that
+    instrument's articles were never read, so the cursor would be claiming a poll that
+    did not happen -- and the unread articles would then be dropped until the sweep came
+    round again. Leaving it unstamped puts the instrument first in the queue next run;
+    the articles written before the stop are committed here either way, and re-polling
+    costs nothing because a stored story is recognised by its `url_hash`.
+    """
+    if report.stopped_early:
+        release_write_lock(session)
+        raise progress.Stopped(
+            f"{position} of {total} instruments, part-way through {instrument.t212_ticker}"
+        )
+
+    instrument.news_polled_at = utcnow()
+    release_write_lock(session)
+
+
 def ingest_rss_news(
     session: Session,
     *,
@@ -398,12 +506,22 @@ def ingest_rss_news(
         session, tickers=tickers, limit_instruments=limit_instruments
     )
 
-    rss = RssNewsProvider(settings)
-    finnhub = FinnhubNewsProvider(settings)
-    marketaux = MarketauxNewsProvider(settings)
+    feeds = _Feeds(
+        rss=RssNewsProvider(settings),
+        finnhub=FinnhubNewsProvider(settings),
+        marketaux=MarketauxNewsProvider(settings),
+    )
 
     try:
         for position, instrument in enumerate(instruments, start=1):
+            # The instrument boundary is the cheapest place to leave: the previous
+            # instrument's articles and its cursor were committed together on the last
+            # pass through this loop, so stopping here costs nothing at all. Checked
+            # before gathering rather than after, because `gather_for_instrument` makes
+            # one to three HTTP requests and there is no reason to spend them on a walk
+            # that is already over.
+            progress.barrier(f"{position - 1} of {len(instruments)} instruments")
+
             # The instrument throttle. `gather_for_instrument` makes one to three
             # requests and can come back with nothing, in which case no article count
             # moves -- so without this the log goes silent for exactly as long as the
@@ -413,48 +531,22 @@ def ingest_rss_news(
                     f"{position} of {len(instruments)} instruments: "
                     f"{report.fetched} articles, {report.written} new"
                 )
-            try:
-                gathered = gather_for_instrument(
-                    instrument,
-                    settings=settings,
-                    rss=rss,
-                    finnhub=finnhub,
-                    marketaux=marketaux,
-                )
-            except Exception as exc:
-                report.errors.append(f"{instrument.t212_ticker}: {exc}")
-                continue
 
-            kept = []
-            for item in gathered:
-                if prefilter.keep(item, instrument):
-                    kept.append(item)
-                else:
-                    report.prefiltered_out += 1
-
-            persist_items(
+            _poll_instrument(
                 session,
-                kept[: settings.news.max_items_per_feed_poll],
+                instrument,
+                feeds,
+                settings=settings,
+                prefilter=prefilter,
                 classifier=classifier,
                 report=report,
-                instrument=instrument,
             )
 
-            # Release SQLite's write lock between instruments. This loop makes
-            # roughly a thousand HTTP requests for a 500-instrument universe, and
-            # holding one transaction across all of them locked every other writer
-            # out for minutes.
-            #
-            # Stamped before the release, so the cursor and the commit that makes the
-            # articles durable are the same transaction: a crash between them would
-            # either re-poll an instrument whose stories were saved (cheap) or skip one
-            # whose were not (a lost gap), and this order makes it the cheap one.
-            instrument.news_polled_at = utcnow()
-            release_write_lock(session)
+            _finish_instrument(
+                session, instrument, report, position=position, total=len(instruments)
+            )
     finally:
-        rss.close()
-        finnhub.close()
-        marketaux.close()
+        feeds.close()
 
     logger.info("news ingest: %s", report.as_dict())
     return report

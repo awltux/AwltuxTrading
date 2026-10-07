@@ -465,6 +465,54 @@ class TestQuieting:
         assert status["running"] == []
         assert status["idle"] is True
 
+    def test_quieting_asks_the_running_jobs_to_stop(self, quiet_jobs):
+        """Pausing stops the next run starting; the ask is what stops the current one.
+
+        Without it the wait is as long as the job. `news_rss` walks the universe for
+        hours, so quiet was never quiet -- it was only early, and the rebuild still
+        killed the run.
+        """
+        from awltux.scheduler import progress
+
+        service = SchedulerService([])
+        assert progress.stop_requested() is False
+
+        status = service.quiet()
+
+        assert progress.stop_requested() is True
+        assert status["stopping"] is True
+
+    def test_unquiet_withdraws_the_stop_request(self, quiet_jobs):
+        """A job left holding a stop request leaves at the first checkpoint of every
+        later run, so an upgrade called off would leave a container doing no work."""
+        from awltux.scheduler import progress
+
+        service = SchedulerService([])
+        service.start()
+        try:
+            service.quiet()
+            assert progress.stop_requested() is True
+
+            status = service.unquiet()
+
+            assert progress.stop_requested() is False
+            assert status["stopping"] is False
+        finally:
+            service.shutdown(wait=False)
+
+    def test_draining_asks_as_well_as_waits(self, quiet_jobs):
+        """The bounded drain is the last line of defence; the ask makes it cheap.
+
+        A drain that only waited would spend its whole budget on a job that would have
+        stopped in seconds had anyone asked it to.
+        """
+        from awltux.scheduler import progress
+
+        service = SchedulerService([])
+        service.drain(timeout=0.1)
+
+        assert progress.stop_requested() is True
+
     def test_unquiet_resumes_scheduling(self, quiet_jobs):
         """An abandoned upgrade must not leave a container that never works again."""
         service = SchedulerService([])

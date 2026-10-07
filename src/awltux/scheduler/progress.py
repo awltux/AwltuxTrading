@@ -1,4 +1,4 @@
-"""A progress log per job, kept for the most recent run only.
+"""A progress log per job, kept for the most recent run only -- and a way to stop one.
 
 A job that takes forty minutes is a black box from the outside: the Operations page
 says it is running and the run history says nothing until it finishes. This gives it
@@ -27,6 +27,15 @@ formatted the same way, because a reader should not have to know which is which.
    migration. Progress chatter does not belong in that backup.
 3. Tailing by byte offset is how the live panel reads it without re-sending a whole
    file every second.
+
+**Asking a long job to stop.** :func:`checkpoint` is :func:`note` plus a look at
+whether a stop has been requested, and it raises :class:`Stopped` when one has. The
+pairing is the design: every loop that can say how far it has got is a loop that can
+be left, so a job cannot report progress at a boundary it is unwilling to stop at.
+This is what makes ``awltux quiet`` short -- without it, a job already inside a walk
+over thousands of rows only notices when the walk ends, and `news_rss` walks the
+universe for hours, so every deploy was a kill. The signal lives here rather than in
+the scheduler because it is a property of a *run*, which this module already owns.
 """
 
 from __future__ import annotations
@@ -62,6 +71,42 @@ PROGRESS_LOGGER = "awltux.progress"
 #: run by one thread, and the handler filters on this so a manual run triggered from
 #: a web request cannot have its lines land in a scheduled run's file.
 _local = threading.local()
+
+#: Set when a stop has been asked for, cleared when it is withdrawn or a new process
+#: starts. An `Event` rather than a bool because the asker and the reader are different
+#: threads and there is no lock either should have to hold.
+_stop = threading.Event()
+
+
+class Stopped(Exception):
+    """A job returned early because a stop was requested.
+
+    Not an error and not a failure of the work: it means the run stopped at a boundary
+    it chose, between items, with whatever it had already done committed. It is an
+    exception rather than a sentinel because the loops it interrupts are nested inside
+    provider calls and batch writes, and unwinding is the only way to leave all of them
+    without threading a return value through every layer.
+    """
+
+
+def request_stop() -> None:
+    """Ask every running job to stop at its next checkpoint.
+
+    Monotonic until :func:`clear_stop`: a job that has already passed a checkpoint
+    still stops at the one after it, which is what makes the request reliable rather
+    than a race with whichever loop happened to be between iterations.
+    """
+    _stop.set()
+
+
+def clear_stop() -> None:
+    """Withdraw the request, for an upgrade that was called off."""
+    _stop.clear()
+
+
+def stop_requested() -> bool:
+    """Whether a stop has been asked for."""
+    return _stop.is_set()
 
 _FORMAT = logging.Formatter(
     fmt="%(asctime)s %(levelname)-5s %(message)s", datefmt="%Y-%m-%dT%H:%M:%SZ"
@@ -193,6 +238,39 @@ def note(message: str) -> None:
         stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         active.add(f"{stamp} PROGRESS {message}")
     logging.getLogger(PROGRESS_LOGGER).info("%s", message)
+
+
+def checkpoint(message: str) -> None:
+    """Note where a loop has got to, and leave if a stop has been asked for.
+
+    Called at the boundary between items -- where the last item's work is committed and
+    nothing is half-written -- so stopping costs the current item and no more.
+
+    **The note comes first, always.** The last line of the log has to say where the run
+    stopped, and a job that raised before writing it would leave a log whose final line
+    is some earlier item and no indication that anything was cut short.
+
+    A no-op barrier when nothing is running, exactly like :func:`note`: a job called
+    from a test or a script still checks the flag, but the flag is only ever set by the
+    scheduler, so the behaviour is the same and there is one code path.
+    """
+    note(message)
+    barrier(message)
+
+
+def barrier(where: str) -> None:
+    """Leave if a stop has been asked for, and write no progress line.
+
+    The other half of :func:`checkpoint`, for a boundary that is checked on *every*
+    iteration but reported only every n-th. Calling :func:`checkpoint` there would put a
+    line in the log per instrument and bury the log it exists to make readable, so the
+    two are separable -- check often, report rarely.
+
+    ``where`` is the position, and it is what the run row records as where the job
+    stopped, so it is worth naming the unit.
+    """
+    if _stop.is_set():
+        raise Stopped(where)
 
 
 @contextmanager
