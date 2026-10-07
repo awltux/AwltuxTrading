@@ -439,6 +439,26 @@ column.
 
 ## Operations
 
+### fal embedding spend is recorded nowhere, so only the balance constrains it
+
+`llm_call` is written by exactly one module -- `llm/deepseek.py:438` -- so it holds
+DeepSeek chat spend and nothing else. `EmbeddingClient` goes out through `HttpClient` and
+records no cost, and `store_vectors` stores vectors and a `text_hash` with no money
+against them. Measured 2026-10-07: `select provider, count(*), sum(cost_usd) from llm_call
+group by 1` returns `deepseek` only.
+
+What that means for the credit banner, which reads spend from that table: DeepSeek gets a
+"spent / 30d" figure and fal does not. So the only thing bounding fal is the balance
+itself — which is now readable (`FAL_ADMIN_KEY` + `GET /account/billing?expand=credits`),
+and stood at **$1.10** when this was written. A balance with no burn rate beside it cannot
+say *how long* is left, which is the question a near-empty account actually raises.
+
+The add: record an `llm_call` row per embeddings *request* (not per story) with
+`provider="fal"`, `purpose="embeddings"`, the token count fal returns in its usage block,
+and `cost_usd` from the model's published per-million rate. It needs the rates in
+`config.yaml` beside `news.embeddings`, because they are per model and the parser already
+knows which model answered.
+
 ### Six sweeps still do not skip an instrument a refresh is working on
 
 The one-instrument refresh takes a lease (`ingest/lease.py`) and the sweeps consult it so

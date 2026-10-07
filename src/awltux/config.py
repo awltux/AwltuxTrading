@@ -98,6 +98,22 @@ class EnvSettings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("AWLTUX_FALAI_KEY", "FAL_KEY"),
     )
+    #: A fal key with the scope the **billing** endpoint needs, and nothing else uses it.
+    #:
+    #: Separate from the key above on purpose, and it is least privilege rather than
+    #: tidiness. fal's Platform APIs "may require different API key scopes", and
+    #: `GET /account/billing` refuses the model key this project holds with a plain
+    #: `403 authorization_error`. Reading a balance is the only thing here that needs a
+    #: privileged key, so it is the only thing that gets one -- the key used for
+    #: inference stays a model key, which is the credential that is actually spent.
+    #:
+    #: Optional. Unset is the honest default: the banner then says the balance is not
+    #: readable rather than showing a zero, and spending is still counted from
+    #: `llm_call`, which needs no provider co-operation at all.
+    falai_admin_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AWLTUX_FAL_ADMIN_KEY", "FAL_ADMIN_KEY"),
+    )
 
     # news providers
     finnhub_api_key: SecretStr | None = None
@@ -181,6 +197,13 @@ class AppConfig(BaseModel):
     #:   about **90% of the table** while the extractor is unwired, which is why it is
     #:   not the default: a filter that selects almost everything discriminates nothing.
     attention_level: int = Field(default=1, ge=1, le=3)
+    #: Balance in USD below which a provider is announced on every page.
+    #:
+    #: A floor rather than "notify me when it hits zero", because the useful warning comes
+    #: while there is still time to top up: at zero the decision engine has already
+    #: fallen back to the deterministic rules and the next job has already failed. Set to
+    #: ``0`` to announce only a provider that says it cannot pay.
+    balance_warn_below_usd: float = Field(default=5.0, ge=0.0)
 
 
 class UniverseConfig(BaseModel):
@@ -238,6 +261,10 @@ class ScheduleConfig(BaseModel):
     decision: int = 86_400
     calibration: int = 86_400
     retention: int = 604_800
+    #: How often the provider balances are refreshed. Hourly: it is two requests, and the
+    #: point of the number is to warn *before* the account empties, which a daily check
+    #: can miss by most of a day's spend.
+    provider_balance: int = 3_600
 
 
 class BudgetRule(BaseModel):
@@ -510,8 +537,9 @@ class EmbeddingsConfig(BaseModel):
         """The key to send, from whichever place it was supplied.
 
         The YAML field wins where it is set, because a deployment that wrote it
-        there meant it; otherwise the environment is the documented path, and
-        ``AWLTUX_FALAI_KEY`` is the one this deployment uses.
+        there meant it; otherwise the environment is the documented path. Both
+        ``FAL_KEY`` (the name the vendor documents, and the one `.env` uses) and
+        ``AWLTUX_FALAI_KEY`` set the same field, so either works.
         """
         if self.api_key is not None:
             return self.api_key.get_secret_value()

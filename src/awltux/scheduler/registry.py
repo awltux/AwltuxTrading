@@ -44,6 +44,19 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="provider_balance",
+            func=ingest_jobs.refresh_provider_balances,
+            interval_seconds=schedule.provider_balance,
+            description=(
+                "Ask each model provider what is left on the account, so an empty one "
+                "is announced rather than discovered"
+            ),
+            # Nothing it reads is produced by another job, and it gates nothing: it is
+            # the only job whose output is a *warning* rather than a dependency.
+            run_on_start=True,
+            enabled=True,
+        ),
+        JobSpec(
             id="t212_instruments",
             func=ingest_jobs.sync_instruments,
             interval_seconds=schedule.t212_instruments,

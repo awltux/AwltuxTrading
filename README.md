@@ -105,6 +105,8 @@ improve it:
 | `AWLTUX_TYPESAFE_API_KEY` | **JEV**, the calibrated decision engine | Gated early access |
 | `AWLTUX_COMPANIES_HOUSE_API_KEY` | UK company filings and accounts | Free |
 | `AWLTUX_FINNHUB_API_KEY` / `AWLTUX_MARKETAUX_API_KEY` | Real-time US news, sentiment-scored news | Free tiers |
+| `FAL_KEY` | Embeddings, so several outlets reporting one event show as one entry | The `openai/*` embedding models are refused by this route; see `news.embeddings.model` |
+| `FAL_ADMIN_KEY` | Reading the fal account balance for the credit banner | Optional, and used only for that call — a model key is refused with a 403 |
 
 `AWLTUX_SEC_USER_AGENT` must contain a **real contact address** — the SEC rejects
 requests without one with an HTTP 403.

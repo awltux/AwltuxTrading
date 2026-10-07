@@ -8,6 +8,7 @@ visible placeholder and never as ``0``, which would read as a real figure.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ from fastapi.templating import Jinja2Templates
 from awltux.timezones import as_utc, current_zone_name, current_zone_note, format_moment, zone_label
 from awltux.web.filters import UNCLASSIFIED
 from awltux.web.glossary import explanation
+
+logger = logging.getLogger(__name__)
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -234,6 +237,28 @@ def pct0(value: Any) -> str:
         return "\u2014"
 
 
+def provider_status_for_page() -> dict[str, Any]:
+    """The credit banner's data, for a template global.
+
+    Defined here rather than passed through every route's context: it appears on every
+    page, and a key each route had to remember is a key one route would forget -- which
+    is exactly how `news_events` rendered an empty list on the instrument page.
+
+    A failure to read it must not take the page down, so a database error degrades to
+    "nothing to report" and is logged. The banner is a warning *about* the system, and a
+    warning that can break the system is worse than no warning.
+    """
+    from awltux.db.session import session_scope
+    from awltux.web import queries
+
+    try:
+        with session_scope() as session:
+            return queries.provider_status(session)
+    except Exception:  # pragma: no cover - a banner must never break a page
+        logger.exception("could not read the provider balances for the status banner")
+        return {"balances": [], "warnings": [], "readable": False, "floor": 0.0}
+
+
 def create_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
     env = templates.env
@@ -277,6 +302,13 @@ def create_templates() -> Jinja2Templates:
             # place: the same figure appears on the dashboard and on an instrument
             # page, and two copies of an explanation drift like any other duplicate.
             "explain": explanation,
+            # Whether a model provider has run out of money, or nearly. A function
+            # rather than page state because it is site-wide: the failure it reports is
+            # invisible from every page, since the decision engine falls back to the
+            # deterministic rules rather than raising. It opens its own session -- a
+            # page render may have one already and `session_scope` is re-entrant per
+            # thread, so it joins that rather than opening a second connection.
+            "provider_status": provider_status_for_page,
             "disclaimer": (
                 "Advisory tooling for personal research only. Not financial advice. "
                 "Free-tier market data is unofficial and may be delayed or wrong."

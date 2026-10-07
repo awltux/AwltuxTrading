@@ -21,6 +21,14 @@ app:
   # selects almost the whole table tells the reader nothing. Raise it as coverage
   # improves -- it is the only change needed.
   attention_level: 1
+  # Balance in USD below which a model provider is announced on every page.
+  #
+  # A floor rather than "tell me at zero", because the useful warning comes while there
+  # is still time to act: at zero the decision engine has already fallen back to the
+  # deterministic rules and the next job has already failed. Set to 0 to announce only a
+  # provider that says it cannot pay. A provider whose balance cannot be read is not a
+  # warning at any floor -- see `providers/balances.py`.
+  balance_warn_below_usd: 5.0
 
 # --- universe -----------------------------------------------------------------
 universe:
@@ -66,6 +74,9 @@ schedule:
   calibration: 86400
   retention: 604800
   macro_rates: 21600             # Treasury publishes once a business day
+  # Two requests an hour, and the point is to warn before the account empties rather
+  # than after -- at zero the decision engine has already fallen back to the rules.
+  provider_balance: 3600
 
 # --- provider rate-limit budgets (requests per window) ------------------------
 # Scopes mirror each provider's own per-endpoint limits, because a single shared

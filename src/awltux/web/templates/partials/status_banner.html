@@ -1,0 +1,51 @@
+{# A provider out of money, or nearly. Rendered on every page because the failure it
+   reports is invisible everywhere else: the decision engine falls back to the
+   deterministic rules, the embeddings job records a fatal error, and nothing says the
+   account is empty.
+
+   It is **silent when nothing is wrong**. A bar that is always up is a bar nobody reads,
+   so an unreadable balance is not a warning -- several providers cannot be asked at all
+   with the credential this project holds, and saying so on every page would train the
+   reader to ignore the one that matters.
+
+   What it *does* always do is state each provider's balance in one line, because
+   "everything is fine" and "we cannot see anything" look identical otherwise. #}
+{% set status = provider_status() %}
+<section class="status-banner {% if status.warnings %}warn{% endif %}">
+  <span class="banner-label" title="What each model provider says is left on the account">
+    CREDIT
+  </span>
+  <div class="banner-body">
+    {% for row in status.balances %}
+      <span class="balance {% if row.payment_failure or row.available is sameas false %}bad{% elif row.amount is not none and row.amount < status.floor %}warn{% endif %}"
+            {% if row.note %}title="{{ row.note }}"{% endif %}>
+        <strong>{{ row.provider }}</strong>
+        {% if row.amount is not none %}
+          {{ row.amount | money(row.currency) }}
+        {% elif row.available is sameas false %}
+          cannot pay
+        {% else %}
+          <span class="muted" title="{{ row.note }}">not readable</span>
+        {% endif %}
+        {% if row.spent is not none %}
+          <span class="muted small">&middot; {{ row.spent | money('USD') }} spent / 30d</span>
+        {% endif %}
+        {% if row.read_at %}<span class="muted small">&middot; read {{ row.read_at | ago }}</span>{% endif %}
+      </span>
+    {% endfor %}
+  </div>
+</section>
+
+{% if status.warnings %}
+  <div class="notice warn status-warning">
+    <strong>Model provider credit</strong>
+    <ul>
+      {% for warning in status.warnings %}<li>{{ warning }}</li>{% endfor %}
+    </ul>
+    <p class="muted small">
+      Until it is topped up, calls to that provider fail and this system falls back to
+      its deterministic rules rather than to a model. Nothing else about the data below
+      is affected.
+    </p>
+  </div>
+{% endif %}

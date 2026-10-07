@@ -752,6 +752,49 @@ def _lookup_symbol(provider, query: str, instrument: Any, *, by_isin: bool):
     )
 
 
+def refresh_provider_balances() -> JobResult:
+    """Ask each model provider what is left on the account.
+
+    Running out of credit is the one provider failure that is neither transient nor a bug,
+    and it presents like both: the decision engine falls back to the deterministic rules,
+    the embeddings job records a fatal error, and nothing says *the account is empty*.
+    This is the only job here that costs nothing to run and prevents the most.
+
+    A provider that cannot be asked is recorded as unreadable rather than skipped, so the
+    banner can say which provider it cannot see and why. Nothing about this job fails the
+    run: an unreadable balance is a state, not an error.
+    """
+    from awltux.providers import balances as balance_probes
+
+    readings = balance_probes.read_all()
+    with session_scope() as session:
+        balance_probes.store(session, readings)
+
+    readable = [row for row in readings if row.amount is not None]
+    unreadable = [row for row in readings if row.amount is None]
+    return JobResult(
+        items_seen=len(readings),
+        items_written=len(readable),
+        note=(
+            None
+            if readable
+            else "no provider reported a balance; see the notes for why"
+        ),
+        detail={
+            "balances": {
+                row.provider: {
+                    "available": row.available,
+                    "amount": row.amount,
+                    "currency": row.currency,
+                    "note": row.note,
+                }
+                for row in readings
+            },
+            "unreadable": [row.provider for row in unreadable],
+        },
+    )
+
+
 def refresh_macro_rates() -> JobResult:
     """Observe the risk-free rate for every currency the model discounts in.
 
@@ -885,17 +928,7 @@ def sync_shareholder_reports(tickers: list[str] | None = None) -> JobResult:
         # rather than what was attempted.
         flagged = refresh_report_flags(session)
 
-    detail = {
-        "years": years,
-        "discovered": discovery.discovered,
-        "downloaded": download.fetched,
-        "failed": download.failed,
-        "bytes_written": download.bytes_written,
-        "instruments_covered": len(download.instruments),
-        "instruments_flagged": flagged,
-        "discovery_errors": discovery.errors[:5],
-        "download_errors": download.errors[:5],
-    }
+    detail = _document_detail(discovery, download, years=years, flagged=flagged)
 
     if not discovery.discovered and not download.fetched:
         return JobResult(
@@ -910,6 +943,29 @@ def sync_shareholder_reports(tickers: list[str] | None = None) -> JobResult:
         items_written=download.fetched,
         detail=detail,
     )
+
+
+def _document_detail(
+    discovery: Any, download: Any, *, years: int, flagged: int
+) -> dict[str, Any]:
+    """What the two phases did, as one run's detail.
+
+    A named step because the two phases fail differently and the reader needs both halves:
+    a run that discovered six reports and downloaded none is a download problem, and one
+    that discovered none is a discovery problem -- and the counts for each come from a
+    different report.
+    """
+    return {
+        "years": years,
+        "discovered": discovery.discovered,
+        "downloaded": download.fetched,
+        "failed": download.failed,
+        "bytes_written": download.bytes_written,
+        "instruments_covered": len(download.instruments),
+        "instruments_flagged": flagged,
+        "discovery_errors": discovery.errors[:5],
+        "download_errors": download.errors[:5],
+    }
 
 
 def _stuck_instruments(

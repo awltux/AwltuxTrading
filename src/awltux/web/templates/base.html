@@ -40,6 +40,11 @@
     </nav>
   </header>
 
+  {# Whether a model provider has run out of money, or nearly. Immediately below the
+     navigation because it is a statement about the whole installation rather than about
+     the page underneath it -- and it is silent when there is nothing to say. #}
+  {% include "partials/status_banner.html" %}
+
   {# The flash ticker is the only element that needs JavaScript. The server
      fallback below it is a plain HTML fragment refreshed with HTMX. #}
   <section class="ticker" id="news-flash"

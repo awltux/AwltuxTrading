@@ -448,6 +448,17 @@ def _probe_retention(session: Session) -> Coverage:
     return Coverage.none("housekeeping; it depends on nothing and nothing depends on it")
 
 
+def _probe_provider_balance(session: Session) -> Coverage:
+    """Nothing to backfill: a balance is a point-in-time reading, like a quote.
+
+    It never blocks anything either. Its whole output is a warning, so treating an empty
+    reading as "outstanding work" would make a job that cannot be caught up look behind.
+    """
+    return Coverage.none(
+        "polls each provider's balance; there is nothing to backfill and nothing depends on it"
+    )
+
+
 #: One probe per job id. Kept separate from the registry so the scheduler package
 #: still imports without touching the database, and asserted complete by a test so
 #: adding a job without saying what it produces fails loudly.
@@ -518,6 +529,7 @@ def _probe_shareholder_reports(session: Session) -> Coverage:
 
 
 PROBES = {
+    "provider_balance": _probe_provider_balance,
     "shareholder_reports": _probe_shareholder_reports,
     "macro_rates": _probe_macro_rates,
     "t212_instruments": _probe_t212_instruments,

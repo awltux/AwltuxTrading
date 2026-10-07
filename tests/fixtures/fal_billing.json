@@ -1,0 +1,20 @@
+{
+  "_captured": "2026-10-07, GET https://api.fal.ai/v1/account/billing?expand=credits with an Admin-scope key",
+  "_note": "Without `expand=credits` the same endpoint answers {\"username\": \"awltux\"} with no credits object at all, which is why the path carries the parameter.",
+  "payload": {
+    "username": "awltux",
+    "credits": {
+      "current_balance": 1.1,
+      "currency": "USD"
+    }
+  },
+  "without_expansion": {
+    "username": "awltux"
+  },
+  "refused_with_a_model_key": {
+    "error": {
+      "type": "authorization_error",
+      "message": "This API key is not permitted to perform this action."
+    }
+  }
+}

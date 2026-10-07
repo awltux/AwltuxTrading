@@ -443,6 +443,29 @@ def _symbol_resolution(detail: dict[str, Any]) -> str:
     return line
 
 
+def _provider_balance(detail: dict[str, Any]) -> str:
+    """One line naming each provider's balance, or that it could not be read.
+
+    The difference is the whole point: a balance of zero and a balance nobody could read
+    are opposite conclusions, and this is where the run history says which happened.
+    """
+    balances = detail.get("balances")
+    if not isinstance(balances, dict) or not balances:
+        return "no provider reported a balance"
+    parts: list[str] = []
+    for provider, entry in sorted(balances.items()):
+        if not isinstance(entry, dict):
+            continue
+        amount = entry.get("amount")
+        if isinstance(amount, (int, float)):
+            parts.append(f"{provider} {amount:,.2f} {entry.get('currency') or ''}".strip())
+        elif entry.get("available") is False:
+            parts.append(f"{provider} reports it cannot pay")
+        else:
+            parts.append(f"{provider} not readable")
+    return "; ".join(parts)
+
+
 def _retention(detail: dict[str, Any]) -> str:
     removed = detail.get("removed")
     if isinstance(removed, dict):
@@ -490,6 +513,7 @@ def _shareholder_reports(detail: dict[str, Any]) -> str:
 
 
 SUMMARISERS: dict[str, Summariser] = {
+    "provider_balance": _provider_balance,
     "shareholder_reports": _shareholder_reports,
     "macro_rates": _macro_rates,
     "t212_instruments": _t212_instruments,

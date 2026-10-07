@@ -1,0 +1,43 @@
+{
+  "_captured": "2026-10-07, GET https://api.deepseek.com/user/balance",
+  "_note": "One entry per currency. `is_available` is stated separately from the amount, and the two are independent: a zero balance with is_available true is a different state from an account that has been cut off. The amounts are strings.",
+  "payload": {
+    "is_available": true,
+    "balance_infos": [
+      {
+        "currency": "USD",
+        "total_balance": "21.76",
+        "granted_balance": "0.00",
+        "topped_up_balance": "21.76"
+      }
+    ]
+  },
+  "unavailable": {
+    "is_available": false,
+    "balance_infos": [
+      {
+        "currency": "USD",
+        "total_balance": "0.00",
+        "granted_balance": "0.00",
+        "topped_up_balance": "0.00"
+      }
+    ]
+  },
+  "several_currencies": {
+    "is_available": true,
+    "balance_infos": [
+      {
+        "currency": "CNY",
+        "total_balance": "150.00",
+        "granted_balance": "0.00",
+        "topped_up_balance": "150.00"
+      },
+      {
+        "currency": "USD",
+        "total_balance": "21.76",
+        "granted_balance": "0.00",
+        "topped_up_balance": "21.76"
+      }
+    ]
+  }
+}

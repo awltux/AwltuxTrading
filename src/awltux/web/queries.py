@@ -19,6 +19,7 @@ from awltux.analysis import attention as attention_rules
 from awltux.analysis import macro
 from awltux.analysis.attention import Reason
 from awltux.analysis.embeddings import group_events
+from awltux.config import get_settings
 from awltux.db import (
     DecisionOutcome,
     DecisionRun,
@@ -27,6 +28,7 @@ from awltux.db import (
     IngestRun,
     Instrument,
     InstrumentAlias,
+    LLMCall,
     NewsItem,
     PriceBar,
     Quote,
@@ -474,6 +476,137 @@ def refresh_state(row: Any) -> dict[str, Any] | None:
         "current": sequence[finished] if running and finished < len(sequence) else None,
         "steps": done,
         "failed": [entry for entry in done if entry.get("ok") is False],
+    }
+
+
+def _credit_spend(session: Session, *, days: int = 30) -> tuple[dict[str, float], dict[str, int]]:
+    """Model spend and call counts per provider, from our own call log.
+
+    Our log rather than the provider's, because it is the only spend figure that exists
+    for a provider whose billing endpoint we cannot read -- and because it is measured the
+    same way regardless of who is asking.
+    """
+    spend: dict[str, float] = {}
+    calls: dict[str, int] = {}
+    for provider, total, count in session.execute(
+        select(
+            LLMCall.provider,
+            func.coalesce(func.sum(LLMCall.cost_usd), 0.0),
+            func.count(LLMCall.id),
+        )
+        .where(LLMCall.created_at >= utcnow() - dt.timedelta(days=days))
+        .group_by(LLMCall.provider)
+    ).all():
+        spend[provider] = float(total or 0.0)
+        calls[provider] = int(count or 0)
+    return spend, calls
+
+
+def _payment_failures(session: Session, *, days: int = 7) -> dict[str, str]:
+    """The most recent message per provider that reads as a payment refusal.
+
+    Classified in Python rather than with a `LIKE` chain: the marker list is a rule with a
+    reason and belongs where it can be read and tested. One per provider, because a
+    hundred identical 402s are one problem.
+    """
+    from awltux.providers.balances import looks_like_payment_failure
+
+    found: dict[str, str] = {}
+    for provider, error in session.execute(
+        select(LLMCall.provider, LLMCall.error)
+        .where(LLMCall.ok.is_(False))
+        .where(LLMCall.created_at >= utcnow() - dt.timedelta(days=days))
+        .order_by(LLMCall.created_at.desc())
+        .limit(200)
+    ).all():
+        if provider not in found and looks_like_payment_failure(error):
+            found[provider] = (error or "")[:240]
+    return found
+
+
+def _credit_warnings(balance: Any, *, failure: str | None, floor: float) -> list[str]:
+    """Every reason this provider deserves a line in the banner, worded for a reader.
+
+    Unreadable is deliberately not one of them: several providers cannot be asked at all
+    with the credential this project holds, and a bar that is always up is a bar nobody
+    reads.
+    """
+    out: list[str] = []
+    if balance.available is False:
+        out.append(f"{balance.provider} reports it cannot pay; model calls will fail")
+    elif balance.amount is not None and balance.amount < floor:
+        shown = f"{balance.amount:,.2f} {balance.currency or ''}".strip()
+        out.append(f"{balance.provider} is down to {shown}, below the {floor:,.2f} floor")
+    if failure:
+        out.append(f"{balance.provider} refused a call for payment: {failure}")
+    return out
+
+
+def provider_status(session: Session, *, settings: Any = None) -> dict[str, Any]:
+    """Whether any model provider is out of money, and what each one has left.
+
+    Two independent signals, because one of them needs the provider's co-operation and the
+    other does not:
+
+    * **What the provider says.** ``providers/balances.py`` reads DeepSeek's balance
+      endpoint. fal's exists and refuses this project's model key (403), so its reading is
+      *unreadable* -- which is reported as unreadable and never as zero. An operator who
+      adds ``FAL_ADMIN_KEY`` gets a number instead.
+    * **What our own calls show.** Every model call is logged with its cost and its error
+      in ``llm_call``, so spend and *payment failures* are visible regardless of what any
+      provider is willing to expose. A call that failed because the account could not pay
+      is direct evidence, and it arrives the moment it happens rather than at the next
+      hourly probe.
+
+    Returns ``warnings`` already worded, because the template must not decide what counts
+    as a problem -- the same reason the attention reasons are built in analysis rather than
+    in Jinja.
+    """
+    from awltux.providers.balances import Balance, read_stored
+
+    settings = settings or get_settings()
+    floor = settings.app.balance_warn_below_usd
+
+    balances = read_stored(session)
+    if not balances:
+        # Never probed. The job runs on start, so this is the first few seconds after a
+        # fresh container rather than a normal state -- and saying so beats a blank bar.
+        balances = [
+            Balance(name, note="no reading yet; the provider_balance job has not run")
+            for name in ("deepseek", "fal")
+        ]
+
+    spend, calls = _credit_spend(session)
+    failures = _payment_failures(session)
+
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for balance in balances:
+        read_at = as_utc(balance.read_at) if balance.read_at else None
+        failure = failures.get(balance.provider)
+        rows.append(
+            {
+                "provider": balance.provider,
+                "amount": balance.amount,
+                "currency": balance.currency,
+                "available": balance.available,
+                "note": balance.note,
+                "read_at": read_at,
+                "stale": read_at is None or (utcnow() - read_at) > dt.timedelta(hours=3),
+                "spent": spend.get(balance.provider),
+                "calls": calls.get(balance.provider, 0),
+                "payment_failure": failure,
+            }
+        )
+        warnings.extend(_credit_warnings(balance, failure=failure, floor=floor))
+
+    return {
+        "balances": rows,
+        "warnings": warnings,
+        # Whether *any* provider reported a number. The strip says so when none did, which
+        # is how a reader tells "everything is fine" from "we cannot see anything".
+        "readable": any(row["amount"] is not None for row in rows),
+        "floor": floor,
     }
 
 
