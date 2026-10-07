@@ -180,13 +180,39 @@ def _is_uk(instrument: Instrument) -> bool:
     return is_uk_listing(instrument.exchange_name, instrument.yahoo_symbol)
 
 
+#: Sources whose feed is addressed by **symbol** and returns a pool of articles rather
+#: than that symbol's own news.
+#:
+#: A ticker from one of these is evidence that the feed was *asked*, not that the story
+#: concerns the instrument. Measured 2026-10-07: 21 `yahoo_rss` rows carried more than
+#: three tickers and 49 more than one, because `?s=PET.L` returns a shared pool of
+#: investment-trust announcements and `_merge_duplicate` appended a ticker for every
+#: instrument whose feed happened to return the same article --
+#:
+#:     id=6572  tickers=8  feed=s=PET.L
+#:       "Fidelity Asian Values Plc - Transaction in Own Shares"
+#:       PETl_EQ, ARRl_EQ, PMPl_EQ, AVGl_EQ, SCFl_EQ, PENl_EQ, BGFDl_EQ, CYNl_EQ
+#:
+#: Nobody in that list is the subject, and the feed's own symbol is not either. Google
+#: News is not in this set on purpose: its feed is a *query for the company's name*, so
+#: a result is at least about what was asked for, and a story naming two companies is
+#: the case the union exists to serve.
+SYMBOL_POOLED_SOURCES = frozenset({"yahoo_rss"})
+
+
 def _merge_target(existing: NewsItem, item: RawNewsItem) -> None:
     """Add a second feed's instrument to a story that is already stored.
 
     Only the target is added. The direction and materiality are the story's --
     judged once, against whichever instrument's feed found it first -- and
     pretending otherwise per instrument would need a judgement per instrument.
+
+    A story from a symbol-addressed feed contributes **nothing**: see
+    :data:`SYMBOL_POOLED_SOURCES`. The row keeps the ticker of the feed that stored it,
+    and no second feed can add another on the strength of having been asked.
     """
+    if item.source in SYMBOL_POOLED_SOURCES:
+        return
     tickers = list(existing.tickers or [])
     for ticker in item.tickers or []:
         if ticker not in tickers:

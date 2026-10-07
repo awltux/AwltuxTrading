@@ -463,32 +463,33 @@ stories `news_sectors` captures -- a sector feed has no company to classify agai
 the classifier was never asked -- plus older rows. Worth correcting the framing rather
 than the code.
 
-### The sector attribution of a Yahoo feed is taken on trust
+### A story from a loose feed is still attributed to the instrument that fed it
 
-A Yahoo per-symbol feed returns a *shared pool* of announcements, not the symbol's own
-news. Measured 2026-10-07: 21 `yahoo_rss` rows carry more than three tickers and 49 carry
-more than one, because the same article arrived from several instruments' feeds and
-`news.merge_duplicate` appends a ticker for each one that returned it.
+The *accumulation* half of this no longer happens: a symbol-addressed feed cannot add a
+ticker to a story another feed already stored (`SYMBOL_POOLED_SOURCES`, migration `0016`),
+which took the 21 `yahoo_rss` rows carrying more than three tickers down to one each.
 
-    id=6572  tickers=8  feed=s=PET.L
+What is left is the first attribution. A Yahoo `?s=` feed returns a shared pool, so the
+*fetching* instrument is not the subject either -- and it is the one ticker that survives:
+
+    id=6572  feed=s=PET.L  tickers=[PETl_EQ]
       "Fidelity Asian Values Plc - Transaction in Own Shares"
-      PETl_EQ, ARRl_EQ, PMPl_EQ, AVGl_EQ, SCFl_EQ, PENl_EQ, BGFDl_EQ, CYNl_EQ
-    id=6573  tickers=8  feed=s=PET.L
-      "Capital Gearing Trust P.l.c. - Transaction in Own Shares"
 
-Neither article is about any of those eight instruments, and the feed's own symbol is not
-the subject either -- it is a Petrofac feed carrying investment-trust announcements. Every
-ticker after the first is an artefact of merging, and the first is unverified.
+That story is on Petrofac's page, and it is about neither Petrofac nor PET's feed. The
+same is true of the 48 other `yahoo_rss` rows that were over-attributed, and of any
+single-ticker row a pooled feed stored.
 
-**This is not the cache-key bug.** That was one response answering every query; this is
-Yahoo genuinely returning the same articles for many symbols. The cache fix changes
-nothing here.
+**Why it is not simply deleted.** The row is `relevant=False`, so relevance-filtered
+views already exclude it -- but `db.news_for_ticker` does not filter on relevance, so
+`/instrument/PETl_EQ` lists it under its news. That is the visible wrongness, and it is a
+question about what an instrument's news list should require: the feed's say-so, or the
+classifier's `is_about_this_company`.
 
-Damage is bounded: both rows are already `relevant=False`, and relevance is item-level, so
-the wrongness is limited to which instrument pages list them. The fix is not to clear the
-tickers -- the first one may be honest -- but to stop *accumulating* them without asking
-whether the story names the instrument. `analysis/relevance.py` already decides exactly
-that per item; nothing consults it at merge time.
+The classifier already answers that per item and `apply_classification` already stores
+it; nothing consults it when deciding what an instrument's news list contains. Worth
+deciding deliberately, because filtering the list on relevance would also hide the rows
+that are merely *unassessed*.
+
 
 ### Sentiment aggregation loads the whole news window per run
 
