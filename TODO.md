@@ -23,7 +23,7 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 ## Bugs
 
-None open. The nine before this one — `serve` not migrating, silent DeepSeek
+Two open, both below. The nine before them — `serve` not migrating, silent DeepSeek
 truncation, the `universe_refresh` startup race, CLI/server write-lock contention, the
 unhelpful blank dashboard, a stale container being indistinguishable from a code bug,
 SQLite's write lock being held across model calls, a rate-limit counter failing the job
@@ -48,6 +48,79 @@ A ninth was self-inflicted rather than a code bug: an unanchored `.gitignore`
 pattern (`research/`) also matched `docs/research/`, so nine research reports were
 invisible to git while `git status` reported a clean tree.
 `tests/test_repo_hygiene.py` now asserts the invariant that broke.
+
+### A cached request ignores its query string, so one response answers every parameter
+
+`ResponseCache.key(provider, url)` hashes the provider and the URL, and
+`HttpClient.request` builds that URL from the path alone:
+
+    full_url = url if url.startswith("http") else f"{self.base_url}{url}"
+    key = ResponseCache.key(self.provider, full_url)      # providers/http.py:523-524
+
+`params` is forwarded to httpx on the next line but never enters the key. Any endpoint
+whose variation lives in `params` therefore has **one** cache entry, shared by every
+distinct query, for the whole TTL.
+
+**Found from `uk_companies`**, whose matcher turned out to be innocent. Eight
+consecutive runs (316 → 437, 2026-10-06 22:48 to 2026-10-07 13:08) each report
+`attempted=11 matched=0 unmatched=11`. Probed against the live API through the
+application's own provider:
+
+    cache_ttl=0.0       q='Hays'           -> 'HAYS PLC' 02150950
+                        q='Morgan Sindall' -> 'MORGAN SINDALL LIMITED' 15166961
+                        q='Nichols'        -> 'NICHOLS PLC' 00238303
+    cache_ttl=86400.0   all three          -> 'NICHOLS PLC' first, identical 20-candidate list
+
+`match_company` scores that as an exact match at 0.9, so the rule is not why nothing
+matched — it is never shown the right company. The cache directory holds exactly **one**
+entry for `/search/companies`, and the whole 11-instrument run took **0.31 s**: no
+network call happened on any of them.
+
+**Same shape elsewhere**, read from the cache directory and the call sites:
+
+| caller | varies in `params` | `cache_ttl` | state |
+|---|---|---|---|
+| `companies_house.search_companies` | `q` | 86400 | the observed failure |
+| `finnhub.company_news` | `symbol` | 900 | live damage, below |
+| `marketaux.latest_news` | `symbols`, `published_after` | 1800 | same shape |
+| `gdelt.timeline_tone` / `article_tone` | `query` | 1800 / 900 | same shape |
+| `edgar.get_current_events` | `type`, `count` | 0 by default | latent, no caller yet |
+
+Unaffected, so the list is not read as all of them: `edgar`'s per-CIK and per-document
+calls (the CIK is in the URL), `rss` (the Google News and Yahoo query is in the URL path
+— 814 cache entries for 814 distinct URLs), `gilt`, and `t212` whose `get_positions` and
+`_paginate` pass the default `cache_ttl=0.0`.
+
+**And it has already corrupted news.** `news_item` holds 18,455 `google_news` and 963
+`yahoo_rss` rows, both safe, plus **1 `finnhub` row** — one Finnhub article,
+`raw.id = 142612913`, filed under **60 different tickers**. One response attributed to
+sixty companies. Finnhub contributing a single row in total is the same bug seen from
+the other side.
+
+The correction is to fold the sorted params into the digest — `key(provider, url,
+params)`. That re-fetches every existing entry once, which is what a cache is for, and
+it leaves the `data/raw` evidence archive alone because that is named from
+`archive_as`, not from this key.
+
+### `uk_companies` attempts the same 11 instruments on every run
+
+    statement = select(Instrument).where(in_universe.is_(True)).where(ch_company_number.is_(None))
+    if limit: statement = statement.limit(limit)                       # 50
+    instruments = [row for row in ... if is_uk_listing(row.exchange_name, row.yahoo_symbol)]
+
+The `limit` is applied **before** the UK filter and the selection has no `ORDER BY`, so
+a run takes the first 50 unresolved instruments of 18,488 in rowid order and keeps
+whichever 11 are UK-listed. When nothing matches, nothing is written, so the next run
+makes the identical selection: runs 316 through 437 attempted the same 11 tickers eight
+times for 0 matches.
+
+The universe holds **118 UK-listed instruments**; the other **107 have never been
+attempted**. Only **2** instruments in the whole database carry a `ch_company_number`,
+both from a `partial_name` (0.5) and an `exact_name` (0.6) alias.
+
+Independent of the cache-key bug above, and not fixed by it: with the right candidates
+the window would advance, but it advances by *matches*, so an era of unmatched names
+stalls the walk permanently, and the walk is over a rowid order other jobs renumber.
 
 ---
 
