@@ -54,9 +54,31 @@ JOB = "xbrl_statements"
 MIN_YEAR_DAYS = 340
 MAX_YEAR_DAYS = 380
 
-#: Forms whose figures are audited annual statements. A 10-Q carries quarterly
-#: figures and would put three-month numbers in an annual column.
-ANNUAL_FORMS = frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
+#: Forms whose figures may define a fiscal year. A 10-Q carries quarterly figures and
+#: would put three-month numbers in an annual column, so it is not here.
+#:
+#: **6-K is, and it is where a foreign private issuer's annual figures actually arrive.**
+#: Measured 2026-10-07 on `CNI_US_EQ` (Canadian National Railway, a 40-F filer): its
+#: companyfacts payload carries **6,338** facts and every one is tagged `6-K`, with no
+#: `40-F` fact at all -- the annual statements are *furnished* as a 6-K exhibit rather
+#: than filed with the annual report. Excluded, the filer looked like it had no annual
+#: data: 457 us-gaap tags, 24 annual-duration `Revenues` facts, 39 annual-duration
+#: `NetIncomeLoss` facts, and `annual_periods` returned nothing. Every one of those
+#: durations is self-evidently a year -- see :data:`ANNUAL_REPORT_FORMS` for why the
+#: instants need more care than that.
+ANNUAL_FORMS = frozenset(
+    {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A", "6-K", "6-K/A"}
+)
+
+#: The forms that may define a fiscal year end when **nothing else has**.
+#:
+#: A *duration* is self-evidently annual when it spans :data:`MIN_YEAR_DAYS` to
+#: :data:`MAX_YEAR_DAYS`, whatever form carried it. An *instant* is not: the same
+#: balance sheet appears at every quarter end, so with no annual duration to anchor it a
+#: 6-K would turn each interim date into a "year" -- the phantom-year failure the
+#: ``established`` guard in :func:`annual_periods` exists to prevent. This is the narrower
+#: set that guard falls back to.
+ANNUAL_REPORT_FORMS = frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
 
 #: How a metric's unit is recognised. XBRL unit keys are strings -- ``"USD"``,
 #: ``"USD/shares"``, ``"shares"`` -- so a per-share figure taken from the
@@ -583,6 +605,26 @@ def _compose(entry: ExtractedPeriod) -> None:
         )
 
 
+def _is_year_end(period_end: dt.date, fact: dict[str, Any], established: set[dt.date]) -> bool:
+    """Whether an instant's date is a fiscal year end, and so a balance-sheet date.
+
+    **A duration establishes which dates are year ends; an instant only lands on one.**
+    That is why the two passes are not symmetric: an annual duration says by its own span
+    that it covers a year, while a balance sheet says nothing about whether its date is a
+    quarter end or a year end -- the same figures appear at both.
+
+    So when a duration has established the year ends, an instant at one of those dates is
+    that year's balance sheet, whichever form carried it. With **nothing** established
+    there is no such signal, and the fallback asks for an annual *report* rather than any
+    accepted form: a 6-K balance sheet would otherwise become a "year" at every quarter
+    end. Measured 2026-10-07 on `AIT_US_EQ`'s 2024-04-15 row, which held nothing but
+    `goodwill` before the guard existed.
+    """
+    if established:
+        return period_end in established
+    return str(fact.get("form") or "").upper() in ANNUAL_REPORT_FORMS
+
+
 def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
     """Annual figures per fiscal year, newest last.
 
@@ -626,10 +668,7 @@ def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
         if span is None:
             continue
         for period_end, fact in chosen.items():
-            # The `established` guard is skipped when nothing is established: a
-            # filer that tags only a balance sheet still has a balance sheet, and
-            # refusing it outright would trade a phantom year for a missing one.
-            if established and period_end not in established:
+            if not _is_year_end(period_end, fact, established):
                 continue
             entry = slot(period_end)
             entry.facts[spec.key] = _make_fact(spec.key, fact, period_end)

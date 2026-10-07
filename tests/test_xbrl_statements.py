@@ -740,3 +740,69 @@ class TestWritingToTheDatabase:
             "the second run re-read the filer the first had just written, so with a "
             "queue of 312 the job would never drain it"
         )
+
+
+class TestAForeignPrivateIssuer:
+    """A filer whose annual figures arrive on a 6-K rather than an annual report.
+
+    Measured 2026-10-07 on `CNI_US_EQ` (Canadian National Railway, a 40-F filer): its
+    companyfacts payload carries **6,338** facts and every one is tagged `6-K`, with no
+    `40-F` fact at all -- the statements are furnished as a 6-K exhibit instead. With 6-K
+    excluded from `ANNUAL_FORMS` the filer looked like it had no annual data: 457 us-gaap
+    tags, 24 annual-duration `Revenues` facts, 39 annual-duration `NetIncomeLoss` facts,
+    and `annual_periods` returned nothing.
+
+    The asymmetry is the point. A duration spanning 340-380 days says by itself that it
+    covers a year, whatever form carried it. An instant says nothing of the kind, so a 6-K
+    is allowed to anchor a year end only when a duration has already established one.
+    """
+
+    def test_a_6k_annual_duration_defines_a_fiscal_year(self):
+        facts = combine(duration("Revenues", 1000.0, "2024-01-01", "2024-12-31", form="6-K"))
+
+        found = annual_periods(payload(facts))
+
+        assert [p.period_end.isoformat() for p in found] == ["2024-12-31"]
+
+    def test_a_6k_balance_sheet_joins_the_year_its_duration_established(self):
+        facts = combine(
+            duration("Revenues", 1000.0, "2024-01-01", "2024-12-31", form="6-K"),
+            instant("Assets", 5000.0, "2024-12-31", form="6-K"),
+        )
+
+        found = annual_periods(payload(facts))
+
+        assert [p.period_end.isoformat() for p in found] == ["2024-12-31"]
+        assert "total_assets" in found[0].metrics()
+
+    def test_a_6k_balance_sheet_at_a_quarter_end_is_not_a_year(self):
+        """The phantom-year failure the guard exists for, and why 6-K cannot simply be
+        trusted for instants: the same balance sheet appears at every quarter end."""
+        facts = combine(
+            duration("Revenues", 1000.0, "2024-01-01", "2024-12-31", form="6-K"),
+            instant("Assets", 5000.0, "2024-12-31", form="6-K"),
+            instant("Assets", 4000.0, "2024-09-30", form="6-K"),
+        )
+
+        found = annual_periods(payload(facts))
+
+        assert [p.period_end.isoformat() for p in found] == ["2024-12-31"]
+
+    def test_a_6k_with_only_a_balance_sheet_establishes_no_year_at_all(self):
+        """No duration, so there is no year end to join and the form is all that is left.
+        Two interim dates must not become two "years"."""
+        facts = combine(
+            instant("Assets", 5000.0, "2024-12-31", form="6-K"),
+            instant("Assets", 4000.0, "2024-09-30", form="6-K"),
+        )
+
+        assert annual_periods(payload(facts)) == []
+
+    def test_an_annual_report_with_only_a_balance_sheet_still_yields_its_year(self):
+        """The fallback is not a refusal: a 10-K balance sheet on its own is a year, which
+        is what `ANNUAL_REPORT_FORMS` exists to keep."""
+        facts = combine(instant("Assets", 5000.0, "2024-12-31", form="10-K"))
+
+        found = annual_periods(payload(facts))
+
+        assert [p.period_end.isoformat() for p in found] == ["2024-12-31"]
