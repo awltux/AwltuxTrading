@@ -390,6 +390,69 @@ class FundamentalPeriod(Base, TimestampMixin):
 
 
 # --------------------------------------------------------------------------- #
+# instrument-level attention and refresh
+# --------------------------------------------------------------------------- #
+
+
+class InstrumentRefresh(Base, TimestampMixin):
+    """A one-instrument refresh: the lock that serialises it, and its progress.
+
+    Two jobs in one row, deliberately. It is a **lease** -- while a row is unexpired
+    and running, the universe-wide jobs skip that instrument, so a scoped refresh and
+    a sweep over the whole universe cannot write the same company at once. And it is
+    the **record** of what the refresh did, so the instrument page can say "step 4 of
+    13, xbrl_statements" and a reader can see which step failed without opening a log.
+
+    **One row per instrument, primary key on the ticker.** That *is* the lock: a second
+    refresh of the same instrument finds the row held and refuses, which is the
+    behaviour asked for -- and it needs no separate table, because the thing being
+    protected and the thing being reported are the same fact.
+
+    **A lease, not a flag.** `expires_at` is what stops a crashed refresh from wedging
+    an instrument out of every universe job forever. The holder renews it as it moves
+    between steps (see :func:`~awltux.ingest.refresh.heartbeat`), so an expiry means the
+    process is gone rather than that the work is slow -- and the TTL is generous for
+    exactly that reason: a refresh legitimately spends minutes in model calls.
+
+    **The lock is cooperative.** Universe jobs consult it at the boundary between one
+    instrument and the next, which is the same boundary the cooperative stop uses
+    (`progress.checkpoint`). Nothing here can interrupt a job that is already inside an
+    instrument, and pretending otherwise would be worse than saying so: `SQLite`
+    serialises the writes either way, so the cost of a collision is a wait, not a
+    corrupted figure.
+    """
+
+    __tablename__ = "instrument_refresh"
+
+    instrument_t212_ticker: Mapped[str] = mapped_column(
+        ForeignKey("instrument.t212_ticker", ondelete="CASCADE"), primary_key=True
+    )
+
+    #: Random per-acquisition token. Only the holder releases the lease, so a refresh
+    #: that overran its TTL cannot release the one that replaced it.
+    token: Mapped[str] = mapped_column(String(36))
+    #: What the row means right now. `running` holds the lock; the other states do not.
+    state: Mapped[str] = mapped_column(String(16), default="running", index=True)
+    #: Free text for the reader: which step is in progress, or why the run failed.
+    note: Mapped[str | None] = mapped_column(String(512))
+
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    #: Renewed between steps. An unexpired row is a held lock.
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: One entry per step: its job id, whether it ran, and what it did. JSON rather
+    #: than a child table because it is written once, read whole, and never queried
+    #: across rows -- the same reasoning as `Filing.parsed`.
+    steps: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+
+    @property
+    def held(self) -> bool:
+        """Whether this row is currently locking the instrument."""
+        return self.state == "running"
+
+
+# --------------------------------------------------------------------------- #
 # instrument-level blockers
 # --------------------------------------------------------------------------- #
 

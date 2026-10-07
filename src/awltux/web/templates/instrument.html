@@ -23,6 +23,74 @@
   <div><dt>SEC CIK</dt><dd>{{ instrument.sec_cik or '—' }}</dd></div>
 </section>
 
+{# ----------------------------------------------------------------- refresh #}
+{# The pipeline stages for this one company, on demand. It exists because a call can be
+   shown here while most of what it rests on has never been fetched -- the scheduled
+   jobs rotate at their own pace -- and the reader's question is "what would you say if
+   you actually had the data?". The lease in `ingest/lease.py` is both the lock and the
+   progress report, so this panel and the sweeps cannot disagree about whether a refresh
+   is running. #}
+<section class="panel" id="refresh">
+  <h2>Refresh this instrument</h2>
+  <p class="muted small">
+    Runs the pipeline stages for this company alone, in dependency order: prices,
+    filings, statements, the annual reports and what they disclose, news, sentiment,
+    valuation, and a fresh decision. Universe-wide jobs skip this instrument while it
+    runs. It takes minutes and spends provider and model budget, so it is a deliberate
+    act rather than something the page does on load.
+  </p>
+
+  {% if refresh_message == 'started' %}
+    <p class="notice ok">Refresh started. It is running in the background &mdash;
+      this page will not update by itself.</p>
+  {% elif refresh_message == 'refused' %}
+    <p class="notice warn">Nothing was started: a refresh is already running, either for
+      this instrument or for another one. Only one runs at a time.</p>
+  {% endif %}
+
+  {% if refresh %}
+    <p>
+      <strong>{{ refresh.state }}</strong>
+      {% if refresh.running %}
+        &mdash; step {{ refresh.steps_done + 1 }} of {{ refresh.total_steps }}{% if refresh.current %} ({{ refresh.current }}){% endif %}
+      {% else %}
+        &mdash; {{ refresh.steps_done }} of {{ refresh.total_steps }} steps completed
+      {% endif %}
+      <span class="muted small">
+        started {{ refresh.started_at | datetime }}
+        {% if refresh.finished_at %}&middot; finished {{ refresh.finished_at | datetime }}{% endif %}
+      </span>
+    </p>
+    {% if refresh.note %}<p class="muted small">{{ refresh.note }}</p>{% endif %}
+    {% if refresh.failed %}
+      <p class="notice warn">
+        {{ refresh.failed | length }} step{{ '' if refresh.failed | length == 1 else 's' }}
+        did not complete:
+        {% for entry in refresh.failed %}<br><code>{{ entry.step }}</code> &mdash; {{ entry.note }}{% endfor %}
+      </p>
+    {% endif %}
+    {% if refresh.steps %}
+      <details>
+        <summary class="muted small">Every step</summary>
+        <ol class="muted small">
+          {% for entry in refresh.steps %}
+            <li><code>{{ entry.step }}</code> &mdash; {% if entry.ok %}ok{% else %}failed{% endif %}{% if entry.note %}: {{ entry.note }}{% endif %}</li>
+          {% endfor %}
+        </ol>
+      </details>
+    {% endif %}
+    <p><a href="/jobs/{{ refresh_job }}/log">Live log for the last refresh &rarr;</a></p>
+  {% else %}
+    <p class="muted small">This instrument has never been refreshed on its own.</p>
+  {% endif %}
+
+  <form method="post" action="/instrument/{{ ticker }}/refresh">
+    <button type="submit" {% if refresh and refresh.running %}disabled{% endif %}>
+      {% if refresh and refresh.running %}Refreshing&hellip;{% else %}Refresh now{% endif %}
+    </button>
+  </form>
+</section>
+
 {# ------------------------------------------------------------------ decision #}
 <h2>Decision</h2>
 {% if decision %}

@@ -13,7 +13,10 @@ decisions from being refreshed.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from awltux.db import Instrument
 
 from awltux.config import get_settings
 from awltux.db import session_scope
@@ -213,7 +216,7 @@ def refresh_universe() -> JobResult:
     )
 
 
-def refresh_prices_eod() -> JobResult:
+def refresh_prices_eod(tickers: list[str] | None = None) -> JobResult:
     """End-of-day OHLCV for the universe, plus FX for the majors.
 
     Alternates network and database phases per batch rather than wrapping the
@@ -241,9 +244,16 @@ def refresh_prices_eod() -> JobResult:
 
     # --- database phase: which instruments, in what order --------------------
     with session_scope() as session:
-        targets = load_price_targets(
-            session, limit=settings.schedule.price_eod_max_per_run or None
-        )
+        if tickers:
+            # Scoped: the named instruments and nothing else, whatever the ration and
+            # whatever their coverage. The targeted ordering below exists to spread a
+            # universe sweep across runs, and a single named instrument has no queue to
+            # be fair to.
+            targets = load_price_targets(session, only=tickers)
+        else:
+            targets = load_price_targets(
+                session, limit=settings.schedule.price_eod_max_per_run or None
+            )
     report.tickers_requested = len(targets)
     if not targets.symbols:
         return JobResult(detail={**report.as_dict(), "skipped": "empty universe"})
@@ -333,8 +343,13 @@ def refresh_prices_intraday() -> JobResult:
     )
 
 
-def ingest_news_rss() -> JobResult:
-    """Poll RSS and optional providers, then classify anything new."""
+def ingest_news_rss(tickers: list[str] | None = None) -> JobResult:
+    """Poll RSS and optional providers, then classify anything new.
+
+    ``tickers`` scopes the poll to named instruments, for a manual one-instrument
+    refresh. The universe walk is ordered by its own cursor, so a scoped run neither
+    reads nor advances it.
+    """
     from awltux.ingest.news import ingest_rss_news
     from awltux.llm.classify import build_classifier
 
@@ -346,7 +361,7 @@ def ingest_news_rss() -> JobResult:
             # published" rather than "there was nothing to look for".
             logger.info("news ingest skipped: %s", note)
             return JobResult(note=note)
-        report = ingest_rss_news(session, classifier=classifier)
+        report = ingest_rss_news(session, tickers=tickers, classifier=classifier)
 
     return JobResult(
         items_seen=report.fetched,
@@ -360,7 +375,7 @@ def ingest_news_rss() -> JobResult:
     )
 
 
-def analyse_news() -> JobResult:
+def analyse_news(tickers: list[str] | None = None) -> JobResult:
     """Sceptically appraise recent news: sources, framing, corroboration, claims.
 
     Deliberately a separate job from the poll. The poll is volume work on hundreds
@@ -381,10 +396,13 @@ def analyse_news() -> JobResult:
     with session_scope() as session:
         report = analyse_universe(
             session,
+            tickers=tickers,
             settings=settings,
             analyser=analyser,
             days=config.lookback_days,
-            limit=config.max_deep_per_run,
+            # A scoped refresh is asking about one company, so the ration that spreads
+            # forty deep reads across the universe has nothing to spread here.
+            limit=None if tickers else config.max_deep_per_run,
             refresh_after_days=config.refresh_after_days,
         )
 
@@ -522,7 +540,7 @@ def embed_news() -> JobResult:
     )
 
 
-def assess_news_relevance() -> JobResult:
+def assess_news_relevance(tickers: list[str] | None = None) -> JobResult:
     """Decide whether stored stories are claims about a share price.
 
     Relevance is normally settled at ingest, by the same classifier call that
@@ -561,7 +579,6 @@ def assess_news_relevance() -> JobResult:
     # backfill take thirty runs to drain while protecting nothing. The paid work is
     # what needs rationing, and the row window is only there to bound memory.
     call_limit = settings.news.relevance_backfill_per_run
-    row_limit = RELEVANCE_BACKFILL_ROWS
     classifier = build_classifier(settings)
 
     with session_scope() as session:
@@ -570,9 +587,19 @@ def assess_news_relevance() -> JobResult:
                 select(NewsItem)
                 .where(NewsItem.relevant.is_(None))
                 .order_by(NewsItem.id)
-                .limit(row_limit)
+                .limit(RELEVANCE_BACKFILL_ROWS if not tickers else None)
             ).scalars().all()
         )
+        if tickers:
+            # Scoped to a manual refresh, so the window is the instrument rather than a
+            # rationed slice of the backlog. Matched in Python because `tickers` is a
+            # JSON column and `json_each` cannot use an index -- for one instrument over
+            # a deliberate button press that is the right trade, and for the scheduled
+            # sweep the rationed window above is what keeps it bounded.
+            wanted = set(tickers)
+            pending = [
+                item for item in pending if wanted & set(item.tickers or [])
+            ]
         if not pending:
             return JobResult(note="every stored story already has a relevance verdict")
 
@@ -812,7 +839,7 @@ def refresh_macro_rates() -> JobResult:
     return JobResult(items_seen=seen, items_written=written, detail=detail)
 
 
-def sync_shareholder_reports() -> JobResult:
+def sync_shareholder_reports(tickers: list[str] | None = None) -> JobResult:
     """Find and download the annual reports: this year and the previous one.
 
     The annual report is the primary evidence about a business, and until now this
@@ -827,6 +854,9 @@ def sync_shareholder_reports() -> JobResult:
     recent *interesting* filings, so a company that files a lot of 8-Ks had its
     older 10-Ks cut off by a limit rather than by a date. The second downloads the
     documents behind those rows.
+
+    ``tickers`` scopes both phases to one company and lifts the per-run download
+    ration, which exists to spread a universe-wide sweep over several runs.
     """
     from awltux.ingest.documents import (
         deepen_annual_history,
@@ -839,10 +869,17 @@ def sync_shareholder_reports() -> JobResult:
     per_run = settings.reports.per_run
 
     with session_scope() as session:
-        discovery = deepen_annual_history(session, years=years, settings=settings)
+        discovery = deepen_annual_history(
+            session, years=years, settings=settings, tickers=tickers
+        )
 
     with session_scope() as session:
-        download = fetch_annual_reports(session, limit=per_run, settings=settings)
+        download = fetch_annual_reports(
+            session,
+            limit=None if tickers else per_run,
+            settings=settings,
+            tickers=tickers,
+        )
         # The flag is recomputed from the rows rather than incremented as documents
         # arrive, so a run that dies halfway leaves it describing what is held
         # rather than what was attempted.
@@ -875,7 +912,39 @@ def sync_shareholder_reports() -> JobResult:
     )
 
 
-def resolve_symbols() -> JobResult:
+def _stuck_instruments(
+    session, *, tickers: list[str] | None, limit: int
+) -> list[Instrument]:
+    """Instruments with an ISIN and no price history: the ones a lookup can help.
+
+    A named step rather than a block inside the job for the reason the job's own docstring
+    gives: this is the *input* to the whole thing, and the scoped and sweeping cases
+    differ only here. The limit rations a daily sweep across runs; a one-instrument
+    refresh must not be rationed out of the run it was asked for, and the "no price
+    history" filter is why the refresh runs this *before* prices -- a derived symbol that
+    is wrong shows up as an instrument with no bars.
+    """
+    from sqlalchemy import select
+
+    from awltux.db import Instrument, PriceBar
+
+    priced = select(PriceBar.instrument_t212_ticker).distinct()
+    statement = (
+        select(Instrument)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .where(Instrument.isin.is_not(None))
+        .where(Instrument.t212_ticker.not_in(priced))
+        .order_by(Instrument.t212_ticker)
+    )
+    if tickers is not None:
+        statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    else:
+        statement = statement.limit(limit)
+    return list(session.execute(statement).scalars().all())
+
+
+def resolve_symbols(tickers: list[str] | None = None) -> JobResult:
     """Look up the provider symbol for instruments a derived one cannot reach.
 
     Every price, account and news item joins on a provider symbol, and until now
@@ -899,7 +968,7 @@ def resolve_symbols() -> JobResult:
     from sqlalchemy import select
 
     from awltux.config import get_settings
-    from awltux.db import Instrument, InstrumentAlias, PriceBar, utcnow
+    from awltux.db import Instrument, InstrumentAlias, utcnow
     from awltux.db.session import release_write_lock
     from awltux.ingest.identity import APPLY_FLOOR, describe
     from awltux.providers.http import ProviderError
@@ -910,18 +979,7 @@ def resolve_symbols() -> JobResult:
     provider = YahooProvider(settings)
 
     with session_scope() as session:
-        priced = select(PriceBar.instrument_t212_ticker).distinct()
-        stuck = list(
-            session.execute(
-                select(Instrument)
-                .where(Instrument.in_universe.is_(True))
-                .where(Instrument.excluded.is_(False))
-                .where(Instrument.isin.is_not(None))
-                .where(Instrument.t212_ticker.not_in(priced))
-                .order_by(Instrument.t212_ticker)
-                .limit(limit)
-            ).scalars().all()
-        )
+        stuck = _stuck_instruments(session, tickers=tickers, limit=limit)
         if not stuck:
             return JobResult(
                 note=(
@@ -1067,8 +1125,13 @@ def ingest_edgar_events() -> JobResult:
     )
 
 
-def sync_filings() -> JobResult:
-    """Refresh filing history for instruments with a resolved CIK."""
+def sync_filings(tickers: list[str] | None = None) -> JobResult:
+    """Refresh filing history for instruments with a resolved CIK.
+
+    ``tickers`` scopes the CIK resolution *and* the fetch to named instruments. The
+    resolution half matters for a single US listing and is otherwise a no-op, because
+    an instrument with a CIK already resolves to itself.
+    """
     from sqlalchemy import func, select
 
     from awltux.db import Instrument
@@ -1087,7 +1150,7 @@ def sync_filings() -> JobResult:
             .where(Instrument.sec_cik.is_not(None))
         ).scalar_one()
 
-        resolution = resolve_ciks(session)
+        resolution = resolve_ciks(session, tickers=tickers)
         if int(with_cik or 0) == 0 and not resolution.resolved:
             # Worth naming explicitly: EDGAR covers US filers only, so a
             # London-only book legitimately has nothing here.
@@ -1100,7 +1163,7 @@ def sync_filings() -> JobResult:
                 detail={"cik_resolution": resolution.as_dict()},
             )
 
-        report = _sync(session)
+        report = _sync(session, tickers=tickers)
 
     return JobResult(
         items_seen=report.filings_seen,
@@ -1112,31 +1175,38 @@ def sync_filings() -> JobResult:
     )
 
 
-def sync_fundamentals_job() -> JobResult:
+def sync_fundamentals_job(tickers: list[str] | None = None) -> JobResult:
     """Rotating fundamentals refresh, rationed to keep within free-tier limits.
 
     The configured per-day rotation is divided across the 24 hourly runs so the
     load is spread rather than concentrated in one burst.
+
+    ``tickers`` is the one-instrument scope a manual refresh uses. It is a keyword with a
+    default rather than a second function so the scheduled and the scoped run take
+    exactly the same path -- same blockers, same progress lines, same report -- and the
+    rotation limit is lifted, because a rationed batch of two is not "refresh this one".
     """
     settings = get_settings()
     from awltux.ingest.fundamentals import sync_fundamentals
 
-    per_run = max(1, settings.schedule.fundamentals_rotation_per_day // 24)
+    per_run = 1 if tickers else max(1, settings.schedule.fundamentals_rotation_per_day // 24)
     with session_scope() as session:
         note = empty_universe_note(session)
         if note:
             logger.info("fundamentals sync skipped: %s", note)
             return JobResult(note=note)
-        report = sync_fundamentals(session, limit=per_run)
+        report = sync_fundamentals(
+            session, tickers=tickers, limit=None if tickers else per_run
+        )
 
     return JobResult(
         items_seen=report.tickers_attempted,
         items_written=report.periods_written,
-        detail={**report.as_dict(), "per_run_limit": per_run},
+        detail={**report.as_dict(), "per_run_limit": per_run if not tickers else "scoped"},
     )
 
 
-def sync_xbrl_statements_job() -> JobResult:
+def sync_xbrl_statements_job(tickers: list[str] | None = None) -> JobResult:
     """Annual statements from XBRL company facts, for US filers.
 
     Separate from ``fundamentals`` because the two answer different questions and
@@ -1148,27 +1218,31 @@ def sync_xbrl_statements_job() -> JobResult:
     settings = get_settings()
     from awltux.ingest.xbrl import sync_xbrl_fundamentals
 
-    per_run = max(1, settings.schedule.fundamentals_rotation_per_day // 24)
+    per_run = 1 if tickers else max(1, settings.schedule.fundamentals_rotation_per_day // 24)
     with session_scope() as session:
         note = empty_universe_note(session)
         if note:
             logger.info("xbrl statements skipped: %s", note)
             return JobResult(note=note)
-        report = sync_xbrl_fundamentals(session, settings=settings, limit=per_run)
+        report = sync_xbrl_fundamentals(
+            session, settings=settings, tickers=tickers, limit=None if tickers else per_run
+        )
 
     return JobResult(
         items_seen=report.tickers_attempted,
         items_written=report.periods_written,
-        detail={**report.as_dict(), "per_run_limit": per_run},
+        detail={**report.as_dict(), "per_run_limit": per_run if not tickers else "scoped"},
     )
 
 
-def resolve_uk_companies_job() -> JobResult:
+def resolve_uk_companies_job(tickers: list[str] | None = None) -> JobResult:
     """Attach Companies House numbers to UK-listed instruments."""
     from awltux.ingest.fundamentals import resolve_uk_companies
 
     with session_scope() as session:
-        summary = resolve_uk_companies(session, limit=50)
+        summary = resolve_uk_companies(
+            session, tickers=tickers, limit=None if tickers else 50
+        )
 
     return JobResult(
         items_seen=summary.get("attempted", 0),
@@ -1177,12 +1251,12 @@ def resolve_uk_companies_job() -> JobResult:
     )
 
 
-def run_valuations() -> JobResult:
+def run_valuations(tickers: list[str] | None = None) -> JobResult:
     """Recompute the deterministic valuation for the universe."""
     from awltux.analysis.valuation import run_valuations as _run
 
     with session_scope() as session:
-        stats = _run(session)
+        stats = _run(session, tickers=tickers)
 
     return JobResult(
         items_seen=stats.get("attempted", 0),
@@ -1191,12 +1265,12 @@ def run_valuations() -> JobResult:
     )
 
 
-def run_decisions() -> JobResult:
+def run_decisions(tickers: list[str] | None = None) -> JobResult:
     """Produce a fresh decision for every instrument whose inputs changed."""
     from awltux.decision.service import decide_universe
 
     with session_scope() as session:
-        stats = decide_universe(session)
+        stats = decide_universe(session, tickers=tickers)
 
     return JobResult(
         items_seen=stats.get("attempted", 0),
@@ -1219,12 +1293,12 @@ def update_calibration() -> JobResult:
     )
 
 
-def aggregate_sentiment() -> JobResult:
+def aggregate_sentiment(tickers: list[str] | None = None) -> JobResult:
     """Roll news items up into per-stock and per-sector sentiment series."""
     from awltux.analysis.sentiment import aggregate_all
 
     with session_scope() as session:
-        stats = aggregate_all(session)
+        stats = aggregate_all(session, tickers=tickers)
 
     return JobResult(
         items_seen=stats.get("instruments_seen", 0),

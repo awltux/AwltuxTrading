@@ -10,8 +10,8 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import desc, select
 
 from awltux import __version__, version
@@ -21,7 +21,9 @@ from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
 from awltux.db import Filing, IngestRun, session_scope
+from awltux.ingest import lease
 from awltux.ingest.universe import cached_t212_capabilities
+from awltux.scheduler import scoped
 from awltux.timezones import as_utc
 from awltux.web import filters, queries
 from awltux.web.templating import templates
@@ -160,6 +162,10 @@ def instrument_page(
         predictions, prediction_count = queries.decision_history(
             session, ticker=ticker, limit=25
         )
+        # The lease doubles as the refresh's progress: the same row that stops a sweep
+        # touching this instrument says which step is running.
+        refresh_row = lease.current(session, ticker)
+        refresh_state = queries.refresh_state(refresh_row)
 
     return templates.TemplateResponse(
         request,
@@ -182,11 +188,31 @@ def instrument_page(
             "predictions": predictions,
             "prediction_count": prediction_count,
             "horizon_windows": HORIZON_WINDOWS,
+            "refresh": refresh_state,
+            "refresh_job": scoped.REFRESH_JOB,
+            "refresh_message": request.query_params.get("refresh"),
             "horizons": {
                 "long_term": get_settings().horizons.long_term,
                 "short_term": get_settings().horizons.short_term,
             },
         },
+    )
+
+
+@router.post("/instrument/{ticker}/refresh", include_in_schema=False)
+def instrument_refresh(ticker: str) -> RedirectResponse:
+    """Force the pipeline stages for one instrument, and return immediately.
+
+    A POST rather than a link, and not because of the semantics: a GET would be followed
+    by any prefetcher or crawler that happened to see the URL, and this spends provider
+    and model budget. The redirect carries the outcome as a query parameter, so the page
+    can say why nothing started without keeping state anywhere.
+    """
+    outcome = scoped.start(ticker)
+    reason = "started" if outcome.ok else "refused"
+    return RedirectResponse(
+        url=f"/instrument/{ticker}?refresh={reason}#refresh",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

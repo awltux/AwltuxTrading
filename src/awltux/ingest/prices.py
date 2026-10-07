@@ -87,7 +87,12 @@ class PriceTargets:
         return len(self.symbols)
 
 
-def load_price_targets(session: Session, *, limit: int | None = None) -> PriceTargets:
+def load_price_targets(
+    session: Session,
+    *,
+    limit: int | None = None,
+    only: list[str] | None = None,
+) -> PriceTargets:
     """The instruments to price, **most in need first**.
 
     A separate step from :func:`persist_batch` so the network phase can run with
@@ -111,6 +116,12 @@ def load_price_targets(session: Session, *, limit: int | None = None) -> PriceTa
     job on a 500-name universe can afford; the cap exists so a deployment on a
     tight rate limit can ration, and it is the priority order above that makes
     rationing fair rather than arbitrary.
+
+    ``only`` names the instruments instead of ordering them. The priority above is a
+    fairness rule for a sweep; a one-instrument refresh is not a sweep, and ordering by
+    need would silently drop the instrument the reader asked about whenever it happened
+    to be well covered. The symbol requirement still applies -- an instrument with no
+    provider symbol has nothing to request.
     """
     coverage = (
         select(
@@ -136,6 +147,14 @@ def load_price_targets(session: Session, *, limit: int | None = None) -> PriceTa
             Instrument.t212_ticker.asc(),
         )
     )
+    if only is not None:
+        statement = statement.where(Instrument.t212_ticker.in_(list(only)))
+    else:
+        # A sweep skips instruments a scoped refresh currently holds, so the two cannot
+        # write the same bars at once. Not applied to `only`: that *is* the refresh.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     rows = session.execute(statement).all()
 
     targets = PriceTargets()

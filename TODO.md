@@ -287,9 +287,14 @@ bridge is applied.
 
 Still to build, in the order the note argues for:
 
-1. **Filing events** — auditor change, restatement, going-concern, accounting-policy
-   change. The extraction fields and prompt are in place, but `extract_filing`
-   (`llm/extractors.py:267`) is **not called from anywhere**, so none of it runs.
+1. **Filing events, on a schedule.** `extract_filing` *is* called now: the
+   one-instrument refresh reads the held documents and stores the cited metrics and the
+   filing events (`ingest/parsing.py`), and `decision/service.py` already prompts with
+   `filing.parsed["extraction"]["filing_events"]`. What is still missing is anything that
+   does it **unattended** — 601 documents are held and the only route to reading one is a
+   button press on a single instrument. A job would need a per-run ration (this is a
+   model read over a document that can be hundreds of thousands of characters) and a
+   coverage probe, since `Filing.status == "fetched"` is exactly "downloaded and unread".
 2. **ROIC against an explicitly stated WACC** — the economic question the system
    cannot currently answer. `valuation.py::wacc` exists; the denominator definition
    is the part that has to be stated rather than assumed.
@@ -482,6 +487,28 @@ column.
 ---
 
 ## Operations
+
+### Six sweeps still do not skip an instrument a refresh is working on
+
+The one-instrument refresh takes a lease (`ingest/lease.py`) and the sweeps consult it so
+the two cannot write the same company at once. Six of them do not yet: `filings_edgar`,
+`shareholder_reports`, `uk_companies`, `news_relevance`, `news_analysis` and
+`sentiment`. Wired: `price_eod`, `fundamentals`, `xbrl_statements`, `news_rss`,
+`valuation` and `decision` — the six that call `lease.exclude_locked(...)` on their
+instrument selection.
+
+The add is one line each, and it must go on the *selection*, not inside the loop: a job
+that has already loaded its instrument list would re-ask per item at best, and at worst
+an instrument fetched before the lease was taken sails past a check placed after the load.
+`decide_universe` is the worked example — it slices an in-memory list by `limit`
+afterwards, so a post-load check would still spend one of the sweep's slots on an
+instrument it must not touch.
+
+Cost of the gap, measured rather than assumed: a collision is a *wait*, not a corrupted
+figure, because SQLite serialises the writes either way — so this is worth doing and is
+not an emergency. `refresh.py` does not pause the scheduler for its duration, which would
+close the window completely, because a thread that died while holding the pause would
+leave the whole scheduler stopped; the lease expires and that failure mode does not exist.
 
 ### Only two jobs record a per-instrument blocker
 
@@ -803,6 +830,9 @@ Dockerfile says so in a comment, which is not a test.
 A long-running background task: read six value-investing channels, extract the
 concepts that could improve the rating app, and merge them into
 `docs/research/FINDINGS.md` alongside the existing literature.
+First find the Youtube terms and conditions on rate limiting when downloading transcripts. 
+This IP address has been locked out previously, I'd like to avoid that in future.
+Rate limiting should be an integral part of the solution. 
 
 **Scope, measured rather than assumed** (enumerated 2026-10-06 with
 `yt_enumerate.py --playlists` and `--limit 150`):

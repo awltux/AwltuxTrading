@@ -59,10 +59,16 @@ class EdgarSyncReport:
 def resolve_ciks(
     session: Session,
     *,
+    tickers: list[str] | None = None,
     settings: Settings | None = None,
     provider: EdgarProvider | None = None,
 ) -> EdgarSyncReport:
-    """Attach SEC CIKs to US-listed instruments from EDGAR's official map."""
+    """Attach SEC CIKs to US-listed instruments from EDGAR's official map.
+
+    ``tickers`` narrows the walk to named instruments, for a one-instrument refresh: a
+    US listing with no CIK can have no EDGAR filing at all, so resolving it is the first
+    thing that has to work. The ticker map itself is one cached request either way.
+    """
     settings = settings or get_settings()
     report = EdgarSyncReport()
     provider = provider or EdgarProvider(settings)
@@ -73,9 +79,10 @@ def resolve_ciks(
         report.errors.append(f"ticker map unavailable: {exc}")
         return report
 
-    instruments = session.execute(
-        select(Instrument).where(Instrument.in_universe.is_(True))
-    ).scalars().all()
+    statement = select(Instrument).where(Instrument.in_universe.is_(True))
+    if tickers is not None:
+        statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    instruments = session.execute(statement).scalars().all()
 
     for instrument in instruments:
         if is_uk_listing(instrument.exchange_name, instrument.yahoo_symbol):

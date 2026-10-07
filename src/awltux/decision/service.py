@@ -635,6 +635,14 @@ def decide_universe(
     )
     if tickers:
         statement = statement.where(Instrument.t212_ticker.in_(tickers))
+    else:
+        # A sweep skips instruments a scoped refresh holds. Placing it here rather than
+        # inside the loop matters: `limit` below slices a list already in memory, so a
+        # check after the load would still consume one of the sweep's slots on an
+        # instrument it must not touch.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     if settings.app.require_resolved_mapping:
         statement = statement.where(Instrument.yahoo_symbol.is_not(None))
     instruments = list(session.execute(statement).scalars().all())

@@ -31,9 +31,10 @@ from awltux.db import (
     Quote,
     SentimentSeries,
     ValuationRun,
+    utcnow,
 )
 from awltux.db.news import appraisals_for, news_for_ticker
-from awltux.timezones import format_moment, utc_today
+from awltux.timezones import as_utc, format_moment, utc_today
 
 SortKey = Literal[
     "composite_score", "short_term_score", "margin_of_safety", "confidence",
@@ -437,6 +438,42 @@ def recommendations(
     result.sort(key=lambda row: _sort_value(row, sort), reverse=(direction == "desc"))
     total = len(result)
     return result[offset : offset + limit], total
+
+
+def refresh_state(row: Any) -> dict[str, Any] | None:
+    """The instrument's last scoped refresh, as the page reads it.
+
+    ``None`` when the instrument has never been refreshed, which the template renders as
+    an invitation rather than as an empty table. The step that is *in progress* is
+    derived rather than stored: the run appends to ``steps`` as each one finishes, so the
+    next step is the one after the last recorded entry, and a completed refresh has no
+    step in progress at all.
+    """
+    if row is None:
+        return None
+
+    from awltux.ingest import refresh
+
+    done = [entry for entry in (row.steps or []) if isinstance(entry, dict)]
+    sequence = refresh.step_ids()
+    # `as_utc`: SQLite returns this naive however the column is declared, and comparing
+    # it to an aware clock raises rather than answering.
+    running = row.state == "running" and as_utc(row.expires_at) > utcnow()
+    # Index by position so a step that is no longer in the sequence -- the registry
+    # changed between runs -- cannot make the count wrong.
+    finished = len([entry for entry in done if entry.get("step") in sequence])
+    return {
+        "state": row.state,
+        "running": running,
+        "note": row.note,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "total_steps": len(sequence),
+        "steps_done": finished,
+        "current": sequence[finished] if running and finished < len(sequence) else None,
+        "steps": done,
+        "failed": [entry for entry in done if entry.get("ok") is False],
+    }
 
 
 def _sort_value(row: RecommendationRow, key: SortKey) -> Any:

@@ -341,7 +341,7 @@ zone so that failure is visible rather than silent.
 | Page | What it shows |
 |---|---|
 | **Recommendations** | Sortable table with **both verdicts side by side**, plus a `Suits` column showing which horizon the evidence actually supports. Filters follow a selected horizon. Views for *actionable only*, *my holdings*, and *suits long/short term* |
-| **Instrument** | Decision receipt with **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, accounts, news |
+| **Instrument** | Decision receipt with **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, accounts, news. **Refresh now** runs the pipeline stages for this company alone — prices, filings, statements, the annual reports and what they disclose, news, sentiment, valuation, and a fresh decision — so a call can be checked against data the sweeps have not reached yet |
 | **Sectors** | Sector sentiment heatmap, drill-down to constituents |
 | **Calibration** | Per-horizon tabs; realised hit rate and return by confidence and by engine; high-confidence misses |
 | **Operations** | Job status and history, provider health, LLM spend, ledger verification; run any job by hand |

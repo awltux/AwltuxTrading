@@ -139,6 +139,7 @@ def deepen_annual_history(
     settings: Settings | None = None,
     provider: Any | None = None,
     limit_per_company: int = 6,
+    tickers: list[str] | None = None,
 ) -> DocumentReport:
     """Make sure the last ``years`` annual reports are on file for every filer.
 
@@ -146,6 +147,8 @@ def deepen_annual_history(
     a company that files a lot of 8-Ks reaches back barely a year -- the live
     database held one annual report for 249 of its 265 filers. This asks EDGAR for
     annual forms specifically and by date.
+
+    ``tickers`` scopes the walk to named instruments, for a one-instrument refresh.
 
     **Two years, deliberately, and it is a limitation rather than a target.** The
     accounting markers worth the most are about persistence -- accruals that stay
@@ -163,11 +166,14 @@ def deepen_annual_history(
 
     cutoff = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=int(years * 365.25))
 
-    instruments = session.execute(
+    statement = (
         select(Instrument)
         .where(Instrument.in_universe.is_(True))
         .where(Instrument.sec_cik.is_not(None))
-    ).scalars().all()
+    )
+    if tickers is not None:
+        statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    instruments = session.execute(statement).scalars().all()
 
     for instrument in instruments:
         assert instrument.sec_cik is not None
@@ -222,7 +228,9 @@ def deepen_annual_history(
     return report
 
 
-def pending_annual_reports(session: Session, *, limit: int = DEFAULT_BATCH) -> list[Filing]:
+def pending_annual_reports(
+    session: Session, *, limit: int = DEFAULT_BATCH, tickers: list[str] | None = None
+) -> list[Filing]:
     """Annual reports whose document has not been fetched yet, oldest gap first.
 
     Ordered by instrument then date so one company's six years arrive together
@@ -230,16 +238,17 @@ def pending_annual_reports(session: Session, *, limit: int = DEFAULT_BATCH) -> l
     partial run is far more legible if it finished some companies than if it
     half-covered all of them.
     """
-    return list(
-        session.execute(
-            select(Filing)
-            .where(Filing.filing_type.in_(ANNUAL_FORMS))
-            .where(Filing.status.in_(("pending", "failed")))
-            .where(Filing.url.is_not(None))
-            .order_by(Filing.instrument_t212_ticker.asc(), Filing.filed_at.desc())
-            .limit(limit)
-        ).scalars().all()
+    statement = (
+        select(Filing)
+        .where(Filing.filing_type.in_(ANNUAL_FORMS))
+        .where(Filing.status.in_(("pending", "failed")))
+        .where(Filing.url.is_not(None))
+        .order_by(Filing.instrument_t212_ticker.asc(), Filing.filed_at.desc())
+        .limit(limit)
     )
+    if tickers is not None:
+        statement = statement.where(Filing.instrument_t212_ticker.in_(list(tickers)))
+    return list(session.execute(statement).scalars().all())
 
 
 def fetch_document(
@@ -291,15 +300,21 @@ def fetch_annual_reports(
     limit: int = DEFAULT_BATCH,
     settings: Settings | None = None,
     provider: Any | None = None,
+    tickers: list[str] | None = None,
 ) -> DocumentReport:
-    """Download the documents behind the annual reports already on file."""
+    """Download the documents behind the annual reports already on file.
+
+    ``tickers`` scopes it to named instruments, for a one-instrument refresh, where the
+    per-run batch limit is lifted by the caller -- the queue is one company, not a
+    universe.
+    """
     from awltux.providers.edgar import EdgarProvider
 
     settings = settings or get_settings()
     provider = provider or EdgarProvider(settings)
     report = DocumentReport()
 
-    for filing in pending_annual_reports(session, limit=limit):
+    for filing in pending_annual_reports(session, limit=limit, tickers=tickers):
         written = fetch_document(session, filing, settings=settings, provider=provider)
         if written is None:
             report.failed += 1

@@ -976,6 +976,12 @@ def run_valuations(
     )
     if tickers:
         statement = statement.where(Instrument.t212_ticker.in_(tickers))
+    else:
+        # A sweep skips instruments a scoped refresh holds; the refresh will write the
+        # valuation for its own instrument at the end of its own sequence.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     instruments = session.execute(statement).scalars().all()
 
     peers_by_sector = sector_multiples(session)

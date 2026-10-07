@@ -338,16 +338,27 @@ def _appraisals(
 
 
 def aggregate_all(
-    session: Session, *, settings: Settings | None = None, days: int = 30
+    session: Session,
+    *,
+    settings: Settings | None = None,
+    days: int = 30,
+    tickers: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Recompute today's sentiment series for every instrument and sector."""
+    """Recompute today's sentiment series for every instrument and sector.
+
+    ``tickers`` narrows it to named instruments, for a one-instrument refresh. The
+    sector series is recomputed either way: it is a roll-up of the instruments that have
+    a score, so refreshing one company without refreshing the sector it sits in would
+    leave the two disagreeing.
+    """
     settings = settings or get_settings()
     today = utc_today()
     now = utcnow()
 
-    instruments = session.execute(
-        select(Instrument).where(Instrument.in_universe.is_(True))
-    ).scalars().all()
+    statement = select(Instrument).where(Instrument.in_universe.is_(True))
+    if tickers is not None:
+        statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    instruments = session.execute(statement).scalars().all()
 
     stats = {"instruments_seen": 0, "rows_written": 0, "skipped_no_data": 0}
     sector_accumulator: dict[str, list[float]] = {}

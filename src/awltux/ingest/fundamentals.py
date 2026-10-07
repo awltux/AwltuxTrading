@@ -380,6 +380,11 @@ def sync_fundamentals(
     )
     if tickers:
         statement = statement.where(Instrument.t212_ticker.in_(tickers))
+    else:
+        # A sweep skips instruments a scoped refresh holds. See `ingest/lease.py`.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     if limit:
         statement = statement.limit(limit)
 
@@ -631,9 +636,16 @@ def resolve_uk_companies(
     *,
     settings: Settings | None = None,
     provider: CompaniesHouseProvider | None = None,
+    tickers: list[str] | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Attach Companies House company numbers to UK-listed instruments."""
+    """Attach Companies House company numbers to UK-listed instruments.
+
+    ``tickers`` scopes it to named instruments, for a one-instrument refresh. The filter
+    is applied to the selection rather than after it, so a scoped run of a US listing
+    reports nothing attempted rather than spending a request to find out it is not a UK
+    company.
+    """
     from awltux.ingest.symbols import is_uk_listing
 
     settings = settings or get_settings()
@@ -646,6 +658,8 @@ def resolve_uk_companies(
         .where(Instrument.in_universe.is_(True))
         .where(Instrument.ch_company_number.is_(None))
     )
+    if tickers is not None:
+        statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
     if limit:
         statement = statement.limit(limit)
     instruments = [

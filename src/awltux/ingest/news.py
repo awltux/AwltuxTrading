@@ -384,6 +384,13 @@ def _instruments_to_poll(
     )
     if tickers:
         statement = statement.where(Instrument.t212_ticker.in_(tickers))
+    else:
+        # A sweep skips instruments a scoped refresh holds, so the poll and the refresh
+        # cannot both be writing this company's stories. The cursor is unaffected either
+        # way: a skipped instrument keeps its stamp and comes round again next run.
+        from awltux.ingest.lease import exclude_locked
+
+        statement = exclude_locked(statement, session)
     instruments = list(session.execute(statement).scalars().all())
 
     if limit_instruments:
