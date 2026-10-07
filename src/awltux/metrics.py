@@ -227,23 +227,6 @@ EXTRACTABLE_METRICS: frozenset[str] = frozenset(STATED_METRICS)
 OUTFLOW_METRICS: frozenset[str] = frozenset({"capex", "dividends_paid"})
 
 
-def prompt_metric_names() -> str:
-    """The canonical names, formatted for the extraction prompt.
-
-    Generated rather than typed, so the prompt cannot quietly fall behind the
-    gate. See the module docstring: that is exactly the bug this file was written
-    to end.
-    """
-    lines: list[str] = []
-    for label, group in (
-        ("income statement", INCOME_METRICS),
-        ("balance sheet", BALANCE_METRICS),
-        ("cash flow", CASH_METRICS),
-    ):
-        lines.append(f"{label}: " + ", ".join(group))
-    return "\n".join(lines)
-
-
 def is_canonical(name: str) -> bool:
     return name in CANONICAL_METRICS
 

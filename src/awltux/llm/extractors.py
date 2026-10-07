@@ -27,10 +27,10 @@ from awltux.llm.deepseek import (
     model_for_purpose,
 )
 from awltux.llm.prompts import (
-    FILING_EXTRACTION_INSTRUCTION,
     FILING_EXTRACTION_SYSTEM,
     FILING_SUMMARY_INSTRUCTION,
     FILING_SUMMARY_SYSTEM,
+    filing_extraction_instruction,
     prompt_fingerprint,
 )
 from awltux.metrics import EXTRACTABLE_METRICS
@@ -181,13 +181,24 @@ def _event_flags(
     return {**stated, "span": span[:500]}
 
 
-def validate_extraction(payload: dict[str, Any]) -> ExtractionResult:
+def validate_extraction(
+    payload: dict[str, Any], *, allowed: frozenset[str] | None = None
+) -> ExtractionResult:
     """Enforce citation discipline on a model response.
 
     Each metric must have a numeric value, a quoted span of at least
     :data:`MIN_SPAN_CHARS`, and a location. Anything else is dropped and its name
     recorded in ``discarded`` so the omission is visible rather than silent.
+
+    ``allowed`` is the vocabulary this call was *asked* with -- the canonical names plus
+    whatever earlier filings revealed (`analysis/metric_fields.py`). It defaults to the
+    canonical set so a caller with no database still gates on something, but passing the
+    same mapping the prompt was built from is what keeps the two in step: the gate and
+    the prompt disagreed once, and the symptom was a figure the model was invited to
+    report being discarded for not being canonical.
     """
+    if allowed is None:
+        allowed = CANONICAL_METRICS
     result = ExtractionResult()
     if not isinstance(payload, dict):
         return result
@@ -202,8 +213,8 @@ def validate_extraction(payload: dict[str, Any]) -> ExtractionResult:
     metrics = payload.get("metrics")
     if isinstance(metrics, dict):
         for name, entry in metrics.items():
-            if name not in CANONICAL_METRICS:
-                result.discarded.append(f"{name}: not a canonical metric name")
+            if name not in allowed:
+                result.discarded.append(f"{name}: not a metric name offered in the prompt")
                 continue
             if not isinstance(entry, dict):
                 result.discarded.append(f"{name}: malformed entry")
@@ -270,9 +281,14 @@ def extract_filing(
     company_name: str,
     client: DeepSeekClient | None = None,
     settings: Settings | None = None,
+    vocabulary: dict[str, Any] | None = None,
     max_document_chars: int = 400_000,
 ) -> ExtractionResult | None:
     """Extract cited metrics from one filing.
+
+    ``vocabulary`` is the names this call may ask for -- `analysis/metric_fields.load()`
+    for the canonical list plus whatever earlier filings revealed. Omitted, the canonical
+    names are used, which is what a caller with no database wants.
 
     The document is truncated from the middle if it is enormous, keeping the
     front (where primary statements usually sit) and the back (notes and
@@ -294,7 +310,7 @@ def extract_filing(
     messages = build_messages(
         system=FILING_EXTRACTION_SYSTEM,
         document=header + trimmed,
-        instruction=FILING_EXTRACTION_INSTRUCTION,
+        instruction=filing_extraction_instruction(vocabulary),
     )
 
     try:
@@ -303,7 +319,11 @@ def extract_filing(
             messages=messages,
             model=model_for_purpose(settings, EXTRACTION_PURPOSE),
             json_mode=True,
-            prompt_hash=prompt_fingerprint(FILING_EXTRACTION_SYSTEM),
+            # The vocabulary is part of the prompt, so it is part of the cache key: two
+            # runs with different discovered fields are different requests.
+            prompt_hash=prompt_fingerprint(
+                FILING_EXTRACTION_SYSTEM + filing_extraction_instruction(vocabulary)
+            ),
         )
         payload = completion.json_object()
     except BudgetExceeded as exc:
@@ -313,7 +333,7 @@ def extract_filing(
         logger.warning("filing extraction failed for %s: %s", company_name, exc)
         return None
 
-    result = validate_extraction(payload)
+    result = validate_extraction(payload, allowed=frozenset(vocabulary or {}))
     result.llm_call_id = completion.llm_call_id
     return result
 

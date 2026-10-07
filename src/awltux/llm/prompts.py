@@ -17,8 +17,6 @@ so the prompt is written to make fabricating one pointless.
 
 from __future__ import annotations
 
-from awltux.metrics import prompt_metric_names
-
 PROMPT_VERSION = "2026-02-2"
 
 #: Shared safety preamble. Reused so the rule cannot drift between templates.
@@ -54,8 +52,7 @@ currency and units you used. Do not convert.
 
 Return JSON only, matching the requested schema exactly."""
 
-FILING_EXTRACTION_INSTRUCTION = (
-    """Extract the financial and qualitative facts below from this filing.
+_FILING_EXTRACTION_HEAD = """Extract the financial and qualitative facts below from this filing.
 
 Return a JSON object with these keys:
 {
@@ -82,8 +79,8 @@ appear in a set of accounts. Report a figure in the group and under the name tha
 matches the document's own line item; if the document states a subtotal rather
 than a component, report the subtotal and omit the component:
 """
-    + prompt_metric_names()
-    + """
+
+_FILING_EXTRACTION_TAIL = """
 
 Report a positive `capex` for cash spent, even where the document shows it as a
 deduction. `depreciation_amortisation` is the income-statement charge for the
@@ -102,7 +99,25 @@ other overstates what is known.
 
 Set `extraction_confidence` low if the document is a scanned image, if figures are
 inconsistent, or if you could only find a minority of the metrics."""
-)
+
+
+def filing_extraction_instruction(metrics: dict | None = None) -> str:
+    """The extraction instruction, with the vocabulary it may ask for.
+
+    A function rather than a constant because the metric list is not fixed: it is the
+    canonical names plus whatever earlier filings have revealed
+    (`analysis/metric_fields.py`). Built as a concatenation rather than an f-string
+    because the JSON schema above is full of braces that an f-string would read as
+    placeholders -- which is what the original `+ prompt_metric_names() +` was avoiding.
+    """
+    from awltux.analysis.metric_fields import prompt_block
+
+    return _FILING_EXTRACTION_HEAD + prompt_block(metrics) + _FILING_EXTRACTION_TAIL
+
+
+#: The instruction with the canonical vocabulary only, for callers with no database.
+FILING_EXTRACTION_INSTRUCTION = filing_extraction_instruction()
+
 
 # --------------------------------------------------------------------------- #
 # filing summarisation

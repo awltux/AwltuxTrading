@@ -128,6 +128,13 @@ def extract_held_filings(
 
     filings = _candidates(session, tickers, limit)
     total = len(filings)
+    # The vocabulary this run may ask for: the canonical names plus whatever earlier
+    # filings have revealed. Loaded once, because nothing in this job adds to it -- the
+    # gate and the prompt must agree, and they agree by being built from this mapping.
+    from awltux.analysis.metric_fields import load as load_fields
+
+    vocabulary = load_fields(session)
+    report["vocabulary"] = len(vocabulary)
     for position, filing in enumerate(filings, start=1):
         report["attempted"] += 1
         progress.note(
@@ -152,7 +159,9 @@ def extract_held_filings(
         # single writer must not be held across it.
         session.commit()
         try:
-            result = extract_filing(document, company_name=name, settings=settings)
+            result = extract_filing(
+                document, company_name=name, settings=settings, vocabulary=vocabulary
+            )
         except Exception as exc:  # noqa: BLE001 - one document must not stop the refresh
             filing.status = "failed"
             filing.error = f"{type(exc).__name__}: {exc}"

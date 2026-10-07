@@ -22,7 +22,6 @@ from awltux.metrics import (
     METRIC_NOTES,
     STATED_METRICS,
     is_canonical,
-    prompt_metric_names,
 )
 
 
@@ -90,15 +89,25 @@ class TestPromptStaysInStepWithTheGate:
 
     def test_the_prompt_names_no_metric_outside_the_gate(self):
         """The other direction: a name the prompt asks for and the gate rejects
-        would be extracted and silently discarded on arrival."""
+        would be extracted and silently discarded on arrival.
+
+        Read from `metric_fields.prompt_block`, which is what builds the live prompt.
+        The equivalent function in `metrics.py` was deleted when the vocabulary became
+        dynamic -- it was a second generator of the same block, and two of those is one
+        more than can be kept in step with the gate.
+        """
+        from awltux.analysis.metric_fields import prompt_block
+
         asked: set[str] = set()
-        for line in prompt_metric_names().splitlines():
+        for line in prompt_block().splitlines():
             _, _, names = line.partition(":")
             asked.update(name.strip() for name in names.split(",") if name.strip())
         assert asked == set(EXTRACTABLE_METRICS)
 
     def test_the_prompt_groups_metrics_by_statement(self):
-        generated = prompt_metric_names()
+        from awltux.analysis.metric_fields import prompt_block
+
+        generated = prompt_block()
         assert "income statement:" in generated
         assert "balance sheet:" in generated
         assert "cash flow:" in generated
