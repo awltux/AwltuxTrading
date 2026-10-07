@@ -27,21 +27,48 @@ Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
 
 Added 2026-10-16 with the rate-limit work, and it is the *real* fix for the Google News
 side rather than a rate limit. A full sweep of 500 instruments asks Google News for one
-company per query, twice for a UK listing (GB and US editions) plus Yahoo's feed — about
-**1,200 requests**, which is not what a feed reader does. Google publishes no quota, calls
-it "fair use" in its own forum, and answers 4-digit automated volume with a 503
-"automated queries" page or a flat IP block rather than a 429.
+company per query — **one edition**, not two: `gather_for_instrument` picks GB or US from
+`_is_uk`, it does not ask both (the "twice for a UK listing" that both this entry and the
+comment at `ingest/news.py:680` claim was never true; the sector poll is the one that
+takes both) — plus one Yahoo feed. That is about **1,000 requests**, which is not what a
+feed reader does. Google publishes no quota, calls it "fair use" in its own forum, and
+answers 4-digit automated volume with a 503 "automated queries" page or a flat IP block
+rather than a 429.
 
 The new budget paces that at one request every five seconds with a 2,000-a-day ceiling, so
 a full sweep now takes about two hours and competes for the same day's allowance as the
 eleven-sector poll (~530 requests/day). **The consequence is coverage**: at 2,000/day the
 instrument poll cannot complete a sweep and a sector poll every day.
 
-The fix is volume, not pacing: Google's `q=` accepts OR'd phrases, so twenty companies
-could go in one query and the results be attributed by the classifier that already decides
-what a story is about. That would take a sweep from ~1,200 requests to ~60. `analysis/
-relevance.py` and the classifier already exist; what is missing is batching in
-`company_query` and a decision on how to attribute a pooled result.
+**Pooling companies into one query does not work, measured 2026-10-07.** The plan above
+was "twenty companies in one query, ~1,200 requests to ~60". Tried against the live
+endpoint with real universe names, parenthesised `("A" OR "B") stock`:
+
+| companies pooled | items returned | companies visible in them |
+|---|---|---|
+| 1 | 99 | 1/1 |
+| 2 | 99 | 2/2 |
+| 4 | 99 | 3/4 |
+| 5 | 99 | 4/5 |
+| 6 | 99 | 3/6 |
+| 8 | 99 | 4/8 |
+| **10** | **27** | **1/10** |
+| **20** | **26** | **1/20** |
+
+Two independent limits, and neither is the query syntax (dropping the parentheses gives
+the same 26 items, and rotating the order moves *which* company survives rather than
+fixing it):
+
+- **Google News caps a response at ~100 items.** A single company already returns 99, so a
+  pool of N shares that same 100 between N companies — pooling trades depth for breadth,
+  it does not give N× the items.
+- **At ten or more terms the query collapses to ~27 items with one company surviving**,
+  which reads as Google refusing the expression rather than ranking it.
+
+So the request count cannot be cut this way, and batching beyond ~5 companies would
+silently destroy coverage rather than trade it. What is left of this entry is the *other*
+lever, and it is a bigger one: the poll's cost is not only requests but **the model call
+per stored story** — see the LLM-traffic entry below.
 
 ### `robots.txt` disallows three of the sources this app reads (a policy decision, not a rate limit)
 

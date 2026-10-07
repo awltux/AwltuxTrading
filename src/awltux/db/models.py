@@ -565,6 +565,19 @@ class NewsItem(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(String(32), index=True)
     url: Mapped[str | None] = mapped_column(String(1024))
     url_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    #: A digest of the headline with its publisher suffix removed, so the *same story*
+    #: carried by two outlets can be recognised as one. Google News titles are
+    #: "Headline - Publisher", and that suffix is the only part that differs when a wire
+    #: story is syndicated -- so it is the part the digest drops. The whole title is
+    #: digested rather than a prefix on purpose: "MDIA Q3 2023 Earnings: Net Loss of
+    #: $0.11" and "MDIA Q3 2023 Earnings: Loss Per Share of -$0.11" share forty
+    #: characters and are different facts.
+    #:
+    #: Indexed, not unique. Two genuinely different stories can carry the same headline,
+    #: so this answers "have we already judged a headline like this" and never constrains
+    #: what may be stored.
+    title_key: Mapped[str | None] = mapped_column(String(64), index=True)
     title: Mapped[str] = mapped_column(String(768), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[dt.datetime | None] = mapped_column(

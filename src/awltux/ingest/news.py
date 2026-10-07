@@ -19,6 +19,7 @@ testable without an LLM and so the pipeline still runs when no API key is set.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections.abc import Callable, Iterable
@@ -59,6 +60,10 @@ class NewsIngestReport:
     duplicates: int = 0
     written: int = 0
     classified: int = 0
+    #: Stories whose verdict was copied from an already-judged copy of the same
+    #: headline rather than bought again. Counted separately from ``classified``
+    #: because that number is the model spend, and this one is the spend avoided.
+    reused: int = 0
     by_source: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     #: Set when the walk left because a stop was requested. The caller needs it because
@@ -78,6 +83,7 @@ class NewsIngestReport:
             "duplicates": self.duplicates,
             "written": self.written,
             "classified": self.classified,
+            "reused": self.reused,
             "by_source": self.by_source,
             "errors": self.errors[:10],
             "stopped_early": self.stopped_early,
@@ -257,6 +263,149 @@ def _apply_relevance(row: NewsItem, *, about: bool | None) -> None:
         row.relevance_reason = verdict.reason
 
 
+#: Google News renders a headline as "Headline - Publisher". That suffix is the only
+#: part that differs when a wire story is carried by two outlets, so it is the part the
+#: title key drops.
+_PUBLISHER_SEPARATOR = " - "
+
+#: The shortest "headline" that may be left after stripping. A short remainder means the
+#: separator was part of the headline rather than a masthead -- "Form 8.3 - [ADVANCED
+#: MEDICAL SOLUTIONS GROUP PLC - 02 10 2026]" would otherwise key on "Form 8.3" and
+#: merge every filing of that kind into one.
+_MIN_HEADLINE_CHARS = 25
+
+
+def title_key(title: str) -> str:
+    """A digest of a headline that ignores the publisher carrying it.
+
+    The same wire story syndicated by two outlets arrives as two rows with two URLs, so
+    `url_hash` cannot see the duplication and each copy bought its own model call.
+    Matching on the headline *with the masthead removed* is what lets the second copy
+    reuse the first's verdict.
+
+    **The whole headline is digested, not a prefix.** Measured 2026-10-07 over 26,008
+    stored headlines, a 40-character prefix matches 3,028 repeats (11.6%) -- twice as
+    many -- but **972 of those prefixes merge two or more genuinely different
+    headlines**, covering 2,723 rows, and the difference is often the company itself:
+    "What is the current Price Target and Forecast for 5E Advanced Materials (FEAM)" and
+    the same sentence about "Aeon Biopharma, Inc. (AEON)" are one prefix and two
+    companies. Copying a verdict through that key would stamp one company's judgement
+    onto another's row, silently. Stripping the masthead and matching the rest finds
+    1,570 (6.0%), and every group checked was one story under two names.
+    """
+    normalised = re.sub(r"\s+", " ", title or "").strip().lower()
+    head, separator, _tail = normalised.rpartition(_PUBLISHER_SEPARATOR)
+    if separator and len(head) >= _MIN_HEADLINE_CHARS:
+        normalised = head
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+
+
+def _verdict_of(row: NewsItem) -> dict[str, Any]:
+    """A stored row's judgement, shaped like a classifier's answer.
+
+    Only the judgement: not the tickers and not the sectors, which belong to the feed
+    that found the story rather than to the story itself.
+    """
+    return {
+        "materiality": row.materiality,
+        "direction": row.direction,
+        "horizon": row.horizon,
+        "sentiment_score": row.sentiment_score,
+        "relevance": row.relevance,
+        "engine": row.engine,
+        "event_type": row.event_type,
+        "metric": row.metric,
+        "period": row.period,
+        "magnitude": row.magnitude,
+        "reasoning": row.relevance_reason,
+    }
+
+
+def _reusable_verdict(
+    session: Session, item: RawNewsItem, instrument: Instrument | None
+) -> NewsItem | None:
+    """An already-judged copy of this headline, or ``None`` to classify it properly.
+
+    **Only a verdict reached for the same instrument is reused.** ``is_about_this_company``
+    is answered *against a subject*, so a headline judged for one company is not an answer
+    about another; borrowing it would attribute a judgement nobody made. The ticker has to
+    be in the earlier row's own list for that reason, which also keeps a story that merely
+    passes through a feed from inheriting the verdict of the company it mentioned.
+
+    The rows this returns are the reason the column is indexed: this runs once per new
+    story, and a scan of `news_item` per story is the cost the reuse is meant to avoid.
+    """
+    if instrument is None:
+        return None
+
+    candidates = session.execute(
+        select(NewsItem)
+        .where(NewsItem.title_key == title_key(item.title))
+        .where(NewsItem.engine.isnot(None))
+        .order_by(NewsItem.id.asc())
+    ).scalars().all()
+
+    for candidate in candidates:
+        if instrument.t212_ticker in (candidate.tickers or []):
+            return candidate
+    return None
+
+
+def _judge(
+    session: Session,
+    row: NewsItem,
+    item: RawNewsItem,
+    *,
+    instrument: Instrument | None,
+    classifier: Classifier | None,
+    report: NewsIngestReport,
+) -> None:
+    """Settle this story's verdict: reuse a judged copy of the headline, or buy one.
+
+    Two ways to arrive at the same place, and which one applies is a property of the
+    *story* rather than of the caller -- so it is named here instead of being a branch
+    threaded through the insert loop.
+
+    A reused verdict copies ``relevant`` as well as the classification fields.
+    ``is_about_this_company`` was answered against the earlier row's subject and is not
+    recoverable from the columns, so re-running the rule here would re-derive it from a
+    guess rather than reproduce the verdict that was actually reached.
+    """
+    reused = _reusable_verdict(session, item, instrument)
+    if reused is not None:
+        report.reused += 1
+        apply_classification(row, _verdict_of(reused))
+        row.relevant = reused.relevant
+        return
+
+    # The classifier's answer to "is this even about that company", kept so the
+    # relevance rule can tell a connection from a passing mention.
+    about: bool | None = None
+    if classifier is not None:
+        # Release SQLite's write lock before classifying. The previous iteration's
+        # flush left a transaction open, and a model call takes seconds: holding it
+        # here is what made a concurrent job fail with "database is locked". The lock
+        # is also released inside the model client; this is the same guarantee stated
+        # where the slow call is.
+        release_write_lock(session)
+        try:
+            updates = classifier(item, instrument)
+        except Exception as exc:
+            # A classifier failure must not lose the headline.
+            logger.warning("classification failed for %r: %s", item.title[:80], exc)
+            updates = None
+        if updates:
+            report.classified += 1
+            about = updates.get("is_about_this_company")
+            apply_classification(row, updates)
+            if updates.get("tickers"):
+                row.tickers = list({*row.tickers, *updates["tickers"]})
+            if updates.get("sectors"):
+                row.sectors = list({*row.sectors, *updates["sectors"]})
+
+    _apply_relevance(row, about=about)
+
+
 def _merge_duplicate(existing: NewsItem, item: RawNewsItem, report: NewsIngestReport) -> None:
     """Fold a story we already hold into the row we hold it as.
 
@@ -323,6 +472,7 @@ def persist_items(
             source=item.source,
             url=item.url,
             url_hash=url_hash,
+            title_key=title_key(item.title),
             title=item.title[:768],
             summary=item.summary,
             published_at=item.published_at,
@@ -333,32 +483,14 @@ def persist_items(
             created_at=utcnow(),
         )
 
-        # The classifier's answer to "is this even about that company", kept so the
-        # relevance rule can tell a connection from a passing mention.
-        about: bool | None = None
-        if classifier is not None:
-            # Release SQLite's write lock before classifying. The previous
-            # iteration's flush left a transaction open, and a model call takes
-            # seconds: holding it here is what made a concurrent job fail with
-            # "database is locked". The lock is also released inside the model
-            # client; this is the same guarantee stated where the slow call is.
-            release_write_lock(session)
-            try:
-                updates = classifier(item, instrument)
-            except Exception as exc:
-                # A classifier failure must not lose the headline.
-                logger.warning("classification failed for %r: %s", item.title[:80], exc)
-                updates = None
-            if updates:
-                report.classified += 1
-                about = updates.get("is_about_this_company")
-                apply_classification(row, updates)
-                if updates.get("tickers"):
-                    row.tickers = list({*row.tickers, *updates["tickers"]})
-                if updates.get("sectors"):
-                    row.sectors = list({*row.sectors, *updates["sectors"]})
-
-        _apply_relevance(row, about=about)
+        _judge(
+            session,
+            row,
+            item,
+            instrument=instrument,
+            classifier=classifier,
+            report=report,
+        )
 
         # Flush inside the loop so the dedupe lookup sees rows added in this same
         # batch; without it, two copies of one story in a single feed both insert.
