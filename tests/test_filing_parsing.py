@@ -331,6 +331,50 @@ class TestWritingThePeriod:
         assert source["location"] == "Income Statements"
         assert source["source"] == "llm_extraction"
 
+    def test_every_filing_in_one_run_leaves_a_queryable_period(
+        self, session, settings, monkeypatch
+    ):
+        """Two filings in a batch, two periods readable when the run returns.
+
+        The row was added and left pending: with no flush in `_store_period` the second
+        period only reached the database on the *next* filing's flush or the scope's
+        commit, so a probe reading the batch back saw one period where two had been
+        stored -- measured on MSFT's two 10-Ks. The other two `_upsert_period` call sites
+        flush, and this is the measurement that says why the third must too.
+        """
+        from sqlalchemy import select
+
+        from awltux.db import FundamentalPeriod
+
+        _seed(session)
+        first = _document(settings, "fy2026.htm", "<p>Total revenue 331,839</p>")
+        second = _document(settings, "fy2025.htm", "<p>Total revenue 281,724</p>")
+        _filing(session, url="https://sec.test/fy2026.htm", raw_path=first)
+        _filing(session, url="https://sec.test/fy2025.htm", raw_path=second)
+        session.commit()
+
+        def extract(document, **kwargs):
+            if "331,839" in document:
+                return self._result()
+            return self._result(period_end="2025-06-30")
+
+        monkeypatch.setattr(parsing, "extract_filing", extract)
+
+        report = parsing.extract_held_filings(session, settings=settings)
+
+        periods = list(
+            session.execute(
+                select(FundamentalPeriod)
+                .where(FundamentalPeriod.source == "llm_extraction")
+                .order_by(FundamentalPeriod.period_end)
+            ).scalars()
+        )
+        assert report["periods_stored"] == 2
+        assert [period.period_end for period in periods] == [
+            dt.date(2025, 6, 30),
+            dt.date(2026, 6, 30),
+        ]
+
     def test_derived_ratios_are_computed_from_the_scaled_figures(self, session, settings, monkeypatch):
         """They are ours, so they are recomputed rather than scaled -- and they carry no
         citation, because claiming the issuer tagged `net_margin` would be a fabricated

@@ -283,6 +283,10 @@ def _store_period(
         confidence=result.confidence,
         metric_sources=result.metrics_for_storage,
     )
+    # Flushed where the other two `_upsert_period` call sites flush. A pending row is
+    # invisible to a query on the same session, and the next filing's flush is what made
+    # the second of MSFT's two periods disappear from a probe that read them back.
+    session.flush()
     report["periods_stored"] = report.get("periods_stored", 0) + 1
 
 
