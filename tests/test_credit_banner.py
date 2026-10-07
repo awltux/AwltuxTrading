@@ -174,15 +174,39 @@ class TestTheBannerOnAPage:
         assert "deepseek" in body
         assert "21.68" in body
 
-    def test_it_warns_when_a_provider_is_down_to_its_last_dollar(self, client, session, settings):
+    def test_a_low_balance_is_outlined_rather_than_described(self, client, session, settings):
+        """The figure itself carries the warning.
+
+        This replaced a sentence above the strip naming the provider, the figure and the
+        floor -- accurate, and a paragraph on every page to say one word. What has to
+        survive is that the reader can still tell *which* provider is short, so the
+        assertion is on the class being on fal's chip and not on deepseek's.
+        """
         settings.yaml.app.balance_warn_below_usd = 5.0
-        _store(session, balances.Balance("fal", amount=1.10, currency="USD"))
+        _store(
+            session,
+            balances.Balance("deepseek", amount=21.68, currency="USD"),
+            balances.Balance("fal", amount=1.10, currency="USD"),
+        )
 
         body = client.get("/dashboard").text
 
-        assert "Model provider credit" in body
+        assert "balance low" in body
         assert "1.10" in body
-        assert "top it up" not in body, "the wording says what happens, not what to do"
+        assert "Model provider credit" not in body, "the prose is gone"
+        low = body.split("balance low", 1)[1].split("</span>", 1)[0]
+        assert "fal" in low and "deepseek" not in low, "the outline is on the short one"
+
+    def test_a_full_balance_is_not_outlined(self, client, session, settings):
+        settings.yaml.app.balance_warn_below_usd = 5.0
+        _store(
+            session,
+            balances.Balance("deepseek", amount=21.68, currency="USD"),
+            balances.Balance("fal", amount=1.10, currency="USD"),
+        )
+
+        deepseek = client.get("/dashboard").text.split("balance low", 1)[0]
+        assert "21.68" in deepseek, "the threshold is per provider, not per banner"
 
     def test_it_says_nothing_alarming_when_nothing_is_wrong(self, client, session, settings):
         settings.yaml.app.balance_warn_below_usd = 5.0
@@ -192,6 +216,7 @@ class TestTheBannerOnAPage:
 
         assert "status-banner" in body
         assert "Model provider credit" not in body
+        assert "balance low" not in body
 
     def test_it_is_on_every_page(self, client, session, settings):
         """Not only the dashboard: the failure it reports is invisible from *any* page,
@@ -201,3 +226,63 @@ class TestTheBannerOnAPage:
 
         for path in ("/dashboard", "/jobs", "/info", "/calibration"):
             assert "status-banner" in client.get(path).text, path
+
+
+class TestRefreshingIt:
+    """Clicking the strip re-reads the balances.
+
+    This spends provider calls, so the two things worth asserting are that it is a POST
+    -- a GET would be followed by any prefetcher that saw the URL -- and that the page it
+    returns to is one on this site rather than whatever `next` said.
+    """
+
+    def test_the_strip_is_a_post_form(self, client, session, settings):
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+
+        body = client.get("/dashboard").text
+
+        assert 'method="post"' in body
+        assert "/credit/refresh" in body
+        assert "<button" in body, "the strip itself is the control"
+
+    def test_a_get_is_not_allowed(self, client, session, settings):
+        """The route is a POST and only a POST, so a crawler cannot spend the calls."""
+        assert client.get("/credit/refresh").status_code == 405
+
+    def test_it_stores_a_fresh_reading_and_returns_to_the_same_page(self, client, session, settings):
+        seen: list[str] = []
+
+        def fake_read_all(_settings=None):
+            seen.append("read")
+            return [balances.Balance("deepseek", amount=99.0, currency="USD")]
+
+        original = balances.read_all
+        balances.read_all = fake_read_all
+        try:
+            response = client.post(
+                "/credit/refresh", params={"next": "/jobs?page=2"}, follow_redirects=False
+            )
+        finally:
+            balances.read_all = original
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/jobs?page=2"
+        assert seen == ["read"], "the click is what spends the calls"
+        session.expire_all()
+        stored = {row.provider: row.amount for row in balances.read_stored(session)}
+        assert stored["deepseek"] == 99.0
+
+    def test_an_offsite_target_is_refused(self, client, session, settings):
+        """`next` comes from the page the strip was rendered on, so it is a redirect
+        target a caller controls. An unchecked one turns every page into a phishing
+        primitive, which is a worse outcome than the dashboard losing its query string."""
+        original = balances.read_all
+        balances.read_all = lambda _settings=None: []
+        try:
+            for hostile in ("https://evil.test/x", "//evil.test", "/\\evil.test", ""):
+                response = client.post(
+                    "/credit/refresh", params={"next": hostile}, follow_redirects=False
+                )
+                assert response.headers["location"] == "/dashboard", hostile
+        finally:
+            balances.read_all = original

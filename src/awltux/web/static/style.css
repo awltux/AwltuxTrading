@@ -53,12 +53,20 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 /* Sits under the navigation and reports what each model provider has left. The
    failure it exists for is invisible otherwise: when an account is empty the decision
    engine falls back to the deterministic rules rather than raising, so every page
-   keeps working and looks exactly the same. */
+   keeps working and looks exactly the same.
+
+   The strip is a <button> -- clicking it re-reads the balances -- so every rule here
+   has to undo a button default, and `font-family: inherit` is the one that matters:
+   without it the whole banner renders in the browser's form-control font. */
 .status-banner {
   display: flex; align-items: center; gap: 10px;
-  background: #10151b; border-bottom: 1px solid var(--line);
-  padding: 5px 14px; font-size: 12px;
+  width: 100%; text-align: left;
+  background: #10151b; border: 0; border-bottom: 1px solid var(--line);
+  color: inherit; font-family: inherit; font-size: 12px;
+  padding: 5px 14px; cursor: pointer;
 }
+.status-banner:hover { background: #141b23; }
+.status-banner:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .status-banner.warn { border-bottom-color: rgba(210,153,34,.5); }
 .status-banner .banner-label {
   font-size: 11px; font-weight: 700; letter-spacing: .08em;
@@ -66,10 +74,18 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 }
 .status-banner .banner-body { display: flex; flex-wrap: wrap; gap: 18px; }
 .status-banner .balance { white-space: nowrap; }
-.status-banner .balance.warn { color: var(--warn); }
 .status-banner .balance.bad { color: var(--bad, #f85149); }
-.status-warning { margin: 10px 14px; }
-.status-warning ul { margin: 6px 0 4px 18px; }
+/* A balance under the floor. This replaced a sentence printed above the strip on every
+   page: the outline says the same thing in the place the reader is already looking, and
+   costs no space when there is nothing to say. `outline` rather than `border` so the
+   strip does not reflow by two pixels when it appears. */
+.status-banner .balance.low {
+  color: var(--bad, #f85149);
+  font-weight: 700;
+  outline: 2px solid var(--bad, #f85149);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 
 /* ------------------------------------------------------------------ ticker */
 .ticker {

@@ -223,6 +223,44 @@ def instrument_refresh(ticker: str) -> RedirectResponse:
     )
 
 
+@router.post("/credit/refresh", include_in_schema=False)
+def credit_refresh(request: Request) -> RedirectResponse:
+    """Re-read every provider's balance, and return to the page that asked.
+
+    A POST for the reason the instrument refresh is one: a GET would be followed by any
+    prefetcher or crawler that saw the URL, and this spends two provider calls. The
+    redirect is what makes the button feel like a button -- the reader stays where they
+    were, and the *only* visible change is the reading timestamp, which is the feedback.
+
+    The balance read happens **before** the session opens, so the network call is not
+    made inside a transaction. Two provider calls a second or so apart is a real hold on
+    SQLite's single writer, and ``db/session.py`` documents what holding it costs.
+    """
+    from awltux.providers import balances as balance_probes
+
+    readings = balance_probes.read_all()
+    with session_scope() as session:
+        balance_probes.store(session, readings)
+
+    return RedirectResponse(
+        url=_same_page(request.query_params.get("next")),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _same_page(target: str | None) -> str:
+    """``target`` if it is a path on this site, else the dashboard.
+
+    The value arrives from the template as the page the strip was rendered on, which
+    makes it a redirect target a caller controls. Anything absolute, protocol-relative
+    or backslash-escaped is refused: an unchecked one turns every page in the
+    application into an open redirect, which is a phishing primitive rather than a bug.
+    """
+    if target and target.startswith("/") and not target.startswith("//") and "\\" not in target:
+        return target
+    return "/dashboard"
+
+
 @router.get("/accounts/{period_id}", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/accounts/{period_id}/{statement}", response_class=HTMLResponse, include_in_schema=False)
 def accounts_page(

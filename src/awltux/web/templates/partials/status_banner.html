@@ -8,44 +8,41 @@
    with the credential this project holds, and saying so on every page would train the
    reader to ignore the one that matters.
 
-   What it *does* always do is state each provider's balance in one line, because
-   "everything is fine" and "we cannot see anything" look identical otherwise. #}
-{% set status = provider_status() %}
-<section class="status-banner {% if status.warnings %}warn{% endif %}">
-  <span class="banner-label" title="What each model provider says is left on the account">
-    CREDIT
-  </span>
-  <div class="banner-body">
-    {% for row in status.balances %}
-      <span class="balance {% if row.payment_failure or row.available is sameas false %}bad{% elif row.amount is not none and row.amount < status.floor %}warn{% endif %}"
-            {% if row.note %}title="{{ row.note }}"{% endif %}>
-        <strong>{{ row.provider }}</strong>
-        {% if row.amount is not none %}
-          {{ row.amount | money(row.currency) }}
-        {% elif row.available is sameas false %}
-          cannot pay
-        {% else %}
-          <span class="muted" title="{{ row.note }}">not readable</span>
-        {% endif %}
-        {% if row.spent is not none %}
-          <span class="muted small">&middot; {{ row.spent | money('USD') }} spent / 30d</span>
-        {% endif %}
-        {% if row.read_at %}<span class="muted small">&middot; read {{ row.read_at | ago }}</span>{% endif %}
-      </span>
-    {% endfor %}
-  </div>
-</section>
+   **The strip is the refresh button.** Reading the balances costs two provider calls, so
+   it is a POST -- a GET would be followed by any prefetcher that saw the URL, and this
+   spends budget. The whole strip is the target rather than a separate control, because
+   the number a reader wants refreshed is the one they are already looking at.
 
-{% if status.warnings %}
-  <div class="notice warn status-warning">
-    <strong>Model provider credit</strong>
-    <ul>
-      {% for warning in status.warnings %}<li>{{ warning }}</li>{% endfor %}
-    </ul>
-    <p class="muted small">
-      Until it is topped up, calls to that provider fail and this system falls back to
-      its deterministic rules rather than to a model. Nothing else about the data below
-      is affected.
-    </p>
-  </div>
-{% endif %}
+   **A low balance is shown, not described.** It used to print a sentence above the strip
+   explaining which provider was short and what would happen; that is a paragraph on
+   every page to say one word -- `.low`, a heavy red outline on the figure itself. What
+   is left of the explanation is the tooltip, which costs no space and is there when
+   someone asks. #}
+{% set status = provider_status() %}
+<form class="credit-refresh" method="post"
+      action="/credit/refresh?next={{ (request.url.path ~ ('?' ~ request.url.query if request.url.query else '')) | urlencode }}">
+  <button type="submit"
+          class="status-banner {% if status.warnings %}warn{% endif %}"
+          title="Read every provider's balance again">
+    <span class="banner-label">CREDIT</span>
+    <span class="banner-body">
+      {% for row in status.balances %}
+        <span class="balance {% if row.payment_failure or row.available is sameas false %}bad{% elif row.amount is not none and row.amount < status.floor %}low{% endif %}"
+              {% if row.note %}title="{{ row.note }}"{% endif %}>
+          <strong>{{ row.provider }}</strong>
+          {% if row.amount is not none %}
+            {{ row.amount | money(row.currency) }}
+          {% elif row.available is sameas false %}
+            cannot pay
+          {% else %}
+            <span class="muted" title="{{ row.note }}">not readable</span>
+          {% endif %}
+          {% if row.spent is not none %}
+            <span class="muted small">&middot; {{ row.spent | money('USD') }} spent / 30d</span>
+          {% endif %}
+          {% if row.read_at %}<span class="muted small">&middot; read {{ row.read_at | ago }}</span>{% endif %}
+        </span>
+      {% endfor %}
+    </span>
+  </button>
+</form>
