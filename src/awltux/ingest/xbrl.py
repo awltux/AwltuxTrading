@@ -682,6 +682,10 @@ class XbrlReport:
 
     tickers_attempted: int = 0
     tickers_failed: int = 0
+    #: Filers whose payload arrived and yielded no period. Counted apart from `failed`
+    #: because nothing went wrong -- the fetch and the parse both worked -- and apart
+    #: from success because nothing came back. See `_sync_one`.
+    tickers_empty: int = 0
     periods_written: int = 0
     metrics_written: int = 0
     failures: list[str] = field(default_factory=list)
@@ -690,6 +694,7 @@ class XbrlReport:
         return {
             "attempted": self.tickers_attempted,
             "failed": self.tickers_failed,
+            "empty": self.tickers_empty,
             "periods_written": self.periods_written,
             "metrics_written": self.metrics_written,
             "failures": self.failures[:20],
@@ -815,13 +820,59 @@ def _sync_one(
         session.flush()
         return
 
-    # The payload arrived and parsed, so whatever was recorded against this step is no
-    # longer true. Both stages, because either could have been the one that failed.
+    # The payload arrived and parsed, so whatever was recorded against those two steps
+    # is no longer true. Both, because either could have been the one that failed.
     clear_blocker(session, instrument.t212_ticker, job=JOB, stage="statements")
     clear_blocker(session, instrument.t212_ticker, job=JOB, stage="xbrl")
+
+    if written:
+        clear_blocker(session, instrument.t212_ticker, job=JOB, stage="extract")
+    else:
+        # Asked, received, and got no period out of it -- which used to be recorded as
+        # *success*: `_write_periods` returning zero took this branch, cleared the
+        # blockers and moved on. That made three states indistinguishable, and the
+        # distinction is the whole question: "not yet reached" is waiting, "received and
+        # empty" is a filer we cannot read, and "read with the wrong tags" is a mapper
+        # to fix. Measured 2026-10-07, of 314 in-universe instruments with a resolved SEC
+        # CIK, 261 had no period and nothing said which of the three they were.
+        #
+        # Deliberately not inferred by the coverage probe, which counts missing periods:
+        # that would flag all 261, including the ones the rotation has simply not reached.
+        # A blocker is written only where the fetch actually happened and came back empty.
+        report.tickers_empty += 1
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=JOB,
+            stage="extract",
+            reason=_payload_note(payload),
+        )
+
     report.periods_written += written
     report.metrics_written += metrics_written
     session.flush()
+
+
+def _payload_note(payload: dict[str, Any]) -> str:
+    """What the payload actually carried, because "extracted nothing" is a symptom.
+
+    The three cases need different fixes and the payload says which one it is: no
+    ``facts`` at all (the wrong endpoint, or a filer with no XBRL), facts under a
+    taxonomy that is not ``us-gaap`` (a foreign filer on ``ifrs-full``, which the mapper
+    does not read), or a ``us-gaap`` taxonomy with no annual frame it recognises. Written
+    from the payload rather than guessed, so the blocker can be acted on without
+    re-fetching anything.
+    """
+    facts = payload.get("facts")
+    if not isinstance(facts, dict) or not facts:
+        return "the companyfacts payload carried no facts at all"
+    taxonomies = ", ".join(sorted(str(name) for name in facts)[:4])
+    us_gaap = facts.get("us-gaap")
+    tags = len(us_gaap) if isinstance(us_gaap, dict) else 0
+    return (
+        f"the payload carried facts for {taxonomies} but no annual period could be read "
+        f"from them ({tags} us-gaap tag(s))"
+    )
 
 
 def _write_periods(

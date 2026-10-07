@@ -311,6 +311,7 @@ def _unattributed(facts: _Facts) -> Reason | None:
 STAGE_LABELS = {
     "statements": "fetch the statements",
     "xbrl": "read the filing's XBRL",
+    "extract": "read a period out of the payload",
     "cik": "resolve an SEC CIK",
     "document": "download the document",
     "prices": "fetch prices",

@@ -619,6 +619,78 @@ class TestWritingToTheDatabase:
         assert report.periods_written == 0
         assert report.failures == []
 
+    def _blockers(self, session):
+        from sqlalchemy import select
+
+        from awltux.db import InstrumentBlocker
+        from awltux.ingest.xbrl import JOB
+
+        rows = session.execute(
+            select(InstrumentBlocker)
+            .where(InstrumentBlocker.instrument_t212_ticker == "AAPL_US_EQ")
+            .where(InstrumentBlocker.job == JOB)
+        ).scalars().all()
+        return {row.stage: row for row in rows}
+
+    def test_a_payload_that_yields_no_period_is_recorded_rather_than_succeeding(
+        self, session, filer
+    ):
+        """The state this whole entry is about.
+
+        `_write_periods` returning zero used to take the *success* branch: it cleared the
+        blockers and moved on. So "asked, received, extracted nothing" was recorded as
+        success and could not be told apart from "not yet reached" -- and measured
+        2026-10-07, 261 of the 314 in-universe instruments with a resolved SEC CIK were in
+        one of those two states with nothing to say which.
+        """
+        import datetime as dt
+
+        report = self._sync(session, {"facts": {}})
+        session.flush()
+
+        assert report.tickers_empty == 1, "counted apart from both success and failure"
+        assert report.periods_written == 0
+        blocker = self._blockers(session)["extract"]
+
+        assert blocker.resolved_at is None
+        assert "no facts at all" in blocker.reason
+        assert dt.datetime.now(dt.UTC).replace(tzinfo=None) >= blocker.last_seen_at
+
+    def test_the_reason_names_the_taxonomy_so_the_blocker_is_actionable(
+        self, session, filer
+    ):
+        """"Extracted nothing" is a symptom. The three causes need different fixes, and
+        the payload says which one it is without anything being re-fetched."""
+        report = self._sync(session, {"facts": {"ifrs-full": {"Revenue": {}}, "dei": {}}})
+        session.flush()
+
+        assert report.tickers_empty == 1
+        reason = self._blockers(session)["extract"].reason
+
+        assert "ifrs-full" in reason
+        assert "us-gaap" in reason, "the count of us-gaap tags is what says whether to look"
+        assert "no annual period" in reason
+
+    def test_a_later_success_clears_it(self, session, filer, apple):
+        """The half that gets forgotten. A blocker never cleared turns every past
+        failure into a permanent accusation, and the attention filter into a list of
+        things that used to be broken."""
+        self._sync(session, {"facts": {}})
+        session.flush()
+        assert self._blockers(session)["extract"].resolved_at is None
+
+        self._sync(session, apple)
+        session.flush()
+
+        assert self._blockers(session)["extract"].resolved_at is not None
+
+    def test_a_complete_payload_records_no_extract_blocker(self, session, filer, apple):
+        """The ordinary case must stay quiet, or the filter fills with non-problems."""
+        self._sync(session, apple)
+        session.flush()
+
+        assert "extract" not in self._blockers(session)
+
     def test_a_filer_without_a_cik_is_not_attempted(self, session):
         """EDGAR has nothing to look up, so it is not a gap this job can close."""
         from awltux.ingest.xbrl import sync_xbrl_fundamentals

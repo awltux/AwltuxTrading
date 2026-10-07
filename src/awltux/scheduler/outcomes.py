@@ -209,18 +209,27 @@ def _fundamentals(detail: dict[str, Any]) -> str:
 def _xbrl_statements(detail: dict[str, Any]) -> str:
     attempted = _get(detail, "attempted")
     periods = _get(detail, "periods_written")
+    # Counted separately since 2026-10-07. Before that "asked and got nothing" took the
+    # success path, so this sentence had to hedge between a filer with no XBRL and one
+    # whose payload we could not read.
+    empty = _get(detail, "empty")
     failures = detail.get("failures") or []
     if not periods:
-        # A filer with no XBRL and a filer whose payload we could not parse both
-        # land here, so the sentence names the failures rather than guessing which.
+        reasons = []
+        if failures:
+            reasons.append(f"{_n(len(failures))} failed ({_first_names(failures)})")
+        if empty:
+            reasons.append(f"{_n(empty)} returned no annual figures")
         return _nothing(
             attempted,
             "filers attempted",
-            f"no statements extracted -- {_first_names(failures)}"
-            if failures
+            "no statements extracted -- " + "; ".join(reasons)
+            if reasons
             else "EDGAR returned no annual figures for any of them",
         )
     line = f"{_n(periods)} annual periods written from XBRL for {_n(attempted)} filers"
+    if empty:
+        line += f"; {_n(empty)} returned no annual figures"
     if failures:
         line += f"; {_n(len(failures))} failed ({_first_names(failures)})"
     return line
