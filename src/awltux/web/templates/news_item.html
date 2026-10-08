@@ -39,9 +39,18 @@
   </p>
 {% endif %}
 
-{% if item.relevance_reason %}
+{% if item.relevant is not none and not item.relevance_reason %}
+  {# When the classifier stored no sentence, the reason above is *our* rule's reading
+     rather than a model's, and a reader is entitled to know which they are reading.
+
+     The block that used to sit here printed `item.relevance_reason` under a second
+     heading. Because the verdict line above already prints
+     `payload.relevance.reason` -- which is that same field, falling back to this rule --
+     it was the identical sentence twice whenever it appeared at all, and nothing when it
+     did not. It could not carry information the line above did not. #}
   <p class="muted small">
-    <strong>Why, in the classifier's words:</strong> {{ item.relevance_reason }}
+    That reason is this rule's own reading — the story names something and carries a
+    direction. No classifier sentence was stored with it.
   </p>
 {% endif %}
 

@@ -605,6 +605,46 @@ class TestTheNewsItemPage:
         assert "Relevant." in body
         assert "names the company and reports a win" in body
 
+    def test_the_reason_is_printed_once(self, client, universe_instrument, session):
+        """The page used to state the classifier's sentence twice, under two headings.
+
+        `_relevance` returns `item.relevance_reason or structural.reason`, and the verdict
+        line prints that. A second block printed `item.relevance_reason` on its own -- so
+        it was the same sentence again whenever the classifier had supplied one, and
+        nothing at all when it had not. It could not say anything the line above did not.
+        """
+        row = self._story(session)
+        session.commit()
+
+        sentence = "names the company and reports a win, which is positive"
+        body = client.get(f"/news/{row.id}").text
+        assert body.count(sentence) == 1, "the reason belongs in one place"
+
+    def test_a_story_with_no_classifier_sentence_attributes_the_reason_to_the_rule(
+        self, client, universe_instrument, session
+    ):
+        """The one case the removed block was reaching for, said plainly.
+
+        With no stored classifier sentence the reason above is the rule's own, and the page
+        should not let a reader mistake it for a model's judgement.
+        """
+        row = self._story(session, relevance_reason=None)
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+        assert "this rule's own reading" in body
+        assert "No classifier sentence" in body
+
+    def test_an_assessed_story_with_a_classifier_sentence_says_nothing_extra(
+        self, client, universe_instrument, session
+    ):
+        """No provenance note when the sentence really is the classifier's -- there is
+        nothing to disambiguate, and a note would be the noise this removed."""
+        row = self._story(session)
+        session.commit()
+
+        assert "this rule's own reading" not in client.get(f"/news/{row.id}").text
+
     def test_it_lists_the_instrument_the_story_concerns(self, client, universe_instrument, session):
         row = self._story(session)
         session.commit()
