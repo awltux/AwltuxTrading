@@ -637,6 +637,19 @@ class NewsItem(Base, TimestampMixin):
     #: beside the instruments, because "relevant" with no reason is unarguable.
     relevance_reason: Mapped[str | None] = mapped_column(Text)
 
+    #: When the reader told the ticker to stop showing this story, or ``None``.
+    #:
+    #: **The row is not deleted**, and nothing about the story changes: it is still a
+    #: headline the system ingested, classified, and can group with others. This records
+    #: one reader decision -- "I have seen this, stop putting it in the banner" -- which is
+    #: why it is a timestamp rather than a boolean: "when did I stop wanting this" is
+    #: answerable and "was it dismissed" on its own is not.
+    #:
+    #: Deliberately not per-browser. This dashboard has no login and one reader, so a
+    #: dismissal kept in the browser would come back in another browser or after clearing
+    #: site data -- which is not what the person clicking it meant.
+    dismissed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     raw_path: Mapped[str | None] = mapped_column(String(512))
 

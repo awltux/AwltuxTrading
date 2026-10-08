@@ -133,16 +133,33 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
   display: flex; gap: 22px; overflow-x: auto; white-space: nowrap;
   scrollbar-width: thin; align-items: center;
 }
+/* The entry is a span holding a link and a dismiss button, so it needs to lay its two
+   children out itself rather than inheriting an anchor's inline flow. */
 .ticker-item {
+  display: inline-flex; align-items: center; gap: 4px;
   color: var(--fg); font-size: 0.95rem; padding-left: 9px;
   border-left: 3px solid var(--line); white-space: nowrap;
 }
-.ticker-item:hover { text-decoration: none; color: #fff; }
+/* The link carries the colour, not the default link blue: the whole entry used to be the
+   anchor, and `a { color: var(--link) }` would otherwise repaint it. */
+.ticker-item .ticker-link { color: inherit; text-decoration: none; }
+/* Hovering anywhere on the entry brightens it, as it did when the entry was one link. */
+.ticker-item:hover { color: #fff; }
 .ticker-item.mat-critical { border-left-color: var(--bad); }
 .ticker-item.mat-material { border-left-color: var(--warn); }
 .ticker-item.mat-moderate { border-left-color: var(--link); }
 .ticker-item.mat-mild { border-left-color: var(--muted); }
 .ticker-title { margin: 0 8px; }
+/* Small and quiet, but not hidden. `cursor: pointer` and a hover background are what say
+   it is a control; a bare glyph in a bar of text does not read as one on its own. */
+.ticker-dismiss {
+  background: transparent; border: 0; border-radius: 4px;
+  color: var(--muted); font-size: 1rem; line-height: 1;
+  padding: 1px 5px; cursor: pointer;
+}
+.ticker-dismiss:hover, .ticker-dismiss:focus-visible {
+  color: var(--fg); background: var(--panel-2); outline: none;
+}
 .dir-up { color: var(--good); font-size: 0.8rem; }
 .dir-down { color: var(--bad); font-size: 0.8rem; }
 

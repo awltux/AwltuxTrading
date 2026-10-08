@@ -788,6 +788,83 @@ class TestTheFlashBannerIsOrdered:
         assert item["priority_inputs"]["formula"]
 
 
+class TestDismissingAStory:
+    """The reader's own judgement, which no filter can supply.
+
+    The ticker is floored by materiality and collapsed by headline, and it still shows the
+    same acquisition from four outlets when the classifier graded all four `critical`.
+    Nothing in the data knows which of those the reader has already read.
+    """
+
+    def _story(self, session, **overrides):
+        from awltux.db import NewsItem, utcnow
+
+        values = {
+            "source": "t", "url": "https://x/dismissable", "url_hash": "d1",
+            "title": "Acme agrees a takeover", "published_at": utcnow(),
+            "tickers": ["TEST_US_EQ"], "direction": "positive",
+            "materiality": "critical", "relevant": True,
+        }
+        values.update(overrides)
+        row = NewsItem(**values)
+        session.add(row)
+        session.commit()
+        return row
+
+    def test_the_button_is_on_the_entry(self, client, universe_instrument, session):
+        row = self._story(session)
+        body = client.get("/partials/news-ticker").text
+
+        assert f'data-dismiss-url="/api/news/{row.id}/dismiss"' in body
+        assert '<button class="ticker-dismiss"' in body
+        # The button must not be inside the link: a click would navigate as well as dismiss.
+        assert body.index('class="ticker-dismiss"') > body.index("</a>")
+
+    def test_dismissing_removes_it_from_the_banner(self, client, universe_instrument, session):
+        row = self._story(session)
+        assert "Acme agrees a takeover" in client.get("/partials/news-ticker").text
+
+        response = client.post(f"/api/news/{row.id}/dismiss")
+
+        assert response.status_code == 200
+        assert client.get("/partials/news-ticker").text.count("Acme agrees a takeover") == 0
+
+    def test_the_story_is_kept_rather_than_deleted(self, client, universe_instrument, session):
+        """A dismissal is one reader decision, not a retraction.
+
+        The row is still a headline that was ingested and classified, and it still carries
+        one event for the grouping. Deleting it would make the dismissal irreversible
+        without re-ingesting, and would change what every marker counts.
+        """
+        from awltux.db import NewsItem
+
+        row = self._story(session)
+        client.post(f"/api/news/{row.id}/dismiss")
+
+        session.expire_all()
+        kept = session.get(NewsItem, row.id)
+        assert kept is not None, "the row must survive"
+        assert kept.dismissed_at is not None
+        assert kept.title == "Acme agrees a takeover"
+
+    def test_dismissing_an_unknown_story_is_a_404(self, client, universe_instrument):
+        assert client.post("/api/news/999999/dismiss").status_code == 404
+
+    def test_a_dismissed_story_does_not_wake_the_ticker(
+        self, client, universe_instrument, session, settings
+    ):
+        """Otherwise every open tab re-renders identical HTML on the next poll."""
+        from awltux.db import NewsItem
+        from awltux.web.routes.news import _refresh_due
+
+        row = self._story(session)
+        client.post(f"/api/news/{row.id}/dismiss")
+
+        session.expire_all()
+        assert session.get(NewsItem, row.id).dismissed_at is not None
+        assert _refresh_due(0, settings) is None
+
+
 class TestInfoPage:
     """The build-provenance page.
 
@@ -1043,9 +1120,9 @@ class TestNewsStreamContract:
     def test_ticker_partial_renders_without_javascript(self, client):
         response = client.get("/partials/news-ticker")
         assert response.status_code == 200
-        # The empty state names the rule, because "no headlines" and "no headlines
-        # that touch a holding" are different and only one is worth worrying about.
-        assert "No relevant headlines yet" in response.text
+        # The empty state names the rule, because "no headlines" and "no headlines that
+        # cleared the floor" are different and only one is worth worrying about.
+        assert "No material headlines yet" in response.text
 
 
 class TestWhatWakesTheTicker:
@@ -1343,6 +1420,12 @@ class TestNewsScepticismSurface:
             sentiment_score=-0.9,
             relevance=0.9,
             event_type="other",
+            # Set explicitly: the ticker shows only *assessed* stories, and this fixture
+            # stands in for an ingested one. `persist_items` runs `_apply_relevance` on
+            # anything carrying a materiality or a direction, and a ticker plus a direction
+            # is the conjunction `relevant` is defined as -- so a real row here would be
+            # True, and leaving it NULL would be testing a state ingest cannot produce.
+            relevant=True,
         )
         session.add(item)
         session.flush()

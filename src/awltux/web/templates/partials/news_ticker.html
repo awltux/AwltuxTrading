@@ -16,28 +16,30 @@
    the input to an assessment rather than the assessment, and it may be paywalled,
    syndicated or gone by the time anyone clicks. #}
 {% for entry in entries %}
-  <a class="ticker-item mat-{{ entry.materiality | materiality_class }}{% if entry.relevant is not true %} unassessed{% endif %}"
-     href="{{ entry.local_url }}"
-     title="{{ entry.title }}{% if entry.tickers %} — {{ entry.tickers | join(', ') }}{% endif %} · priority {{ entry.priority }}{% if entry.event and entry.event.size > 1 %} · {{ entry.event.size }} stories covering this{% endif %}{% if entry.scepticism %} · {{ entry.scepticism.grade }} evidence, weight {{ entry.scepticism.credibility | pct0 }}{% if entry.scepticism.source %} · {{ entry.scepticism.source }}{% endif %}{% endif %}">
-    {% if entry.tickers %}<span class="chip">{{ entry.tickers | join(', ') }}</span>{% endif %}
-    <span class="ticker-title">{{ entry.title }}</span>
-    {% if entry.direction %}<span class="dir dir-{{ entry.direction }}">{{ entry.direction }}</span>{% endif %}
-    {% if entry.event and entry.event.size > 1 %}
-      <span class="badge ok" title="{{ entry.event.size }} stories cover this event; open for the list">
-        {{ entry.event.size }}&times;
-      </span>
-    {% endif %}
-    {% if entry.relevant is not true %}
-      {# Kept in the feed and labelled, rather than dropped: an item nothing has
-         judged yet is a gap worth seeing, not a story worth hiding. #}
-      <span class="badge unknown" title="Nothing has judged whether this is a claim about a share price">unassessed</span>
-    {% endif %}
-    {% if entry.scepticism %}
-      <span class="badge {{ entry.scepticism.grade | grade_class }}"
-            title="How much weight this headline was given, after source, framing and corroboration">
-        {{ entry.scepticism.grade or 'unrated' }}
-      </span>
-      {% if 'manipulative_framing' in (entry.scepticism.flags or []) %}
+  {# The entry is a span holding a link and a button, not a link. A `<button>` inside an
+     `<a>` is invalid and a click on it would navigate as well as dismiss. #}
+  <span class="ticker-item mat-{{ entry.materiality | materiality_class }}">
+    <a class="ticker-link"
+       href="{{ entry.local_url }}"
+       title="{{ entry.title }}{% if entry.tickers %} — {{ entry.tickers | join(', ') }}{% endif %} · priority {{ entry.priority }}{% if entry.event and entry.event.size > 1 %} · {{ entry.event.size }} stories covering this{% endif %}{% if entry.scepticism %} · {{ entry.scepticism.grade }} evidence, weight {{ entry.scepticism.credibility | pct0 }}{% if entry.scepticism.source %} · {{ entry.scepticism.source }}{% endif %}{% endif %}">
+      {% if entry.tickers %}<span class="chip">{{ entry.tickers | join(', ') }}</span>{% endif %}
+      <span class="ticker-title">{{ entry.title }}</span>
+      {% if entry.direction %}<span class="dir dir-{{ entry.direction }}">{{ entry.direction }}</span>{% endif %}
+      {% if entry.event and entry.event.size > 1 %}
+        <span class="badge ok" title="{{ entry.event.size }} stories cover this event; open for the list">
+          {{ entry.event.size }}&times;
+        </span>
+      {% endif %}
+      {# No "unassessed" badge: only assessed stories reach here at all (`_visible_to_the_
+         banner`). It used to be kept and labelled -- "a gap worth seeing" -- but a ticker
+         is not a place to show what the classifier has not looked at yet, and the gap is
+         visible on the story's own page, which is where a gap can be investigated. #}
+      {% if entry.scepticism %}
+        <span class="badge {{ entry.scepticism.grade | grade_class }}"
+              title="How much weight this headline was given, after source, framing and corroboration">
+          {{ entry.scepticism.grade or 'unrated' }}
+        </span>
+        {% if 'manipulative_framing' in (entry.scepticism.flags or []) %}
         <span class="badge bad" title="Written to provoke">framing</span>
       {% endif %}
       {% if 'unconfirmed' in (entry.scepticism.flags or []) %}
@@ -46,10 +48,20 @@
         </span>
       {% endif %}
     {% endif %}
-    <span class="muted small">{{ entry.published_at | ago }}</span>
-  </a>
+      <span class="muted small">{{ entry.published_at | ago }}</span>
+    </a>
+    {# Small, always visible rather than hover-only: this is the one control on the bar, and
+       a thing that only appears on hover is invisible on a touch screen and easy to miss
+       with a mouse. `aria-label` because "×" says nothing to a screen reader. #}
+    <button class="ticker-dismiss" type="button"
+            data-dismiss-url="/api/news/{{ entry.id }}/dismiss"
+            title="Stop showing this story in the ticker"
+            aria-label="Stop showing this story in the ticker">&times;</button>
+  </span>
 {% else %}
-  <span class="muted">No relevant headlines yet. A story appears once it names an instrument or sector and carries a direction.</span>
+  {# The rule, not just the absence. "No headlines" and "no headlines that cleared the
+     floor" look identical on screen and only one is worth worrying about. #}
+  <span class="muted">No material headlines yet. A story appears once it has been assessed as a claim about a price and classified at or above the ticker's materiality floor.</span>
 {% endfor %}
 {% if clustering %}
   {# "One entry per event" and "one entry per story" look identical on screen, and

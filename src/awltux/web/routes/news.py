@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import desc, func, select
 from starlette.concurrency import run_in_threadpool
 
 from awltux.analysis.relevance import (
@@ -32,7 +32,7 @@ from awltux.analysis.relevance import (
     priority,
 )
 from awltux.config import Settings, get_settings
-from awltux.db import NewsAnalysis, NewsItem, session_scope
+from awltux.db import NewsAnalysis, NewsItem, session_scope, utcnow
 from awltux.timezones import format_moment
 
 router = APIRouter(tags=["news"])
@@ -214,48 +214,65 @@ def _analyses_in(session, items: list[NewsItem]) -> dict[int, NewsAnalysis]:
     return _pick(rows, wanted)
 
 
+def _visible_to_the_banner(settings: Settings) -> tuple[object, ...]:
+    """The conditions a story must meet to be shown by the ticker.
+
+    One definition with three callers: the ranking that picks the entries, the stream's
+    refresh check, and the sibling window on the news page -- which promises to agree with
+    the banner about what one event is, so it has to draw from the same population. A story
+    that can never be displayed must not wake every open tab, and a story the banner shows
+    must not be missing from its own event.
+
+    **Assessed only.** ``relevant IS NULL`` means nothing has judged the story: it is not
+    known to be a claim about a price, and it carries no materiality to clear the floor
+    with either. Showing it would be the banner guessing, and the classification output is
+    the thing this ticker exists to curate with.
+
+    **Not dismissed.** No filter can know which of four `critical` write-ups of one
+    acquisition the reader has already read, so the reader says so (see `dismiss_news_item`).
+    """
+    return (
+        NewsItem.relevant.is_(True),
+        NewsItem.dismissed_at.is_(None),
+        NewsItem.materiality.in_(
+            materiality_floor_values(settings.news.ticker_min_materiality)
+        ),
+    )
+
+
 def _ranked(
     session, *, window: int, limit: int, settings: Settings | None = None
 ) -> list[tuple[NewsItem, NewsAnalysis | None]]:
     """Recent stories a reader should see, best first.
 
-    Three filters, and the distinction between them is the point:
+    Eligibility is `_visible_to_the_banner`: assessed, and at or above
+    ``news.ticker_min_materiality``. Most of the corpus fails the second test -- measured
+    2026-10-08, 12,125 of 26,301 stored stories are classified ``none`` -- and until this
+    was wired the banner had no floor at all, despite its own label reading
+    "materiality-filtered headlines likely to move a price".
 
-    * **Below the materiality floor is excluded.** ``news.ticker_min_materiality`` is the
-      answer to "how much must this matter", and most of the corpus does not clear it:
-      measured 2026-10-08, 12,125 of 26,301 stored stories are classified ``none``. The
-      banner has always *claimed* this in its own label -- "materiality-filtered headlines
-      likely to move a price" -- but nothing read the setting, so every classified story
-      reached the ticker.
-    * **Not relevant is excluded.** A story with no instrument and no direction has
-      nothing to attach to, and the banner is not a general news feed.
+    Then two things order and thin what is left:
+
+    * **Priority**, the product of materiality, credibility and recency.
     * **A repeated headline collapses to its best copy.** A wire story carried by two
       outlets is two rows with two URLs, so ``url_hash`` cannot see it; ``title_key`` can.
-      The embedding grouping in `_events` catches the semantic case afterwards, but it
-      needs a stored vector and most stories do not have one yet.
-
-    ``relevant IS NULL`` means nothing has judged it. Such a row has no materiality either,
-    so it no longer reaches the ticker -- which is the correct reading of a
-    materiality-filtered banner: an unjudged story is not yet *known* to be material.
+      The embedding grouping in `_events` catches the semantic case afterwards, but it needs
+      a stored vector and most stories do not have one yet.
     """
     settings = settings or get_settings()
-    floor = materiality_floor_values(settings.news.ticker_min_materiality)
     rows = list(
         session.execute(
             select(NewsItem)
-            .where(or_(NewsItem.relevant.is_(True), NewsItem.relevant.is_(None)))
-            .where(NewsItem.materiality.in_(floor))
+            .where(*_visible_to_the_banner(settings))
             .order_by(desc(NewsItem.id))
             .limit(window)
         ).scalars().all()
     )
     analyses = _analyses_in(session, list(rows))
 
-    def sort_key(row: NewsItem) -> tuple[int, float, int]:
-        # Assessed-relevant first, then unassessed, each by priority, then newest.
-        tier = 1 if row.relevant is True else 0
+    def sort_key(row: NewsItem) -> tuple[float, int]:
         score, _ = _score(row, analyses.get(row.id))
-        return (tier, score, row.id or 0)
+        return (score, row.id or 0)
 
     rows.sort(key=sort_key, reverse=True)
 
@@ -338,13 +355,11 @@ def _refresh_due(cursor: int, settings: Settings | None = None) -> int | None:
     never be displayed does not wake every open tab to re-render identical HTML.
     """
     settings = settings or get_settings()
-    floor = materiality_floor_values(settings.news.ticker_min_materiality)
     with session_scope() as session:
         return session.execute(
             select(func.max(NewsItem.id))
             .where(NewsItem.id > cursor)
-            .where(NewsItem.relevant.is_(True))
-            .where(NewsItem.materiality.in_(floor))
+            .where(*_visible_to_the_banner(settings))
         ).scalar()
 
 
@@ -389,6 +404,27 @@ def news_ticker_partial(request: Request, limit: int = Query(15, ge=1, le=50)) -
     )
 
 
+@router.post("/api/news/{item_id}/dismiss", summary="Stop showing a story in the ticker")
+def dismiss_news_item(item_id: int) -> dict[str, object]:
+    """Hide one story from the flash ticker.
+
+    **Global rather than per-browser.** This dashboard has no login and one reader, so a
+    dismissal kept in the browser would come back in a second browser or after clearing
+    site data -- not what "dismiss" means to the person clicking it.
+
+    **A timestamp, not a delete.** The row stays; it is still a headline that was ingested
+    and classified, and it still carries one event for the grouping and the scepticism work
+    to use. This records only that the reader does not want it in the banner. Dismissing is
+    therefore reversible by clearing the column, and nothing has to be re-ingested.
+    """
+    with session_scope() as session:
+        item = session.get(NewsItem, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="no such news item")
+        item.dismissed_at = utcnow()
+    return {"dismissed": True, "id": item_id}
+
+
 @router.get("/news/{item_id}", response_class=HTMLResponse, include_in_schema=False)
 def news_item_page(request: Request, item_id: int) -> HTMLResponse:
     """One story, on a page of our own.
@@ -428,16 +464,16 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
             else {}
         )
 
-        # Which other stories cover the same event. Computed against the same
-        # ranking window the banner uses, so the page and the banner agree about
-        # what the event is -- a page that said "3 stories" while the banner showed
-        # the entry alone would be worse than either.
+        # Which other stories cover the same event. Drawn from the same population the
+        # banner draws from, so the page and the banner agree about what the event is -- a
+        # page that said "3 stories" while the banner showed the entry alone would be worse
+        # than either.
         from awltux.analysis.embeddings import cluster_items
 
         window_rows = list(
             session.execute(
                 select(NewsItem)
-                .where(or_(NewsItem.relevant.is_(True), NewsItem.relevant.is_(None)))
+                .where(*_visible_to_the_banner(get_settings()))
                 .order_by(desc(NewsItem.id))
                 .limit(EVENT_WINDOW)
             ).scalars().all()

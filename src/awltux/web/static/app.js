@@ -95,6 +95,24 @@
 
     source.addEventListener("refresh", scheduleRefresh);
 
+    // Delegated, because the track's contents are replaced wholesale on every refresh --
+    // a listener bound to the button would be thrown away with the element it was bound to.
+    track.addEventListener("click", function (event) {
+      var button = event.target.closest(".ticker-dismiss");
+      if (!button) return;
+      event.preventDefault();
+
+      // Removed first so the click feels answered, then re-rendered from the server: that
+      // is what fills the gap with the next story rather than leaving the bar one short.
+      // If the POST failed the entry comes back, which is the honest outcome.
+      var entry = button.closest(".ticker-item");
+      if (entry) entry.remove();
+      fetch(button.dataset.dismissUrl, {
+        method: "POST",
+        headers: { "X-Requested-With": "fetch" }
+      }).then(loadFragment, loadFragment);
+    });
+
     // EventSource reconnects on its own; surface the break without spamming.
     source.addEventListener("error", function () {
       root.classList.add("stream-down");

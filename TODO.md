@@ -1006,6 +1006,34 @@ Two things it needs before the next run, both measured 2026-10-08:
 tool reads `ingest_youtube/inventory/edu_*_tiered.json` (`run.py:40-43`). Two records of the
 same selection, so one should go.
 
+### The ticker cannot group events, because the stories it shows are the ones without vectors
+
+Measured 2026-10-08, after the ticker was floored by materiality and collapsed by headline:
+one event was still two entries -- "McKesson, CD&R to buy Option Care Health for $5.8
+billion" and "CD&R and McKesson Corporation Sign Agreement to Acquire Option Care Health",
+both `critical`. The exact-headline collapse cannot see them (different sentences) and the
+embedding grouping could not run:
+
+    ranking window (600 rows)          280 of 600 have a vector
+    the newest 15 by id                  0 of 15
+    the top 15 by the app's own ranking  1 of 15
+
+**Why the top of the banner is the worst-served part.** `news_embeddings` runs hourly
+(`config.py:265`, `schedule.news_embeddings = 3_600`) and its pending set is
+`relevant IS TRUE`, ordered by **`id DESC`**, `limit=max_per_run` (1000). The ticker picks by
+**materiality x credibility x recency**, which is a different set: a `critical` story stays
+at the top of the banner for hours, while the embedding ration goes on the thousand newest
+relevant stories -- most of them `mild` or `none`, which the materiality floor now excludes
+from the banner entirely. So the allowance is spent where the grouping is not needed.
+
+The gap is visible in the ids: newest vectorised story 26,201 against newest story 27,231.
+
+**Next:** order the embedding pending set the way the banner ranks -- materiality first, then
+recency -- or embed only stories that clear `ticker_min_materiality`. Both are a change to
+`embed_news`'s selection. Check first whether the same-event grouping in the decision
+pipeline (`Identity.conflicts`) depends on the newest-first order before changing it; if it
+does, the selection needs two queues rather than one reordering.
+
 ---
 
 ## Deliberately not doing
