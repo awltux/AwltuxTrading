@@ -25,17 +25,20 @@ the reason, so it is not re-litigated.
 Added 2026-10-16 with the rate-limit work, and it is the *real* fix for the Google News
 side rather than a rate limit. A full sweep of 500 instruments asks Google News for one
 company per query — **one edition**, not two: `gather_for_instrument` picks GB or US from
-`_is_uk`, it does not ask both (the "twice for a UK listing" that both this entry and the
-comment at `ingest/news.py:680` claim was never true; the sector poll is the one that
-takes both) — plus one Yahoo feed. That is about **1,000 requests**, which is not what a
-feed reader does. Google publishes no quota, calls it "fair use" in its own forum, and
-answers 4-digit automated volume with a 503 "automated queries" page or a flat IP block
-rather than a 429.
+`_is_uk` and does not ask both, so the "both a UK and a US edition" claim is wrong wherever
+it still appears (`ingest/news.py:150` and its duplicate at `ingest/news.py:863`; the sector
+poll is the one that takes both) — plus one Yahoo feed. That is about **1,000 requests**,
+which is not what a feed reader does. Google publishes no quota, calls it "fair use" in its
+own forum, and answers 4-digit automated volume with a 503 "automated queries" page or a
+flat IP block rather than a 429.
 
 The new budget paces that at one request every five seconds with a 2,000-a-day ceiling, so
 a full sweep now takes about two hours and competes for the same day's allowance as the
-eleven-sector poll (~530 requests/day). **The consequence is coverage**: at 2,000/day the
-instrument poll cannot complete a sweep and a sector poll every day.
+eleven-sector poll (11 sectors × 2 editions × 24 runs = 528/day). **The ceiling is not what
+starves the sweep** -- one sweep plus the sector poll is 1,528 of 2,000, so both fit. What
+it cannot fund is the *hourly interval*: 24 sweeps a day would want 24,000 requests, so the
+budget funds (2,000 − 528) / 1,000 ≈ **1.5 sweeps a day**, and coverage is that rather than
+hourly.
 
 **Pooling companies into one query does not work, measured 2026-10-07.** The plan above
 was "twenty companies in one query, ~1,200 requests to ~60". Tried against the live
@@ -63,9 +66,15 @@ fixing it):
   which reads as Google refusing the expression rather than ranking it.
 
 So the request count cannot be cut this way, and batching beyond ~5 companies would
-silently destroy coverage rather than trade it. What is left of this entry is the *other*
-lever, and it is a bigger one: the poll's cost is not only requests but **the model call
-per stored story** — see the LLM-traffic entry below.
+silently destroy coverage rather than trade it. The other half of the cost was **the model
+call per stored story**, and that has since been paid off rather than deferred: `43f517f`
+reuses a verdict for a syndicated headline, and `724c935` asks about twenty headlines in one
+call. What remains here is the request volume itself, which no longer has an obvious fix --
+see the `robots.txt` entry below for why accepting the position may be the honest option.
+
+**Two documents still carry the superseded plan** and were not corrected with this entry:
+`config/config.yaml:144-146` repeats the "about 1,200 requests" figure and calls pooling
+"the fix".
 
 ### `robots.txt` disallows three of the sources this app reads (a policy decision, not a rate limit)
 
@@ -108,10 +117,14 @@ No writer in the repo ever writes `source="edgar_xbrl"`; `ingest/xbrl.py` writes
 **`xbrl_companyfacts`**, which is absent from the map and therefore scores **0** — below
 both Yahoo sources. Measured 2026-10-08: **295 periods, 226 `xbrl_companyfacts`, 53
 `yahoo_statements`, 14 `yahoo_info`, 2 `llm_extraction`** (the entry read "277 periods, 226
-and 41" when written; the picture it describes is unchanged). So wherever the two describe
-the same `(period_end, period_type)` the scraped snapshot wins and the filer's tagging is
-dropped, which is the inverse of the comment above the map ("A figure extracted from the
-filed document with a citation beats a scraped snapshot").
+and 41" when written; the picture it describes is unchanged). **How much it actually costs
+today, re-counted 2026-10-08: 4 `(instrument, period_end, period_type)` groups carry two or
+more sources.** In the two `RLX_US_EQ` annual groups (2024-12-31, 2025-12-31) the scraped
+snapshot outranks the filer's tags and wins, which is the inverse of the comment above the
+map ("A figure extracted from the filed document with a citation beats a scraped
+snapshot"); the two `MSFT_US_EQ` groups go to `llm_extraction` (5) instead, so they are not
+an XBRL loss. Small, then, but silent and systematic — every future collision resolves the
+wrong way until the map names the source that is actually written.
 
 The fix is one line, but which value is a decision: `xbrl_companyfacts` is the SEC's
 aggregate of the filer's tags rather than our reading of the document, so it is arguably
