@@ -385,6 +385,25 @@ instead of calling `execute_job` would answer both halves at once, at the cost o
 `wait=True` no longer meaning "wait" — the button currently reports the run's
 result, so it would have to poll the run table instead.
 
+**Measured again 2026-10-08, and this time it wedged the deploy path.** Run 886
+(`decision`, a *scheduled catch-up* the container restart had just fired, 13:29:38Z)
+overlapped run 887 (`held_refresh`, manual, 13:30:09Z -> 13:33:06Z, the new hourly
+sweep) and died at 13:30:15Z with `database is locked` — first on the `llm_call`
+insert, then on `decision_run`. Two consequences the earlier measurement did not
+show:
+
+* **A paid model call that is recorded nowhere.** The DeepSeek call completed; the
+  `llm_call` row is the write that failed, and `deepseek._write_call` logs the error
+  and carries on. The spend exists at the provider and not in the ledger the
+  Operations page adds up.
+* **The close-out hit the same lock, so run 886 stayed open** with `ok=NULL` — the
+  Operations page showed `decision` *running* with no thread behind it, and
+  `awltux quiet` waited on it indefinitely rather than reporting idle. That is the
+  part that matters beyond one lost decision: a lock collision can block the next
+  deploy, because the deploy path waits for quiet. A restart clears it through
+  `close_orphaned_runs`, but that writes "the process restarted", which is not what
+  happened; the row was closed by hand with the real reason.
+
 ### Build the accounting-quality markers from `docs/investment-markers.md`
 
 **Mostly done.** Re-measured 2026-10-06: this entry still listed Piotroski, the
