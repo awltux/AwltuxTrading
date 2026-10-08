@@ -83,12 +83,20 @@ class Declaration:
     absent: tuple[str, ...] = ()
     #: Declared children our vocabulary does not name at all.
     unmodelled: tuple[str, ...] = ()
+    #: Declared children we hold *inside a line that is itself a sum of captions*, so the
+    #: figure we hold covers this child and others and cannot be attributed to one.
+    #: `other_current_assets` is the case that produced this: it is
+    #: ``OtherAssetsCurrent+OtherReceivablesNetCurrent`` for `DAC_US_EQ`, and the filer
+    #: declares both as children of `AssetsCurrent`. Counting the line twice would double
+    #: count the money, and counting it zero times would understate the coverage -- so it
+    #: is counted once, and anything the sum cannot cover is named here.
+    pooled: tuple[str, ...] = ()
     residual: float | None = None
 
     @property
     def complete(self) -> bool:
         """Whether every declared child had a figure, so the sum means something."""
-        return not self.absent and not self.unmodelled
+        return not self.absent and not self.unmodelled and not self.pooled
 
     @property
     def status(self) -> str:
@@ -110,6 +118,7 @@ class Declaration:
                 "held": list(self.held),
                 "absent": list(self.absent),
                 "unmodelled": list(self.unmodelled),
+                "pooled": list(self.pooled),
                 "role": self.role,
             },
         )
@@ -121,6 +130,11 @@ class Declaration:
                 parts.append(f"no metric for {_named(self.unmodelled)}")
             if self.absent:
                 parts.append(f"no figure for {_named(self.absent)}")
+            if self.pooled:
+                parts.append(
+                    f"{_named(self.pooled)} is held inside a line that sums several "
+                    "captions, so it cannot be counted on its own here"
+                )
             return "; ".join(parts) + " -- not computable from what we hold"
         return (
             f"the filer's own {declared} lines sum to {self.declared_sum:,.0f} "
@@ -134,6 +148,31 @@ def _named(tags: Iterable[str]) -> str:
     if len(listed) > NAMED_LIMIT:
         return f"{shown} and {len(listed) - NAMED_LIMIT} more"
     return shown
+
+
+def _members(span: str) -> tuple[str, ...]:
+    """The tags a provenance span names, qualified the way ``metric_sources`` writes them.
+
+    **The taxonomy is written once.** A metric supplied by one tag records
+    ``us-gaap:OtherAssetsCurrent``; a metric that is the *sum* of several records
+    ``us-gaap:OtherAssetsCurrent+OtherReceivablesNetCurrent`` -- the prefix on the first
+    and bare names after it, which is how ``ExtractedFact.as_source`` builds a joined tag
+    and how ``total_debt`` has always been written. A reader that splits on ``+`` and
+    compares the pieces to locator tags therefore misses every member but the first, which
+    is what made the live page call two captions we hold "no metric for". So a member
+    without a prefix takes the first one's.
+
+    A span that is prose rather than a tag -- ``"Other current assets 48,594"``, which is
+    what the model-reading path stores -- stays as it is: it matches no locator, and
+    inventing a prefix for it would only make it look like one.
+    """
+    parts = [part.strip() for part in span.split("+") if part.strip()]
+    if not parts:
+        return ()
+    taxonomy = parts[0].split(":", 1)[0] if ":" in parts[0] else ""
+    if not taxonomy:
+        return tuple(parts)
+    return tuple(part if ":" in part else f"{taxonomy}:{part}" for part in parts)
 
 
 def accession(period: FundamentalPeriod) -> str:
@@ -173,9 +212,30 @@ def tag_index(period: FundamentalPeriod) -> dict[str, str]:
         if not isinstance(source, dict):
             continue
         span = source.get("span")
-        if isinstance(span, str) and span:
-            index.setdefault(span, metric)
+        if not isinstance(span, str) or not span:
+            continue
+        # A metric that is the sum of several tags records them joined by `+` -- see
+        # `_members`. Each maps to the metric, because each is where that caption's money
+        # is held; `summed_members` is what stops the sum counting the same figure twice.
+        for tag in _members(span):
+            index.setdefault(tag, metric)
     return index
+
+
+def summed_members(period: FundamentalPeriod) -> dict[str, tuple[str, ...]]:
+    """``metric`` -> the tags it is the sum of, for the metrics that are sums.
+
+    Only the multi-tag spans appear: a metric supplied by one tag is not a sum, and
+    treating it as one would change nothing except by obscuring that.
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for metric, source in (period.metric_sources or {}).items():
+        if not isinstance(source, dict):
+            continue
+        members = _members(str(source.get("span") or ""))
+        if len(members) > 1:
+            out[metric] = members
+    return out
 
 
 def reconcile(
@@ -186,8 +246,18 @@ def reconcile(
     ``parents`` limits the work to particular tags. Declarations come back in the
     filer's order and duplicates are kept: the same subtotal declared in two roles is
     two statements, and two roles disagreeing with each other is worth seeing.
+
+    **A declared child may be held inside a summed line.** `other_current_assets` is one
+    line to us and two to `DAC_US_EQ`, which declares `OtherAssetsCurrent` and
+    `OtherReceivablesNetCurrent` as separate children of `AssetsCurrent`. Summing our
+    figure once per child would count that money twice; skipping the children would claim
+    two lines we read are missing. So the line is counted **once**, when every tag it sums
+    is among the declared children, and any child it covers that the declaration leaves
+    out is reported as ``pooled`` -- the honest statement that we hold it and cannot
+    attribute its share.
     """
     index = tag_index(period)
+    sums = summed_members(period)
     wanted = set(parents) if parents is not None else None
     metrics = period.metrics or {}
 
@@ -206,6 +276,10 @@ def reconcile(
         held: list[str] = []
         absent: list[str] = []
         unmodelled: list[str] = []
+        pooled: list[str] = []
+        counted: set[str] = set()
+        children = {tag for tag, _weight in spec.children}
+
         for tag, weight in spec.children:
             child_metric = index.get(tag)
             child = value_of(metrics, child_metric) if child_metric else None
@@ -215,10 +289,25 @@ def reconcile(
                 else:
                     unmodelled.append(tag)
                 continue
-            total += weight * child
-            held.append(tag)
 
-        complete = not absent and not unmodelled
+            members = sums.get(child_metric or "")
+            if members is None:
+                total += weight * child
+                held.append(tag)
+                continue
+
+            held.append(tag)
+            if child_metric in counted:
+                continue
+            if set(members) <= children:
+                # Every tag this line sums is declared here, so the line *is* their
+                # contribution and belongs in the sum exactly once.
+                total += weight * child
+                counted.add(child_metric)
+            else:
+                pooled.append(tag)
+
+        complete = not absent and not unmodelled and not pooled
         out.append(
             Declaration(
                 role=spec.role,
@@ -229,6 +318,7 @@ def reconcile(
                 held=tuple(held),
                 absent=tuple(absent),
                 unmodelled=tuple(unmodelled),
+                pooled=tuple(pooled),
                 residual=(stated - total) if complete else None,
             )
         )

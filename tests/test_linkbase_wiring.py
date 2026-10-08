@@ -160,6 +160,106 @@ class TestListingTheFilingDirectory:
         assert provider.get_filing_index("1369241", ACCESSION) == []
 
 
+class TestTheDeclaredChildrenWeHoldInsideASummedLine:
+    """`other_current_assets` is one line to us and two to Danaos.
+
+    The live page reported "the filer declares 6 lines here and we hold 3; no metric for
+    PrepaidExpenseCurrent, OtherReceivablesNetCurrent" -- wrong twice: `OtherAssetsCurrent`
+    and `OtherReceivablesNetCurrent` are the two tags of one metric we *do* hold, and the
+    first version could not see that because it joined on the whole span. This pins the
+    arithmetic that fixes it: the summed line counts once, and only the caption that is
+    genuinely absent is reported absent.
+    """
+
+    def _period(self) -> FundamentalPeriod:
+        linkbase, _name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        metrics = {
+            "current_assets": 1_319_419_000.0,
+            "cash_and_equivalents": 1_037_292_000.0,
+            "receivables": 38_730_000.0,
+            "inventory": 23_417_000.0,
+            # The two tags Danaos declares separately, summed into one line of ours.
+            "other_current_assets": 217_887_000.0,
+        }
+        spans = {
+            "current_assets": "us-gaap:AssetsCurrent",
+            "cash_and_equivalents": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+            "receivables": "us-gaap:AccountsReceivableNetCurrent",
+            "inventory": "us-gaap:InventoryNet",
+            "other_current_assets": "us-gaap:OtherAssetsCurrent+OtherReceivablesNetCurrent",
+        }
+        return FundamentalPeriod(
+            instrument_t212_ticker="DAC_US_EQ",
+            period_end=dt.date(2025, 12, 31),
+            period_type="annual",
+            source="xbrl_companyfacts",
+            metrics=metrics,
+            metric_sources={
+                metric: {"value": metrics[metric], "span": span, "accession": ACCESSION}
+                for metric, span in spans.items()
+            },
+        )
+
+    def _declaration(self):
+        linkbase, _name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        from awltux.analysis import linkbase as reconciliation
+
+        [declaration] = reconciliation.reconcile(
+            self._period(), linkbase, parents=["us-gaap:AssetsCurrent"]
+        )
+        return declaration
+
+    def test_the_summed_line_is_counted_once_not_twice(self):
+        declaration = self._declaration()
+
+        # 1,037,292 + 38,730 + 23,417 + 217,887 thousand: five of the six declared lines,
+        # with the bucket counted once for the two tags it sums.
+        assert set(declaration.held) == {
+            "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+            "us-gaap:AccountsReceivableNetCurrent",
+            "us-gaap:InventoryNet",
+            "us-gaap:OtherAssetsCurrent",
+            "us-gaap:OtherReceivablesNetCurrent",
+        }
+        # And the one line left is *unmodelled* rather than "a figure we lack": there is no
+        # canonical metric for a prepaid-expense line, which is the finding the page has to
+        # report -- widening an extraction would never produce it.
+        assert declaration.unmodelled == ("us-gaap:PrepaidExpenseCurrent",)
+        assert declaration.absent == ()
+        assert declaration.pooled == ()
+        assert declaration.declared_sum is None, "one declared line has no metric"
+        detail = declaration.detail(6)
+        assert "we hold 5" in detail and "no metric for us-gaap:PrepaidExpenseCurrent" in detail
+
+    def test_a_child_left_out_of_the_declaration_is_reported_as_pooled(self):
+        """We hold it inside a line summing other captions, so its share is unknown.
+
+        Built by holding the bucket while the filer declares *one* of its two tags: the
+        line's figure covers the tag and something else, so attributing it to the tag
+        would be inventing a split the filing does not make.
+        """
+        from awltux.analysis import linkbase as reconciliation
+        from awltux.ingest.linkbase import Calculation, Linkbase
+
+        only_one = Linkbase(
+            calculations=(
+                Calculation(
+                    role="CONSOLIDATEDBALANCESHEETS",
+                    parent="us-gaap:AssetsCurrent",
+                    children=(("us-gaap:OtherAssetsCurrent", 1.0),),
+                ),
+            )
+        )
+
+        [declaration] = reconciliation.reconcile(
+            self._period(), only_one, parents=["us-gaap:AssetsCurrent"]
+        )
+
+        assert declaration.pooled == ("us-gaap:OtherAssetsCurrent",)
+        assert declaration.complete is False
+        assert "sums several captions" in declaration.detail(1)
+
+
 class TestKeepingIt:
     def test_a_stored_linkbase_round_trips_with_its_filename(self, session):
         """The page reads SQLite; the filename is the citation it prints.
