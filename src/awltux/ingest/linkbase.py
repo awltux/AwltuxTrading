@@ -33,8 +33,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from lxml import etree
@@ -348,8 +348,71 @@ def fetch(
     return parse_calculation_linkbase(document.body), name
 
 
-def stored(session: Any, accession: str) -> tuple[Linkbase, str] | None:
-    """The remembered linkbase for one filing, with the filename it came from."""
+@dataclass(frozen=True, slots=True)
+class Stored:
+    """A filing as we remembered it: its declaration, its source, and its figures.
+
+    The figures are the second half of the reconciliation and are not part of a linkbase
+    at all -- they come from the companyfacts payload. They are kept together because they
+    answer one question together: *what does the filer say this subtotal is made of, and
+    what did it tag each piece at?* An unread line with no figure beside it tells a reader
+    it is missing; with its own figure it tells them how much is missing, which is what
+    decides whether to care.
+    """
+
+    linkbase: Linkbase
+    source: str = ""
+    #: iso period end -> ``taxonomy:Tag`` -> the value the filer tagged at that date.
+    values: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    read_at: str = ""
+
+    def value(self, period: str, tag: str) -> float | None:
+        """The filer's own figure for one concept at one period end, if it tagged one."""
+        return (self.values.get(period) or {}).get(tag)
+
+
+def declared_values(
+    payload: Mapping[str, Any],
+    concepts: Iterable[str],
+    *,
+    ends: Iterable[str] | None = None,
+) -> dict[str, dict[str, float]]:
+    """The filer's own figure for each declared concept, per period end.
+
+    Pure, and separate from the fetch so it can be tested against a captured payload.
+
+    **Only the period ends we already hold**, passed in as ``ends``. A companyfacts
+    payload carries every date the filer has ever tagged an instant at, and a linkbase's
+    children include concepts tagged at quarter ends too -- so without that filter the
+    record would grow by four figures per line per year to answer a question about one
+    balance-sheet date. Filtering on the dates we hold is also what stands in for
+    ``xbrl._is_year_end``: a period end in our table is one a duration already
+    established as a fiscal year, which is the same guarantee that function provides.
+    """
+    from awltux.ingest import xbrl
+
+    facts = (payload or {}).get("facts") or {}
+    wanted = set(ends) if ends is not None else None
+    out: dict[str, dict[str, float]] = {}
+    for concept in sorted(set(concepts)):
+        taxonomy, _, tag = concept.partition(":")
+        if not tag:
+            continue
+        chosen = xbrl._pick_per_period(
+            xbrl._select(facts, tag, taxonomy, instant=True, kind=xbrl.MONETARY)
+        )
+        for end, fact in chosen.items():
+            iso = end.isoformat()
+            if wanted is not None and iso not in wanted:
+                continue
+            value = fact.get("val")
+            if isinstance(value, int | float):
+                out.setdefault(iso, {})[concept] = float(value)
+    return out
+
+
+def stored(session: Any, accession: str) -> Stored | None:
+    """The remembered record for one filing, or ``None``."""
     from awltux.db import AppSetting
 
     if not accession:
@@ -360,17 +423,36 @@ def stored(session: Any, accession: str) -> tuple[Linkbase, str] | None:
         return None
     # The filename comes out of the stored payload, not out of `note`: the note is prose
     # for a human and parsing it would make the citation depend on its wording.
-    return Linkbase.from_dict(payload), str(payload.get("source") or "")
+    return Stored(
+        linkbase=Linkbase.from_dict(payload),
+        source=str(payload.get("source") or ""),
+        values={
+            str(period): {str(tag): float(value) for tag, value in (figures or {}).items()}
+            for period, figures in (payload.get("values") or {}).items()
+        },
+        read_at=str(payload.get("read_at") or ""),
+    )
 
 
-def save(session: Any, accession: str, linkbase: Linkbase, *, source: str, cik: str) -> None:
-    """Remember one filing's declared arithmetic, replacing any earlier read of it."""
+def save(
+    session: Any,
+    accession: str,
+    linkbase: Linkbase,
+    *,
+    source: str,
+    cik: str,
+    values: Mapping[str, Mapping[str, float]] | None = None,
+) -> None:
+    """Remember one filing's declared arithmetic and its figures, replacing any earlier read."""
     from awltux.db import AppSetting
 
     payload = linkbase.as_dict()
     payload["cik"] = cik
     payload["source"] = source
     payload["read_at"] = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload["values"] = {
+        period: dict(figures) for period, figures in (values or {}).items()
+    }
 
     row = session.get(AppSetting, setting_key(accession))
     if row is None:
@@ -379,7 +461,8 @@ def save(session: Any, accession: str, linkbase: Linkbase, *, source: str, cik: 
     row.value = payload
     # The filename, because it is the provenance a reader needs to open the document --
     # kept in `note` so the row is legible on the settings page as well as in code.
-    row.note = f"{len(linkbase.calculations)} declaration(s) from {source}"
+    figures = sum(len(period) for period in (values or {}).values())
+    row.note = f"{len(linkbase.calculations)} declaration(s) from {source}, {figures} figure(s)"
     session.flush()
 
 
@@ -398,7 +481,9 @@ def forget(session: Any, accession: str) -> bool:
 __all__ = [
     "Calculation",
     "Linkbase",
+    "Stored",
     "declared_tags",
+    "declared_values",
     "fetch",
     "find_calculation",
     "forget",

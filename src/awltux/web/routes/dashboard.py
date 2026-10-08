@@ -373,14 +373,45 @@ def _filer_arithmetic(
     accession = reconciliation.accession(period)
     stored = linkbases.stored(session, accession) if accession else None
     return {
-        "filer_checks": reconciliation.checks(period, stored[0]) if stored else [],
+        "filer_checks": (
+            reconciliation.checks(
+                period,
+                stored.linkbase,
+                figures=dict(stored.values.get(period.period_end.isoformat()) or {}),
+            )
+            if stored
+            else []
+        ),
         "linkbase": {
             "accession": accession,
-            "file": stored[1] if stored else "",
+            "file": stored.source if stored else "",
             "outcome": request.query_params.get("linkbase", ""),
             "cik": instrument.sec_cik if instrument is not None else None,
         },
     }
+
+
+def _read_filing_arithmetic(
+    provider: Any, *, cik: str, accession: str, ends: list[str]
+) -> tuple[Any, str, dict[str, dict[str, float]]]:
+    """The filing's declaration and the figures it tagged for the dates we hold.
+
+    Two requests, in one named step because they are one errand: the linkbase says what
+    the subtotals are made of, and the companyfacts payload says what each of those
+    concepts was tagged at. The second is against the payload the xbrl job already
+    fetched today, so it is a cache hit in the ordinary case.
+    """
+    from awltux.ingest import linkbase as linkbases
+
+    linkbase, name = linkbases.fetch(provider, cik=cik, accession=accession)
+    if linkbase is None:
+        return None, name, {}
+    figures = linkbases.declared_values(
+        provider.get_company_facts(cik),
+        linkbases.declared_tags(linkbase),
+        ends=ends,
+    )
+    return linkbase, name, figures
 
 
 @router.post("/accounts/{period_id}/linkbase", include_in_schema=False)
@@ -398,8 +429,9 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
     from awltux.ingest import linkbase as linkbases
     from awltux.providers.edgar import EdgarProvider, ProviderError
 
-    # Phase one: what the stored period says about which filing to read. The session is
-    # closed before the request goes out, so no database lock is held across it.
+    # Phase one: what the stored period says about which filing to read, and which of the
+    # period ends we hold this filing reported. The session is closed before the first
+    # request goes out, so no database lock is held across it.
     with session_scope() as session:
         detail = queries.accounts_detail(session, period_id)
         if detail is None:
@@ -407,6 +439,11 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
         period, instrument = detail["period"], detail["instrument"]
         accession = reconciliation.accession(period)
         cik = instrument.sec_cik if instrument is not None else None
+        ends = [
+            row.period_end.isoformat()
+            for row in detail["series"]
+            if reconciliation.accession(row) == accession
+        ]
 
     if not cik or not accession:
         # A period from a Yahoo snapshot or a model's reading of a document has no filing
@@ -415,7 +452,9 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
     else:
         # Phase two: the network, with nothing open.
         try:
-            linkbase, name = linkbases.fetch(EdgarProvider(), cik=cik, accession=accession)
+            linkbase, name, figures = _read_filing_arithmetic(
+                EdgarProvider(), cik=cik, accession=accession, ends=ends
+            )
         except ProviderError as exc:
             logger.warning("linkbase read failed for %s: %s", accession, exc)
             outcome = "failed"
@@ -424,7 +463,14 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
             outcome = "read" if linkbase is not None and name else "none-published"
             if outcome == "read":
                 with session_scope() as session:
-                    linkbases.save(session, accession, linkbase, source=name, cik=cik)
+                    linkbases.save(
+                        session,
+                        accession,
+                        linkbase,
+                        source=name,
+                        cik=cik,
+                        values=figures,
+                    )
 
     return RedirectResponse(
         url=f"/accounts/{period_id}/health?linkbase={outcome}#filer-arithmetic",

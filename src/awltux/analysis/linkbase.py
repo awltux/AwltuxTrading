@@ -30,7 +30,7 @@ is reporting our own coverage as if it were the filer's error.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from awltux.analysis.ledger import IMBALANCE, OK, UNKNOWN, Check, tolerance
@@ -92,6 +92,10 @@ class Declaration:
     #: count the money, and counting it zero times would understate the coverage -- so it
     #: is counted once, and anything the sum cannot cover is named here.
     pooled: tuple[str, ...] = ()
+    #: What the filer tagged each child at, from its own companyfacts payload, for the
+    #: children we do not hold -- the figure that turns "we have no metric for
+    #: PrepaidExpenseCurrent" into "...and it is 2,093,000, which is the size of the gap".
+    figures: Mapping[str, float] = field(default_factory=dict)
     residual: float | None = None
 
     @property
@@ -128,9 +132,9 @@ class Declaration:
         if not self.complete:
             parts = [f"the filer declares {declared} lines here and we hold {len(self.held)}"]
             if self.unmodelled:
-                parts.append(f"no metric for {_named(self.unmodelled)}")
+                parts.append(f"no metric for {_priced(self.unmodelled, self.figures)}")
             if self.absent:
-                parts.append(f"no figure for {_named(self.absent)}")
+                parts.append(f"no figure for {_priced(self.absent, self.figures)}")
             if self.pooled:
                 parts.append(
                     f"{_named(self.pooled)} is held inside a line that sums several "
@@ -141,6 +145,22 @@ class Declaration:
             f"the filer's own {declared} lines sum to {self.declared_sum:,.0f} "
             f"against a stated {self.stated:,.0f}"
         )
+
+
+def _priced(tags: Iterable[str], figures: Mapping[str, float]) -> str:
+    """The names, each with the filer's own figure where one was read.
+
+    The figure is what makes a missing line actionable: "no metric for
+    PrepaidExpenseCurrent" says what to build, and "2,093,000" says whether it is the
+    whole of the residual or a footnote to it.
+    """
+    listed = list(tags)
+    shown = [
+        f"{tag} ({figures[tag]:,.0f})" if tag in figures else tag for tag in listed[:NAMED_LIMIT]
+    ]
+    if len(listed) > NAMED_LIMIT:
+        return f"{', '.join(shown)} and {len(listed) - NAMED_LIMIT} more"
+    return ", ".join(shown)
 
 
 def _named(tags: Iterable[str]) -> str:
@@ -291,7 +311,11 @@ def _reading(
 
 
 def reconcile(
-    period: FundamentalPeriod, linkbase: Linkbase, *, parents: Iterable[str] | None = None
+    period: FundamentalPeriod,
+    linkbase: Linkbase,
+    *,
+    parents: Iterable[str] | None = None,
+    figures: Mapping[str, float] | None = None,
 ) -> list[Declaration]:
     """Measure every declared subtotal we hold a figure for.
 
@@ -306,6 +330,12 @@ def reconcile(
     two lines we read are missing. So the line is counted **once**, and a child whose
     summed line also covers captions the filer declares elsewhere is reported as
     ``pooled`` -- held, but with no attributable share. :func:`_reading` decides each case.
+
+    ``figures`` is the filer's own companyfacts value per ``taxonomy:Tag`` for this period
+    end, used only to *price* the children we do not hold. It changes no verdict: a
+    declared line we have no metric for stays unmodelled whether or not we know its
+    figure, and the figure is there so a reader can tell a 2,093,000 rounding line from a
+    third of the balance sheet.
     """
     index = tag_index(period)
     sums = summed_members(period)
@@ -360,6 +390,7 @@ def reconcile(
                 absent=absent,
                 unmodelled=unmodelled,
                 pooled=pooled,
+                figures=figures,
             )
         )
     return out
@@ -375,14 +406,21 @@ def _declared(
     absent: list[str],
     unmodelled: list[str],
     pooled: list[str],
+    figures: Mapping[str, float] | None,
 ) -> Declaration:
     """One declaration's verdict.
 
     A partial sum is not a smaller total, it is a different number, so ``declared_sum``
     and ``residual`` are present only when nothing was left out or misattributed -- which
     is what makes ``status`` meaningful rather than merely favourable.
+
+    Only the lines that could not be placed are priced: the ones inside the sum already
+    carry their figure, and a price on a pooled line would suggest we know its share.
     """
     complete = not absent and not unmodelled and not pooled
+    prices = {
+        tag: figures[tag] for tag in (*absent, *unmodelled) if figures and tag in figures
+    }
     return Declaration(
         role=spec.role,
         parent=spec.parent,
@@ -393,18 +431,23 @@ def _declared(
         absent=tuple(absent),
         unmodelled=tuple(unmodelled),
         pooled=tuple(pooled),
+        figures=prices,
         residual=(stated - total) if complete else None,
     )
 
 
 def checks(
-    period: FundamentalPeriod, linkbase: Linkbase, *, parents: Iterable[str] | None = None
+    period: FundamentalPeriod,
+    linkbase: Linkbase,
+    *,
+    parents: Iterable[str] | None = None,
+    figures: Mapping[str, float] | None = None,
 ) -> list[Check]:
     """The reconciliation of every declaration we can measure, as page-ready checks."""
     declared = {spec.parent: len(spec.children) for spec in linkbase.calculations}
     return [
         item.as_check(declared.get(item.parent, len(item.held)))
-        for item in reconcile(period, linkbase, parents=parents)
+        for item in reconcile(period, linkbase, parents=parents, figures=figures)
     ]
 
 

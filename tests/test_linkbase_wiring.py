@@ -30,11 +30,19 @@ class StubEdgar:
     the part of this that a wrong answer would still pass without.
     """
 
-    def __init__(self, *, names: list[str] | None = None, document: bytes | None = None):
+    def __init__(
+        self,
+        *,
+        names: list[str] | None = None,
+        document: bytes | None = None,
+        facts: dict | None = None,
+    ):
         self.names = names if names is not None else ["dac-20251231_cal.xml", "a.htm"]
         self.document = document if document is not None else CAL.read_bytes()
+        self.facts = facts if facts is not None else {"us-gaap": {}}
         self.index_calls: list[tuple] = []
         self.document_calls: list[tuple] = []
+        self.facts_calls: list[str] = []
 
     def get_filing_index(self, cik, accession, **_kwargs):
         self.index_calls.append((cik, accession))
@@ -46,6 +54,46 @@ class StubEdgar:
     def fetch_document(self, url, **_kwargs):
         self.document_calls.append(url)
         return type("Document", (), {"url": url, "body": self.document})()
+
+    def get_company_facts(self, cik, **_kwargs):
+        self.facts_calls.append(cik)
+        return {"facts": self.facts}
+
+
+def instant(tag: str, value: float, end: str, *, taxonomy: str = "us-gaap") -> dict:
+    """One instant fact, in the shape ``companyfacts`` serves it."""
+    return {
+        taxonomy: {
+            tag: {
+                "units": {
+                    "USD": [
+                        {"end": end, "val": value, "form": "20-F", "filed": "2026-02-27",
+                         "accn": ACCESSION}
+                    ]
+                }
+            }
+        }
+    }
+
+
+def merge(*fragments: dict) -> dict:
+    """Combine taxonomy fragments, extending a tag's unit series rather than replacing it.
+
+    A plain ``update`` per taxonomy keeps only the *last* fragment's body for a tag, so
+    two facts for the same concept collapse to one -- silently, and in the direction that
+    looks like a parser bug. `test_xbrl_statements.py::combine` documents the same trap.
+    """
+    out: dict[str, dict] = {}
+    for fragment in fragments:
+        for taxonomy, tags in fragment.items():
+            bucket = out.setdefault(taxonomy, {})
+            for tag, body in tags.items():
+                if tag not in bucket:
+                    bucket[tag] = body
+                    continue
+                for unit, series in body["units"].items():
+                    bucket[tag]["units"].setdefault(unit, []).extend(series)
+    return out
 
 
 class TestFindingTheDocument:
@@ -260,6 +308,74 @@ class TestTheDeclaredChildrenWeHoldInsideASummedLine:
         assert "sums several captions" in declaration.detail(1)
 
 
+class TestPricingTheLinesWeDoNotHold:
+    """`declared_values`: the filer's own figure for each concept it declares.
+
+    This is what turns "no metric for PrepaidExpenseCurrent" into that sentence *with*
+    2,093,000 beside it -- the size of the gap, from the filing rather than from our
+    arithmetic.
+    """
+
+    PAYLOAD = {
+        "facts": merge(
+            instant("PrepaidExpenseCurrent", 2_093_000.0, "2025-12-31"),
+            instant("PrepaidExpenseCurrent", 1_800_000.0, "2024-12-31"),
+            instant("PrepaidExpenseCurrent", 900_000.0, "2025-09-30"),
+            instant("DepositsAssetsNoncurrent", 428_147_000.0, "2025-12-31"),
+            # A fact in the wrong unit is not the figure, and must not be priced as one.
+            {
+                "us-gaap": {
+                    "DeferredCosts": {
+                        "units": {"shares": [{"end": "2025-12-31", "val": 5.0, "form": "20-F"}]}
+                    }
+                }
+            },
+        )
+    }
+
+    def test_it_reads_each_declared_concept_at_the_period_end(self):
+        values = linkbases.declared_values(
+            self.PAYLOAD,
+            ["us-gaap:PrepaidExpenseCurrent", "us-gaap:DepositsAssetsNoncurrent"],
+            ends=["2025-12-31"],
+        )
+
+        assert values == {
+            "2025-12-31": {
+                "us-gaap:PrepaidExpenseCurrent": 2_093_000.0,
+                "us-gaap:DepositsAssetsNoncurrent": 428_147_000.0,
+            }
+        }
+
+    def test_only_the_period_ends_we_hold_are_kept(self):
+        """Otherwise the record grows four figures a year to answer about one date.
+
+        The quarter end (2025-09-30) and the comparative year (2024-12-31) are both in the
+        payload; the caller asks for the dates its own `fundamental_period` rows carry.
+        """
+        values = linkbases.declared_values(
+            self.PAYLOAD, ["us-gaap:PrepaidExpenseCurrent"], ends=["2025-12-31"]
+        )
+
+        assert set(values) == {"2025-12-31"}
+
+    def test_it_reads_every_end_when_none_is_given(self):
+        values = linkbases.declared_values(self.PAYLOAD, ["us-gaap:PrepaidExpenseCurrent"])
+
+        assert set(values) == {"2024-12-31", "2025-09-30", "2025-12-31"}
+
+    def test_a_concept_in_the_wrong_unit_is_not_priced(self):
+        """A share count read as dollars is worse than no figure at all."""
+        values = linkbases.declared_values(self.PAYLOAD, ["us-gaap:DeferredCosts"])
+
+        assert values == {}
+
+    def test_a_concept_the_filer_never_tagged_is_absent_rather_than_zero(self):
+        values = linkbases.declared_values(self.PAYLOAD, ["us-gaap:NothingLikeThis"])
+
+        assert values == {}
+
+
 class TestKeepingIt:
     def test_a_stored_linkbase_round_trips_with_its_filename(self, session):
         """The page reads SQLite; the filename is the citation it prints.
@@ -272,9 +388,9 @@ class TestKeepingIt:
 
         linkbases.save(session, ACCESSION, linkbase, source=name, cik="1369241")
 
-        stored, stored_name = linkbases.stored(session, ACCESSION)
-        assert stored.calculations == linkbase.calculations
-        assert stored_name == "dac-20251231_cal.xml"
+        stored_record = linkbases.stored(session, ACCESSION)
+        assert stored_record.linkbase.calculations == linkbase.calculations
+        assert stored_record.source == "dac-20251231_cal.xml"
         row = session.get(AppSetting, linkbases.setting_key(ACCESSION))
         assert row is not None and row.value["cik"] == "1369241"
 
@@ -378,6 +494,30 @@ class TestThePage:
         )
         assert "PrepaidExpenseCurrent" in body, "the line we still do not hold is named"
         assert "dac-20251231_cal.xml" in body
+
+    def test_a_missing_line_carries_the_filers_own_figure(self, client, session, filer):
+        """Named *and valued*: the figure is what says whether the gap is worth closing.
+
+        Stored the way the POST stores it -- the figures come from the companyfacts
+        payload at the same time as the linkbase, and the page reads them from SQLite.
+        """
+        period = self._period(session)
+        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbases.save(
+            session,
+            ACCESSION,
+            linkbase,
+            source=name,
+            cik="1369241",
+            values={"2025-12-31": {"us-gaap:PrepaidExpenseCurrent": 2_093_000.0}},
+        )
+        session.commit()
+
+        body = " ".join(client.get(f"/accounts/{period.id}/health").text.split())
+
+        assert "us-gaap:PrepaidExpenseCurrent (2,093,000)" in body, body[
+            body.find("PrepaidExpenseCurrent") - 200: body.find("PrepaidExpenseCurrent") + 200
+        ]
 
     def test_the_page_reads_sqlite_and_makes_no_request(self, client, session, filer, monkeypatch):
         """A render must not fetch: the POST is where the network call lives.
