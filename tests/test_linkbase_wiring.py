@@ -20,7 +20,20 @@ from awltux.ingest import linkbase as linkbases
 from tests.helpers import make_instrument
 
 CAL = Path(__file__).parent / "fixtures" / "dac-20251231_cal.xml"
+PRE = Path(__file__).parent / "fixtures" / "dac_20251231_pre.xml"
+LAB = Path(__file__).parent / "fixtures" / "dac_20251231_lab.xml"
 ACCESSION = "0001104659-26-021574"
+
+
+def _calculation(*args, **kwargs):
+    """The calculation linkbase and its filename for a stubbed fetch.
+
+    These tests were written when `fetch` returned that pair; it now returns all three
+    trees at once, and this keeps them about the reconciliation rather than about the
+    return shape. `TestTheOtherLinkbases` exercises the record itself.
+    """
+    read = linkbases.fetch(*args, **kwargs)
+    return read.calculation, read.source
 
 
 class StubEdgar:
@@ -37,7 +50,12 @@ class StubEdgar:
         document: bytes | None = None,
         facts: dict | None = None,
     ):
-        self.names = names if names is not None else ["dac-20251231_cal.xml", "a.htm"]
+        self.names = names if names is not None else [
+            "dac-20251231_cal.xml",
+            "dac-20251231_pre.xml",
+            "dac-20251231_lab.xml",
+            "a.htm",
+        ]
         self.document = document if document is not None else CAL.read_bytes()
         self.facts = facts if facts is not None else {"us-gaap": {}}
         self.index_calls: list[tuple] = []
@@ -53,7 +71,14 @@ class StubEdgar:
 
     def fetch_document(self, url, **_kwargs):
         self.document_calls.append(url)
-        return type("Document", (), {"url": url, "body": self.document})()
+        #  The body follows the filename, so a stub holding all three documents serves
+        #  each of them. A stub that returned the calculation linkbase for every request
+        #  would make `fetch` parse one document three times and still pass.
+        body = self.document
+        for suffix, path in (("_pre.xml", PRE), ("_lab.xml", LAB)):
+            if url.endswith(suffix):
+                body = path.read_bytes()
+        return type("Document", (), {"url": url, "body": body})()
 
     def get_company_facts(self, cik, **_kwargs):
         self.facts_calls.append(cik)
@@ -111,15 +136,24 @@ class TestFetching:
     def test_it_reads_the_linkbase_for_the_accession_it_was_given(self):
         provider = StubEdgar()
 
-        linkbase, name = linkbases.fetch(provider, cik="1369241", accession=ACCESSION)
+        read = linkbases.fetch(provider, cik="1369241", accession=ACCESSION)
 
-        assert name == "dac-20251231_cal.xml"
+        assert read.source == "dac-20251231_cal.xml"
         assert provider.index_calls == [("1369241", ACCESSION)]
+        #  All three documents, each addressed by the name the listing gave: the
+        #  calculation linkbase is the arithmetic, and the other two are what turn a tag
+        #  into the line the filing prints.
         assert provider.document_calls == [
-            f"https://www.sec.gov/Archives/edgar/data/1369241/{ACCESSION}/"
-            "dac-20251231_cal.xml"
+            f"https://www.sec.gov/Archives/edgar/data/1369241/{ACCESSION}/dac-20251231_cal.xml",
+            f"https://www.sec.gov/Archives/edgar/data/1369241/{ACCESSION}/dac-20251231_pre.xml",
+            f"https://www.sec.gov/Archives/edgar/data/1369241/{ACCESSION}/dac-20251231_lab.xml",
         ]
-        assert linkbase is not None and linkbase.calculations
+        assert read.calculation is not None and read.calculation.calculations
+        assert read.files == {
+            "cal": "dac-20251231_cal.xml",
+            "pre": "dac-20251231_pre.xml",
+            "lab": "dac-20251231_lab.xml",
+        }
 
     def test_the_real_document_declares_the_children_that_closed_the_gap(self):
         """Danaos's own balance sheet, and the two captions this app did not read.
@@ -130,7 +164,7 @@ class TestFetching:
         adding `PrepaidExpenseCurrent` to it is right here and wrong for the filers whose
         linkbase declares `PrepaidExpenseAndOtherAssetsCurrent` as the whole bucket.
         """
-        linkbase, _name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, _name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         assert linkbase is not None
         [current] = linkbase.for_parent("us-gaap:AssetsCurrent")
 
@@ -146,7 +180,7 @@ class TestFetching:
     def test_a_filing_that_publishes_none_is_not_an_error(self):
         provider = StubEdgar(names=["a.htm"])
 
-        linkbase, name = linkbases.fetch(provider, cik="1", accession=ACCESSION)
+        linkbase, name = _calculation(provider, cik="1", accession=ACCESSION)
 
         assert linkbase is None
         assert name == ""
@@ -220,7 +254,7 @@ class TestTheDeclaredChildrenWeHoldInsideASummedLine:
     """
 
     def _period(self) -> FundamentalPeriod:
-        linkbase, _name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, _name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         metrics = {
             "current_assets": 1_319_419_000.0,
             "cash_and_equivalents": 1_037_292_000.0,
@@ -249,7 +283,7 @@ class TestTheDeclaredChildrenWeHoldInsideASummedLine:
         )
 
     def _declaration(self):
-        linkbase, _name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, _name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         from awltux.analysis import linkbase as reconciliation
 
         [declaration] = reconciliation.reconcile(
@@ -438,7 +472,7 @@ class TestTheFilersArithmeticReplacingOurs:
         )
 
     def _linkbase(self):
-        linkbases_read, _name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbases_read, _name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         return linkbases_read
 
     def _sums(self, figures=None):
@@ -544,6 +578,90 @@ class TestTheFilersArithmeticReplacingOurs:
         assert checks["assets_composition"].status == ledger.IMBALANCE
 
 
+class TestTheOtherLinkbases:
+    """The presentation and label trees: the order, the statement, and the filer's words.
+
+    The calculation linkbase says what sums to what. These two say *where* a line is
+    printed and *what the filer calls it* -- and the second is what turns
+    `us-gaap:PrepaidExpenseCurrent` into "Prepaid expenses" on the page, which is the
+    difference between a report a reader can act on and one they have to translate.
+    """
+
+    def _read(self):
+        return linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+
+    def test_the_presentation_tree_is_kept_for_the_statements_we_check(self):
+        read = self._read()
+
+        assert read.presentation is not None
+        assert "StatementConsolidatedBalanceSheets" in read.presentation.roles
+        #  The notes are dropped: `DAC_US_EQ`'s presentation document is 647 KB and the
+        #  statement roles are 89 KB of it, and nothing asks about a note's order.
+        assert all(role.startswith("Statement") for role in read.presentation.roles)
+
+    def test_the_presentation_tree_gives_a_position_in_the_statement(self):
+        """Where the line we are missing is printed, counting from the top."""
+        read = self._read()
+        assert read.presentation is not None
+
+        heading = read.presentation.children(
+            "StatementConsolidatedBalanceSheets", "us-gaap:AssetsCurrentAbstract"
+        )
+
+        assert "us-gaap:CashAndCashEquivalentsAtCarryingValue" in heading
+        assert read.presentation.position(
+            "StatementConsolidatedBalanceSheets", "us-gaap:PrepaidExpenseCurrent"
+        ) == 4
+
+    def test_the_labels_are_the_words_the_filing_prints(self):
+        """Not the taxonomy's generic caption, and that is the whole reason to read them.
+
+        `us-gaap:ContractWithCustomerLiabilityCurrent` has a standard label of "Contract
+        with Customer, Liability, Current" and a terse label of "Unearned revenue"; the
+        terse one is what Danaos prints. `DeferredCosts` is "Deferred charges, net" rather
+        than "Deferred Costs, Noncurrent".
+        """
+        read = self._read()
+        assert read.labels is not None
+
+        assert read.labels.name("us-gaap:PrepaidExpenseCurrent") == "Prepaid expenses"
+        assert read.labels.name("us-gaap:OtherReceivablesNetCurrent") == "Due from related parties"
+        assert read.labels.name("us-gaap:DeferredCosts") == "Deferred charges, net"
+        assert read.labels.name("us-gaap:ContractWithCustomerLiabilityCurrent") == "Unearned revenue"
+        #  A subtotal's total label, which is what the statement prints above the sum.
+        assert read.labels.totals["us-gaap:AssetsCurrent"] == "Total current assets"
+        assert read.labels.name("us-gaap:AssetsCurrent") == "Assets, Current", (
+            "the standard label is the name where the filer gave no terse one"
+        )
+
+    def test_a_concept_with_no_label_keeps_its_tag(self):
+        """A missing label is not a missing line: the reader still needs to know which."""
+        from awltux.ingest.linkbase import Labels
+
+        assert Labels().name("us-gaap:SomethingNobodyLabelled") == "us-gaap:SomethingNobodyLabelled"
+
+    def test_the_trees_survive_the_round_trip_through_the_store(self, session):
+        read = self._read()
+        linkbases.save(
+            session,
+            ACCESSION,
+            read.calculation,
+            source=read.source,
+            cik="1369241",
+            presentation=read.presentation,
+            labels=read.labels,
+            files=read.files,
+        )
+
+        loaded = linkbases.stored(session, ACCESSION)
+
+        assert loaded is not None
+        assert loaded.presentation.links == read.presentation.links
+        assert loaded.labels.names == read.labels.names
+        assert loaded.labels.totals == read.labels.totals
+        assert loaded.files["lab"] == "dac-20251231_lab.xml"
+
+
 class TestKeepingIt:
     def test_a_stored_linkbase_round_trips_with_its_filename(self, session):
         """The page reads SQLite; the filename is the citation it prints.
@@ -552,7 +670,7 @@ class TestKeepingIt:
         ``bytes_read`` is a fact about the parse and a stored copy has no bytes --
         `test_linkbase.py` draws the same line for the same reason.
         """
-        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
 
         linkbases.save(session, ACCESSION, linkbase, source=name, cik="1369241")
 
@@ -563,7 +681,7 @@ class TestKeepingIt:
         assert row is not None and row.value["cik"] == "1369241"
 
     def test_storing_it_twice_replaces_rather_than_duplicates(self, session):
-        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         linkbases.save(session, ACCESSION, linkbase, source=name, cik="1369241")
         linkbases.save(session, ACCESSION, linkbase, source=name, cik="1369241")
 
@@ -580,7 +698,7 @@ class TestKeepingIt:
 
     def test_forgetting_it_is_possible(self, session):
         """A wrong read must not be permanent."""
-        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         linkbases.save(session, ACCESSION, linkbase, source=name, cik="1369241")
 
         assert linkbases.forget(session, ACCESSION) is True
@@ -656,7 +774,7 @@ class TestThePage:
 
     def test_a_stored_linkbase_is_shown_as_declared_subtotals(self, client, session, filer):
         period = self._period(session)
-        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         linkbases.save(session, ACCESSION, linkbase, source=name, cik="1369241")
         session.commit()
 
@@ -677,22 +795,28 @@ class TestThePage:
         payload at the same time as the linkbase, and the page reads them from SQLite.
         """
         period = self._period(session)
-        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        read = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
         linkbases.save(
             session,
             ACCESSION,
-            linkbase,
-            source=name,
+            read.calculation,
+            source=read.source,
             cik="1369241",
             values={"2025-12-31": {"us-gaap:PrepaidExpenseCurrent": 2_093_000.0}},
+            presentation=read.presentation,
+            labels=read.labels,
         )
         session.commit()
 
         body = " ".join(client.get(f"/accounts/{period.id}/health").text.split())
 
-        assert "us-gaap:PrepaidExpenseCurrent (2,093,000)" in body, body[
-            body.find("PrepaidExpenseCurrent") - 200: body.find("PrepaidExpenseCurrent") + 200
+        #  The filer's own words for the line, then its own figure for it.
+        assert "Prepaid expenses (2,093,000)" in body, body[
+            body.find("filer") : body.find("filer") + 600
         ]
+        assert "us-gaap:PrepaidExpenseCurrent (2,093,000)" not in body, (
+            "the tag is the precise identifier, but it is not what the page should say"
+        )
 
     def test_the_page_reads_sqlite_and_makes_no_request(self, client, session, filer, monkeypatch):
         """A render must not fetch: the POST is where the network call lives.
@@ -702,7 +826,7 @@ class TestThePage:
         this pass while the page happily phoned EDGAR.
         """
         period = self._period(session)
-        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         linkbases.save(session, ACCESSION, linkbase, source=name, cik="1369241")
         session.commit()
 
@@ -724,7 +848,7 @@ class TestThePage:
         neither of us can supply without a metric.
         """
         period = self._period(session)
-        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbase, name = _calculation(StubEdgar(), cik="1369241", accession=ACCESSION)
         linkbases.save(
             session,
             ACCESSION,

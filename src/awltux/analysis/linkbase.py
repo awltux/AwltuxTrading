@@ -123,6 +123,7 @@ def declared_sums(
     linkbase: Linkbase,
     *,
     figures: Mapping[str, float] | None = None,
+    names: Mapping[str, str] | None = None,
 ) -> dict[str, Declared]:
     """What each declared subtotal adds up to, from the figures this project holds.
 
@@ -140,6 +141,10 @@ def declared_sums(
     ``missing_total`` is left unset unless the filer tagged **every** absent line, because
     a partial price is the most misleading number in this module: it would read as an
     explanation of the residual while leaving part of it unaccounted for.
+
+    ``names`` is the filer's own label per tag, from its label linkbase, and changes only
+    how an unread line is *written*: "Prepaid expenses" rather than
+    "us-gaap:PrepaidExpenseCurrent".
     """
     index = tag_index(period)
     sums = summed_members(period)
@@ -167,7 +172,7 @@ def declared_sums(
                 # Not held. Named whether or not we have a price for it: the name is what
                 # says which line to look at, and the price is what says whether it is the
                 # whole of the residual.
-                missing.append(_priced_name(tag, prices))
+                missing.append(_priced_name(tag, prices, names))
                 if tag in prices and absent_total is not None:
                     absent_total += prices[tag] * weight
                 else:
@@ -189,10 +194,20 @@ def declared_sums(
     return out
 
 
-def _priced_name(tag: str, figures: Mapping[str, float]) -> str:
-    """``us-gaap:PrepaidExpenseCurrent (2,093,000)`` when the filer's figure is known."""
+def _priced_name(
+    tag: str, figures: Mapping[str, float], names: Mapping[str, str] | None = None
+) -> str:
+    """How one unread declared line is shown: the filer's name, and what it tagged it at.
+
+    ``Prepaid expenses (2,093,000)`` rather than ``us-gaap:PrepaidExpenseCurrent
+    (2,093,000)``, because the reader is going back to the filing to look at the line and
+    "Prepaid expenses" is what it says there -- measured on `DAC_US_EQ`, whose label
+    linkbase calls `us-gaap:ContractWithCustomerLiabilityCurrent` "Unearned revenue". The
+    tag is what the *fix* needs, so it stays in the structured fields either way.
+    """
+    label = (names or {}).get(tag) or tag
     value = figures.get(tag)
-    return f"{tag} ({value:,.0f})" if value is not None else tag
+    return f"{label} ({value:,.0f})" if value is not None else label
 
 
 #: Which of our subtotals each declared concept is. The filer names `us-gaap:Assets`;
@@ -238,6 +253,9 @@ class Declaration:
     #: children we do not hold -- the figure that turns "we have no metric for
     #: PrepaidExpenseCurrent" into "...and it is 2,093,000, which is the size of the gap".
     figures: Mapping[str, float] = field(default_factory=dict)
+    #: What the filer calls each child it declares, where it published a label -- so the
+    #: page can print "Prepaid expenses" rather than "us-gaap:PrepaidExpenseCurrent".
+    names: Mapping[str, str] = field(default_factory=dict)
     residual: float | None = None
 
     @property
@@ -274,9 +292,9 @@ class Declaration:
         if not self.complete:
             parts = [f"the filer declares {declared} lines here and we hold {len(self.held)}"]
             if self.unmodelled:
-                parts.append(f"no metric for {_priced(self.unmodelled, self.figures)}")
+                parts.append(f"no metric for {_priced(self.unmodelled, self.figures, self.names)}")
             if self.absent:
-                parts.append(f"no figure for {_priced(self.absent, self.figures)}")
+                parts.append(f"no figure for {_priced(self.absent, self.figures, self.names)}")
             if self.pooled:
                 parts.append(
                     f"{_named(self.pooled)} is held inside a line that sums several "
@@ -289,16 +307,21 @@ class Declaration:
         )
 
 
-def _priced(tags: Iterable[str], figures: Mapping[str, float]) -> str:
+def _priced(
+    tags: Iterable[str],
+    figures: Mapping[str, float],
+    names: Mapping[str, str] | None = None,
+) -> str:
     """The names, each with the filer's own figure where one was read.
 
-    The figure is what makes a missing line actionable: "no metric for
-    PrepaidExpenseCurrent" says what to build, and "2,093,000" says whether it is the
-    whole of the residual or a footnote to it.
+    The figure is what makes a missing line actionable: "no metric for Prepaid expenses"
+    says what to build, and "2,093,000" says whether it is the whole of the residual or a
+    footnote to it. The *name* is the filer's own, because that is what the reader will
+    find when they open the filing to look at the line.
     """
     listed = list(tags)
     shown = [
-        f"{tag} ({figures[tag]:,.0f})" if tag in figures else tag for tag in listed[:NAMED_LIMIT]
+        _priced_name(tag, figures, names) for tag in listed[:NAMED_LIMIT]
     ]
     if len(listed) > NAMED_LIMIT:
         return f"{', '.join(shown)} and {len(listed) - NAMED_LIMIT} more"
@@ -458,6 +481,7 @@ def reconcile(
     *,
     parents: Iterable[str] | None = None,
     figures: Mapping[str, float] | None = None,
+    names: Mapping[str, str] | None = None,
 ) -> list[Declaration]:
     """Measure every declared subtotal we hold a figure for.
 
@@ -478,6 +502,11 @@ def reconcile(
     declared line we have no metric for stays unmodelled whether or not we know its
     figure, and the figure is there so a reader can tell a 2,093,000 rounding line from a
     third of the balance sheet.
+
+    ``names`` is the filer's label for each tag, from its own label linkbase. It changes no
+    verdict either -- it changes what the verdict is *called*: "Prepaid expenses" instead
+    of "us-gaap:PrepaidExpenseCurrent", which is the difference between a report a reader
+    can act on and one they have to translate.
     """
     index = tag_index(period)
     sums = summed_members(period)
@@ -533,6 +562,7 @@ def reconcile(
                 unmodelled=unmodelled,
                 pooled=pooled,
                 figures=figures,
+                names=names,
             )
         )
     return out
@@ -549,6 +579,7 @@ def _declared(
     unmodelled: list[str],
     pooled: list[str],
     figures: Mapping[str, float] | None,
+    names: Mapping[str, str] | None,
 ) -> Declaration:
     """One declaration's verdict.
 
@@ -574,6 +605,9 @@ def _declared(
         unmodelled=tuple(unmodelled),
         pooled=tuple(pooled),
         figures=prices,
+        names={
+            tag: names[tag] for tag in (*absent, *unmodelled) if names and tag in names
+        },
         residual=(stated - total) if complete else None,
     )
 
@@ -584,12 +618,13 @@ def checks(
     *,
     parents: Iterable[str] | None = None,
     figures: Mapping[str, float] | None = None,
+    names: Mapping[str, str] | None = None,
 ) -> list[Check]:
     """The reconciliation of every declaration we can measure, as page-ready checks."""
     declared = {spec.parent: len(spec.children) for spec in linkbase.calculations}
     return [
         item.as_check(declared.get(item.parent, len(item.held)))
-        for item in reconcile(period, linkbase, parents=parents, figures=figures)
+        for item in reconcile(period, linkbase, parents=parents, figures=figures, names=names)
     ]
 
 

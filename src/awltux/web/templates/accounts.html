@@ -179,8 +179,11 @@
      sum" and "the filer declares six lines here and we hold three of them". #}
   {% if filer_checks %}
     <p class="muted small">
-      Read from <code>{{ linkbase.file }}</code> for accession
-      <code>{{ linkbase.accession }}</code>. Each row is a subtotal the filer declares,
+      Read from
+      {% for kind, name in linkbase.files.items() %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+      for accession <code>{{ linkbase.accession }}</code> — the calculation linkbase for
+      the arithmetic, the presentation for the statement order, and the label linkbase for
+      the filer's own names for its lines. Each row is a subtotal the filer declares,
       against the lines we hold for it. A row reading <em>not computable</em> is this
       project's coverage, not the filer's error; only a row where we hold every declared
       line and it still does not sum is a contradiction.

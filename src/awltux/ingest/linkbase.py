@@ -34,7 +34,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from lxml import etree
@@ -50,6 +50,21 @@ LINK_NS = "http://www.xbrl.org/2003/linkbase"
 #: What the calculation linkbase is called, after the filer's own prefix and period label
 #: (`dac-20251231_cal.xml`). The suffix is the only part that is the same on every filing.
 CALCULATION_SUFFIX = "_cal.xml"
+
+#: The other two linkbases this project reads. The presentation linkbase says which
+#: statement a line is printed in and in what order; the label linkbase says what the
+#: filer *calls* it -- `us-gaap:PrepaidExpenseCurrent` is "Prepaid expenses" on the page.
+PRESENTATION_SUFFIX = "_pre.xml"
+LABEL_SUFFIX = "_lab.xml"
+
+#: The label roles this project keeps. `label` is the printed line; `totalLabel` is what a
+#: subtotal is called where the filer gives it one ("Total current assets"); `terseLabel`
+#: is the short form some filers use in the statement and print nothing else.
+LABEL_ROLES = (
+    "http://www.xbrl.org/2003/role/label",
+    "http://www.xbrl.org/2003/role/totalLabel",
+    "http://www.xbrl.org/2003/role/terseLabel",
+)
 
 #: One `app_setting` row per filing. The linkbase is read whole for one accession and
 #: joined on by nothing else, which is the shape `analysis/metric_fields` already stores
@@ -162,6 +177,262 @@ def qualification(href: str | None) -> str | None:
         # is rather than refused: it is a real locator, just an unusual one.
         return fragment
     return f"{prefix}:{tag}"
+
+
+@dataclass(frozen=True, slots=True)
+class RoleOrder:
+    """One statement's presentation tree: which lines it prints, in the filer's order.
+
+    XBRL presentation arcs are parent/child with an ``order`` and no weight, so this is
+    the same shape as a calculation tree without the arithmetic -- and it carries what the
+    calculation linkbase does not: the *statement* a line is printed in and its position.
+    """
+
+    role: str
+    parent: str
+    children: tuple[str, ...] = ()
+
+    def as_list(self) -> list[Any]:
+        return [self.role, self.parent, list(self.children)]
+
+
+@dataclass(frozen=True, slots=True)
+class Presentation:
+    """One filing's presentation linkbase, as far as it could be read."""
+
+    roles: tuple[str, ...] = ()
+    links: tuple[RoleOrder, ...] = ()
+
+    def children(self, role: str, parent: str) -> tuple[str, ...]:
+        for link in self.links:
+            if link.role == role and link.parent == parent:
+                return link.children
+        return ()
+
+    def position(self, role: str, tag: str) -> int | None:
+        """Where in a statement the filer prints ``tag``, counting from one.
+
+        Counted over the role's leaves in order, which is the order a reader sees them:
+        the point of it is to answer "where is the line we are missing" with a place in
+        the filing rather than a row in our own table.
+        """
+        seen: list[str] = []
+        parents = {link.parent for link in self.links if link.role == role}
+        for link in self.links:
+            if link.role != role:
+                continue
+            for child in link.children:
+                if child in parents:
+                    continue
+                seen.append(child)
+        if tag not in seen:
+            return None
+        return seen.index(tag) + 1
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "roles": list(self.roles),
+            "links": [link.as_list() for link in self.links],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any] | None) -> Presentation:
+        raw = payload or {}
+        return cls(
+            roles=tuple(str(role) for role in raw.get("roles") or []),
+            links=tuple(
+                RoleOrder(
+                    role=str(entry[0]),
+                    parent=str(entry[1]),
+                    children=tuple(str(child) for child in entry[2]),
+                )
+                for entry in raw.get("links") or []
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Labels:
+    """What the filer calls each concept, keyed the way ``metric_sources`` keys tags."""
+
+    names: Mapping[str, str] = field(default_factory=dict)
+    totals: Mapping[str, str] = field(default_factory=dict)
+
+    def name(self, tag: str) -> str:
+        """The filer's name for a concept, falling back to the tag itself.
+
+        The fallback is the tag rather than an empty string because a missing label is
+        not a missing line: a reader still needs to know which line the report means.
+        """
+        return self.names.get(tag) or tag
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"names": dict(self.names), "totals": dict(self.totals)}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any] | None) -> Labels:
+        raw = payload or {}
+        return cls(
+            names={str(k): str(v) for k, v in (raw.get("names") or {}).items()},
+            totals={str(k): str(v) for k, v in (raw.get("totals") or {}).items()},
+        )
+
+
+LABEL_ROLE = "http://www.xbrl.org/2003/role/label"
+TOTAL_LABEL_ROLE = "http://www.xbrl.org/2003/role/totalLabel"
+TERSE_LABEL_ROLE = "http://www.xbrl.org/2003/role/terseLabel"
+
+
+def parse_presentation_linkbase(
+    document: bytes | str, *, roles: Iterable[str] | None = None
+) -> Presentation:
+    """Parse a ``_pre.xml`` document into statement order.
+
+    ``roles`` keeps only the roles asked about -- the statements whose arithmetic is being
+    checked. A filing's notes are most of the bytes in this document and none of the
+    question, and the stored copy is one JSON column per accession.
+
+    Pure: bytes in, order out. A malformed arc is skipped; a document that is not XML
+    raises, because a caller that asked for a specific artefact needs to know it got
+    something else.
+    """
+    raw = document.encode("utf-8") if isinstance(document, str) else document
+    root = etree.fromstring(raw)
+    wanted = set(roles) if roles is not None else None
+
+    links: list[RoleOrder] = []
+    seen_roles: dict[str, None] = {}
+    for link in root.iter(f"{{{LINK_NS}}}presentationLink"):
+        role = _role_name(link.get(f"{XLINK}role") or "")
+        if wanted is not None and role not in wanted:
+            continue
+        seen_roles.setdefault(role, None)
+
+        locators: dict[str, str] = {}
+        arcs: list[tuple[float, str, str]] = []
+        for child in link:
+            name = etree.QName(child).localname
+            if name == "loc":
+                href, label = child.get(f"{XLINK}href"), child.get(f"{XLINK}label")
+                if label and href:
+                    locators[label] = href
+            elif name == "presentationArc":
+                arcs.append(
+                    (
+                        _order(child.get("order")),
+                        child.get(f"{XLINK}from") or "",
+                        child.get(f"{XLINK}to") or "",
+                    )
+                )
+
+        grouped: dict[str, list[tuple[float, str]]] = {}
+        for order, source, target in arcs:
+            parent = qualification(locators.get(source))
+            child_tag = qualification(locators.get(target))
+            if parent is None or child_tag is None:
+                continue
+            grouped.setdefault(parent, []).append((order, child_tag))
+        for parent, children in grouped.items():
+            children.sort(key=lambda item: item[0])
+            links.append(
+                RoleOrder(
+                    role=role,
+                    parent=parent,
+                    children=tuple(tag for _order_, tag in children),
+                )
+            )
+
+    return Presentation(roles=tuple(seen_roles), links=tuple(links))
+
+
+@dataclass(frozen=True, slots=True)
+class _LabelParts:
+    """A label linkbase's three pieces, before they are joined."""
+
+    #: locator label -> the concept it names.
+    concepts: Mapping[str, str] = field(default_factory=dict)
+    #: resource label -> role -> the text. **The same resource label carries every role**,
+    #: so keying by the label alone keeps only whichever role the document happened to
+    #: write last -- measured on `DAC_US_EQ`, that was `verboseLabel`, which is why an
+    #: earlier version reported "Contract with Customer, Liability, Current" as unnamed.
+    texts: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    #: ``(locator label, resource label)`` for every ``labelArc``.
+    joins: tuple[tuple[str, str], ...] = ()
+
+
+def _label_parts(root: Any) -> _LabelParts:
+    """Read a label linkbase's locators, label resources and arcs, without joining them."""
+    concepts: dict[str, str] = {}
+    texts: dict[str, dict[str, str]] = {}
+    joins: list[tuple[str, str]] = []
+    for link in root.iter(f"{{{LINK_NS}}}labelLink"):
+        for child in link:
+            name = etree.QName(child).localname
+            if name == "loc":
+                href, label = child.get(f"{XLINK}href"), child.get(f"{XLINK}label")
+                concept = qualification(href) if href else None
+                if label and concept:
+                    concepts[label] = concept
+            elif name == "label":
+                resource = child.get(f"{XLINK}label")
+                role = child.get(f"{XLINK}role") or ""
+                if resource and role in LABEL_ROLES:
+                    texts.setdefault(resource, {})[role] = (child.text or "").strip()
+            elif name == "labelArc":
+                joins.append(
+                    (child.get(f"{XLINK}from") or "", child.get(f"{XLINK}to") or "")
+                )
+    return _LabelParts(concepts=concepts, texts=texts, joins=tuple(joins))
+
+
+def _label_names(parts: _LabelParts, wanted: set[str] | None) -> Labels:
+    """Join the arcs to the concepts, keeping the role a reader actually sees."""
+    names: dict[str, str] = {}
+    totals: dict[str, str] = {}
+    for source, resource in parts.joins:
+        concept = parts.concepts.get(source)
+        available = {role: text for role, text in parts.texts.get(resource, {}).items() if text}
+        if not concept or not available:
+            continue
+        if wanted is not None and concept not in wanted:
+            continue
+        totals.setdefault(concept, available.get(TOTAL_LABEL_ROLE, ""))
+        #  The terse label wins, and that is the whole reason to read this document:
+        #  measured on `DAC_US_EQ`, `us-gaap:ContractWithCustomerLiabilityCurrent` is
+        #  printed as "Unearned revenue" while its standard label is "Contract with
+        #  Customer, Liability, Current", and `DeferredCosts` is "Deferred charges, net"
+        #  rather than "Deferred Costs, Noncurrent". The taxonomy's wording names the
+        #  concept; the terse label is what a person reading the balance sheet sees.
+        for role in (TERSE_LABEL_ROLE, LABEL_ROLE, TOTAL_LABEL_ROLE):
+            if available.get(role):
+                names.setdefault(concept, available[role])
+                break
+    return Labels(
+        names=names,
+        totals={concept: text for concept, text in totals.items() if text},
+    )
+
+
+def parse_label_linkbase(
+    document: bytes | str, *, concepts: Iterable[str] | None = None
+) -> Labels:
+    """Parse a ``_lab.xml`` document into the filer's names for its concepts.
+
+    ``concepts`` keeps only the labels for concepts something else already names -- in
+    practice the tags in the calculation linkbase. The alternative is a megabyte of
+    footnote labels for accounts this codebase never reads.
+
+    **The label is addressed by an arc, not by proximity.** A ``label`` element carries a
+    resource label and ``labelArc`` joins a concept's locator to it; several label roles
+    exist per concept (the printed line, a total, a terse form), so the role decides which
+    one is the line a reader sees. Matching labels to concepts by document order would put
+    a footnote's wording on the balance sheet.
+    """
+    raw = document.encode("utf-8") if isinstance(document, str) else document
+    return _label_names(
+        _label_parts(etree.fromstring(raw)),
+        set(concepts) if concepts is not None else None,
+    )
 
 
 def _weight(value: str | None) -> float | None:
@@ -303,17 +574,45 @@ def declared_tags(linkbase: Linkbase) -> set[str]:
 
 
 def find_calculation(names: Iterable[str]) -> str | None:
-    """The calculation linkbase among a filing's filenames, if it filed one.
+    """The calculation linkbase among a filing's filenames."""
+    return find_document(names, CALCULATION_SUFFIX)
 
-    Filers are not required to publish one, and the ones that do call it whatever their
-    filing agent chose, so this is a suffix test over the directory listing rather than a
-    constructed name. ``None`` is an ordinary answer: the reconciliation then has nothing
-    to check against and the page says so instead of showing an empty table.
+
+def find_document(names: Iterable[str], suffix: str) -> str | None:
+    """The linkbase with this suffix among a filing's filenames, if it filed one.
+
+    Filers are not required to publish any of them, and the ones that do call them
+    whatever their filing agent chose (`dac-20251231_cal.xml`), so this is a suffix test
+    over the directory listing rather than a constructed name. ``None`` is an ordinary
+    answer: the reconciliation then has nothing to check against and the page says so
+    instead of showing an empty table.
     """
     for name in names:
-        if name.lower().endswith(CALCULATION_SUFFIX):
+        if name.lower().endswith(suffix):
             return name
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class Read:
+    """What one filing's linkbases said, and the filename each came from.
+
+    One object rather than three returns, because they are read together and used
+    together: the calculation tree is the arithmetic, the presentation tree is the order
+    and the statement, and the labels are what the filer calls the lines -- and a page
+    that showed one without the others would name a line "us-gaap:PrepaidExpenseCurrent".
+    """
+
+    calculation: Linkbase | None = None
+    presentation: Presentation | None = None
+    labels: Labels | None = None
+    #: kind (`cal`/`pre`/`lab`) -> the filename it was read from.
+    files: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def source(self) -> str:
+        """The calculation linkbase's filename, which is the one the page cites."""
+        return self.files.get("cal", "")
 
 
 def fetch(
@@ -322,53 +621,92 @@ def fetch(
     cik: str,
     accession: str,
     cache_ttl: float = 604_800.0,
-) -> tuple[Linkbase | None, str]:
-    """Fetch and parse one filing's calculation linkbase. No database, no session.
+) -> Read:
+    """Fetch and parse one filing's calculation, presentation and label linkbases.
 
-    Returns the linkbase (``None`` when the filing published none) and the filename it
-    came from, which is what the page cites so a reader can open the document.
-
-    **Deliberately sessionless**, so the caller can fetch between two database phases
+    No database and no session, so the caller can fetch between two database phases
     rather than holding SQLite's write lock across an EDGAR request -- the rule
     ``ingest/xbrl.py`` releases the lock for, applied here by not taking it.
 
+    **The three are not equal, and the trimming is deliberate.** The calculation linkbase
+    is kept whole: it *is* the reconciliation. The presentation tree is kept for the roles
+    the calculation declares -- a filing's notes are most of that document's bytes and none
+    of the question -- and the labels are kept for the concepts the calculation names, for
+    the same reason: `DAC_US_EQ`'s label linkbase is 929 KB of footnote labels for accounts
+    this codebase never reads.
+
     A filing that published no calculation linkbase is not an error: filers are not
-    required to publish one, so ``None`` is an ordinary answer and the page says so
-    instead of showing an empty table.
+    required to publish one, so ``Read.calculation is None`` is an ordinary answer and the
+    page says so instead of showing an empty table.
     """
     names = provider.get_filing_index(cik, accession, cache_ttl=cache_ttl)
-    name = find_calculation(names)
+    name = find_document(names, CALCULATION_SUFFIX)
     if name is None:
         logger.info("no calculation linkbase among %d file(s) for %s", len(names), accession)
-        return None, ""
+        return Read()
 
-    document = provider.fetch_document(
-        provider.document_url(cik, accession, name), cache_ttl=cache_ttl
-    )
-    return parse_calculation_linkbase(document.body), name
+    def body(filename: str) -> bytes:
+        return provider.fetch_document(
+            provider.document_url(cik, accession, filename), cache_ttl=cache_ttl
+        ).body
+
+    calculation = parse_calculation_linkbase(body(name))
+    files = {"cal": name}
+    read = Read(calculation=calculation, files=files)
+
+    presentation_name = find_document(names, PRESENTATION_SUFFIX)
+    if presentation_name is not None:
+        files["pre"] = presentation_name
+        read = replace(
+            read,
+            presentation=parse_presentation_linkbase(
+                body(presentation_name), roles=calculation.roles
+            ),
+        )
+
+    label_name = find_document(names, LABEL_SUFFIX)
+    if label_name is not None:
+        files["lab"] = label_name
+        read = replace(
+            read,
+            labels=parse_label_linkbase(
+                body(label_name), concepts=declared_tags(calculation)
+            ),
+        )
+
+    return read
 
 
 @dataclass(frozen=True, slots=True)
 class Stored:
-    """A filing as we remembered it: its declaration, its source, and its figures.
+    """A filing as we remembered it: its trees, its source, and its figures.
 
     The figures are the second half of the reconciliation and are not part of a linkbase
     at all -- they come from the companyfacts payload. They are kept together because they
     answer one question together: *what does the filer say this subtotal is made of, and
     what did it tag each piece at?* An unread line with no figure beside it tells a reader
     it is missing; with its own figure it tells them how much is missing, which is what
-    decides whether to care.
+    decides whether to care -- and with the filer's *label* it tells them which line to
+    look for in the filing, in the words the filing uses.
     """
 
     linkbase: Linkbase
     source: str = ""
     #: iso period end -> ``taxonomy:Tag`` -> the value the filer tagged at that date.
     values: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    presentation: Presentation = field(default_factory=Presentation)
+    labels: Labels = field(default_factory=Labels)
+    #: kind (`cal`/`pre`/`lab`) -> the filename that tree came from, for the citation.
+    files: Mapping[str, str] = field(default_factory=dict)
     read_at: str = ""
 
     def value(self, period: str, tag: str) -> float | None:
         """The filer's own figure for one concept at one period end, if it tagged one."""
         return (self.values.get(period) or {}).get(tag)
+
+    def name(self, tag: str) -> str:
+        """What the filer calls this concept, or the tag when it published no label."""
+        return self.labels.name(tag)
 
 
 def declared_values(
@@ -430,6 +768,14 @@ def stored(session: Any, accession: str) -> Stored | None:
             str(period): {str(tag): float(value) for tag, value in (figures or {}).items()}
             for period, figures in (payload.get("values") or {}).items()
         },
+        presentation=Presentation.from_dict(payload.get("presentation")),
+        labels=Labels.from_dict(payload.get("labels")),
+        # A record written before the presentation and label linkbases were read has no
+        # `files`, and the citation must not come back empty for it.
+        files=(
+            {str(kind): str(name) for kind, name in (payload.get("files") or {}).items()}
+            or ({"cal": str(payload["source"])} if payload.get("source") else {})
+        ),
         read_at=str(payload.get("read_at") or ""),
     )
 
@@ -442,8 +788,11 @@ def save(
     source: str,
     cik: str,
     values: Mapping[str, Mapping[str, float]] | None = None,
+    presentation: Presentation | None = None,
+    labels: Labels | None = None,
+    files: Mapping[str, str] | None = None,
 ) -> None:
-    """Remember one filing's declared arithmetic and its figures, replacing any earlier read."""
+    """Remember one filing's trees and figures, replacing any earlier read of it."""
     from awltux.db import AppSetting
 
     payload = linkbase.as_dict()
@@ -453,6 +802,14 @@ def save(
     payload["values"] = {
         period: dict(figures) for period, figures in (values or {}).items()
     }
+    if presentation is not None:
+        payload["presentation"] = presentation.as_dict()
+    if labels is not None:
+        payload["labels"] = labels.as_dict()
+    #  Every filename, so a reader can open the document each tree came from rather than
+    #  the calculation linkbase's alone. The calculation one is always known -- it is the
+    #  caller's `source` -- so the citation is never empty.
+    payload["files"] = dict(files) if files else {"cal": source}
 
     row = session.get(AppSetting, setting_key(accession))
     if row is None:
@@ -462,7 +819,11 @@ def save(
     # The filename, because it is the provenance a reader needs to open the document --
     # kept in `note` so the row is legible on the settings page as well as in code.
     figures = sum(len(period) for period in (values or {}).values())
-    row.note = f"{len(linkbase.calculations)} declaration(s) from {source}, {figures} figure(s)"
+    names = len((labels or Labels()).names)
+    row.note = (
+        f"{len(linkbase.calculations)} declaration(s) from {source}, "
+        f"{figures} figure(s), {names} label(s)"
+    )
     session.flush()
 
 
@@ -480,14 +841,21 @@ def forget(session: Any, accession: str) -> bool:
 
 __all__ = [
     "Calculation",
+    "Labels",
     "Linkbase",
+    "Presentation",
+    "Read",
+    "RoleOrder",
     "Stored",
     "declared_tags",
     "declared_values",
     "fetch",
     "find_calculation",
+    "find_document",
     "forget",
     "parse_calculation_linkbase",
+    "parse_label_linkbase",
+    "parse_presentation_linkbase",
     "qualification",
     "save",
     "stored",

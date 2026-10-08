@@ -383,18 +383,27 @@ def _filer_arithmetic(
     accession = reconciliation.accession(period)
     stored = linkbases.stored(session, accession) if accession else None
     figures = dict(stored.values.get(period.period_end.isoformat()) or {}) if stored else {}
+    names = dict(stored.labels.names) if stored else {}
     return {
         "declared": (
-            reconciliation.declared_sums(period, stored.linkbase, figures=figures)
+            reconciliation.declared_sums(
+                period, stored.linkbase, figures=figures, names=names
+            )
             if stored
             else {}
         ),
         "filer_checks": (
-            reconciliation.checks(period, stored.linkbase, figures=figures) if stored else []
+            reconciliation.checks(
+                period, stored.linkbase, figures=figures, names=names
+            )
+            if stored
+            else []
         ),
         "linkbase": {
             "accession": accession,
             "file": stored.source if stored else "",
+            "files": dict(stored.files) if stored else {},
+            "labels": len(stored.labels.names) if stored else 0,
             "outcome": request.query_params.get("linkbase", ""),
             "cik": instrument.sec_cik if instrument is not None else None,
         },
@@ -403,25 +412,25 @@ def _filer_arithmetic(
 
 def _read_filing_arithmetic(
     provider: Any, *, cik: str, accession: str, ends: list[str]
-) -> tuple[Any, str, dict[str, dict[str, float]]]:
-    """The filing's declaration and the figures it tagged for the dates we hold.
+) -> tuple[Any, dict[str, dict[str, float]]]:
+    """The filing's three linkbases, and the figures it tagged for the dates we hold.
 
-    Two requests, in one named step because they are one errand: the linkbase says what
-    the subtotals are made of, and the companyfacts payload says what each of those
+    One errand in two requests: the linkbases say what the subtotals are made of and what
+    the filer calls each line, and the companyfacts payload says what each of those
     concepts was tagged at. The second is against the payload the xbrl job already
     fetched today, so it is a cache hit in the ordinary case.
     """
     from awltux.ingest import linkbase as linkbases
 
-    linkbase, name = linkbases.fetch(provider, cik=cik, accession=accession)
-    if linkbase is None:
-        return None, name, {}
+    read = linkbases.fetch(provider, cik=cik, accession=accession)
+    if read.calculation is None:
+        return read, {}
     figures = linkbases.declared_values(
         provider.get_company_facts(cik),
-        linkbases.declared_tags(linkbase),
+        linkbases.declared_tags(read.calculation),
         ends=ends,
     )
-    return linkbase, name, figures
+    return read, figures
 
 
 @router.post("/accounts/{period_id}/linkbase", include_in_schema=False)
@@ -462,7 +471,7 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
     else:
         # Phase two: the network, with nothing open.
         try:
-            linkbase, name, figures = _read_filing_arithmetic(
+            read, figures = _read_filing_arithmetic(
                 EdgarProvider(), cik=cik, accession=accession, ends=ends
             )
         except ProviderError as exc:
@@ -470,16 +479,19 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
             outcome = "failed"
         else:
             # Phase three: store what came back, or record that the filer published none.
-            outcome = "read" if linkbase is not None and name else "none-published"
+            outcome = "read" if read.calculation is not None and read.source else "none-published"
             if outcome == "read":
                 with session_scope() as session:
                     linkbases.save(
                         session,
                         accession,
-                        linkbase,
-                        source=name,
+                        read.calculation,
+                        source=read.source,
                         cik=cik,
                         values=figures,
+                        presentation=read.presentation,
+                        labels=read.labels,
+                        files=read.files,
                     )
 
     return RedirectResponse(
