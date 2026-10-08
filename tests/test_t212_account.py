@@ -128,6 +128,81 @@ class TestApplyingPositions:
         assert _apply_positions(session, [POSITION]) == 1
 
 
+BASE_URL = "https://live.trading212.com/api/v0"
+ORIGIN = "https://live.trading212.com"
+CURSOR_PATH = "/api/v0/equity/history/orders?cursor=1720618206583&limit=50"
+
+PAGE_ONE = {
+    "items": [{"order": {"id": 3}}, {"order": {"id": 2}}],
+    "nextPagePath": CURSOR_PATH,
+}
+PAGE_TWO = {"items": [{"order": {"id": 1}}]}
+
+
+class _RecordingClient:
+    """Answers one canned page per call, and remembers what it was asked for."""
+
+    def __init__(self, pages: list[dict]):
+        self._pages = list(pages)
+        self.asked: list[str] = []
+
+    def get_json(self, url: str, **kwargs) -> dict:
+        self.asked.append(url)
+        return self._pages.pop(0) if self._pages else {}
+
+
+def _paging_provider(pages: list[dict]):
+    from awltux.providers.t212 import T212Provider
+
+    class _Env:
+        t212_base_url = BASE_URL
+
+    class _Settings:
+        env = _Env()
+
+    provider = T212Provider.__new__(T212Provider)
+    provider.settings = _Settings()
+    client = _RecordingClient(pages)
+    provider.client = lambda scope: client  # type: ignore[method-assign]
+    return provider, client
+
+
+def _fetched(url: str) -> str:
+    """The address `HttpClient` would actually send.
+
+    It concatenates rather than resolving (``providers/http.py``: *url if url.startswith
+    ("http") else f"{self.base_url}{url}"*), and that is the rule the 404 turned on: a
+    cursor path is host-root absolute, so a second ``/api/v0`` is prepended to the one it
+    already carries.
+    """
+    return url if url.startswith("http") else f"{BASE_URL}{url}"
+
+
+class TestPagingPastTheFirstPage:
+    """A cursor path is absolute from the host root; the first page is not.
+
+    `nextPagePath` comes back as `/api/v0/equity/history/orders?cursor=…` while the client's
+    base URL already ends in `/api/v0`, so asking for it unchanged requests
+    `/api/v0/api/v0/equity/...` and the API answers 404. Nothing had ever called a history
+    endpoint with a limit past one page, so the bug had never been exercised: measured
+    2026-10-08, `limit=5` returned its five items (it stops after page one) while `limit=200`
+    404'd on the second.
+    """
+
+    def test_the_walk_asks_for_both_pages_at_a_single_api_prefix(self):
+        provider, client = _paging_provider([PAGE_ONE, PAGE_TWO])
+        id_of = lambda item: (item.get("order") or {}).get("id")  # noqa: E731
+
+        items = provider._paginate("/equity/history/orders", 50, id_of=id_of, stop_at_id=0)
+
+        assert len(items) == 3, "the second page was read, not abandoned after a 404"
+        assert client.asked == ["/equity/history/orders", f"{ORIGIN}{CURSOR_PATH}"]
+        assert [_fetched(url) for url in client.asked] == [
+            f"{BASE_URL}/equity/history/orders",
+            f"{BASE_URL}/equity/history/orders?cursor=1720618206583&limit=50",
+        ]
+
+
 class TestStoringAnOrder:
     def test_a_trade_is_stored_with_its_execution_date(self, session):
         assert _store_order(session, ORDER) is True

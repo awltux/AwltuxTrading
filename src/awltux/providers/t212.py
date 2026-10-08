@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -273,7 +274,8 @@ class T212Provider:
         pages = 0
         client = self.client(SCOPE_HISTORY)
         while next_path and pages < 40:
-            payload = client.get_json(next_path, params={"limit": min(limit, 50)})
+            url, params = self._page_request(next_path, first_page=pages == 0, limit=limit)
+            payload = client.get_json(url, params=params)
             if not isinstance(payload, dict):
                 break
             page = payload.get("items") or []
@@ -293,6 +295,35 @@ class T212Provider:
             if finished:
                 break
         return items
+
+    def _page_request(
+        self, path: str, *, first_page: bool, limit: int
+    ) -> tuple[str, dict[str, int] | None]:
+        """The address and query for one page of a history walk.
+
+        **Page two is not addressed like page one.** The first page is a *relative*
+        endpoint -- `/equity/history/orders` -- which `HttpClient` joins to a base URL
+        that already ends in `/api/v0`. Every `nextPagePath` after it comes back absolute
+        from the **host root** and already carries that prefix
+        (`/api/v0/equity/history/orders?cursor=…&limit=50`), so joining it a second time
+        asks for `/api/v0/api/v0/equity/...`, which the API answers with 404.
+
+        Measured 2026-10-08: `get_order_history(limit=5)` returned its five items because
+        it stops after one page, while `limit=200` hit the 404 on the *second*. No caller
+        had asked for more than a page before, so the bug had never been exercised.
+        """
+        if first_page:
+            return path, {"limit": min(limit, 50)}
+        return f"{self._origin()}{path}", None
+
+    def _origin(self) -> str:
+        """Scheme and host of the configured API, without its ``/api/v0`` path.
+
+        The base URL is what a *relative* endpoint is joined to; a cursor path from the
+        provider is absolute from the host root, so it needs this instead.
+        """
+        parts = urlsplit(self.settings.env.t212_base_url)
+        return f"{parts.scheme}://{parts.netloc}"
 
     # --------------------------------------------------------------- trading
     def _assert_orders_allowed(self, method: str) -> None:
