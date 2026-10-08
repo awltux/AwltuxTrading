@@ -219,6 +219,15 @@ class TestTheAgeThatMayNotRepeatADate:
         assert fmt_age(dt.datetime.now(dt.UTC) - dt.timedelta(days=60)).endswith("mo ago")
         assert fmt_age(dt.datetime.now(dt.UTC) - dt.timedelta(days=800)).endswith("y ago")
 
+    def test_a_year_and_a_half_is_still_counted_in_months(self):
+        """The real case: a position opened 2025-01-31 read "1y ago" on 2026-10-08.
+
+        Fifteen months is an answer; the single year it rounds into is not the answer the
+        reader is looking at the age for.
+        """
+        assert fmt_age(dt.datetime.now(dt.UTC) - dt.timedelta(days=615)) == "20mo ago"
+        assert fmt_age(dt.datetime.now(dt.UTC) - dt.timedelta(days=900)) == "2y ago"
+
     def test_a_future_timestamp_does_not_go_negative(self):
         assert fmt_age(dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)) == "just now"
 

@@ -130,6 +130,10 @@ def _age_units(seconds: float) -> tuple[int, str]:
     Shared by `fmt_ago` and `fmt_age`, which differ only in what they do past a month: a
     freshness column standing alone falls back to a date, and one printed *beside* a
     timestamp cannot.
+
+    **Fifteen months is "15mo ago", not "1y ago".** Rounding to years at 365 days threw away
+    the half of the answer a reader is looking at the age for: the first position on the
+    instrument page is 615 days old and read "1y ago" (seen on the page, 2026-10-08).
     """
     if seconds < 90:
         return int(seconds), "s"
@@ -139,7 +143,7 @@ def _age_units(seconds: float) -> tuple[int, str]:
         return int(seconds // 3600), "h"
     if seconds < 2592000:
         return int(seconds // 86400), "d"
-    if seconds < 31557600:
+    if seconds < 2 * 31557600:
         return int(seconds // 2629800), "mo"
     return int(seconds // 31557600), "y"
 
