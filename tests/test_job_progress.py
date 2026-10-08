@@ -27,8 +27,8 @@ def _noop() -> None:
     pass
 
 
-def _job(job_id: str = "probe", func=_noop) -> JobSpec:
-    return JobSpec(id=job_id, func=func, interval_seconds=3600)
+def _job(job_id: str = "probe", func=_noop, target: str | None = None) -> JobSpec:
+    return JobSpec(id=job_id, func=func, interval_seconds=3600, target=target)
 
 
 class TestCapturing:
@@ -41,6 +41,29 @@ class TestCapturing:
         assert text.startswith("=== probe run")
         assert "===" in text.splitlines()[-1]
         assert "ok in" in text.splitlines()[-1]
+
+    def test_a_targeted_run_names_its_instrument_in_the_header(self):
+        """The header has to carry the target, because the heading does not travel.
+
+        A scoped refresh writes fourteen jobs into one file under one job id
+        (`instrument_refresh`), and the reader meets this text after copying it off the
+        page -- the `<h1>` that said *for GWW_US_EQ* is left behind. Asked for: "this
+        should be indicated at the head of the log if it is [about one instrument]".
+        """
+        execute_job(_job(func=lambda: progress.note("step 1 of 14: price_eod"), target="GWW_US_EQ"))
+
+        text, _, _ = progress.read("probe")
+
+        assert text.startswith("=== probe run"), text
+        assert "for GWW_US_EQ ===" in text.splitlines()[0], text.splitlines()[0]
+
+    def test_an_untargeted_run_says_nothing_about_a_target(self):
+        """Absence is the honest form: a sweep is not about an instrument."""
+        execute_job(_job())
+
+        text, _, _ = progress.read("probe")
+
+        assert " for " not in text.splitlines()[0], text.splitlines()[0]
 
     def test_progress_lines_are_recorded(self):
         def work() -> None:

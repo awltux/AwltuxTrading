@@ -345,7 +345,7 @@ def execute_job(spec: JobSpec, cause: str | None = None) -> JobResult | None:
     started = dt.datetime.now(dt.UTC)
     run_id = start_run(spec.id, started, spec.target)
 
-    with progress.capture(spec.id, run_id, started) as run_log:
+    with progress.capture(spec.id, run_id, started, spec.target) as run_log:
         return _execute_captured(spec, started, run_id, run_log, cause)
 
 

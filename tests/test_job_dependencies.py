@@ -209,6 +209,36 @@ class TestCoverageCounts:
         statuses = {status.id: status for status in job_statuses(session, specs)}
         assert statuses["news_analysis"].outstanding == 1
 
+    def test_the_probe_asks_the_window_the_job_works_in(self, session, specs, settings, monkeypatch):
+        """One window, read from one place: the job's own setting.
+
+        The guard *skips* `news_analysis` when the probe reports nothing outstanding, so
+        a probe looking at a narrower window than `analyse_universe` works in would skip
+        work the job would have done -- permanently, because the next probe is narrower
+        too. The probe had its own `APPRAISAL_WINDOW_DAYS = 14` beside the job's
+        `news.scepticism.lookback_days`, which is exactly how the two drift apart
+        without anyone deciding to.
+        """
+        import awltux.scheduler.dependencies as deps
+
+        session.add(
+            NewsItem(
+                source="t", url="https://x/9", url_hash="h9", title="nine",
+                materiality="material", published_at=utcnow() - dt.timedelta(days=20),
+            )
+        )
+        session.flush()
+
+        assert deps._probe_news_analysis(session).missing == 0, "outside the default 14"
+
+        wider = settings.model_copy(deep=True)
+        wider.news.scepticism.lookback_days = 30
+        monkeypatch.setattr(deps, "get_settings", lambda: wider)
+
+        coverage = deps._probe_news_analysis(session)
+        assert coverage.missing == 1, "the job would reach it at 30 days"
+        assert "the last 30 days" in coverage.reason, coverage.reason
+
     def test_an_appraised_story_is_no_longer_outstanding(self, session, specs):
         item = NewsItem(
             source="t", url="https://x/1", url_hash="h1", title="one",

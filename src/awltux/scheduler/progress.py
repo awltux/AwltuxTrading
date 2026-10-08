@@ -289,12 +289,25 @@ def barrier(where: str) -> None:
 
 
 @contextmanager
-def capture(job_id: str, run_id: int | None, started_at: dt.datetime) -> Iterator[RunLog]:
+def capture(
+    job_id: str,
+    run_id: int | None,
+    started_at: dt.datetime,
+    target: str | None = None,
+) -> Iterator[RunLog]:
     """Truncate this job's log and capture the run into it.
 
     A failure to create the file must not stop the job: the log is a convenience and
     the run history is the record. ``capture`` therefore yields a usable object even
     when the directory is unwritable, and the job proceeds unwatched.
+
+    **``target`` goes in the header line**, not only in the run row. A scoped refresh
+    runs fourteen jobs and writes them all into one file under the same job id
+    (``instrument_refresh``), and the reader most often meets the text after it has
+    been copied out of the page -- where the heading that named the instrument is left
+    behind. Asked for directly: a log whose lines are about one company should say
+    which company at the top. It is the same fact the run row already carries, put
+    where the text cannot be separated from it.
     """
     path = log_path(job_id)
     try:
@@ -315,7 +328,8 @@ def capture(job_id: str, run_id: int | None, started_at: dt.datetime) -> Iterato
     root.addHandler(handle)
     active.add(
         f"=== {job_id} run {run_id if run_id is not None else '-'} "
-        f"started {started_at.strftime('%Y-%m-%dT%H:%M:%SZ')} ==="
+        f"started {started_at.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        f"{f' for {target}' if target else ''} ==="
     )
     try:
         yield active

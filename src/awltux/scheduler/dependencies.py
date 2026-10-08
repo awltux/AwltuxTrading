@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
+from awltux.config import get_settings
 from awltux.db import (
     DecisionOutcome,
     DecisionRun,
@@ -55,7 +56,21 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: How recent a story must be for "awaiting appraisal" to be a fair statement.
 #: Older material stories are not this job's outstanding work; they are history.
+#: The *appraisal* probe does not use this: it asks the question the appraisal job
+#: works to, so it reads the job's own window -- see `_appraisal_window_days`.
 APPRAISAL_WINDOW_DAYS = 14
+
+
+def _appraisal_window_days() -> int:
+    """The window the appraisal job itself reads, from the job's own setting.
+
+    The guard skips ``news_analysis`` when nothing is outstanding, so a probe looking
+    at a *narrower* window than the job works in skips work the job would have done --
+    and nothing corrects it, because the next probe is narrower too. Two constants for
+    one window is how that happens quietly; `news.scepticism.lookback_days` is the one
+    the job passes to `analyse_universe`, so it is the one the probe asks.
+    """
+    return get_settings().news.scepticism.lookback_days
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,9 +409,10 @@ def _probe_news_embeddings(session: Session) -> Coverage:
 
 
 def _probe_news_analysis(session: Session) -> Coverage:
+    days = _appraisal_window_days()
     analysed = select(NewsAnalysis.news_item_id)
     window = [
-        NewsItem.published_at >= utcnow() - dt.timedelta(days=APPRAISAL_WINDOW_DAYS),
+        NewsItem.published_at >= utcnow() - dt.timedelta(days=days),
         NewsItem.materiality.in_(("material", "critical")),
     ]
     pending = session.execute(
@@ -409,12 +425,12 @@ def _probe_news_analysis(session: Session) -> Coverage:
         return Coverage.counted(
             0,
             material,
-            f"no material story from the last {APPRAISAL_WINDOW_DAYS} days is unappraised",
+            f"no material story from the last {days} days is unappraised",
         )
     return Coverage.counted(
         pending,
         material,
-        f"{pending:,} material stories from the last {APPRAISAL_WINDOW_DAYS} days unappraised",
+        f"{pending:,} material stories from the last {days} days unappraised",
     )
 
 

@@ -576,6 +576,70 @@ unilaterally.
 filings, Companies House accounts — and matching them to a claim, which would let
 "the filing says otherwise" be a checkable outcome rather than a suggestion.
 
+### The appraisal guard asks a narrower question than the job it guards
+
+`news_analysis` is skipped when `_probe_news_analysis` reports nothing outstanding, and
+the probe counts only **unappraised `material`/`critical` stories inside the window**. The
+job selects on `is_interesting`, which is four branches — materiality, rhetoric markers
+above the attention threshold, a *held* name with non-`none` materiality, or single-source
+coverage from a needs-checking publisher kind — and it also re-appraises anything whose
+appraisal is older than `refresh_after_days` (7). None of the three non-materiality
+branches is in the probe.
+
+**Measured 2026-10-08, and today the two agree** — so this is latent, not live. Run 815
+appraised the window hours earlier, and re-deriving the job's own selection over the same
+14 days from the live database gives:
+
+    7,025 stories in the window, 295 of them material/critical
+    probe: 0 pending
+    is_interesting selection: 5,070, of which never appraised 0, appraisal stale 0
+    931 stories in the window are unappraised and *declined* (646 none, 236 mild, 49 moderate)
+
+The permanent case is the one that matters: a story interesting **only** by rhetoric or
+single-source coverage pushes the probe's count to 0, so the job is skipped — and because
+the probe is narrow rather than wrong, nothing ever goes back for it. It ages out of the
+window unappraised. 295 material stories in 14 days currently keep the gate open often
+enough to sweep those branches up incidentally, which is why this has never bitten.
+
+**The fix has a trap in it.** Widening the probe to count *every* unappraised in-window
+story makes the guard true and useless: the 931 declined stories never acquire appraisals,
+so the job would run every hour for ever, re-examining 7,000 stories to write nothing.
+Counting staleness is the same trap (most of the window is stale by construction, and
+`max_deep_per_run` is 40, so that is 40 model calls an hour). Either **record the decline**
+so the probe can subtract it — an `is_interesting` verdict stored on the row — or accept
+the narrow probe and say so in the probe's reason text. Do not simply widen the count.
+
+### A story missed while it is inside the appraisal window is never appraised
+
+`analyse_universe` loads `published_at >= now - lookback_days` (14). The window slides
+forward and nothing ever looks behind it, so a story the sweep did not reach while it was
+inside — the guard skipped that hour, the container was down, the RSS allowance was spent —
+stays unappraised permanently, at the "unassessed default" weight, for ever.
+
+**Measured 2026-10-08, against the live database:**
+
+    news_item rows                                  27,526
+    distinct stories with any appraisal              6,457
+    unappraised material/critical, all time          1,685
+      of those, 14-30 days old                         102   (90 material, 12 critical)
+      of those, 30-90 days old                         708
+      of those, over 90 days old                       875
+    unappraised in-window (0-14 days)                  931   -- all declined by is_interesting
+
+The 875 over 90 days mostly predate the appraisal feature, so the recoverable population is
+roughly the **810 in the 14-90 day band** — stories that were material, were inside a window
+this job was running against at the time, and were not reached. `_probe_news_analysis`
+already documents the boundary as deliberate ("older material stories are not this job's
+outstanding work; they are history"), which is a defensible line for the *queue* but not for
+the *record*: an unappraised material story is still weighted at the unassessed default
+wherever news sentiment is aggregated.
+
+Decide one of: widen `lookback_days` (14 → 30 recovers the 102 that are 14-30 days old),
+add a one-off backfill that appraises material stories older than the window, or state in
+the appraisal section of the news page that a story older than 14 days the sweep missed will
+never be appraised. The window is a spend decision — the deterministic pass is ~24s for 7,000
+stories and the model calls are rationed at 40 — so it is not a change to make silently.
+
 ### Cross-domain corroboration does not use GDELT yet
 
 `analysis/corroboration.py` counts origins by clustering what is already in our
