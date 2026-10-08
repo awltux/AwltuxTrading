@@ -547,11 +547,12 @@ written before migration `0004` are `NULL`, and primary-source routing falls bac
 nothing for them.
 
 **Re-measured 2026-10-08: 22,894 of 26,301 stories (87%) carry one**, so this is much
-smaller than it was and much smaller than it reads. The **3,407** without are unchanged
-since the last measurement -- the sector stories `news_sectors` captures (a sector feed has
-no company to classify against, so the classifier was never asked) plus older rows -- so
-the count is static while the proportion keeps falling as ordinary stories arrive. Worth
-correcting the framing rather than the code.
+smaller than it was and much smaller than it reads. The **3,405** without are **not** the
+sector stories this entry used to blame: **there is no `news_sectors` source in the live
+database at all**, and sector feeds are classified like any other (`llm/classify.py:532`).
+Re-counted by source the nulls are **google_news 3,196, yahoo_rss 198, marketaux 12,
+finnhub 1** — the classifier simply never returned an event type for them, or they predate
+the field. Worth correcting the framing rather than the code.
 
 ### A story from a loose feed is still attributed to the instrument that fed it
 
@@ -800,19 +801,23 @@ guard in `scheduler/jobs.py` is where a "ran recently" reason would go, and
 
 ### The universe news poll needs hours and never finishes
 
-`ingest_rss_news` (`ingest/news.py:346`) walks every instrument in the universe, up to
+`ingest_rss_news` (`ingest/news.py:766`) walks every instrument in the universe, up to
 `news.max_items_per_feed_poll` (**50**) headlines each — 500 instruments, so a
-**25,000-item** ceiling — and there is no per-run cap and no rotation. Measured
-2026-10-06, `news_rss` run #220: **3,033 headlines classified in 97 minutes at a flat
-31/minute**, with no decline in the 15-minute buckets from start to finish (273, 451,
-488, 500, 428, 472, 421). At that rate the ceiling is about **13 hours**.
+**25,000-item** ceiling — and there is no per-run cap. **There *is* a rotation, and this
+entry wrongly claimed otherwise**: `_instruments_to_poll` orders by
+`Instrument.news_polled_at` (`ingest/news.py:568-610`, migration `0008_news_poll_cursor`)
+with the stamp written per instrument, so a run resumes where the last stopped rather than
+restarting at row 0. Measured 2026-10-06, `news_rss` run #220: **3,033 headlines classified
+in 97 minutes at a flat 31/minute**, with no decline in the 15-minute buckets from start to
+finish (273, 451, 488, 500, 428, 472, 421). At that rate the ceiling is about **13 hours**.
 
-`news_rss` has **0 successful runs in 7 attempts**, and this is why: a run is a working
-session long, so every session ends with it still going.
+`news_rss` has **0 successful runs in 25 attempts** (re-counted 2026-10-08; the entry said
+7), and this is why: a run is a working session long, so every session ends with it still
+going.
 
 **Interrupting it is cheap, and that was worth checking rather than assuming.**
 `release_write_lock` (`db/session.py:161`) *commits*, and this loop calls it after every
-instrument (`news.py:378`); the model client commits at every network boundary too. So
+instrument (`news.py:763`); the model client commits at every network boundary too. So
 the 3,033 rows were already durable — confirmed by reading them from a *second*
 connection while the run was still going, which is only possible for committed data. A
 kill loses at most the instrument in flight, and the next run skips everything already
@@ -824,70 +829,12 @@ and better in another: nothing is lost, but nothing completes either, so the job
 reports success, never enters the catch-up history (`AGENTS.md` §1) and never gets the
 restart resilience every other job now has.
 
-**Next:** the shape `fundamentals` already uses — a per-run item budget with a
-least-recently-polled rotation over the universe. A poll that stops at, say, 300
+**Next:** the rotation is already there, so what is missing is only the per-run item budget
+— the shape `fundamentals` uses. A poll that stops at, say, 300
 headlines and records where it got to finishes *and reports success*, which is what
 makes it eligible for catch-up. The loop also needs the `progress.note` above it before
 either can be observed.
 
-### The accounting checks fail on most stored periods, and the cause is the vocabulary
-
-First found by the trial balance on the accounts page (`analysis/ledger.py`) on 2026-10-06,
-when the entry said "of the 22 instruments with a computable equation, 14 agree and 4 are
-out". **Re-measured 2026-10-16 against 277 stored periods**, and the equation is the
-smallest part of it:
-
-    277 fundamental periods (101 instruments)
-      31 fail the equation          (15% of the 207 computable)  -- our extraction contradicts the filing
-     248 fail a composition check   (90%)   -- a stated subtotal vs the parts we hold
-     184 fail profit articulation   (66%)   -- profit, which every ratio divides by
-
-The equation is still the sharpest signal, because a published balance sheet balances by
-construction:
-
-| ticker | period | out by | share of assets |
-|---|---|---|---|
-| DFPH_US_EQ | 2020-12-31 | 219,756,050 | **+95.0%** |
-| AMBQ_US_EQ | 2024-12-31 | 378,150,000 | **+362.6%** |
-| ACM_US_EQ | 2025-09-30 | 203,600,000 | +1.7% |
-
-ACM is out on **six consecutive years** by 0.9–1.7% of assets, which is a systematically
-missing caption rather than a one-off.
-
-**The composition failures are the bigger and more tractable population, and they are
-exactly attributable.** `MSFT_US_EQ` passes the equation with a residual of 0 and still
-fails four checks. Adding up its own 10-K balance sheet:
-
-    current assets      20,935 + [55,908] + 80,876 + 1,397 + 48,594 = 207,710  = stated
-    total assets        ... + 313,076 + 24,177 + [36,348] + 119,651 + 18,609 + 38,805 = 758,376
-    current liabilities 42,416 + 9,227 + 14,945 + [2,534] + [72,965] + 26,738 = 168,825  = stated
-
-`current_assets_composition` is out by **exactly 55,908** -- that bracketed line -- and
-`assets_composition` by **exactly 92,256 = 55,908 + 36,348**. The residual is the sum of
-the captions we do not extract, and nothing about it is approximate.
-
-**The cause is that the field vocabulary is frozen at 46 names.** `metrics.STATED_METRICS`
-feeds both `prompt_metric_names()` -- which generates the extraction prompt -- and the
-`validate_extraction` gate, so the model can only ever answer questions we already knew
-to ask. A caption outside those 46 is discarded with `"<name>: not a canonical metric
-name"`. MSFT's 2026 10-K returned exactly 43 metrics with cited spans; there was nothing
-else it was permitted to return.
-
-**Next:** make the field set dynamic -- a registry seeded from the 46 and grown at
-runtime -- so a filing's own captions can be asked for and remembered. The gap gives the
-test: a candidate field is right when it closes a composition residual *exactly*, which
-makes discovery verifiable rather than a judgement call. `short_term_investments` and the
-non-current investment line are MSFT's first two.
-
-Two things settled while measuring this, so they are not re-opened:
-
-* **The outflow sign convention.** `capex` and `dividends_paid` are positive magnitudes;
-  the Yahoo adapter had normalised `capex` alone and left `dividends_paid` negative in 16
-  periods, which put the retained-earnings roll-forward out by exactly twice the dividend.
-  Fixed in `metrics.OUTFLOW_METRICS` and migration `0014`. Both sources now agree.
-* **Which source is authoritative.** With the sign settled, the XBRL row is the better
-  base -- 53 keys against Yahoo's 47, and all nine asset components -- so the merge target
-  is no longer ambiguous.
 
 ### Three pagers still reload the whole page
 
