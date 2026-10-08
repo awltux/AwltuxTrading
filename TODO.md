@@ -40,6 +40,20 @@ it cannot fund is the *hourly interval*: 24 sweeps a day would want 24,000 reque
 budget funds (2,000 − 528) / 1,000 ≈ **1.5 sweeps a day**, and coverage is that rather than
 hourly.
 
+**Measured 2026-10-08, from the other end of it.** The new hourly `held_refresh` refreshed
+three holdings and every one came back with `news_rss` failed; the lease note is only
+`Stopped: 1 of 1 instruments`. Asking the provider directly gives the reason --
+`[rss] budget spent (2000 per 86400s); window resets in 37552s` -- so **the day's allowance
+was already gone at 13:29 UTC** and nothing polls a feed again until midnight. Two things
+follow that the arithmetic above does not say on its own:
+
+- a *scoped* refresh cannot poll its instrument's feeds either, so the Refresh button's news
+  step is refused for most of the day as well;
+- the run is recorded as *stopped*, which is the same word a deploy produces, so the
+  Operations page shows the day's news quietly ending and nothing distinguishes it from an
+  upgrade. `README.md`'s "News headlines | 1–5 minutes" is likewise wrong after the ceiling
+  is reached, which on this measurement is early afternoon.
+
 **Pooling companies into one query does not work, measured 2026-10-07.** The plan above
 was "twenty companies in one query, ~1,200 requests to ~60". Tried against the live
 endpoint with real universe names, parenthesised `("A" OR "B") stock`:
