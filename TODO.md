@@ -869,28 +869,16 @@ means:
 `tests/test_partial_paging.py` carries the contract for the dashboard; adding a tuple to
 `REGIONS` extends it to each one as it lands.
 
-### `xbrl_statements` cannot tell "not reached" from "read and empty" from "read wrongly"
+### `xbrl_statements` coverage counts rows, so a wrongly-read filer is never revisited
 
-Three states, one job, and its success test distinguishes none of them. Merged from two
-entries that were each measuring a different face of the same gap.
-
-**State one: asked, received, extracted nothing -- and recorded as success.** Measured
-2026-10-07: of the **314** in-universe instruments with a resolved SEC CIK, only **40**
-had a period from `xbrl_companyfacts`; the other **274** had nothing, and nothing
-anywhere said whether that was because the rotation had not reached them or because we
-asked, received a payload, and took no figures out of it. `_write_periods` returns
-`written == 0` for the second case and `_sync_one` treats it as success: it clears any
-blocker and moves on. The two need different fixes -- waiting versus reading the tags
-differently -- and they are indistinguishable.
-
-**State two: the coverage probe counts rows, so a wrongly-read filer is never revisited.**
 `_probe_xbrl_statements` counts CIK-having filers with **no** `xbrl_companyfacts` row at
 all, and the job is `backfill=True`, so once that count reaches zero `skip_reason` skips
-it. A period extracted with the wrong tags counts as covered. Measured 2026-10-06: 314
-filers, 30 with periods, 284 without -- and the rotation is
-`ORDER BY max(as_of) NULLS FIRST, ticker` with `reports.per_run: 60`, so the 284 drain
-first and the 30 already-extracted are re-read as runs 5-6. That ordering is the only
-reason the ledger fixes of the same day reached stored rows at all; had those 30 been
+it. A period extracted with the wrong tags counts as covered. Measured 2026-10-08: of the
+**314** in-universe filers with a resolved SEC CIK, **93** have a `xbrl_companyfacts`
+period and **221** do not (the entry read 40 and 274). The rotation is
+`ORDER BY max(as_of) NULLS FIRST, ticker` with `reports.per_run: 60`, so the 221 drain
+first and the 93 already-extracted are re-read as runs 5-6. That ordering is the only
+reason the ledger fixes of the same day reached stored rows at all; had those 93 been
 extracted last they would have been re-read first and then never again.
 
 **This is the lag both 2026-10-06 fixes ran into**, and neither reaches a stored row on its
