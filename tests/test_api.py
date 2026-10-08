@@ -1502,14 +1502,68 @@ class TestTheBannerGroupsOneEventIntoOneEntry:
         self, client, universe_instrument, session, settings
     ):
         self._configure(settings)
-        embedded = self._story(session, "f", "Acme warns on profit")
-        plain = self._story(session, "g", "Acme warns on profit again")
+        embedded = self._story(session, "h", "Acme warns on profit")
+        plain = self._story(session, "i", "Acme warns on profit again")
         self._vector(session, embedded, [1.0, 0.0, 0.0])
         session.commit()
 
         events, note = self._cluster([embedded.id, plain.id], settings)
         assert note is None
         assert [event.members for event in events] == [[embedded.id], [plain.id]]
+
+    def test_the_page_counts_the_event_the_banner_announced(
+        self, client, universe_instrument, session, settings
+    ):
+        """The ticker said "4 stories cover this event" over a page that listed two.
+
+        Measured on Great Southern Copper's £2m raise, 2026-10-08: four reports whose cosines
+        were 0.96, 0.80 and 0.63. `cluster` compares each story against its cluster's
+        *anchor*, so the first one handed over decides whether the rest clear the threshold --
+        best-first groups all four, newest-first drops the one that is only 0.63 from the
+        newest. The banner ranks by priority; the news page read the newest rows by id. Two
+        definitions of the same event, so two answers on screen.
+
+        The vectors here repeat that shape in three dimensions: `critical` outranks
+        `material` outranks `moderate`, so the ranking order is fixed and `a` must anchor.
+        """
+        self._configure(settings)
+        a = self._story(session, "a", "Copper raises £2m for Mostaza", materiality="critical")
+        b = self._story(
+            session, "b", "Copper raises £2m for its Chilean project", materiality="material"
+        )
+        c = self._story(session, "c", "£2m Raised to Advance Mostaza", materiality="moderate")
+        self._vector(session, a, [1.0, 0.0, 0.0])
+        self._vector(session, b, [0.96, 0.28, 0.0])
+        self._vector(session, c, [0.71, 0.0, 0.704])
+        session.commit()
+
+        banner = client.get("/partials/news-ticker").text
+        page = client.get(f"/news/{a.id}").text
+
+        assert "3 stories cover this event" in banner, banner[:400]
+        assert "2 other" in page, "the page must list the same event the banner announced"
+
+    def test_the_oldest_story_is_grouped_with_the_same_event(
+        self, client, universe_instrument, session, settings
+    ):
+        """Whichever report the reader opens, the event is the same one.
+
+        This is the other half of the same rule: the page groups the banner's population in
+        the banner's order, so it does not matter which member of the event the reader
+        arrived from.
+        """
+        self._configure(settings)
+        a = self._story(session, "d", "Copper raises £2m for Mostaza", materiality="critical")
+        b = self._story(
+            session, "e", "Copper raises £2m for its Chilean project", materiality="material"
+        )
+        c = self._story(session, "f", "£2m Raised to Advance Mostaza", materiality="moderate")
+        self._vector(session, a, [1.0, 0.0, 0.0])
+        self._vector(session, b, [0.96, 0.28, 0.0])
+        self._vector(session, c, [0.71, 0.0, 0.704])
+        session.commit()
+
+        assert "2 other" in client.get(f"/news/{c.id}").text
 
 
 class TestDisplayZone:

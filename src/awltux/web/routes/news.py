@@ -49,12 +49,11 @@ MAX_IDLE_SECONDS = 900.0
 #: window and sorting that is the honest alternative to loading the whole table;
 #: the window is far larger than any banner needs, so nothing that could plausibly
 #: rank is excluded.
+#:
+#: **This is also the population the news page groups.** It used to have a second,
+#: smaller window of its own (300, newest by id) for "who else covered this", which
+#: answered "what is one event" differently from the banner -- see `news_item_page`.
 RANKING_WINDOW = 600
-
-#: Stories scanned when finding the other reports of one event. Smaller than the
-#: ranking window because the question is only "who else covered this", and the
-#: answer is always recent.
-EVENT_WINDOW = 300
 
 
 def _targets(item: NewsItem) -> list[dict[str, str]]:
@@ -464,31 +463,7 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
             else {}
         )
 
-        # Which other stories cover the same event. Drawn from the same population the
-        # banner draws from, so the page and the banner agree about what the event is -- a
-        # page that said "3 stories" while the banner showed the entry alone would be worse
-        # than either.
-        from awltux.analysis.embeddings import cluster_items
-
-        window_rows = list(
-            session.execute(
-                select(NewsItem)
-                .where(*_visible_to_the_banner(get_settings()))
-                .order_by(desc(NewsItem.id))
-                .limit(EVENT_WINDOW)
-            ).scalars().all()
-        )
-        events, clustering_note = cluster_items(window_rows)
-        siblings: list[NewsItem] = []
-        for event in events:
-            if item_id in event.members:
-                by_id_local = {row.id: row for row in window_rows}
-                siblings = [
-                    by_id_local[mid]
-                    for mid in event.members
-                    if mid != item_id and mid in by_id_local
-                ]
-                break
+        siblings, clustering_note = _other_coverage(session, item_id)
 
     return templates.TemplateResponse(
         request,
@@ -503,6 +478,35 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
             "clustering_note": clustering_note,
         },
     )
+
+
+def _other_coverage(session, item_id: int) -> tuple[list[NewsItem], str | None]:
+    """The other stories reporting ``item_id``'s event, and why grouping did or did not run.
+
+    **The banner's own population and order**, because the grouping is not a property of the
+    set alone: `cluster` is greedy and compares each story against its cluster's *anchor*, so
+    the first story handed over decides which of the rest clear the threshold. Measured
+    2026-10-08 on the four reports of Great Southern Copper's £2m raise -- cosines 0.96, 0.80
+    and 0.63 against each other -- one event of four when the best-ranked report anchors it,
+    three when the newest does, while the banner said "4 stories cover this event" over a page
+    that listed two. This read the newest rows by id, which is the order that splits them.
+
+    `_ranked` is the banner's ranking: same window, same materiality floor, same headline
+    collapse, same best-first order -- so a story the banner is showing gets the grouping the
+    banner showed, and one it is not showing still gets a grouping from the same population
+    rather than from a second definition of "recent".
+    """
+    from awltux.analysis.embeddings import cluster_items
+
+    window_rows = [
+        row for row, _ in _ranked(session, window=RANKING_WINDOW, limit=RANKING_WINDOW)
+    ]
+    events, note = cluster_items(window_rows)
+    by_id = {row.id: row for row in window_rows}
+    for event in events:
+        if item_id in event.members:
+            return [by_id[mid] for mid in event.members if mid != item_id and mid in by_id], note
+    return [], note
 
 
 @router.get("/api/news/stream", summary="Live news stream (Server-Sent Events)")

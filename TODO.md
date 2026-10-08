@@ -573,6 +573,31 @@ Re-counted by source the nulls are **google_news 3,196, yahoo_rss 198, marketaux
 finnhub 1** — the classifier simply never returned an event type for them, or they predate
 the field. Worth correcting the framing rather than the code.
 
+### Which stories are one event depends on which one anchors it
+
+Measured 2026-10-08 on the four reports of Great Southern Copper's £2m raise (news ids
+27291, 27293, 27294, 27295). All four agree on `event_type=capital_raise`,
+`direction=positive`, `metric=none`, so the identity veto refuses nothing; the cosines are
+0.9623, 0.7993 and 0.6329. `analysis/embeddings.py::cluster` compares each story against its
+cluster's **anchor** -- the first one handed over -- and nothing else, so:
+
+- best-first (the banner's priority order, and id-ascending) → **one event of four**;
+- newest-first → **three**, because 27295 anchors and 27294 is 0.6329 from it, under the 0.7
+  threshold, while it is 0.7993 from the best-ranked report of the same event.
+
+That is what the ticker's "4 stories cover this event" over a news page listing two was
+(27291). The page now groups the banner's population in the banner's order, so those two
+agree -- but the rule is still order-sensitive, and a third caller with its own population can
+split the same set again. `group_events` on the instrument page does exactly that today (it
+claims only "N similar reports", which is the weaker and safer sentence).
+
+Neither fix is free: single-linkage -- compare against every member rather than the anchor --
+makes membership a property of the *set* (the connected components of a ≥threshold graph are
+unique, so no order can change it), at O(n·members) comparisons and with chaining, which the
+anchor rule exists to prevent; or keep the anchor and require every caller to hand over a
+canonical order. The chaining rate under the identity veto is the measurement that decides
+it, and it has not been taken.
+
 ### A story from a loose feed is still attributed to the instrument that fed it
 
 The *accumulation* half of this no longer happens: a symbol-addressed feed cannot add a
