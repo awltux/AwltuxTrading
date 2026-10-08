@@ -29,12 +29,13 @@ is reporting our own coverage as if it were the filer's error.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from awltux.analysis.ledger import IMBALANCE, OK, UNKNOWN, Check, tolerance
 from awltux.db import FundamentalPeriod
-from awltux.ingest.linkbase import Linkbase
+from awltux.ingest.linkbase import Calculation, Linkbase
 from awltux.ingest.xbrl import TAG_MAP
 from awltux.metrics import value_of
 
@@ -238,6 +239,57 @@ def summed_members(period: FundamentalPeriod) -> dict[str, tuple[str, ...]]:
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """What one declared child contributes to its subtotal."""
+
+    #: ``held``, ``absent``, ``unmodelled`` or ``pooled``.
+    kind: str
+    #: The weighted figure to add, zero for everything that is not counted.
+    contribution: float = 0.0
+    #: The metric the figure came from, so the caller can count a summed line once.
+    metric: str | None = None
+
+
+def _reading(
+    tag: str,
+    weight: float,
+    *,
+    index: Mapping[str, str],
+    sums: Mapping[str, tuple[str, ...]],
+    metrics: Mapping[str, Any],
+    declared: set[str],
+    counted: set[str],
+) -> _Reading:
+    """What we can say about one declared child.
+
+    Named and separated because the four verdicts are the whole difficulty of this check
+    and they are easy to confuse in a single loop: a line we hold, a line our vocabulary
+    names with no figure this period, a line we have no name for at all, and a line we
+    hold *inside a summed metric* whose share of it cannot be attributed.
+    """
+    metric = index.get(tag)
+    value = value_of(metrics, metric) if metric else None
+    if value is None:
+        # No figure. Which of the two reasons it is decides the fix, so they are told
+        # apart: `absent` needs a re-extraction, `unmodelled` needs the vocabulary.
+        return _Reading("absent" if (metric or knows(tag)) else "unmodelled")
+
+    members = sums.get(metric or "")
+    if members is None:
+        return _Reading("held", weight * value, metric)
+    if set(members) > declared:
+        # We hold this caption inside a line that also sums captions the filer does not
+        # declare *here*, so its figure covers more than this child. Counting it would
+        # invent a split the filing does not make.
+        return _Reading("pooled", 0.0, metric)
+    if metric in counted:
+        # The line is one figure standing for several declared children, and it is
+        # already in the sum. Adding it again would count the same money twice.
+        return _Reading("held", 0.0, metric)
+    return _Reading("held", weight * value, metric)
+
+
 def reconcile(
     period: FundamentalPeriod, linkbase: Linkbase, *, parents: Iterable[str] | None = None
 ) -> list[Declaration]:
@@ -251,10 +303,9 @@ def reconcile(
     line to us and two to `DAC_US_EQ`, which declares `OtherAssetsCurrent` and
     `OtherReceivablesNetCurrent` as separate children of `AssetsCurrent`. Summing our
     figure once per child would count that money twice; skipping the children would claim
-    two lines we read are missing. So the line is counted **once**, when every tag it sums
-    is among the declared children, and any child it covers that the declaration leaves
-    out is reported as ``pooled`` -- the honest statement that we hold it and cannot
-    attribute its share.
+    two lines we read are missing. So the line is counted **once**, and a child whose
+    summed line also covers captions the filer declares elsewhere is reported as
+    ``pooled`` -- held, but with no attributable share. :func:`_reading` decides each case.
     """
     index = tag_index(period)
     sums = summed_members(period)
@@ -273,56 +324,77 @@ def reconcile(
             continue
 
         total = 0.0
-        held: list[str] = []
-        absent: list[str] = []
-        unmodelled: list[str] = []
-        pooled: list[str] = []
         counted: set[str] = set()
-        children = {tag for tag, _weight in spec.children}
+        declared = {tag for tag, _weight in spec.children}
+        buckets: dict[str, list[str]] = {
+            "held": [],
+            "absent": [],
+            "unmodelled": [],
+            "pooled": [],
+        }
 
         for tag, weight in spec.children:
-            child_metric = index.get(tag)
-            child = value_of(metrics, child_metric) if child_metric else None
-            if child is None:
-                if child_metric is not None or knows(tag):
-                    absent.append(tag)
-                else:
-                    unmodelled.append(tag)
-                continue
+            reading = _reading(
+                tag,
+                weight,
+                index=index,
+                sums=sums,
+                metrics=metrics,
+                declared=declared,
+                counted=counted,
+            )
+            total += reading.contribution
+            if reading.contribution and reading.metric:
+                counted.add(reading.metric)
+            buckets[reading.kind].append(tag)
 
-            members = sums.get(child_metric or "")
-            if members is None:
-                total += weight * child
-                held.append(tag)
-                continue
-
-            held.append(tag)
-            if child_metric in counted:
-                continue
-            if set(members) <= children:
-                # Every tag this line sums is declared here, so the line *is* their
-                # contribution and belongs in the sum exactly once.
-                total += weight * child
-                counted.add(child_metric)
-            else:
-                pooled.append(tag)
-
-        complete = not absent and not unmodelled and not pooled
+        held, absent = buckets["held"], buckets["absent"]
+        unmodelled, pooled = buckets["unmodelled"], buckets["pooled"]
         out.append(
-            Declaration(
-                role=spec.role,
-                parent=spec.parent,
+            _declared(
+                spec,
                 metric=metric,
                 stated=stated,
-                declared_sum=total if complete else None,
-                held=tuple(held),
-                absent=tuple(absent),
-                unmodelled=tuple(unmodelled),
-                pooled=tuple(pooled),
-                residual=(stated - total) if complete else None,
+                total=total,
+                held=held,
+                absent=absent,
+                unmodelled=unmodelled,
+                pooled=pooled,
             )
         )
     return out
+
+
+def _declared(
+    spec: Calculation,
+    *,
+    metric: str,
+    stated: float,
+    total: float,
+    held: list[str],
+    absent: list[str],
+    unmodelled: list[str],
+    pooled: list[str],
+) -> Declaration:
+    """One declaration's verdict.
+
+    A partial sum is not a smaller total, it is a different number, so ``declared_sum``
+    and ``residual`` are present only when nothing was left out or misattributed -- which
+    is what makes ``status`` meaningful rather than merely favourable.
+    """
+    complete = not absent and not unmodelled and not pooled
+    return Declaration(
+        role=spec.role,
+        parent=spec.parent,
+        metric=metric,
+        stated=stated,
+        declared_sum=total if complete else None,
+        held=tuple(held),
+        absent=tuple(absent),
+        unmodelled=tuple(unmodelled),
+        pooled=tuple(pooled),
+        residual=(stated - total) if complete else None,
+    )
 
 
 def checks(
