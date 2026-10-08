@@ -649,17 +649,9 @@ def ordered(checks: Sequence[Check], presentation: Presentation) -> list[Check]:
     a row that is not in the document's order is still a row.
     """
     rank: dict[tuple[str, str], tuple[int, int]] = {}
-    parents = {link.parent for link in presentation.links}
     for statement, role in enumerate(presentation.roles):
-        position = 0
-        for link in presentation.links:
-            if link.role != role:
-                continue
-            for child in link.children:
-                if child in parents:
-                    continue
-                position += 1
-                rank.setdefault((role, child), (statement, position))
+        for position, tag in enumerate(presentation.walk(role), start=1):
+            rank.setdefault((role, tag), (statement, position))
     return sorted(
         checks,
         key=lambda check: rank.get(

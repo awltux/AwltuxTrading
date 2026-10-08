@@ -603,15 +603,25 @@ class TestTheOtherLinkbases:
         """Where the line we are missing is printed, counting from the top."""
         read = self._read()
         assert read.presentation is not None
+        role = "StatementConsolidatedBalanceSheets"
 
         heading = read.presentation.children(
             "StatementConsolidatedBalanceSheets", "us-gaap:AssetsCurrentAbstract"
         )
 
         assert "us-gaap:CashAndCashEquivalentsAtCarryingValue" in heading
+        assert read.presentation.position(role, "us-gaap:PrepaidExpenseCurrent") == 4
+        #  The statement order, not the arc order: Danaos writes the arc for the total
+        #  `us-gaap:Liabilities` *before* the current-liability subtree, so a walk that
+        #  emitted the arcs in document order would print "Total liabilities" above the
+        #  lines it totals. Measured live: AssetsCurrent 8, Assets 14,
+        #  LiabilitiesCurrent 20, Liabilities 25.
+        assert read.presentation.position(role, "us-gaap:AssetsCurrent") < read.presentation.position(
+            role, "us-gaap:Assets"
+        )
         assert read.presentation.position(
-            "StatementConsolidatedBalanceSheets", "us-gaap:PrepaidExpenseCurrent"
-        ) == 4
+            role, "us-gaap:LiabilitiesCurrent"
+        ) < read.presentation.position(role, "us-gaap:Liabilities")
 
     def test_the_labels_are_the_words_the_filing_prints(self):
         """Not the taxonomy's generic caption, and that is the whole reason to read them.

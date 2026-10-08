@@ -209,25 +209,52 @@ class Presentation:
                 return link.children
         return ()
 
+    def walk(self, role: str) -> tuple[str, ...]:
+        """The role's lines in the order a reader meets them, depth first.
+
+        **The tree, not the arc list.** Measured on `DAC_US_EQ`: its balance sheet writes
+        the arc for `us-gaap:Liabilities` (the total) *before* the arcs for the
+        current-liability subtree, so emitting children in document order prints "Total
+        liabilities" above the lines it totals. Each parent's children are already sorted
+        by the filer's ``order``, so following the tree from its roots is the printed
+        order -- and a node that is no parent's child is a root.
+
+        A cycle would be the filing's bug rather than ours; the visited set stops the walk
+        instead of hanging a page.
+        """
+        children = {link.parent: link.children for link in self.links if link.role == role}
+        if not children:
+            return ()
+        nested = {child for kids in children.values() for child in kids}
+        out: list[str] = []
+        visited: set[str] = set()
+
+        def visit(node: str) -> None:
+            if node in visited:
+                return
+            visited.add(node)
+            for child in children.get(node, ()):
+                if child in children:
+                    visit(child)
+                else:
+                    out.append(child)
+
+        for root in children:
+            if root not in nested:
+                visit(root)
+        return tuple(out)
+
     def position(self, role: str, tag: str) -> int | None:
         """Where in a statement the filer prints ``tag``, counting from one.
 
-        Counted over the role's leaves in order, which is the order a reader sees them:
-        the point of it is to answer "where is the line we are missing" with a place in
-        the filing rather than a row in our own table.
+        Counted over the role's lines in printed order, which is what makes it answer
+        "where is the line we are missing" with a place in the filing rather than a row in
+        our own table.
         """
-        seen: list[str] = []
-        parents = {link.parent for link in self.links if link.role == role}
-        for link in self.links:
-            if link.role != role:
-                continue
-            for child in link.children:
-                if child in parents:
-                    continue
-                seen.append(child)
-        if tag not in seen:
+        lines = self.walk(role)
+        if tag not in lines:
             return None
-        return seen.index(tag) + 1
+        return lines.index(tag) + 1
 
     def as_dict(self) -> dict[str, Any]:
         return {
