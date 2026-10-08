@@ -781,6 +781,69 @@ def decision_history(
 TRADES_ON_THE_PAGE = 25
 
 
+@dataclass(frozen=True)
+class TradeRow:
+    """One execution from the broker, with what those shares would fetch at the latest close.
+
+    **`current_value` moves the cash the trade actually moved, not a fresh conversion.**
+    `value` is the broker's own figure in the account's currency -- its FX leg and its fee
+    are already in it -- and scaling it by ``close / fill_price`` keeps the two money columns
+    comparable, so the percentage beside them is *exactly* their ratio. Inventing a GBP rate
+    of our own to re-price the shares would put a number beside a number it does not agree
+    with. The trade-off is that FX movement since the fill is not in it: this is the price
+    change, deliberately.
+
+    It is also not a live quote: `close` is the newest stored daily bar, the same one the
+    price chart ends on, so the table and the chart cannot disagree about "now".
+    """
+
+    executed_at: dt.datetime | None
+    side: str | None
+    quantity: float | None
+    fill_price: float | None
+    value: float | None
+    currency: str | None
+    kind: str
+    current_value: float | None
+    change: float | None
+
+
+def trade_row(order: T212Order, close: float | None) -> TradeRow:
+    """One stored order as the page shows it. Pure, so the arithmetic is testable alone."""
+    price = order.fill_price
+    change = None
+    if close is not None and price:
+        change = close / price - 1.0
+    current_value = None
+    if order.net_value is not None and change is not None:
+        current_value = order.net_value * (1.0 + change)
+    return TradeRow(
+        executed_at=order.filled_at or order.created_at,
+        side=order.side,
+        quantity=order.filled_quantity,
+        fill_price=price,
+        value=order.net_value,
+        currency=order.currency,
+        kind=_trade_kind(order),
+        current_value=current_value,
+        change=change,
+    )
+
+
+def _trade_kind(order: T212Order) -> str:
+    """What the row actually is, in the broker's own vocabulary.
+
+    A stock split or an equity-rights issue arrives in this feed wearing an order's clothes,
+    so calling every row a trade would be wrong. The order of the checks is the order the
+    distinctions matter in: what kind of fill it was, then whether it completed at all.
+    """
+    if order.fill_type and order.fill_type != "TRADE":
+        return str(order.fill_type).lower().replace("_", " ")
+    if order.status and order.status != "FILLED":
+        return str(order.status).lower()
+    return "trade"
+
+
 def instrument_detail(
     session: Session,
     ticker: str,
@@ -881,13 +944,16 @@ def instrument_detail(
     }
 
 
-def _trades_for(session: Session, ticker: str) -> tuple[list[T212Order], bool]:
+def _trades_for(session: Session, ticker: str) -> tuple[list[TradeRow], bool]:
     """The reader's own trades in one instrument, newest execution first.
 
     One extra row is fetched and then discarded, which is how "there are more than this"
     is known without a second ``COUNT`` over the same predicate. Nulls sort last under a
     descending order in SQLite, so a row with no execution date falls to the bottom rather
     than the top -- it has not happened yet as far as the reader is concerned.
+
+    The latest close is read here rather than passed in, and is the newest stored bar the
+    chart also ends on, so the two halves of the page cannot measure "now" differently.
     """
     rows = session.execute(
         select(T212Order)
@@ -895,7 +961,14 @@ def _trades_for(session: Session, ticker: str) -> tuple[list[T212Order], bool]:
         .order_by(desc(T212Order.filled_at), desc(T212Order.order_id))
         .limit(TRADES_ON_THE_PAGE + 1)
     ).scalars().all()
-    return list(rows[:TRADES_ON_THE_PAGE]), len(rows) > TRADES_ON_THE_PAGE
+    close = session.execute(
+        select(PriceBar.close)
+        .where(PriceBar.instrument_t212_ticker == ticker)
+        .order_by(desc(PriceBar.date))
+        .limit(1)
+    ).scalar()
+    trades = [trade_row(row, close) for row in rows[:TRADES_ON_THE_PAGE]]
+    return trades, len(rows) > TRADES_ON_THE_PAGE
 
 
 def accounts_detail(session: Session, period_id: int) -> dict[str, Any] | None:
@@ -1170,7 +1243,7 @@ MARKER_LETTERS = {"buy": "B", "sell": "S", "average": "A"}
 
 def price_markers(
     history: list[dict[str, Any]],
-    trades: list[T212Order],
+    trades: list[TradeRow],
     instrument: Instrument | None,
 ) -> list[dict[str, Any]]:
     """Where the reader's own executions fall on the price line.
@@ -1192,7 +1265,7 @@ def price_markers(
 
     markers = []
     for trade in trades:
-        when = trade.filled_at or trade.created_at
+        when = trade.executed_at
         side = (trade.side or "").upper()
         if when is None or trade.fill_price is None or side not in ("BUY", "SELL"):
             continue

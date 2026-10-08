@@ -79,38 +79,54 @@
     </p>
   {% endif %}
 
-  {# The reader's own orders, newest execution first. `fill_type` is shown whenever it is
-     not a plain TRADE: a stock split or an equity-rights issue arrives in this feed wearing
-     an order's clothes, and calling it a buy would be wrong. #}
+  {# The reader's own orders, newest execution first. `kind` is "trade" unless the broker
+     called it something else -- a stock split or an equity-rights issue arrives in this
+     feed wearing an order's clothes, and calling it a buy would be wrong.
+
+     **Every numeric cell gets `class="num"` on its header too.** `table.grid .num` is
+     right-aligned and the headers default to left, so Quantity, Price and Value sat over
+     the right edge of their own figures (reported 2026-10-08). #}
   {% if trades %}
     <h3>Your trades</h3>
     <table class="grid compact">
       <thead>
         <tr>
-          <th>Executed</th><th>Side</th><th>Quantity</th><th>Price</th><th>Value</th><th>Kind</th>
+          <th>Executed</th><th>Side</th><th class="num">Quantity</th>
+          <th class="num">Price{{ (' (%s)' % instrument.currency_code) if instrument.currency_code else '' }}</th>
+          <th class="num">Paid / received</th><th class="num">Worth now</th><th>Kind</th>
         </tr>
       </thead>
       <tbody>
       {% for trade in trades %}
         <tr>
-          <td class="small">{{ trade.filled_at | datetime if trade.filled_at else (trade.created_at | datetime if trade.created_at else '—') }}</td>
+          <td class="small">{{ trade.executed_at | datetime if trade.executed_at else '—' }}</td>
           <td>
             {% if trade.side == 'BUY' %}<span class="good">buy</span>
             {% elif trade.side == 'SELL' %}<span class="bad">sell</span>
             {% else %}<span class="muted">{{ trade.side | lower if trade.side else '—' }}</span>{% endif %}
           </td>
-          <td class="num small">{{ trade.filled_quantity | number(4) }}</td>
+          <td class="num small">{{ trade.quantity | number(4) }}</td>
           <td class="num small">{{ trade.fill_price | number(4) }}</td>
-          <td class="num small">{{ trade.net_value | number }} {{ trade.currency or '' }}</td>
-          <td class="small muted">
-            {%- if trade.fill_type and trade.fill_type != 'TRADE' %}{{ trade.fill_type | lower | replace('_', ' ') }}
-            {%- elif trade.status and trade.status != 'FILLED' %}{{ trade.status | lower }}
-            {%- else %}trade{% endif -%}
+          <td class="num small nowrap">{{ trade.value | number }} {{ trade.currency or '' }}</td>
+          {# What those shares would fetch at the newest stored close, and how that compares
+             with the price actually traded -- so a sale that turned out early is visible as
+             one. `change` is a fraction of the paid price, not of our own re-pricing. #}
+          <td class="num small nowrap {% if trade.change is not none %}{{ 'good' if trade.change >= 0 else 'bad' }}{% endif %}">
+            {{- trade.current_value | number }} {{ trade.currency or '' }}
+            {%- if trade.change is not none %} ({{ trade.change | pct(1, false) }}){% endif %}
           </td>
+          <td class="small muted">{{ trade.kind }}</td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
+    <p class="muted small">
+      "Worth now" is the cash each trade moved, moved by the price since: the newest stored
+      close against the price you traded at{% if instrument.currency_code %}, so the price
+      column is in {{ instrument.currency_code }} and the money columns in the account's own
+      currency{% endif %}. It excludes currency movement since the fill and is not a live
+      quote.
+    </p>
     {% if trades_truncated %}
       <p class="muted small">The most recent trades only. Older ones are stored.</p>
     {% endif %}
@@ -511,17 +527,30 @@
           data-markers='{{ markers | tojson }}'
           {% if waiting_note %}title="{{ waiting_note }}"{% endif %}></canvas>
 </div>
-{% if markers %}
+{% if trades or markers %}
   {#
     The legend is in the page, not on the canvas. Canvas text is not selectable, not
     translatable and not reachable by a screen reader, so a key drawn into the pixels is
     one nobody who needs a key can read.
+
+    **Counted against the table, not against the dots.** This said "6 bought, 0 sold" -- a
+    count of *markers* wearing the clothes of a statement about the account. The window is
+    the newest 400 daily bars, so a fill older than its first one is not drawn, and on GWW
+    the legend's "0 sold" sat directly above a sale in the table (reported 2026-10-08). A
+    reader cannot tell a marker that is missing from a trade that never happened.
   #}
   <p class="muted small">
-    {{ markers | selectattr("letter", "equalto", "B") | list | length }} bought,
-    {{ markers | selectattr("letter", "equalto", "S") | list | length }} sold
-    {%- if markers | selectattr("letter", "equalto", "A") | list %},
-      cost basis from the position (no stored executions){% endif %}.
+    {%- if not trades %}
+      The marker is the broker's average price paid, dated when the position opened; no
+      individual execution is stored.
+    {%- elif markers | length == trades | length %}
+      All {{ trades | length }} trades in the table above are marked on this chart.
+    {%- elif markers %}
+      {{ markers | length }} of the {{ trades | length }} trades in the table above are
+      marked on this chart; the rest are older than the bars it covers.
+    {%- else %}
+      None of the trades in the table above fall inside the bars this chart covers.
+    {%- endif %}
     A marker sits at the price you actually paid or received — not that day's close — on the
     nearest daily bar.
   </p>

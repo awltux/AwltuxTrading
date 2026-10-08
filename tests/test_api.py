@@ -15,6 +15,11 @@ import pytest
 from awltux.db import utcnow
 
 
+def _money(text: str) -> float:
+    """The leading number of a rendered money cell, e.g. "264.91 GBP" -> 264.91."""
+    return float(text.split()[0].replace(",", ""))
+
+
 class TestHealth:
     def test_healthz_reports_ok_and_the_database(self, client):
         response = client.get("/healthz")
@@ -331,6 +336,78 @@ class TestTemplatesRenderWithData:
 
         assert "data-markers='" in body, "the canvas has no marker attribute"
         assert "347.6" in body.split("data-markers='")[1].split("'")[0]
+
+    def test_the_trades_columns_are_aligned_with_their_headers(self, client, held):
+        """`table.grid .num` is right-aligned and a bare `<th>` is left, so a numeric column
+        under a plain header sits against the wrong edge (reported 2026-10-08)."""
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(client.get("/instrument/TEST_US_EQ").text, "lxml")
+        table = soup.find("h3", string="Your trades").find_next("table")
+        headers = table.thead.find_all("th")
+
+        for row in table.tbody.find_all("tr"):
+            cells = row.find_all("td")
+            assert len(cells) == len(headers), "a row and its header disagree about width"
+            for header, cell in zip(headers, cells, strict=True):
+                assert ("num" in (header.get("class") or [])) == (
+                    "num" in (cell.get("class") or [])
+                ), f"'{header.get_text(strip=True)}' does not line up with its column"
+
+    def test_each_trade_states_what_it_would_be_worth_now(self, client, held):
+        """The paid figure moved by the price, and the percentage is exactly their ratio.
+
+        Asserted on the rendered page, because that is where a reader compares the two.
+        """
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(client.get("/instrument/TEST_US_EQ").text, "lxml")
+        table = soup.find("h3", string="Your trades").find_next("table")
+        headers = [th.get_text(" ", strip=True) for th in table.thead.find_all("th")]
+        cells = table.tbody.find("tr").find_all("td")
+
+        paid = _money(cells[headers.index("Paid / received")].get_text(" ", strip=True))
+        worth_text = cells[headers.index("Worth now")].get_text(" ", strip=True)
+        worth = _money(worth_text)
+        shown = float(worth_text.split("(")[1].rstrip(")").replace("%", ""))
+
+        assert paid > 0 and worth > 0
+        assert shown == pytest.approx((worth / paid - 1) * 100, abs=0.05)
+
+    def test_the_chart_legend_counts_the_table_not_the_dots(self, client, held, session):
+        """It said "0 sold" above a sale.
+
+        A marker older than the first bar is not drawn, and a count of *drawn markers* read
+        as a claim about the account: on GWW the legend's "0 sold" sat directly above a sell
+        in the same page's table (reported 2026-10-08).
+        """
+        import datetime as dt
+
+        from awltux.db import T212Order
+
+        session.add(
+            T212Order(
+                order_id=99,
+                instrument_t212_ticker="TEST_US_EQ",
+                side="SELL",
+                status="FILLED",
+                fill_type="TRADE",
+                filled_quantity=-1.0,
+                fill_price=300.0,
+                net_value=250.0,
+                currency="GBP",
+                # The prices in `populated` start a year before today, so this predates them.
+                filled_at=dt.datetime(2020, 1, 2, 14, 30, tzinfo=dt.UTC),
+            )
+        )
+        session.commit()
+
+        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+
+        assert "0 sold" not in text
+        assert "1 of the 2 trades in the table above are marked" in text
+        # And the sale itself is still stated, which is what made the claim wrong.
+        assert "sell" in text
 
     def test_the_run_button_sits_with_the_job_it_runs(self, client):
         """The button belongs beside the name, not in a column at the far right.

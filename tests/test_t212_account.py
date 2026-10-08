@@ -8,8 +8,11 @@ that make the data worth storing: the parse, and the clearing.
 
 from __future__ import annotations
 
+import pytest
+
 from awltux.db import T212Order
 from awltux.ingest.jobs import _apply_positions, _parse_position, _store_order
+from awltux.web.queries import trade_row
 from tests.helpers import make_instrument
 
 POSITION = {
@@ -238,13 +241,23 @@ class TestTheBuyPointOnTheChart:
     ]
 
     def _trade(self, order_id, day, price, side="BUY"):
+        """A page-shaped row, which is what the marker reads.
+
+        `id_of`-style fields are not needed here: a marker needs when it happened, what it
+        cost and which way it went, and `trade_row` is where those are assembled.
+        """
         import datetime as dt
 
-        return T212Order(
-            order_id=order_id,
-            side=side,
-            fill_price=price,
-            filled_at=dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC),
+        from awltux.web.queries import trade_row
+
+        return trade_row(
+            T212Order(
+                order_id=order_id,
+                side=side,
+                fill_price=price,
+                filled_at=dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC),
+            ),
+            None,
         )
 
     def test_a_fill_on_a_saturday_is_placed_on_the_next_bar(self):
@@ -310,6 +323,88 @@ class TestTheBuyPointOnTheChart:
         from awltux.web.queries import price_markers
 
         assert price_markers([], [self._trade(1, "2026-10-02", 110.0)], None) == []
+
+
+class TestWhatATradeIsWorthNow:
+    """The trades table stated what was paid and left "and now?" to the reader.
+
+    `current_value` is the cash the trade moved, scaled by the price change since, so the
+    percentage beside it is *exactly* the ratio of the two money columns. Re-pricing the
+    shares through an FX rate of our own would put a second number beside the first that does
+    not agree with it, and the reader would have no way to tell which is the trade.
+    """
+
+    def _order(self, price=100.0, value=1000.0, side="BUY", quantity=10.0, **overrides):
+        import datetime as dt
+
+        fields = {
+            "order_id": 1,
+            "side": side,
+            "fill_price": price,
+            "net_value": value,
+            "filled_quantity": quantity,
+            "currency": "GBP",
+            "status": "FILLED",
+            "fill_type": "TRADE",
+            "filled_at": dt.datetime(2026, 7, 1, 16, 0, tzinfo=dt.UTC),
+        }
+        fields.update(overrides)
+        return T212Order(**fields)
+
+    def test_the_paid_figure_moves_with_the_price(self):
+        row = trade_row(self._order(price=100.0, value=1000.0), 110.0)
+
+        assert row.current_value == pytest.approx(1100.0)
+        assert row.change == pytest.approx(0.1)
+
+    def test_the_percentage_is_the_ratio_of_the_two_money_columns(self):
+        """The invariant a reader can check by eye, on a fall as well as a rise."""
+        for close in (88.0, 110.0, 100.0):
+            row = trade_row(self._order(price=100.0, value=1000.0), close)
+            assert row.current_value / row.value - 1 == pytest.approx(row.change)
+
+    def test_a_sale_is_priced_the_same_way(self):
+        """The counterfactual is the point: did selling there cost or save money?"""
+        row = trade_row(
+            self._order(price=100.0, value=500.0, side="SELL", quantity=-5.0), 120.0
+        )
+
+        assert row.current_value == pytest.approx(600.0)
+        assert row.change == pytest.approx(0.2)
+
+    def test_no_stored_close_leaves_both_columns_empty(self):
+        """Empty, not zero and not the paid figure dressed up as today's price."""
+        row = trade_row(self._order(), None)
+
+        assert (row.current_value, row.change) == (None, None)
+
+    def test_a_zero_fill_price_does_not_divide_by_zero(self):
+        assert trade_row(self._order(price=0.0), 10.0).change is None
+
+    def test_a_missing_paid_figure_still_states_the_price_change(self):
+        row = trade_row(self._order(value=None), 110.0)
+
+        assert row.current_value is None
+        assert row.change == pytest.approx(0.1)
+
+    def test_the_kind_names_the_brokers_own_words(self):
+        """A split arrives in this feed wearing an order's clothes."""
+        split = self._order(fill_type="STOCK_SPLIT")
+        cancelled = self._order(status="CANCELLED")
+
+        assert trade_row(split, 100.0).kind == "stock split"
+        assert trade_row(cancelled, 100.0).kind == "cancelled"
+        assert trade_row(self._order(), 100.0).kind == "trade"
+
+    def test_the_execution_date_falls_back_to_when_the_order_was_created(self):
+        import datetime as dt
+
+        created = dt.datetime(2026, 7, 1, 15, 0, tzinfo=dt.UTC)
+        order = self._order()
+        order.filled_at = None
+        order.created_at = created
+
+        assert trade_row(order, 100.0).executed_at == created
 
 
 class _HeldPosition:
