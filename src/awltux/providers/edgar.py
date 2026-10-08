@@ -434,7 +434,11 @@ class EdgarProvider:
         the caller says so.
         """
         padded = self._require_cik(cik)
-        url = self.document_url(padded, accession).replace("-index.htm", "/index.json")
+        # Built by `document_url` with the filename `index.json`, **not** by rewriting the
+        # `-index.htm` URL: the accession appears in that URL twice (once as the directory
+        # and once in the filename), so a replace leaves `.../<accession>/<accession>/
+        # index.json` and EDGAR answers 404.
+        url = self.document_url(padded, accession, "index.json")
         try:
             payload = self._client.get_json(url, cache_ttl=cache_ttl)
         except ProviderError as exc:

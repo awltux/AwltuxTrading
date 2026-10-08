@@ -105,6 +105,61 @@ class TestFetching:
         assert provider.document_calls == [], "it must not fetch a document it cannot name"
 
 
+class TestListingTheFilingDirectory:
+    """The provider half, against a fake client rather than a stub provider.
+
+    `StubEdgar` reimplements `document_url`, so it cannot catch a wrong URL -- and the
+    first version of `get_filing_index` built `.../<accession>/<accession>/index.json` by
+    rewriting the `-index.htm` URL (the accession appears twice in it) and got a 404 from
+    EDGAR on the live container. This pins the address instead.
+    """
+
+    def _provider(self):
+        from awltux.providers.edgar import EdgarProvider
+
+        asked: list[str] = []
+
+        class Client:
+            def get_json(self, url, **_kwargs):
+                asked.append(url)
+                return {
+                    "directory": {
+                        "item": [
+                            {"name": "dac-20251231_cal.xml"},
+                            {"name": "dac-20251231.htm"},
+                        ]
+                    }
+                }
+
+        provider = EdgarProvider.__new__(EdgarProvider)
+        provider._client = Client()  # type: ignore[assignment]
+        return provider, asked
+
+    def test_it_asks_for_the_directory_index_json(self):
+        provider, asked = self._provider()
+
+        names = provider.get_filing_index("1369241", ACCESSION)
+
+        assert asked == [
+            "https://www.sec.gov/Archives/edgar/data/1369241/000110465926021574/index.json"
+        ]
+        assert names == ["dac-20251231.htm", "dac-20251231_cal.xml"]
+
+    def test_an_unexpected_payload_lists_nothing_rather_than_raising(self):
+        """A filing we cannot list is one whose linkbase we cannot read, which the page
+        says -- not an exception in a route."""
+        from awltux.providers.edgar import EdgarProvider
+
+        class Client:
+            def get_json(self, url, **_kwargs):
+                return {"unexpected": True}
+
+        provider = EdgarProvider.__new__(EdgarProvider)
+        provider._client = Client()  # type: ignore[assignment]
+
+        assert provider.get_filing_index("1369241", ACCESSION) == []
+
+
 class TestKeepingIt:
     def test_a_stored_linkbase_round_trips_with_its_filename(self, session):
         """The page reads SQLite; the filename is the citation it prints.
