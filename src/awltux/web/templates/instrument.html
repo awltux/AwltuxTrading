@@ -856,6 +856,11 @@
             <span class="badge unknown" title="This story has not been appraised yet">
               not yet appraised
             </span>
+            {# The tag, made actionable. It lands on the story's own page, where the
+               appraisal appears -- a POST because it spends a model call. #}
+            <form method="post" action="/news/{{ item.id }}/appraise">
+              <button type="submit" class="small">Appraise now</button>
+            </form>
           </div>
         {% endif %}
       </li>

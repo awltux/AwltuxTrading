@@ -21,8 +21,8 @@ import datetime as dt
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import desc, func, select
 from starlette.concurrency import run_in_threadpool
 
@@ -424,6 +424,40 @@ def dismiss_news_item(item_id: int) -> dict[str, object]:
     return {"dismissed": True, "id": item_id}
 
 
+@router.post("/news/{item_id}/appraise", summary="Appraise one story now")
+def appraise_news_item(item_id: int) -> RedirectResponse:
+    """Run the scepticism appraisal for one story, because a reader asked for it.
+
+    **Synchronous, and that is a decision rather than an oversight.** The instrument refresh
+    runs on a thread because it is fourteen pipeline stages and minutes long; this is one
+    story's worth of model calls, seconds, and the reader is waiting to see the verdict that
+    the button promised. A background run would need somewhere to report progress, and the
+    page would have to poll for an answer it could have had inline.
+
+    The consequence to know: this bypasses the interest threshold and the per-run model
+    ration that the scheduled sweep applies (`analysis.news_analysis.appraise_story` says
+    why), so it spends what one story costs. Nothing is written when the story names no
+    instrument and no sector, and the page says so rather than showing an unchanged page.
+    """
+    from awltux.analysis.news_analysis import appraise_story
+    from awltux.llm.news_sceptic import build_analyser
+
+    settings = get_settings()
+    with session_scope() as session:
+        if session.get(NewsItem, item_id) is None:
+            raise HTTPException(status_code=404, detail="no such news item")
+        report = appraise_story(
+            session, item_id, settings=settings, analyser=build_analyser(settings)
+        )
+
+    outcome = str(report.get("outcome") or "failed")
+    if outcome == "appraised" and report.get("deterministic_only"):
+        outcome = "deterministic"
+    return RedirectResponse(
+        url=f"/news/{item_id}?appraise={outcome}#appraisal", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
 @router.get("/news/{item_id}", response_class=HTMLResponse, include_in_schema=False)
 def news_item_page(request: Request, item_id: int) -> HTMLResponse:
     """One story, on a page of our own.
@@ -476,6 +510,7 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
             "published": format_moment(item.published_at) if item.published_at else None,
             "siblings": siblings,
             "clustering_note": clustering_note,
+            "appraise": request.query_params.get("appraise"),
         },
     )
 

@@ -787,6 +787,73 @@ class TestTheNewsItemPage:
         assert "/sectors/Healthcare" not in body
         assert "no sector page of its own" in body
 
+    def test_an_unappraised_story_offers_the_appraisal_as_a_button(
+        self, client, universe_instrument, session
+    ):
+        """The tag was a statement; it is now the thing to press.
+
+        A story the daily sweep declines (`is_interesting`) stays unappraised for good
+        otherwise, so the page has to offer the one action that changes it.
+        """
+        row = self._story(session)
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+
+        assert f'action="/news/{row.id}/appraise"' in body
+        assert "Appraise this story now" in body
+        assert "unassessed default" in body, "the reason it matters is still stated"
+
+    def test_pressing_it_appraises_and_returns_to_the_story(self, client, session):
+        """A POST that spends a model call, and lands back on the story with the outcome.
+
+        GET would let any prefetcher spend it, which is the same reason the instrument
+        refresh is a POST. No model provider is configured in the suite, so this is the
+        deterministic appraisal -- which writes the row the page then shows.
+        """
+        from awltux.db import NewsAnalysis
+
+        row = self._story(session, tickers=["TEST_US_EQ"])
+        session.commit()
+
+        response = client.post(f"/news/{row.id}/appraise", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/news/{row.id}?appraise=deterministic#appraisal"
+        session.expire_all()
+        stored = (
+            session.query(NewsAnalysis)
+            .filter_by(news_item_id=row.id, subject_type="instrument")
+            .all()
+        )
+        assert [entry.subject_id for entry in stored] == ["TEST_US_EQ"]
+        assert "Appraised by the deterministic rules only" in client.get(
+            f"/news/{row.id}?appraise=deterministic"
+        ).text
+
+    def test_the_outcome_is_stated_rather_than_left_to_be_noticed(
+        self, client, universe_instrument, session
+    ):
+        """Four outcomes the reader has to be able to tell apart, three of them not faults."""
+        row = self._story(session)
+        session.commit()
+
+        for code, expected in (
+            ("appraised", "Appraised."),
+            ("deterministic", "deterministic rules only"),
+            ("fresh", "already has a current appraisal"),
+            ("nothing", "names no instrument and no sector"),
+            ("failed", "did not complete"),
+        ):
+            # Collapsed, so the assertion is about the sentence rather than about how the
+            # template happens to wrap it -- the first version of this test failed on a
+            # line break inside "no sector".
+            body = " ".join(client.get(f"/news/{row.id}?appraise={code}").text.split())
+            assert expected in body, code
+
+    def test_an_unknown_story_cannot_be_appraised(self, client):
+        assert client.post("/news/987654/appraise", follow_redirects=False).status_code == 404
+
     def test_the_page_renders_with_the_verdict_and_the_reason(self, client, universe_instrument, session):
         row = self._story(session)
         session.commit()

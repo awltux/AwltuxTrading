@@ -385,77 +385,90 @@ class TestThePage:
         assert 'href="/jobs"' in body
         assert "/instrument/" not in body
 
-    def test_a_run_recorded_before_targets_existed_names_the_lease_it_held(
-        self, client, session
-    ):
-        """Every refresh run in the history predates `JobSpec.target`.
+class TestWhichInstrumentARunWasAbout:
+    """`_target_of`, the rule that decides the way back from a refresh's log.
 
-        The lease is the fallback, and the rule is containment rather than nearness: the
-        refresh takes the lease *before* its run row is written and gives it up after the
-        row's work ends, so the lease whose window contains this run's start is this run's.
-        Measured on the live rows 2026-10-08: run 797 started 11:38:40.837 while its lease
-        spans 11:38:40.834 to 11:40:24.185.
+    Tested directly rather than through the page, because the page reads *the newest*
+    `instrument_refresh` run and every lease in the database -- so a test that seeds its own
+    run is at the mercy of whatever another test left behind. Measured: the first version of
+    these two asserted on the rendered page, passed all afternoon, and then failed once the
+    wall clock passed a fixed date it used, because a sibling test's lease now spanned it.
+    """
+
+    @staticmethod
+    def _run(*, started, finished=None, target=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            detail={"target": target} if target else None,
+            started_at=started,
+            finished_at=finished,
+        )
+
+    def test_a_run_that_says_what_it_is_about_needs_no_lease(self):
+        from awltux.web.routes.dashboard import _target_of
+
+        started = dt.datetime(2026, 10, 8, 11, 38, 40, tzinfo=dt.UTC)
+
+        assert _target_of(self._run(started=started, target="GWW_US_EQ"), []) == "GWW_US_EQ"
+
+    def test_a_run_from_before_targets_existed_falls_back_to_the_lease_it_held(self):
+        """The live shape, to the millisecond: run 797 started 11:38:40.837739 and its
+        lease spans 11:38:40.834055 to 11:40:24.185767.
+
+        The lease *ends before the run closes* -- `release` happens at the end of the work
+        and the run row is closed after it -- so the rule asks whether the lease contains the
+        run's *start*, not its end.
         """
-        from awltux.db import IngestRun
-        from awltux.ingest import lease
-        from tests.helpers import make_instrument
+        from awltux.web.routes.dashboard import _target_of
 
-        run_start = dt.datetime(2026, 10, 8, 11, 38, 40, 837739, tzinfo=dt.UTC)
-        session.add(make_instrument("GWW_US_EQ"))
-        session.add(
-            IngestRun(
-                job="instrument_refresh",
-                started_at=run_start,
-                finished_at=run_start + dt.timedelta(seconds=103),
-                ok=True,
+        started = dt.datetime(2026, 10, 8, 11, 38, 40, 837739, tzinfo=dt.UTC)
+        leases = [
+            (
+                dt.datetime(2026, 10, 8, 11, 38, 40, 834055, tzinfo=dt.UTC),
+                dt.datetime(2026, 10, 8, 11, 40, 24, 185767, tzinfo=dt.UTC),
+                "GWW_US_EQ",
             )
-        )
-        row = lease.acquire(session, "GWW_US_EQ", now=run_start - dt.timedelta(milliseconds=4))
-        lease.release(
-            session, "GWW_US_EQ", token=row.token, state="done", note="14 of 14 steps"
-        )
-        session.commit()
+        ]
 
-        body = client.get("/jobs/instrument_refresh/log").text
+        assert _target_of(self._run(started=started), leases) == "GWW_US_EQ"
 
-        assert 'href="/instrument/GWW_US_EQ"' in body
+    def test_a_lease_that_ended_before_the_run_started_is_refused(self):
+        """The shape of the interrupted run: its own lease was overwritten by a later
+        refresh of the same instrument, so the only lease left ended hours earlier.
 
-        # The run history says it too, from the same rule: the two pages describe one run.
-        history = client.get("/jobs?run_job=instrument_refresh").text
-        assert "GWW_US_EQ" in history.split("instrument_refresh</code></a>")[1][:200]
-
-    def test_a_lease_that_ended_before_the_run_started_is_not_attributed_to_it(
-        self, client, session
-    ):
-        """Refused rather than guessed: a company named wrongly is worse than a link to
-        Operations, which is at least true.
-
-        This is the shape of the interrupted run: its own lease has been overwritten by a
-        later refresh of the same instrument, so the only lease left ended hours earlier.
+        Refused rather than matched by nearness -- a company named wrongly is worse than a
+        link to Operations, which is at least true.
         """
-        from awltux.db import IngestRun
-        from awltux.ingest import lease
-        from tests.helpers import make_instrument
+        from awltux.web.routes.dashboard import _target_of
 
-        run_start = dt.datetime(2026, 10, 8, 14, 46, 35, tzinfo=dt.UTC)
-        session.add(make_instrument("GWW_US_EQ"))
-        session.add(
-            IngestRun(
-                job="instrument_refresh",
-                started_at=run_start,
-                finished_at=run_start + dt.timedelta(seconds=60),
-                ok=False,
-            )
-        )
-        earlier = run_start - dt.timedelta(hours=3)
-        row = lease.acquire(session, "GWW_US_EQ", now=earlier)
-        lease.release(session, "GWW_US_EQ", token=row.token, state="done", note="done")
-        session.commit()
+        started = dt.datetime(2026, 10, 8, 14, 46, 35, tzinfo=dt.UTC)
+        leases = [
+            (started - dt.timedelta(hours=3), started - dt.timedelta(hours=2), "GWW_US_EQ")
+        ]
 
-        body = client.get("/jobs/instrument_refresh/log").text
+        assert _target_of(self._run(started=started), leases) is None
 
-        assert "/instrument/" not in body
-        assert 'href="/jobs"' in body
+    def test_a_lease_taken_after_the_run_belongs_to_a_later_refresh(self):
+        from awltux.web.routes.dashboard import _target_of
+
+        started = dt.datetime(2026, 10, 8, 14, 46, 35, tzinfo=dt.UTC)
+        leases = [(started + dt.timedelta(minutes=5), None, "GWW_US_EQ")]
+
+        assert _target_of(self._run(started=started), leases) is None
+
+    def test_the_newest_containing_lease_wins(self):
+        """Two leases can span one start when a refresh was taken over after its TTL
+        expired; the later one is the attempt whose log is on screen."""
+        from awltux.web.routes.dashboard import _target_of
+
+        started = dt.datetime(2026, 10, 8, 14, 46, 35, tzinfo=dt.UTC)
+        leases = [
+            (started - dt.timedelta(minutes=30), None, "OLD_US_EQ"),
+            (started - dt.timedelta(minutes=1), None, "NEW_US_EQ"),
+        ]
+
+        assert _target_of(self._run(started=started), leases) == "NEW_US_EQ"
 
     def test_the_job_name_on_the_operations_page_links_to_its_log(self, client, session):
         """The entry point. A panel nobody can reach is not a feature."""

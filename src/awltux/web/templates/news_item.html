@@ -111,7 +111,30 @@
 </p>
 
 {# ----------------------------------------------------------- scepticism #}
-<h2>How much should this be believed?</h2>
+<h2 id="appraisal">How much should this be believed?</h2>
+{% if appraise %}
+  {# What pressing the button did. Four outcomes, and three of them are not a failure:
+     the reader asked for one story, so the page says which of them happened rather
+     than leaving them to compare the page with their memory of it. #}
+  {% if appraise == 'appraised' %}
+    <p class="notice ok">Appraised. One model call, for every company or sector this
+      story names, outside the daily ration the scheduled sweep works to.</p>
+  {% elif appraise == 'deterministic' %}
+    <p class="notice warn">Appraised by the deterministic rules only. The source registry,
+      the wording scan and the corroboration count ran; the model call did not, because no
+      model provider is configured.</p>
+  {% elif appraise == 'fresh' %}
+    <p class="notice">Nothing to do: this story already has a current appraisal.</p>
+  {% elif appraise == 'nothing' %}
+    <p class="notice warn">Nothing was appraised: this story names no instrument and no
+      sector, so there is no subject to appraise it for.</p>
+  {% elif appraise == 'disabled' %}
+    <p class="notice warn">News appraisal is switched off in configuration, so nothing ran.</p>
+  {% else %}
+    <p class="notice warn">The appraisal did not complete. The operations log has the
+      error — see <a href="/jobs/news_analysis/log">the news_analysis log</a>.</p>
+  {% endif %}
+{% endif %}
 {% if analysis %}
   <section class="kv">
     <div><dt>Evidence grade</dt><dd><span class="badge {{ analysis.evidence_grade | grade_class }}">{{ analysis.evidence_grade or 'unrated' }}</span></dd></div>
@@ -175,6 +198,16 @@
     No scepticism appraisal has run for this story. Until it does, the headline is
     shown but weighted at the unassessed default rather than treated as a finding.
   </p>
+  {# The tag the reader is looking at, made actionable. A POST, not a link: it spends a
+     model call, and a prefetcher following a GET would spend it for them. #}
+  <form method="post" action="/news/{{ item.id }}/appraise">
+    <button type="submit">Appraise this story now</button>
+    <span class="muted small">
+      runs the source registry, the rhetoric scan and the corroboration count, then asks
+      the model to read it — the same appraisal the daily job makes, for this one story
+      and without waiting for its ration
+    </span>
+  </form>
 {% endif %}
 
 {# ------------------------------------------------------------------ event #}

@@ -806,3 +806,105 @@ class TestOneAppraisalPerSubject:
         news_analysis.analyse_universe(session, settings=settings)
 
         assert appraisals_for(session, [item], subject=("sector", "Industrials")) == {}
+
+
+class TestAppraisingOneStoryOnRequest:
+    """The button on a story's page, for the stories the sweep left alone.
+
+    The sweep decides what is worth a paid read (`is_interesting`) and rations the calls per
+    run. A reader pointing at one story has answered the first question and is the whole
+    reason for the second, so neither gate applies -- but the appraisal itself is the sweep's
+    own code, so the row is the same shape as one made automatically.
+    """
+
+    def test_a_story_the_sweep_would_skip_is_appraised_on_request(
+        self, session, universe, settings
+    ):
+        """The case the button exists for.
+
+        `is_interesting` refuses this story: it is only `mild`, carries no manipulation
+        markers, its publisher is rated, and its coverage is not thin. Nothing appraises it
+        on the schedule, so without the button it stays unappraised for good.
+        """
+        item = make_item(
+            session,
+            "Acme mentions something mildly",
+            materiality="mild",
+            url="https://www.reuters.com/business/mild",
+        )
+        report = news_analysis.analyse_universe(session, settings=settings)
+        assert report["selected"] == 0, "the sweep declines it"
+        assert session.execute(select(NewsAnalysis)).scalars().all() == []
+
+        result = news_analysis.appraise_story(session, item.id, settings=settings)
+
+        assert result["outcome"] == "appraised"
+        assert result["written"] == 1
+        stored = session.execute(select(NewsAnalysis)).scalars().one()
+        assert stored.news_item_id == item.id
+        assert stored.subject_id == "ACME_US_EQ"
+
+    def test_every_subject_of_the_story_is_appraised(self, session, universe, settings):
+        """Two instruments and a sector is three rows, as it is on the sweep."""
+        item = make_item(
+            session, "Acme and Beta both warn", tickers=["ACME_US_EQ", "BETA_US_EQ"]
+        )
+        item.sectors = ["Industrials"]
+        session.flush()
+
+        result = news_analysis.appraise_story(session, item.id, settings=settings)
+
+        assert result["subjects"] == 3 and result["written"] == 3
+        stored = session.execute(
+            select(NewsAnalysis).where(NewsAnalysis.news_item_id == item.id)
+        ).scalars().all()
+        assert {(row.subject_type, row.subject_id) for row in stored} == {
+            ("instrument", "ACME_US_EQ"),
+            ("instrument", "BETA_US_EQ"),
+            ("sector", "Industrials"),
+        }
+
+    def test_pressing_it_twice_does_not_pay_twice(self, session, universe, settings):
+        """The second press finds a current appraisal and says so, rather than spending a
+        second model call to reproduce the same answer."""
+        item = make_item(session, "Acme warns", tickers=["ACME_US_EQ"])
+        news_analysis.appraise_story(session, item.id, settings=settings)
+
+        second = news_analysis.appraise_story(session, item.id, settings=settings)
+
+        assert second["outcome"] == "fresh"
+        assert second["written"] == 0
+        assert session.execute(select(NewsAnalysis)).scalars().all().__len__() == 1
+
+    def test_a_story_about_nothing_is_refused_with_a_reason(self, session, universe, settings):
+        """An untagged story has no subject, so there is nothing an appraisal could be
+        *about* -- and the page has to say that rather than look unchanged."""
+        item = make_item(session, "Something happened somewhere")
+        # Assigned rather than passed: `make_item` treats an empty list as "use the
+        # default ticker", so `tickers=[]` would give the story a subject after all.
+        item.tickers = []
+        item.sectors = []
+        session.flush()
+
+        result = news_analysis.appraise_story(session, item.id, settings=settings)
+
+        assert result["outcome"] == "nothing"
+        assert result["written"] == 0
+
+    def test_an_unknown_story_is_reported_rather_than_raising(self, session, settings):
+        assert news_analysis.appraise_story(session, 987654, settings=settings)["outcome"] == "missing"
+
+    def test_the_model_is_used_when_one_is_configured(self, session, universe, settings):
+        """The point of the button: the paid half runs, not just the deterministic scan.
+
+        `deep_analysed` is the count of model calls, and it is what the page uses to tell
+        the reader whether the appraisal was the full one.
+        """
+        item = make_item(session, "Acme warns", tickers=["ACME_US_EQ"])
+
+        result = news_analysis.appraise_story(
+            session, item.id, settings=settings, analyser=fake_analyser
+        )
+
+        assert result["deep"] >= 1
+        assert result["deterministic_only"] is False

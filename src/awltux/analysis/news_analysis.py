@@ -56,6 +56,12 @@ DeepAnalyser = Callable[..., dict[str, Any] | None]
 #: Materiality levels that always justify a full appraisal.
 _MATERIAL = {"material", "critical"}
 
+#: What one subject's appraisal did. Returned rather than only counted, because a caller
+#: acting on a single story has to tell the reader which of the three happened.
+APPRAISED = "appraised"
+FRESH = "fresh"
+FAILED = "failed"
+
 #: Publisher kinds whose output cannot be taken at face value when it is the only
 #: coverage there is.
 _NEEDS_CHECKING = {"press_release", "aggregator", "opinion", "unknown"}
@@ -515,7 +521,7 @@ def _appraise_subject(
     rhetoric: RhetoricReport,
     corroboration: Corroboration,
     reason: str,
-) -> None:
+) -> str:
     """One appraisal, or a decision not to make one.
 
     Three outcomes and all of them are normal: the subject was appraised recently
@@ -523,6 +529,10 @@ def _appraise_subject(
     ration is spent so only the deterministic half runs, or it is appraised properly.
     Counting them is the point -- ``appraised`` is rows written, ``deep_analysed`` is
     the part that cost money, and a run that writes rows without spending is working.
+
+    The outcome is also *returned*, because a caller acting on one story has to tell the
+    reader which of the three happened -- the counters a sweep reports cannot say whether
+    the row was rewritten or already current.
     """
     report = run.report
     report.subjects += 1
@@ -531,7 +541,7 @@ def _appraise_subject(
     prior_analysed = _as_utc(prior.analysed_at) if prior is not None else None
     if prior_analysed is not None and prior_analysed > run.stale_before:
         report.appraised += 1
-        return
+        return FRESH
 
     analyser = _analyser_for(run)
 
@@ -552,7 +562,7 @@ def _appraise_subject(
         )
     except Exception as exc:  # noqa: BLE001 - one subject must not stop the run
         report.errors.append(f"{item.id}/{subject.type}:{subject.id}: {exc}")
-        return
+        return FAILED
 
     if analyser is not None:
         report.deep_analysed += 1
@@ -574,6 +584,118 @@ def _appraise_subject(
     # other writer for minutes.
     session.flush()
     release_write_lock(session)
+    return APPRAISED
+
+
+def appraise_story(
+    session: Session,
+    item_id: int,
+    *,
+    settings: Settings | None = None,
+    analyser: DeepAnalyser | None = None,
+) -> dict[str, Any]:
+    """Appraise one story because a reader asked for it.
+
+    **The sweep's two gates are deliberately absent, and that is the whole difference.**
+    `is_interesting` decides which stories are worth a paid read and `limit` rations how many
+    calls a run may make; both exist to spread automatic spend over a corpus nobody is
+    watching. A person pointing at one story has answered the interest question by pressing
+    the button, so this appraises every subject the story names and spends what that costs.
+
+    Everything else is the sweep's own code: the same source registry, the same rhetoric
+    scan, the same corroboration window, the same appraisal writer -- so a row made on request
+    is the same shape as one made automatically, and only the reason it exists differs.
+
+    Returns what happened, in words the page can print: ``outcome`` is one of
+    ``appraised`` (rows written), ``fresh`` (every subject already had a current appraisal),
+    ``nothing`` (the story names no instrument and no sector, so there is nothing to appraise)
+    or ``disabled`` (the appraisal is switched off in configuration).
+    """
+    settings = settings or get_settings()
+    config = settings.news.scepticism
+
+    item = session.get(NewsItem, item_id)
+    if item is None:
+        return {"outcome": "missing", "written": 0, "subjects": 0}
+    if not config.enabled:
+        return {"outcome": "disabled", "written": 0, "subjects": 0}
+
+    subjects = subjects_of(item)
+    if not subjects:
+        return {"outcome": "nothing", "written": 0, "subjects": 0}
+
+    outcomes, report = _appraise_every_subject(
+        session, item, subjects, settings=settings, analyser=analyser
+    )
+
+    written = sum(1 for outcome in outcomes if outcome == APPRAISED)
+    return {
+        "outcome": APPRAISED if written else (FAILED if FAILED in outcomes else "fresh"),
+        "written": written,
+        "subjects": len(subjects),
+        "deep": report.deep_analysed,
+        "deterministic_only": report.deep_analysed == 0,
+        "errors": report.errors[:3],
+    }
+
+
+def _appraise_every_subject(
+    session: Session,
+    item: NewsItem,
+    subjects: list[Subject],
+    *,
+    settings: Settings,
+    analyser: DeepAnalyser | None,
+) -> tuple[list[str], AnalysisReport]:
+    """Every subject this one story names, appraised, and the counters it produced.
+
+    The deterministic half is computed once for the story -- the wording and the coverage are
+    properties of the *story*, not of the subject -- while the model call is per subject,
+    because whether the reader holds it is what decides how deeply to read.
+    """
+    config = settings.news.scepticism
+    held, held_sectors = _held(session)
+    rhetoric = analyse_text(item.summary or item.title, headline=item.title)
+    corroboration = assess(
+        item.title,
+        coverage_of(item, _coverage_index(_recent_coverage(session, days=config.lookback_days))),
+        window_hours=config.corroboration_window_hours,
+    )
+
+    report = AnalysisReport()
+    report.examined = 1
+    report.selected = 1
+    run = _Run(
+        settings=settings,
+        analyser=analyser,
+        held=held,
+        held_sectors=held_sectors,
+        stale_before=utcnow() - dt.timedelta(days=config.refresh_after_days),
+        existing={
+            (row.news_item_id, row.subject_type, row.subject_id): row
+            for row in session.execute(
+                select(NewsAnalysis).where(NewsAnalysis.news_item_id == item.id)
+            ).scalars()
+        },
+        # One story's worth of calls is not a ration: the reader asked for this one.
+        limit=len(subjects),
+        report=report,
+    )
+
+    outcomes = [
+        _appraise_subject(
+            session,
+            run,
+            item,
+            subject,
+            rhetoric=rhetoric,
+            corroboration=corroboration,
+            reason="requested from the story's page",
+        )
+        for subject in subjects
+    ]
+    session.flush()
+    return outcomes, report
 
 
 def analyse_universe(
