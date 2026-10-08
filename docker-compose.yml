@@ -31,9 +31,16 @@ services:
       # overrides `env_file`, so this must be interpolated rather than hardcoded.
       AWLTUX_PORT: "${AWLTUX_PORT:-8080}"
     ports:
-      # Bound to loopback: this dashboard shows your holdings and is not
-      # authenticated, so it must not be exposed on a network by default.
-      - "127.0.0.1:${AWLTUX_PORT:-8080}:${AWLTUX_PORT:-8080}"
+      # Published on loopback by default: this dashboard shows your holdings and is
+      # not authenticated, so it must not be exposed on a network unless you say so.
+      #
+      # Set AWLTUX_BIND_ADDRESS in `.env` to reach it from another machine -- the
+      # host's own address, e.g. 192.168.1.189. That address is machine-specific and
+      # often handed out by DHCP, so it lives in `.env` rather than here; if the lease
+      # changes, `docker compose up` fails with "cannot assign requested address" until
+      # this is updated. `0.0.0.0` publishes on every interface (including the WSL and
+      # Hyper-V switches) and leaves the firewall as the only thing in front of it.
+      - "${AWLTUX_BIND_ADDRESS:-127.0.0.1}:${AWLTUX_PORT:-8080}:${AWLTUX_PORT:-8080}"
     volumes:
       - awltux-data:/data
     # Long enough for the scheduler's drain to finish a job mid-batch rather than

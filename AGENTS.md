@@ -42,11 +42,14 @@ Green tests are not a deployment. Verify it landed:
 
 ```bash
 git rev-parse --short HEAD
-curl -fsS "http://127.0.0.1:${AWLTUX_PORT:-8080}/info" | grep -i "running commit"
+curl -fsS "http://${AWLTUX_BIND_ADDRESS:-127.0.0.1}:${AWLTUX_PORT:-8080}/info" | grep -i "running commit"
 ```
 
 The hash must match and the page must **not** say *has uncommitted changes*.
-Otherwise it did not deploy — do not report it as deployed.
+Otherwise it did not deploy — do not report it as deployed. The address is the one
+`docker-compose.yml` published on: loopback by default, and `docker compose port awltux
+8092` is the authoritative answer when `AWLTUX_BIND_ADDRESS` has been set to the machine's
+own address, because a published port answers *only* on the address it was bound to.
 
 The image bakes provenance (`awltux.buildinfo`) because the runtime image has no
 `.git`. The dirty-tree check covers only the copied paths — `src`, `pyproject.toml`,
@@ -187,10 +190,14 @@ Providers parse and return; they never decide. One concern per module — SQL in
 `web/queries.py`, formatting in `web/templating.py`, time in `timezones.py`.
 
 **Secure** — this dashboard shows holdings and has no login. Secrets stay out of the
-repo and the image; never print one (`redacted_dump`, `doctor`). Loopback-bound in
-`docker-compose.yml`. `allow_live_orders` stays false and is checked at the point of
-action, not only in config. Validate anything that becomes a path or a query
-(`parse_zone`); bound parameters only. Fail closed, and say so.
+repo and the image; never print one (`redacted_dump`, `doctor`). Published on loopback
+in `docker-compose.yml`, and reaching it from another machine is an explicit act:
+`AWLTUX_BIND_ADDRESS` in `.env` (this machine sets it to `192.168.1.189`, so the
+dashboard is on the LAN and **nothing authenticates it** — anyone who can reach the port
+can read the pages and press the buttons that spend provider and model budget). No TLS,
+so nothing should proxy it anywhere it could be read. `allow_live_orders` stays false and
+is checked at the point of action, not only in config. Validate anything that becomes a
+path or a query (`parse_zone`); bound parameters only. Fail closed, and say so.
 
 **Testable** — assert the property, not the implementation. A regression test names
 the failure it prevents and the measurement, in its docstring. Assertions must be
