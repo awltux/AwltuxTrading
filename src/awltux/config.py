@@ -225,6 +225,10 @@ class ScheduleConfig(BaseModel):
     """
 
     t212_instruments: int = 86_400
+    #: Trading 212's order history. Hourly: a handful of orders a day, the endpoint's own
+    #: limit is 20 requests a minute, and an incremental run reads one page and stops at
+    #: the newest order it already holds.
+    t212_orders: int = 3_600
     t212_account: int = 3_600
     prices_intraday: int = 3_600
     prices_eod: int = 86_400

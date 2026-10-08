@@ -12,7 +12,9 @@ decisions from being refreshed.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -123,25 +125,237 @@ def sync_instruments() -> JobResult:
     )
 
 
+#: Every position column, so they are set and cleared as one group and a row is never
+#: left half-populated -- a quantity with no cost basis would read as a free holding.
+_POSITION_FIELDS = (
+    "position_opened_at",
+    "position_quantity",
+    "position_average_price",
+    "position_in_pies",
+    "position_cost_gbp",
+    "position_value_gbp",
+    "position_unrealised_gbp",
+    "position_currency",
+    "position_synced_at",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Position:
+    """One position, parsed out of the broker's payload.
+
+    Parsed once so the write below is about the database rather than about JSON shapes: the
+    ticker is nested under ``instrument``, the money under ``walletImpact``, and every field
+    is optional as far as this code is concerned.
+    """
+
+    ticker: str
+    opened_at: dt.datetime | None
+    quantity: float | None
+    average_price: float | None
+    in_pies: float | None
+    cost: float | None
+    value: float | None
+    unrealised: float | None
+    currency: str | None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN
+
+
+def _as_datetime(value: Any) -> dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _parse_position(payload: dict[str, Any]) -> _Position | None:
+    """One position from the broker's JSON, or ``None`` if it names no instrument.
+
+    A position with no ticker cannot be mapped to anything, so it is skipped rather than
+    guessed at.
+    """
+    instrument = payload.get("instrument") or {}
+    ticker = instrument.get("ticker") or payload.get("ticker")
+    if not ticker:
+        return None
+    impact = payload.get("walletImpact") or {}
+    currency = impact.get("currency")
+    return _Position(
+        ticker=str(ticker),
+        opened_at=_as_datetime(payload.get("createdAt")),
+        quantity=_as_float(payload.get("quantity")),
+        average_price=_as_float(payload.get("averagePricePaid")),
+        in_pies=_as_float(payload.get("quantityInPies")),
+        cost=_as_float(impact.get("totalCost")),
+        value=_as_float(impact.get("currentValue")),
+        unrealised=_as_float(impact.get("unrealizedProfitLoss")),
+        currency=str(currency) if currency else None,
+    )
+
+
+def _clear_position(row) -> None:
+    for field in _POSITION_FIELDS:
+        setattr(row, field, None)
+
+
 def _apply_positions(session, positions: list[dict[str, Any]]) -> int:
-    """Flag held instruments from an already-fetched positions payload."""
+    """Write what the broker says about each holding, and clear the ones it no longer has.
+
+    **The clearing is the contract, not housekeeping.** `is_held` alone cannot carry it: the
+    instrument page reads the figures, so a position that closes must stop being shown.
+    Setting and clearing move together, which also makes `position_synced_at IS NOT NULL`
+    mean exactly "this row currently holds a position".
+
+    Kept as the broker reports it rather than recomputed from our own prices. The cost
+    includes the FX leg and the conversion fee, which the app's price series cannot
+    reproduce.
+    """
     from sqlalchemy import select
 
-    from awltux.db import Instrument
+    from awltux.db import Instrument, utcnow
 
-    held = {
-        str((position.get("instrument") or {}).get("ticker") or position.get("ticker"))
-        for position in positions
-    }
-    held.discard("None")
-    count = 0
+    parsed = [item for item in (_parse_position(p) for p in positions) if item is not None]
+    by_ticker = {item.ticker: item for item in parsed}
+    now = utcnow()
+
+    applied = 0
     for row in session.execute(select(Instrument)).scalars().all():
-        was_held = row.is_held
-        row.is_held = row.t212_ticker in held
-        if row.is_held and not was_held:
-            count += 1
+        position = by_ticker.get(row.t212_ticker)
+        row.is_held = position is not None
+        if position is None:
+            _clear_position(row)
+            continue
+        row.position_opened_at = position.opened_at
+        row.position_quantity = position.quantity
+        row.position_average_price = position.average_price
+        row.position_in_pies = position.in_pies
+        row.position_cost_gbp = position.cost
+        row.position_value_gbp = position.value
+        row.position_unrealised_gbp = position.unrealised
+        row.position_currency = position.currency
+        row.position_synced_at = now
+        applied += 1
+
     session.flush()
-    return len(held)
+    return applied
+
+
+#: How many orders one run will read. The API's page size is 50 and the paginator caps at
+#: 40 pages, so this bounds a first-run backfill at two pages' worth of new trades per run
+#: and lets the rest arrive over subsequent runs. Trading is a handful of orders a day; a
+#: larger ration would only make a backfill finish sooner.
+ORDERS_PER_RUN = 200
+
+
+def _store_order(session, item: dict[str, Any]) -> bool:
+    """Upsert one historical order from the broker's payload. True when it was new.
+
+    Upsert rather than insert because history is re-read from the newest page backwards and
+    a page can be re-read after a failed run; `order_id` is the idempotency key.
+    """
+    from sqlalchemy import select
+
+    from awltux.db import T212Order
+
+    order = item.get("order") or {}
+    fill = item.get("fill") or {}
+    order_id = order.get("id")
+    if not isinstance(order_id, int):
+        return False
+
+    row = session.execute(
+        select(T212Order).where(T212Order.order_id == order_id)
+    ).scalar_one_or_none()
+    created = row is None
+    if row is None:
+        row = T212Order(order_id=order_id)
+        session.add(row)
+
+    instrument = order.get("instrument") or {}
+    ticker = instrument.get("ticker") or order.get("ticker")
+    impact = fill.get("walletImpact") or {}
+    currency = impact.get("currency") or order.get("currency")
+
+    # A ticker that matches no instrument is still stored, unlinked: the account can hold
+    # something outside the stored universe and dropping the row would lose a real trade.
+    row.instrument_t212_ticker = str(ticker) if ticker else None
+    row.side = order.get("side")
+    row.status = order.get("status")
+    row.order_type = order.get("type")
+    row.strategy = order.get("strategy")
+    row.created_at = _as_datetime(order.get("createdAt"))
+    row.filled_at = _as_datetime(fill.get("filledAt"))
+    row.filled_quantity = _as_float(fill.get("quantity"))
+    row.fill_price = _as_float(fill.get("price"))
+    row.fill_type = fill.get("type")
+    row.net_value = _as_float(impact.get("netValue"))
+    row.currency = str(currency) if currency else None
+    return created
+
+
+def sync_orders() -> JobResult:
+    """Store Trading 212's order history: the buy and sell dates the pages were missing.
+
+    **Incremental.** The newest `order_id` already stored is the cursor and the walk stops
+    there, so an hourly run reads only what is new. The first run backfills up to
+    ``ORDERS_PER_RUN`` and the rest arrive over later runs, which the job's detail records
+    so a truncated backfill is visible rather than silent.
+
+    **A key without `history:orders` is a supported configuration**, not a fault: the same
+    way a metadata-only key cannot read positions. It is reported as a note, which the
+    operations page shows.
+    """
+    from sqlalchemy import func, select
+
+    from awltux.db import T212Order
+    from awltux.providers.t212 import ScopeUnavailable, T212Provider
+
+    settings = get_settings()
+    provider = T212Provider(settings)
+    if not provider.configured:
+        return JobResult(note="Trading 212 is not configured")
+
+    with session_scope() as session:
+        newest = session.execute(select(func.max(T212Order.order_id))).scalar()
+
+    try:
+        with provider:
+            orders = provider.get_order_history(
+                limit=ORDERS_PER_RUN, since_order_id=newest
+            )
+    except ScopeUnavailable as exc:
+        return JobResult(note=f"order history is not readable with this key: {exc}")
+    except Exception as exc:
+        # One unreadable endpoint is not a reason to fail the schedule.
+        logger.warning("could not read the trading history: %s", exc)
+        return JobResult(note=f"could not read the trading history: {exc}")
+
+    written = 0
+    with session_scope() as session:
+        for item in orders:
+            if _store_order(session, item):
+                written += 1
+        session.flush()
+
+    return JobResult(
+        items_seen=len(orders),
+        items_written=written,
+        note=(
+            f"backfill truncated at {ORDERS_PER_RUN} orders; more will arrive next run"
+            if len(orders) >= ORDERS_PER_RUN
+            else None
+        ),
+        detail={"since_order_id": newest, "read": len(orders), "new": written},
+    )
 
 
 def _record_capabilities(session, holds_readable: bool, metadata_ok: bool) -> dict[str, Any]:

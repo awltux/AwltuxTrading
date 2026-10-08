@@ -27,6 +27,93 @@
   <div><dt>SEC CIK</dt><dd>{{ instrument.sec_cik or '—' }}</dd></div>
 </section>
 
+{# --------------------------------------------------------------- position #}
+{# What the account actually holds, as the broker reports it. It sits above the refresh
+   panel and the decision because "what do I own" is the first question a reader has, and
+   because everything below is advice about a position this section states.
+
+   **Not recomputed from our own prices.** The cost includes the FX leg and the conversion
+   fee, which the app's price series cannot reproduce; where the two disagree, both are
+   shown and this says which is which. #}
+<section class="panel" id="position">
+  <h2>Your position</h2>
+  {% if instrument.is_held and instrument.position_synced_at %}
+    <section class="kv">
+      <div><dt>Quantity</dt><dd>{{ instrument.position_quantity | number(4) }}</dd></div>
+      <div><dt>Average price paid</dt><dd>{{ instrument.position_average_price | number(4) }}
+        {{ instrument.currency_code or '' }}</dd></div>
+      <div><dt>Opened</dt><dd>{{ instrument.position_opened_at | datetime }}
+        <span class="muted small">· {{ instrument.position_opened_at | ago }}</span></dd></div>
+      <div><dt>Cost</dt><dd>{{ instrument.position_cost_gbp | number }}
+        {{ instrument.position_currency or '' }}</dd></div>
+      <div><dt>Value now</dt><dd>{{ instrument.position_value_gbp | number }}
+        {{ instrument.position_currency or '' }}</dd></div>
+      <div><dt>Unrealised</dt>
+        <dd class="{% if (instrument.position_unrealised_gbp or 0) >= 0 %}good{% else %}bad{% endif %}">
+          {{ instrument.position_unrealised_gbp | number }} {{ instrument.position_currency or '' }}
+        </dd></div>
+      {% if instrument.position_in_pies %}
+        <div><dt>In pies</dt><dd>{{ instrument.position_in_pies | number(4) }}</dd></div>
+      {% endif %}
+    </section>
+    <p class="muted small">
+      From Trading 212 on {{ instrument.position_synced_at | datetime }}, in the account's own
+      currency{% if instrument.position_currency %} ({{ instrument.position_currency }}){% endif %}.
+      Cost and value include the FX conversion the broker applied, so they will not match this
+      page's own price series exactly — that series is in the instrument's currency and
+      excludes the fee.
+    </p>
+  {% elif instrument.position_synced_at %}
+    <p class="muted">No open position.
+      <span class="small">Positions were last read on {{ instrument.position_synced_at | datetime }}.</span>
+    </p>
+  {% else %}
+    {# Distinct from "not held": nothing has ever read a position for this row, which is
+       what a metadata-only API key looks like. #}
+    <p class="muted">No position has been read for this instrument.
+      <span class="small">Either the account does not hold it, or the Trading 212 key cannot
+      read positions — the Info page reports which.</span>
+    </p>
+  {% endif %}
+
+  {# The reader's own orders, newest execution first. `fill_type` is shown whenever it is
+     not a plain TRADE: a stock split or an equity-rights issue arrives in this feed wearing
+     an order's clothes, and calling it a buy would be wrong. #}
+  {% if trades %}
+    <h3>Your trades</h3>
+    <table class="grid compact">
+      <thead>
+        <tr>
+          <th>Executed</th><th>Side</th><th>Quantity</th><th>Price</th><th>Value</th><th>Kind</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for trade in trades %}
+        <tr>
+          <td class="small">{{ trade.filled_at | datetime if trade.filled_at else (trade.created_at | datetime if trade.created_at else '—') }}</td>
+          <td>
+            {% if trade.side == 'BUY' %}<span class="good">buy</span>
+            {% elif trade.side == 'SELL' %}<span class="bad">sell</span>
+            {% else %}<span class="muted">{{ trade.side | lower if trade.side else '—' }}</span>{% endif %}
+          </td>
+          <td class="num small">{{ trade.filled_quantity | number(4) }}</td>
+          <td class="num small">{{ trade.fill_price | number(4) }}</td>
+          <td class="num small">{{ trade.net_value | number }} {{ trade.currency or '' }}</td>
+          <td class="small muted">
+            {%- if trade.fill_type and trade.fill_type != 'TRADE' %}{{ trade.fill_type | lower | replace('_', ' ') }}
+            {%- elif trade.status and trade.status != 'FILLED' %}{{ trade.status | lower }}
+            {%- else %}trade{% endif -%}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if trades_truncated %}
+      <p class="muted small">The most recent trades only. Older ones are stored.</p>
+    {% endif %}
+  {% endif %}
+</section>
+
 {# ----------------------------------------------------------------- refresh #}
 {# The pipeline stages for this one company, on demand. It exists because a call can be
    shown here while most of what it rests on has never been fetched -- the scheduled

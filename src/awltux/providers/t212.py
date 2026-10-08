@@ -24,6 +24,7 @@ build them. The exchange for an instrument comes from ``workingScheduleId``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -234,14 +235,39 @@ class T212Provider:
         return payload
 
     # --------------------------------------------------------------- history
-    def get_order_history(self, limit: int = 50) -> list[dict[str, Any]]:
-        return self._paginate("/equity/history/orders", limit)
+    def get_order_history(
+        self, limit: int = 50, *, since_order_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Executed orders, newest first, stopping at an order already stored.
+
+        ``since_order_id`` makes a repeat run cheap: it walks until it meets an id it has
+        seen and stops there, rather than re-reading the whole account history every hour.
+        """
+        return self._paginate(
+            "/equity/history/orders",
+            limit,
+            id_of=lambda item: (item.get("order") or {}).get("id"),
+            stop_at_id=since_order_id,
+        )
 
     def get_dividends(self, limit: int = 50) -> list[dict[str, Any]]:
         return self._paginate("/equity/history/dividends", limit)
 
-    def _paginate(self, path: str, limit: int) -> list[dict[str, Any]]:
-        """Walk ``nextPagePath`` until exhausted, with a hard safety cap."""
+    def _paginate(
+        self,
+        path: str,
+        limit: int,
+        *,
+        id_of: Callable[[dict[str, Any]], int | None] | None = None,
+        stop_at_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Walk ``nextPagePath`` until exhausted, with a hard safety cap.
+
+        ``stop_at_id`` ends the walk at the first item at or below that id, so an
+        incremental run asks only for what is new. T212 returns history newest-first, but
+        this does not *depend* on that: the caller upserts by id, so a page that arrived
+        out of order would still be correct -- merely slower.
+        """
         items: list[dict[str, Any]] = []
         next_path: str | None = path
         pages = 0
@@ -250,10 +276,21 @@ class T212Provider:
             payload = client.get_json(next_path, params={"limit": min(limit, 50)})
             if not isinstance(payload, dict):
                 break
-            items.extend(payload.get("items") or [])
+            page = payload.get("items") or []
+            finished = False
+            for item in page:
+                if stop_at_id is not None and id_of is not None:
+                    item_id = id_of(item)
+                    if isinstance(item_id, int) and item_id <= stop_at_id:
+                        finished = True
+                        break
+                items.append(item)
+                if len(items) >= limit:
+                    finished = True
+                    break
             next_path = payload.get("nextPagePath")
             pages += 1
-            if len(items) >= limit:
+            if finished:
                 break
         return items
 

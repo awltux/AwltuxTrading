@@ -1034,6 +1034,32 @@ recency -- or embed only stories that clear `ticker_min_materiality`. Both are a
 pipeline (`Identity.conflicts`) depends on the newest-first order before changing it; if it
 does, the selection needs two queues rather than one reordering.
 
+### More of the Trading 212 account is readable than is stored: dividends, cash and pies
+
+The positions and order-history work put two endpoints on the graph. Probing the same key on
+2026-10-08 showed four more, all reachable and none stored:
+
+| endpoint | carries | probed |
+|---|---|---|
+| `/equity/history/dividends` | `paidOn`, `amount`, `grossAmountPerShare`, `quantity`, `ticker`, `type` (ORDINARY / BONUS / DEMERGER) | 5 items, e.g. `VWRLl_EQ` £250.49 paid 2026-09-30 |
+| `/equity/history/transactions` | cash movements in and out of the account | not read |
+| `/equity/pies`, `/equity/pies/{id}` | which pie an instrument sits in, its weight and target | not read |
+| `/equity/history/exports` | async CSV report generation | not read |
+
+**Dividends are the one worth doing next**, and they are not just a page row: a dividend is
+a realised return that the calibration work currently cannot see, so `decision_outcome`'s
+`return_pct` omits cash actually received. That makes it a correctness question about the
+performance figures rather than a display one -- measure what the ledger currently reports
+against the dividend history before adding a table, because the two should agree and today
+nothing checks.
+
+`/equity/pies` is the cheapest of the four and the most decorative: it would let the
+instrument page say "this is 4% of your Tech pie", which is context rather than analysis.
+
+Both `get_dividends` and the pie endpoints need provider methods; `get_dividends` already
+exists (`providers/t212.py:240`) and has no callers, the same way `get_order_history` had none
+before this work.
+
 ---
 
 ## Deliberately not doing

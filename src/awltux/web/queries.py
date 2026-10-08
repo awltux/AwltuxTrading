@@ -33,6 +33,7 @@ from awltux.db import (
     PriceBar,
     Quote,
     SentimentSeries,
+    T212Order,
     ValuationRun,
     utcnow,
 )
@@ -775,6 +776,11 @@ def decision_history(
     return rows, total
 
 
+#: How many of the reader's own trades the instrument page lists. Bounded because a
+#: long-held position has hundreds and the page is not a statement.
+TRADES_ON_THE_PAGE = 25
+
+
 def instrument_detail(
     session: Session,
     ticker: str,
@@ -852,6 +858,8 @@ def instrument_detail(
             for o in decision.outcomes
         ]
 
+    trades, trades_truncated = _trades_for(session, ticker)
+
     return {
         "instrument": instrument,
         "decision": decision,
@@ -868,7 +876,26 @@ def instrument_detail(
         "news_per_page": news_per_page,
         "news_pages": max(1, -(-news_total // news_per_page)),
         "outcomes": outcomes,
+        "trades": trades,
+        "trades_truncated": trades_truncated,
     }
+
+
+def _trades_for(session: Session, ticker: str) -> tuple[list[T212Order], bool]:
+    """The reader's own trades in one instrument, newest execution first.
+
+    One extra row is fetched and then discarded, which is how "there are more than this"
+    is known without a second ``COUNT`` over the same predicate. Nulls sort last under a
+    descending order in SQLite, so a row with no execution date falls to the bottom rather
+    than the top -- it has not happened yet as far as the reader is concerned.
+    """
+    rows = session.execute(
+        select(T212Order)
+        .where(T212Order.instrument_t212_ticker == ticker)
+        .order_by(desc(T212Order.filled_at), desc(T212Order.order_id))
+        .limit(TRADES_ON_THE_PAGE + 1)
+    ).scalars().all()
+    return list(rows[:TRADES_ON_THE_PAGE]), len(rows) > TRADES_ON_THE_PAGE
 
 
 def accounts_detail(session: Session, period_id: int) -> dict[str, Any] | None:

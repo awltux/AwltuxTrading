@@ -448,6 +448,14 @@ def _calibration(detail: dict[str, Any]) -> str:
     return f"{_n(scored)} elapsed decisions scored against their horizon price"
 
 
+def _t212_orders(detail: dict[str, Any]) -> str:
+    read = _get(detail, "read")
+    new = _get(detail, "new")
+    if not read:
+        return "no new orders since the last one stored"
+    return f"{_n(read)} orders read, {_n(new)} new"
+
+
 def _symbol_resolution(detail: dict[str, Any]) -> str:
     looked = _get(detail, "looked_up")
     resolved = _get(detail, "resolved")
@@ -566,6 +574,7 @@ SUMMARISERS: dict[str, Summariser] = {
     "valuation": _valuation,
     "decision": _decision,
     "calibration": _calibration,
+    "t212_orders": _t212_orders,
     "retention": _retention,
 }
 

@@ -356,31 +356,6 @@ def refresh_universe(session: Session, settings: Settings | None = None) -> dict
     return stats
 
 
-def mark_held_instruments(session: Session, provider: T212Provider | None = None) -> int:
-    """Flag instruments the account currently holds, from the positions endpoint."""
-    provider = provider or T212Provider()
-    try:
-        positions = provider.get_positions()
-    except Exception as exc:
-        logger.warning("could not read positions: %s", exc)
-        return 0
-
-    held: set[str] = set()
-    for position in positions:
-        ticker = (position.get("instrument") or {}).get("ticker") or position.get("ticker")
-        if ticker:
-            held.add(str(ticker))
-
-    count = 0
-    for row in session.execute(select(Instrument)).scalars().all():
-        was_held = row.is_held
-        row.is_held = row.t212_ticker in held
-        if row.is_held and not was_held:
-            count += 1
-    session.flush()
-    return len(held)
-
-
 def ticker_venue_summary(session: Session) -> dict[str, int]:
     """Diagnostic: how many instruments parsed to each venue."""
     summary: dict[str, int] = {}

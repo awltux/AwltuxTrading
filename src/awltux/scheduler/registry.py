@@ -66,6 +66,20 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             requires=("T212_API_KEY", "T212_API_SECRET"),
         ),
         JobSpec(
+            id="t212_orders",
+            func=ingest_jobs.sync_orders,
+            interval_seconds=schedule.t212_orders,
+            description=(
+                "Store the account's order history, so an instrument page can show its "
+                "buy and sell dates"
+            ),
+            # Deliberately not `run_on_start`: nothing depends on the trade history, so it
+            # has no business delaying boot. The first run backfills and later runs are
+            # incremental.
+            enabled=t212_ready,
+            requires=("T212_API_KEY", "T212_API_SECRET"),
+        ),
+        JobSpec(
             id="symbol_resolution",
             # Only has work while its coverage probe reports a gap.
             backfill=True,

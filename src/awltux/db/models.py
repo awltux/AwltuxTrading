@@ -22,6 +22,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -150,6 +151,37 @@ class Instrument(Base, TimestampMixin):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     is_held: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    # --- the broker's own view of the position --------------------------------
+    #: What Trading 212 said about this holding, as it said it.
+    #:
+    #: The positions endpoint has always been read -- it is how `is_held` is decided --
+    #: and everything except the ticker was discarded. These are the fields that were
+    #: being thrown away.
+    #:
+    #: **Kept as the broker reports them, and not recomputed from our own price series.**
+    #: `position_cost_gbp` includes the FX leg and the conversion fee, which the app's
+    #: prices cannot reproduce; where the two disagree the page shows both and says which
+    #: is which.
+    #:
+    #: **Cleared when the position closes**, in the same write that clears `is_held`. A
+    #: sold instrument keeping a position for ever is this feature inverted, so the
+    #: clearing is part of the contract rather than housekeeping.
+    position_opened_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    position_quantity: Mapped[float | None] = mapped_column(Float)
+    position_average_price: Mapped[float | None] = mapped_column(Float)
+    position_in_pies: Mapped[float | None] = mapped_column(Float)
+    position_cost_gbp: Mapped[float | None] = mapped_column(Float)
+    position_value_gbp: Mapped[float | None] = mapped_column(Float)
+    position_unrealised_gbp: Mapped[float | None] = mapped_column(Float)
+    #: Which currency `walletImpact` was denominated in. Read rather than assumed: it is
+    #: the account's primary currency, and the columns above are named `_gbp` because
+    #: *this* account's is GBP, not because the code may assume it.
+    position_currency: Mapped[str | None] = mapped_column(String(8))
+    #: When a positions read last applied to this row, held or not. It distinguishes
+    #: "not held" from "positions were not readable", which is the distinction
+    #: `holds_readable` already draws at the call site.
+    position_synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     market_cap: Mapped[float | None] = mapped_column(Float)
     median_daily_turnover_gbp: Mapped[float | None] = mapped_column(Float)
 
@@ -1090,3 +1122,54 @@ class IngestRun(Base):
     items_written: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
     detail: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class T212Order(Base):
+    """One executed order from Trading 212's account history.
+
+    The buy and sell dates the instrument page was missing. `T212Provider.get_order_history`
+    has existed since the provider was written and had no callers, so nothing was stored.
+
+    **`order_id` is T212's, and unique here.** It is the idempotency key: history is
+    re-read from the newest page backwards and a page can be re-read after a failed run, so
+    the write upserts on this rather than assuming each order is seen once.
+
+    **A row whose ticker matches no instrument is kept.** The account can hold something
+    outside the stored universe, and dropping the row would lose a real trade to a gap in
+    our own metadata. It is stored unlinked and the page it would belong to does not exist,
+    which is honest rather than tidy.
+    """
+
+    __tablename__ = "t212_order"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: The broker's own order id. The idempotency key, not a surrogate.
+    order_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    #: Nullable on purpose: see the class docstring.
+    instrument_t212_ticker: Mapped[str | None] = mapped_column(String(32), index=True)
+
+    side: Mapped[str | None] = mapped_column(String(8))  # BUY / SELL
+    status: Mapped[str | None] = mapped_column(String(24))  # FILLED, CANCELLED, ...
+    order_type: Mapped[str | None] = mapped_column(String(16))  # MARKET, LIMIT, ...
+    #: T212's "strategy" tag: VALUE, INVEST, ...
+    strategy: Mapped[str | None] = mapped_column(String(16))
+
+    created_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the order actually executed. This is the date the page is about.
+    filled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+    filled_quantity: Mapped[float | None] = mapped_column(Float)
+    fill_price: Mapped[float | None] = mapped_column(Float)
+    #: TRADE, STOCK_SPLIT, EQUITY_RIGHTS, ... A non-TRADE row is a corporate action
+    #: wearing an order's clothes, and the page says which rather than calling it a buy.
+    fill_type: Mapped[str | None] = mapped_column(String(32))
+
+    #: Cash effect in the account's currency, fees included, and that currency. Read from
+    #: the payload rather than assumed.
+    net_value: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str | None] = mapped_column(String(8))
+
+    #: When this row was first written, so a backfill can be told from a new trade.
+    first_seen_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )

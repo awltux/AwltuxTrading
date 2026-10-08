@@ -21,6 +21,7 @@ from awltux.db.models import (
     ProviderBudget,
     Quote,
     SentimentSeries,
+    T212Order,
     ValuationRun,
     utcnow,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "ProviderBudget",
     "Quote",
     "SentimentSeries",
+    "T212Order",
     "ValuationRun",
     "get_engine",
     "get_session_factory",

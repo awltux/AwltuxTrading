@@ -40,6 +40,7 @@ from awltux.db import (
     NewsItem,
     PriceBar,
     SentimentSeries,
+    T212Order,
     ValuationRun,
     utcnow,
 )
@@ -464,6 +465,22 @@ def _probe_decision(session: Session) -> Coverage:
     return Coverage.counted(missing, len(rows), _note(missing, len(rows), "a decision on record"))
 
 
+def _probe_t212_orders(session: Session) -> Coverage:
+    """Nothing depends on the trade history, so there is no queue to report.
+
+    Registered because every job has a probe, and the honest answer is that this one gates
+    nothing: the instrument page shows whatever has been stored and says when it was read.
+    A zero is worth naming rather than hiding, because the likeliest reason for it is a key
+    without the ``history:orders`` scope -- which the job's own outcome also reports.
+    """
+    stored = _count(session, T212Order)
+    if stored == 0:
+        return Coverage.none(
+            "no trades stored yet; the key may not carry the history:orders scope"
+        )
+    return Coverage.none(f"{stored:,} trades stored")
+
+
 def _probe_calibration(session: Session) -> Coverage:
     total = _count(session, DecisionRun)
     if total == 0:
@@ -589,6 +606,7 @@ PROBES = {
     "valuation": _probe_valuation,
     "decision": _probe_decision,
     "calibration": _probe_calibration,
+    "t212_orders": _probe_t212_orders,
     "retention": _probe_retention,
 }
 
