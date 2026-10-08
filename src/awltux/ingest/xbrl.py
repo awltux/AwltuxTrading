@@ -213,6 +213,10 @@ TAG_MAP: tuple[MetricTag, ...] = (
     # the stated `LiabilitiesCurrent` of 612,411,000 to the dollar.
     MetricTag("compensation_and_benefits", MONETARY, (
         "EmployeeRelatedLiabilitiesCurrent",
+        # The caption the same money carries on most other balance sheets -- see
+        # `METRIC_NOTES`. An alternative and not an addition: a filer that tags both is
+        # describing one liability twice, and the coverage rule keeps the first.
+        "AccruedLiabilitiesCurrent",
     )),
     MetricTag("other_current_liabilities", MONETARY, (
         "OtherLiabilitiesCurrent",
@@ -244,6 +248,36 @@ TAG_MAP: tuple[MetricTag, ...] = (
         "PaymentsOfDividends",
     )),
 )
+
+#: Captions summed into a metric **on top of** the tag that supplies it.
+#:
+#: Keyed by the winning tag, because whether an addition is safe depends on what that
+#: tag already contains. A balance sheet presents several captions in one bucket, and
+#: `TAG_MAP` picks one per metric -- right for a figure the filer names once, wrong for
+#: *other current assets*, where the filer names each piece separately.
+#:
+#: **Every candidate was measured before it was kept.** Measured 2026-10-08 over the 98
+#: companyfacts payloads archived on the volume -- 1,153 periods, re-derived twice, once
+#: with each candidate and once without. A candidate is kept only when it closes
+#: composition checks and closes none of them wrongly:
+#:
+#:     accrued-liabilities alternative   20 closed    0 worse    0 newly failing
+#:     other-receivables addition         4 closed    0 worse    0 newly failing
+#:     prepaid-expense addition           8 closed    0 worse   15 newly failing
+#:     contract-liability addition        5 closed   14 worse    4 newly failing
+#:
+#: The two rejected ones are rejected on that evidence, not on taste, and the reason is
+#: visible in the names: `PrepaidExpenseAndOtherAssetsCurrent` and `OtherLiabilitiesCurrent`
+#: are *residual* captions that already contain what was being added to them. Measured on
+#: `DAC_US_EQ` FY2025-12-31, the kept pair takes current assets from out by 48,843,000 to
+#: 2,093,000 -- inside the check's 0.5% tolerance, so it agrees -- and current liabilities
+#: from 65,397,000 to 36,625,000. The rest of that residual is the deferred revenue the
+#: `ContractWithCustomerLiabilityCurrent` addition would have closed, and it is left
+#: unexplained rather than closed wrongly for fifteen other filers.
+EXTRA_TAGS: dict[str, tuple[str, ...]] = {
+    "OtherAssetsCurrent": ("OtherReceivablesNetCurrent",),
+}
+
 
 #: Share counts. The us-gaap tag is an instant at the balance-sheet date, so it
 #: lines up with a period end exactly; the dei tag is the figure printed on the
@@ -516,6 +550,70 @@ def _first_tag(
     return best[1], best[2]
 
 
+def _metric_facts(
+    facts: dict[str, Any], spec: MetricTag, *, instant: bool
+) -> tuple[dict[dt.date, dict[str, Any]], str | None]:
+    """The facts for one metric: the winning tag, plus the captions added to it.
+
+    ``_first_tag`` answers "which tag supplies this figure", and for a figure a filer
+    names once that is the whole answer. A bucket line is the exception: a filer presents
+    *other current assets* as several captions, and picking one of them leaves the
+    composition check out by the rest -- which is what :data:`EXTRA_TAGS` records.
+
+    **An addition never creates a period.** It is only summed onto a period end the
+    winning tag already established, so a filer that tags one part-line at a date we hold
+    no statements for cannot appear as a fiscal year with one number in it -- the same
+    failure ``_is_year_end`` exists to prevent on the instant side.
+    """
+    chosen, span = _first_tag(facts, spec, instant=instant)
+    if span is None:
+        return chosen, span
+
+    taxonomy, _, primary = span.partition(":")
+    added: list[str] = []
+    for tag in EXTRA_TAGS.get(primary, ()):
+        extra = _pick_per_period(
+            _select(facts, tag, taxonomy, instant=instant, kind=spec.kind)
+        )
+        onto = [end for end in extra if end in chosen]
+        if not onto:
+            continue
+        for end in onto:
+            chosen[end] = _summed(chosen[end], extra[end])
+        added.append(tag)
+
+    if not added:
+        return chosen, span
+    return chosen, span + "".join(f"+{tag}" for tag in added)
+
+
+def _summed(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """One fact standing for two tags that each carry part of the same line.
+
+    The value is the sum, and both tags are named in it, because the figure on the page
+    is now arithmetic this project did rather than a number the filer printed -- which is
+    exactly why ``_compose`` records a joined tag for the totals it derives. The
+    accession lists both filings and ``filed`` is the later of the two, since the sum is
+    only knowable once the second one was filed.
+    """
+    return {
+        **first,
+        "val": float(first["val"]) + float(second["val"]),
+        "_tag": f"{first['_tag']}+{second['_tag']}",
+        "accn": ",".join(
+            sorted(
+                accession
+                for accession in (first.get("accn"), second.get("accn"))
+                if accession
+            )
+        ),
+        "filed": max(
+            (str(filed) for filed in (first.get("filed"), second.get("filed")) if filed),
+            default=None,
+        ),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # the pure entry point
 # --------------------------------------------------------------------------- #
@@ -646,7 +744,7 @@ def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
         return per_period[period_end]
 
     for spec in (s for s in TAG_MAP if s.key not in INSTANT_METRICS):
-        chosen, span = _first_tag(facts, spec, instant=False)
+        chosen, span = _metric_facts(facts, spec, instant=False)
         if span is None:
             continue
         for period_end, fact in chosen.items():
@@ -664,7 +762,7 @@ def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
     established = set(per_period)
 
     for spec in (s for s in TAG_MAP if s.key in INSTANT_METRICS):
-        chosen, span = _first_tag(facts, spec, instant=True)
+        chosen, span = _metric_facts(facts, spec, instant=True)
         if span is None:
             continue
         for period_end, fact in chosen.items():

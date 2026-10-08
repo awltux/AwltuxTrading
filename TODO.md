@@ -270,6 +270,35 @@ a tag meaning something different for that filer — a different context, a rest
 value, a concept whose definition moved — and the filer's own calculation linkbase is
 what would settle it.
 
+### Two captions that close real composition gaps and must not be added globally
+
+Measured 2026-10-08 while closing `DAC_US_EQ`'s balance sheet, over the **98 companyfacts
+payloads archived on the volume** (1,153 periods, each re-derived with and without the
+candidate; the payloads are at `/data/raw/edgar/<date>/companyfacts_<cik>.json` and need no
+network calls to re-measure):
+
+    candidate                          checks closed   worse   newly failing
+    AccruedLiabilitiesCurrent (alt)               20       0               0     KEPT
+    OtherReceivablesNetCurrent (add)               4       0               0     KEPT
+    PrepaidExpenseCurrent (add)                    8       0              15     rejected
+    ContractWithCustomerLiabilityCurrent (add)     5      14               4     rejected
+
+Both rejected captions are *parts of a residual caption we already read*, which is why the
+addition double counts: `other_current_assets`'s winning tag is
+`PrepaidExpenseAndOtherAssetsCurrent` in **42** of the 87 stored periods that hold it, and
+that tag already contains `PrepaidExpenseCurrent`; `OtherLiabilitiesCurrent` often already
+contains the deferred revenue `ContractWithCustomerLiabilityCurrent` names. Adding them
+closes `DAC_US_EQ`'s current liabilities exactly (65,397,000 → 0) and breaks fifteen other
+filers, so it is refused.
+
+**What this leaves open.** `DAC_US_EQ` FY2025-12-31 current liabilities remain out by
+36,625,000 for exactly that reason, and `assets_composition` by 484,596,000 — a gap no
+two-caption search closes (`gap.MAX_COMBINATION` is 2). The general answer is to apply an
+addition **per filer and per period, only where the stated subtotal proves it** (the
+arithmetic `analysis/gap.py` already does), which needs somewhere to store the proven
+mapping — a registry consulted by `annual_periods` beside `TAG_MAP`. A blanket code map is
+what these numbers rule out, and re-proposing one costs another investigation.
+
 **Next:** fetch `_cal.xml` alongside the filing and check `ledger`'s subtotals against
 the filer's declared sums, rather than against ours. Self-contained, and it upgrades a
 plausible check into an authoritative one. Also worth knowing: `companyfacts` is the

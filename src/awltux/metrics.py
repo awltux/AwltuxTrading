@@ -163,8 +163,9 @@ METRIC_NOTES: dict[str, str] = {
         "deferred tax, pensions, long-term investments"
     ),
     "other_current_assets": (
-        "the current assets that are not cash, receivables or inventory -- prepayments, "
-        "held-for-sale, short-term investments"
+        "the current assets that are not cash, the principal receivable line or "
+        "inventory -- other receivables, prepayments, held-for-sale, short-term "
+        "investments. A caption here may be a sum of tags, not one: see `EXTRA_TAGS`"
     ),
     "goodwill": "equity softness and the serial-acquirer flag",
     "intangible_assets": "equity softness; capitalisation drift",

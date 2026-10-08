@@ -500,6 +500,113 @@ class TestTagPreference:
         assert result[0].facts["revenue"].tag == "SalesRevenueNet"
 
 
+class TestTheCaptionsAddedToABucket:
+    """A bucket line the filer presents as several captions, and what may be summed.
+
+    `DAC_US_EQ` FY2025-12-31 is why this exists: its current assets are out by exactly
+    `OtherReceivablesNetCurrent` 46,750,000 + `PrepaidExpenseCurrent` 2,093,000, and its
+    `other_current_assets` is supplied by `OtherAssetsCurrent` -- a caption that contains
+    neither. Both were measured across the 98 archived payloads before one was kept: the
+    receivable addition closed 4 checks and harmed none, the prepaid addition closed 8 and
+    made **15** newly fail, because `PrepaidExpenseAndOtherAssetsCurrent` already contains
+    the prepayments. The tests below pin both halves of that.
+    """
+
+    def _bucket(self, *captions: dict) -> list:
+        """`other_current_assets` plus whatever else the filer tagged at the same date."""
+        return annual_periods(
+            payload(combine(instant("OtherAssetsCurrent", 171_000.0, "2023-12-31"), *captions))
+        )
+
+    def test_the_added_caption_is_summed_into_the_bucket(self):
+        periods = self._bucket(instant("OtherReceivablesNetCurrent", 46_750.0, "2023-12-31"))
+
+        assert periods[0].facts["other_current_assets"].value == 217_750.0
+
+    def test_the_citation_names_both_tags_and_both_filings(self):
+        """The figure is now arithmetic we did, and the provenance has to say so.
+
+        `_compose` sets the same precedent for a total no filer tagged: a joined tag and
+        every accession behind it. The sum is only knowable once the *later* of the two
+        was filed, which is the `filed` date a reader should see.
+        """
+        periods = self._bucket(
+            instant(
+                "OtherReceivablesNetCurrent",
+                46_750.0,
+                "2023-12-31",
+                accession="0000000000-24-000009",
+                filed="2024-03-01",
+            )
+        )
+        source = periods[0].sources()["other_current_assets"]
+
+        assert source["span"] == "us-gaap:OtherAssetsCurrent+OtherReceivablesNetCurrent"
+        assert source["accession"] == "0000000000-24-000001,0000000000-24-000009"
+        assert source["filed"] == "2024-03-01"
+
+    def test_a_caption_the_filer_already_includes_is_not_added(self):
+        """The measured harm this avoids: 15 checks newly failing across 98 filers.
+
+        `PrepaidExpenseAndOtherAssetsCurrent` is "prepaid expense *and* other assets", so
+        `PrepaidExpenseCurrent` is already inside the figure it would be added to. Adding
+        it closed 8 checks and broke 15, which is why it is not in `EXTRA_TAGS`.
+        """
+        facts = combine(
+            instant("PrepaidExpenseAndOtherAssetsCurrent", 171_000.0, "2023-12-31"),
+            instant("PrepaidExpenseCurrent", 2_093.0, "2023-12-31"),
+        )
+
+        periods = annual_periods(payload(facts))
+
+        assert periods[0].facts["other_current_assets"].value == 171_000.0
+
+    def test_a_different_primary_gets_no_addition(self):
+        """The addition is keyed by the winning tag, not by the metric."""
+        facts = combine(
+            instant("PrepaidExpenseAndOtherAssetsCurrent", 171_000.0, "2023-12-31"),
+            instant("OtherReceivablesNetCurrent", 46_750.0, "2023-12-31"),
+        )
+
+        periods = annual_periods(payload(facts))
+
+        assert periods[0].facts["other_current_assets"].value == 171_000.0
+
+    def test_an_addition_never_creates_a_period_of_its_own(self):
+        """Otherwise a part-line at a date we hold no statements for becomes a year.
+
+        The same failure `_is_year_end` prevents on the instant side: one caption is not
+        a balance sheet, and a "year" consisting of one number cannot support a marker.
+        """
+        facts = combine(
+            instant("OtherAssetsCurrent", 171_000.0, "2023-12-31"),
+            instant("OtherReceivablesNetCurrent", 46_750.0, "2022-12-31"),
+        )
+
+        periods = annual_periods(payload(facts))
+
+        assert [period.period_end.year for period in periods] == [2023]
+
+    def test_the_alternative_caption_supplies_the_metric_when_the_first_is_absent(self):
+        """`AccruedLiabilitiesCurrent` is the same money under the name most filers use.
+
+        An alternative and not an addition: a filer that tags both is describing one
+        liability twice, and the coverage rule keeps the declared-first one. Kept on
+        measurement -- 20 composition checks closed, none harmed.
+        """
+        facts = combine(
+            instant("AccruedLiabilitiesCurrent", 28_772.0, "2023-12-31"),
+            # A balance-sheet instant only lands on a year end a duration established,
+            # so the payload needs one annual period for the date to mean anything.
+            duration("Revenues", 1_000.0, "2023-01-01", "2023-12-31"),
+        )
+
+        periods = annual_periods(payload(facts))
+
+        assert periods[0].facts["compensation_and_benefits"].value == 28_772.0
+        assert periods[0].facts["compensation_and_benefits"].tag == "AccruedLiabilitiesCurrent"
+
+
 class TestUnusablePayloads:
     def test_a_payload_with_no_facts_yields_nothing(self):
         assert annual_periods({}) == []
