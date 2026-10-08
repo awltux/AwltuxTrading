@@ -46,117 +46,54 @@
   syncDisplayZone();
 
   // ------------------------------------------------------------- news ticker
-  var MAX_TICKER_ITEMS = 40;
+  //
+  // The ticker is rendered **only** by the server. This used to hold a second renderer
+  // (`tickerElement` / `gradeBadge`) for items pushed down the stream, and the two drifted:
+  // the JS built the badge classes itself, and the live path showed every relevant story
+  // one-per-story while the server showed one entry per *event*, ranked and floored. Two
+  // renderers meant two answers to "what belongs in the ticker".
+  //
+  // So the stream now says only *that* something changed, and this re-fetches the same
+  // fragment the first paint used.
 
-  function escapeHtml(value) {
-    var div = document.createElement("div");
-    div.textContent = value == null ? "" : String(value);
-    return div.innerHTML;
-  }
-
-  function tickerElement(item) {
-    var link = document.createElement("a");
-    link.className = "ticker-item mat-" + (item.materiality || "none");
-    // The local page, not the publisher. The article is the input to an
-    // assessment; the assessment is what a reader needs, and it does not expire,
-    // move behind a paywall or get rewritten.
-    link.href = item.local_url || ("/news/" + item.id);
-    link.rel = "noopener noreferrer";
-    if (item.relevant === false) link.classList.add("not-relevant");
-
-    var scepticism = item.scepticism || null;
-    var title = item.title + (item.tickers && item.tickers.length ? " — " + item.tickers.join(", ") : "");
-    if (item.priority != null) title += " · priority " + item.priority;
-    if (scepticism) {
-      title += " · " + (scepticism.grade || "unrated") + " evidence";
-      if (scepticism.credibility != null) {
-        title += ", weight " + Math.round(scepticism.credibility * 100) + "%";
-      }
-      if (scepticism.source) title += " · " + scepticism.source;
-    }
-    link.title = title;
-
-    var html = "";
-    if (item.tickers && item.tickers.length) {
-      html += '<span class="chip">' + escapeHtml(item.tickers.join(", ")) + "</span>";
-    }
-    html += '<span class="ticker-title">' + escapeHtml(item.title) + "</span>";
-    if (item.direction) {
-      html += '<span class="dir dir-' + escapeHtml(item.direction) + '">' + escapeHtml(item.direction) + "</span>";
-    }
-    if (item.relevant !== true) {
-      html += '<span class="badge unknown" title="Nothing has judged whether this is a claim about a share price">unassessed</span>';
-    }
-    // One entry per event: say how many other stories reported it, because the
-    // grouping is the thing the reader cannot see from a single headline.
-    if (item.event && item.event.size > 1) {
-      html += '<span class="badge ok" title="' + item.event.size +
-        ' stories cover this event; open for the list">' + item.event.size + "&times;</span>";
-    }
-    // The provenance travels with the headline here too, so a live-pushed item
-    // cannot look more established than the same item rendered by the server.
-    if (scepticism) {
-      html += gradeBadge(scepticism);
-    }
-    link.innerHTML = html;
-    return link;
-  }
-
-  function gradeBadge(scepticism) {
-    var grade = scepticism.grade || "unrated";
-    var classes = {
-      strong: "good", moderate: "ok", mixed: "warn", weak: "bad", unsupported: "bad"
-    };
-    var html = '<span class="badge ' + (classes[grade] || "unknown") + '">' +
-      escapeHtml(grade) + "</span>";
-
-    var flags = scepticism.flags || [];
-    if (flags.indexOf("manipulative_framing") !== -1) {
-      html += '<span class="badge bad" title="Written to provoke rather than inform">framing</span>';
-    }
-    if (flags.indexOf("unconfirmed") !== -1) {
-      html += '<span class="badge warn" title="A material claim from a single source — a lead, not a fact">unconfirmed</span>';
-    }
-    return html;
-  }
+  //: Bursts arrive together -- one sweep stores dozens of stories in a minute -- and each
+  //: one would otherwise re-render the whole track. The fragment is idempotent, so waiting
+  //: and fetching once loses nothing.
+  var TICKER_REFRESH_DEBOUNCE_MS = 1500;
 
   function startTicker() {
     var root = document.getElementById("news-flash");
     var track = document.getElementById("ticker-items");
     if (!root || !track || !window.EventSource) return;
 
-    // Seed with the server-rendered fragment so the bar is never empty while
-    // the stream connects, then let live events take over.
-    fetch(root.dataset.fallbackUrl)
-      .then(function (response) { return response.text(); })
-      .then(function (html) {
-        if (html.trim()) track.innerHTML = html;
-      })
-      .catch(function () { /* offline: the seed is cosmetic only */ });
+    function loadFragment() {
+      return fetch(root.dataset.fallbackUrl)
+        .then(function (response) { return response.text(); })
+        .then(function (html) {
+          // Replaced wholesale rather than appended to: the server decides what the
+          // ticker shows, and appending to an old render is how it stops agreeing.
+          if (html.trim()) track.innerHTML = html;
+        });
+    }
 
-    var seen = new Set();
+    // Seed with the server-rendered fragment so the bar is never empty while the stream
+    // connects.
+    loadFragment().catch(function () { /* offline: the seed is cosmetic only */ });
+
+    var pending = null;
+    function scheduleRefresh() {
+      if (pending) return;
+      pending = window.setTimeout(function () {
+        pending = null;
+        // A failed refresh leaves the current contents alone and waits for the next
+        // signal, rather than emptying a bar that is still telling the truth.
+        loadFragment().catch(function () { /* keep what we have */ });
+      }, TICKER_REFRESH_DEBOUNCE_MS);
+    }
+
     var source = new EventSource(root.dataset.streamUrl);
 
-    source.addEventListener("news", function (event) {
-      var item;
-      try {
-        item = JSON.parse(event.data);
-      } catch (err) {
-        return;
-      }
-      if (seen.has(item.id)) return;
-      seen.add(item.id);
-
-      // A reconnect replays history; drop the placeholder on first real item.
-      var placeholder = track.querySelector(".muted");
-      if (placeholder) track.innerHTML = "";
-
-      // Newest first, so a market-moving headline is at the left edge.
-      track.insertBefore(tickerElement(item), track.firstChild);
-      while (track.children.length > MAX_TICKER_ITEMS) {
-        track.removeChild(track.lastChild);
-      }
-    });
+    source.addEventListener("refresh", scheduleRefresh);
 
     // EventSource reconnects on its own; surface the break without spamming.
     source.addEventListener("error", function () {

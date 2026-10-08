@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from awltux.analysis.relevance import MATERIALITY_ORDER
 from awltux.config import Settings, get_settings
 from awltux.llm.deepseek import (
     BudgetExceeded,
@@ -49,8 +50,9 @@ PURPOSE = "news_classification"
 #: sector capture" is a question the operations page should be able to answer.
 SECTOR_PURPOSE = "news_sector_classification"
 
-#: Materiality levels, ordered, for filtering and comparison.
-MATERIALITY_ORDER = ["none", "mild", "moderate", "material", "critical"]
+#: Materiality levels, ordered, for filtering and comparison. Owned by
+#: `analysis.relevance`, which is where the weights they compare against live -- this
+#: module fills the field in, it does not decide what the levels are.
 
 VALID_DIRECTIONS = {"positive", "negative", "neutral"}
 VALID_HORIZONS = {"days", "weeks", "months", "years"}
@@ -551,16 +553,6 @@ def build_sector_classifier(settings: Settings | None = None):
         return classify_for_sector(item, sector=sector, client=client, settings=settings)
 
     return classifier
-
-
-def is_material_enough(materiality: str | None, *, threshold: str = "mild") -> bool:
-    """Whether a headline clears the flash-ticker materiality threshold."""
-    if materiality is None:
-        return False
-    try:
-        return MATERIALITY_ORDER.index(materiality) >= MATERIALITY_ORDER.index(threshold)
-    except ValueError:
-        return False
 
 
 def apply_classification(row: Any, updates: dict[str, Any] | None) -> bool:

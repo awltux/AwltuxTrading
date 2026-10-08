@@ -1,5 +1,10 @@
-{# Server-rendered ticker fragment. This is the no-JavaScript fallback and the
-   initial paint; app.js replaces it with live Server-Sent Events once loaded.
+{# Server-rendered ticker fragment, and **the only thing that renders the ticker**.
+   It is the initial paint, the no-JavaScript fallback, and the live update: app.js
+   re-fetches this same URL whenever the stream says the banner has gone stale.
+   There used to be a second renderer in JavaScript for pushed items, and the two
+   drifted -- the live one showed every relevant story, one entry per story, while
+   this one showed one entry per *event*, ranked and floored. One renderer, one
+   answer to what belongs in the ticker.
 
    One entry per *event*, not per story. A profit warning reaches this system five
    or six times from different outlets, rewritten each time; six entries that say

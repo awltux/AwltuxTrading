@@ -54,6 +54,51 @@ MATERIALITY_WEIGHT: dict[str, float] = {
     "none": 0.1,
 }
 
+#: Materiality, least severe first. This is the order the classifier validates against and
+#: the order a floor is compared on, so it lives beside the weights rather than in the LLM
+#: layer that happens to fill the field in.
+#:
+#: Spelled out rather than derived from `MATERIALITY_WEIGHT`, even though the weights
+#: happen to descend with severity. Deriving it would make the *meaning* of "at least
+#: moderate" depend on five tunable floats: a re-tune that made two of them equal, or that
+#: reordered them for a priority reason, would silently collapse this and the floor would
+#: stop meaning what it says. `tests/test_relevance.py` ties the two together instead, so a
+#: level added to one and not the other fails.
+MATERIALITY_ORDER: list[str] = ["none", "mild", "moderate", "material", "critical"]
+
+
+def _floor_index(threshold: str) -> int:
+    """Where a floor sits in `MATERIALITY_ORDER`, defaulting to ``mild``.
+
+    `ticker_min_materiality` is a validated `Literal`, so an unknown value cannot arrive
+    from configuration. Defaulting rather than raising keeps the banner rendering if one
+    ever does, and ``mild`` is the value the setting already declares.
+    """
+    if threshold in MATERIALITY_ORDER:
+        return MATERIALITY_ORDER.index(threshold)
+    return MATERIALITY_ORDER.index("mild")
+
+
+def is_material_enough(materiality: str | None, *, threshold: str = "mild") -> bool:
+    """Whether a classification clears a floor.
+
+    ``None`` is "nothing has judged this" rather than "judged unimportant", and it does
+    **not** clear a floor: a story nobody has classified has no materiality to compare.
+    """
+    if materiality is None or materiality not in MATERIALITY_ORDER:
+        return False
+    return MATERIALITY_ORDER.index(materiality) >= _floor_index(threshold)
+
+
+def materiality_floor_values(threshold: str) -> tuple[str, ...]:
+    """Every level at or above ``threshold``, in the shape a SQL ``IN`` needs.
+
+    The same floor as :func:`is_material_enough`, expressed for a query. Two answers to
+    "what is material enough" is how a rendered list and the live update that refreshes it
+    come to disagree about what the reader is looking at.
+    """
+    return tuple(MATERIALITY_ORDER[_floor_index(threshold) :])
+
 #: Priority halves every this many days.
 #:
 #: The research note is blunt about news decaying: the return signature is pressure

@@ -584,7 +584,6 @@ class NewsConfig(BaseModel):
     ticker_min_materiality: Literal[
         "none", "mild", "moderate", "material", "critical"
     ] = "mild"
-    dedupe_window_hours: int = 72
     max_items_per_feed_poll: int = 50
     #: How many stories the ``news_relevance`` job may classify in one run.
     #:

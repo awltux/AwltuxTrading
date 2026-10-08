@@ -688,6 +688,60 @@ class TestTheFlashBannerIsOrdered:
         assert "Relevant story" in body
         assert "Irrelevant story" not in body
 
+    def test_a_story_below_the_materiality_floor_does_not_reach_the_banner(
+        self, client, universe_instrument, session
+    ):
+        """`none` is most of the corpus: 12,125 of 26,301 stories, measured 2026-10-08.
+
+        Relevance alone used to be enough, so a story the classifier judged unimportant
+        was still shown as long as it named an instrument and carried a direction. The
+        banner's own label has always said "materiality-filtered"; nothing read the
+        setting until now.
+        """
+        from awltux.db import NewsItem, utcnow
+
+        session.add(
+            NewsItem(
+                source="t", url="https://x/unimportant", url_hash="u1",
+                title="Unimportant story", published_at=utcnow(),
+                tickers=["TEST_US_EQ"], direction="positive",
+                materiality="none", relevant=True,
+            )
+        )
+        session.commit()
+
+        assert "Unimportant story" not in client.get("/partials/news-ticker").text
+
+    def test_the_same_headline_twice_is_one_entry(
+        self, client, universe_instrument, session
+    ):
+        """A wire story carried by two outlets is two rows with two URLs.
+
+        `url_hash` cannot see that; `title_key` can. This is the collapse the reader
+        complained about -- the same sentence under two mastheads was two ticker entries,
+        and the embedding grouping that also catches it needs a stored vector that most
+        stories do not have yet.
+        """
+        from awltux.db import NewsItem, utcnow
+        from awltux.ingest.news import title_key
+
+        headline = "Acme warns on profit for the year"
+        for index, (url, materiality) in enumerate(
+            (("https://x/acme-yahoo", "mild"), ("https://x/acme-globe", "moderate"))
+        ):
+            session.add(
+                NewsItem(
+                    source="t", url=url, url_hash=f"k{index}",
+                    title_key=title_key(headline), title=headline,
+                    published_at=utcnow(), tickers=["TEST_US_EQ"], direction="negative",
+                    materiality=materiality, relevant=True,
+                )
+            )
+        session.commit()
+
+        body = client.get("/partials/news-ticker").text
+        assert body.count('class="ticker-item') == 1, "one entry per headline, not per URL"
+
     def test_a_more_important_story_is_served_first(self, client, universe_instrument, session):
         from awltux.db import NewsItem, utcnow
 
@@ -963,12 +1017,25 @@ class TestNewsStreamContract:
 
     @pytest.mark.asyncio
     async def test_route_declares_an_event_stream(self):
+        """The stream carries a cursor, not stories.
+
+        It used to replay items on connect and then push each new story, which is how the
+        client ended up with a second renderer and a second answer to what the ticker
+        shows. It now only says *that* the banner is stale, and the client re-fetches the
+        fragment -- so the first paint and every update come from one function.
+        """
+        import inspect
+
         from starlette.requests import Request
 
         from awltux.web.routes.news import news_stream
 
+        parameters = inspect.signature(news_stream).parameters
+        assert "last_event_id" in parameters, "the resume cursor is part of the contract"
+        assert "replay" not in parameters, "there is nothing to replay: the fragment is the seed"
+
         scope = {"type": "http", "method": "GET", "path": "/api/news/stream", "headers": []}
-        response = await news_stream(Request(scope), last_event_id=0, replay=0)
+        response = await news_stream(Request(scope), last_event_id=0)
 
         assert response.media_type == "text/event-stream"
         assert response.headers["cache-control"] == "no-cache, no-transform"
@@ -981,72 +1048,79 @@ class TestNewsStreamContract:
         assert "No relevant headlines yet" in response.text
 
 
-class TestNewsQueries:
-    """The database side of the stream, tested directly."""
+class TestWhatWakesTheTicker:
+    """The stream's database side: does this change what the banner shows, or not?
 
-    def test_fetch_since_returns_only_newer_items(self, session, settings):
+    It used to return the stories themselves, and the client rendered them -- which is how
+    the ticker came to show every relevant story, one entry per story, up to forty of them
+    displacing the curated fifteen. It now returns a cursor, and the fragment is re-fetched
+    only when a story that could actually be displayed arrives.
+    """
+
+    def _seed(self, session, **overrides):
         import datetime as dt
 
         from awltux.db import NewsItem
-        from awltux.web.routes.news import _fetch_latest, _fetch_since
 
-        for index in range(3):
-            session.add(
-                NewsItem(
-                    source="rss",
-                    url=f"https://example.test/{index}",
-                    url_hash=f"{index:064d}",
-                    title=f"Story {index}",
-                    published_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=index),
-                    tickers=["TEST_US_EQ"],
-                    materiality="mild",
-                )
-            )
-        session.flush()
-        # The stream helpers open their own session, so these rows must be
-        # committed to be visible to them.
-        session.commit()
-
-        assert len(_fetch_latest(3)) == 3
-        # The replay is ordered by priority, not by id, so the cursor is the
-        # highest id in it rather than a positional guess. Asking for anything
-        # after that must return exactly the remaining two: no gap, no duplicate.
-        cursor = max(int(item["id"]) for item in _fetch_latest(3))
-        older = min(int(item["id"]) for item in _fetch_latest(3))
-        newer = _fetch_since(older, 50)
-        assert len(newer) == 2
-        assert all(int(item["id"]) > older for item in newer)
-        assert cursor > older
-
-    def test_fetch_latest_ends_with_the_best_story(self, session, settings):
-        """The client inserts each event at the left edge, so the last one sent
-        ends up first in the banner. Sending worst-first is what puts the most
-        important story at the left."""
-        import datetime as dt
-
-        from awltux.db import NewsItem
-        from awltux.web.routes.news import _fetch_latest
-
-        now = dt.datetime.now(dt.UTC)
-        session.add(
-            NewsItem(
-                source="rss", url="https://example.test/minor", url_hash="c0" * 32,
-                title="Minor", published_at=now, tickers=["TEST_US_EQ"],
-                materiality="mild", direction="positive", relevant=True,
-            )
-        )
-        session.add(
-            NewsItem(
-                source="rss", url="https://example.test/major", url_hash="c1" * 32,
-                title="Major", published_at=now, tickers=["TEST_US_EQ"],
-                materiality="critical", direction="negative", relevant=True,
-            )
-        )
+        values = {
+            "source": "rss",
+            "title": "Story",
+            "published_at": dt.datetime.now(dt.UTC),
+            "tickers": ["TEST_US_EQ"],
+            "relevant": True,
+            "materiality": "material",
+        }
+        values.update(overrides)
+        url = values.pop("url", "https://example.test/x")
+        row = NewsItem(url=url, url_hash=url.encode().hex().ljust(64, "0")[:64], **values)
+        session.add(row)
         session.flush()
         session.commit()
+        return row
 
-        items = _fetch_latest(2)
-        assert [item["title"] for item in items] == ["Minor", "Major"]
+    def test_a_material_relevant_story_asks_for_a_refresh(self, session, settings):
+        from awltux.web.routes.news import _refresh_due
+
+        row = self._seed(session, url="https://example.test/material", title="A profit warning")
+        assert _refresh_due(0, settings) == row.id
+        # And nothing at or below the cursor asks again: the refresh is idempotent.
+        assert _refresh_due(row.id, settings) is None
+
+    def test_a_story_below_the_floor_does_not_wake_the_ticker(self, session, settings):
+        """The floor has to be applied on both sides.
+
+        A story `_ranked` would never display must not make every open tab re-render
+        identical HTML.
+        """
+        from awltux.web.routes.news import _refresh_due
+
+        self._seed(session, url="https://example.test/none", materiality="none")
+        assert _refresh_due(0, settings) is None
+
+    def test_an_irrelevant_story_does_not_wake_the_ticker(self, session, settings):
+        from awltux.web.routes.news import _refresh_due
+
+        self._seed(session, url="https://example.test/irrelevant", relevant=False)
+        assert _refresh_due(0, settings) is None
+
+    def test_an_unjudged_story_does_not_wake_the_ticker(self, session, settings):
+        """``relevant IS NULL`` is "nothing judged this", not "judged unimportant".
+
+        It has no materiality either, so it cannot clear a materiality floor.
+        """
+        from awltux.web.routes.news import _refresh_due
+
+        self._seed(
+            session, url="https://example.test/unjudged", relevant=None, materiality=None
+        )
+        assert _refresh_due(0, settings) is None
+
+    def test_the_newest_qualifying_story_is_the_cursor(self, session, settings):
+        from awltux.web.routes.news import _refresh_due
+
+        self._seed(session, url="https://example.test/one", title="First")
+        newest = self._seed(session, url="https://example.test/two", title="Second")
+        assert _refresh_due(0, settings) == newest.id
 
 
 class TestTheBannerGroupsOneEventIntoOneEntry:

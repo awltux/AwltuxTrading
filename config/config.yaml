@@ -368,9 +368,14 @@ gate:
 
 # --- news flash ticker --------------------------------------------------------
 news:
-  # Minimum materiality classification for an item to reach the live ticker.
+  # Minimum materiality classification for an item to reach the ticker, live or on first
+  # paint. `none` is excluded by any value here, which is most of the corpus: measured
+  # 2026-10-08, 12,125 of 26,301 stored stories are classified `none`.
+  #
+  # Raise to `moderate` for a quieter banner (leaves ~4,883 stories rather than ~12,364).
+  # The ranking already sorts by materiality x credibility x recency, so this is a floor
+  # rather than the ordering.
   ticker_min_materiality: mild
-  dedupe_window_hours: 72
   max_items_per_feed_poll: 50
   # Output budget for one headline classification. This is NOT the length of the
   # answer (~120 tokens): it has to cover reasoning the API does not return, which

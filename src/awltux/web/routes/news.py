@@ -5,6 +5,13 @@ bus. That is a deliberate choice: news rows are written by scheduler threads,
 and a database cursor is the only handoff that is correct across threads,
 survives a restart, and cannot deliver an event for a row that was rolled back.
 At a few hundred rows a day the cost is negligible.
+
+**The stream carries that cursor rather than the stories.** One function, `_events`,
+decides what the ticker shows -- ranked, floored by `news.ticker_min_materiality`, and
+grouped into events -- and the browser re-fetches its output when the stream says the
+banner has gone stale. It used to push the stories themselves, which gave the client a
+second renderer and a second answer to "what belongs in the ticker"; the live one showed
+every relevant story, one entry per story, and displaced the curated entries.
 """
 
 from __future__ import annotations
@@ -16,10 +23,15 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from starlette.concurrency import run_in_threadpool
 
-from awltux.analysis.relevance import assess, priority
+from awltux.analysis.relevance import (
+    assess,
+    materiality_floor_values,
+    priority,
+)
+from awltux.config import Settings, get_settings
 from awltux.db import NewsAnalysis, NewsItem, session_scope
 from awltux.timezones import format_moment
 
@@ -202,22 +214,37 @@ def _analyses_in(session, items: list[NewsItem]) -> dict[int, NewsAnalysis]:
     return _pick(rows, wanted)
 
 
-def _ranked(session, *, window: int, limit: int) -> list[tuple[NewsItem, NewsAnalysis | None]]:
+def _ranked(
+    session, *, window: int, limit: int, settings: Settings | None = None
+) -> list[tuple[NewsItem, NewsAnalysis | None]]:
     """Recent stories a reader should see, best first.
 
-    Two filters, and the distinction between them is the point:
+    Three filters, and the distinction between them is the point:
 
+    * **Below the materiality floor is excluded.** ``news.ticker_min_materiality`` is the
+      answer to "how much must this matter", and most of the corpus does not clear it:
+      measured 2026-10-08, 12,125 of 26,301 stored stories are classified ``none``. The
+      banner has always *claimed* this in its own label -- "materiality-filtered headlines
+      likely to move a price" -- but nothing read the setting, so every classified story
+      reached the ticker.
     * **Not relevant is excluded.** A story with no instrument and no direction has
       nothing to attach to, and the banner is not a general news feed.
-    * **Unassessed is kept**, after the relevant ones. ``relevant IS NULL`` means
-      nothing has judged it yet -- an item stored before the classifier was
-      configured, or one whose classification failed. Dropping those would hide a
-      gap; showing them as pending makes it visible.
+    * **A repeated headline collapses to its best copy.** A wire story carried by two
+      outlets is two rows with two URLs, so ``url_hash`` cannot see it; ``title_key`` can.
+      The embedding grouping in `_events` catches the semantic case afterwards, but it
+      needs a stored vector and most stories do not have one yet.
+
+    ``relevant IS NULL`` means nothing has judged it. Such a row has no materiality either,
+    so it no longer reaches the ticker -- which is the correct reading of a
+    materiality-filtered banner: an unjudged story is not yet *known* to be material.
     """
+    settings = settings or get_settings()
+    floor = materiality_floor_values(settings.news.ticker_min_materiality)
     rows = list(
         session.execute(
             select(NewsItem)
             .where(or_(NewsItem.relevant.is_(True), NewsItem.relevant.is_(None)))
+            .where(NewsItem.materiality.in_(floor))
             .order_by(desc(NewsItem.id))
             .limit(window)
         ).scalars().all()
@@ -231,7 +258,20 @@ def _ranked(session, *, window: int, limit: int) -> list[tuple[NewsItem, NewsAna
         return (tier, score, row.id or 0)
 
     rows.sort(key=sort_key, reverse=True)
-    return [(row, analyses.get(row.id)) for row in rows[:limit]]
+
+    # Collapse by headline, keeping the first -- which, after the sort, is the best copy of
+    # it. Rows written before migration `0018` carry no key and pass through uncollapsed:
+    # they cannot be matched, and inventing a key here would be a second answer to "is this
+    # the same story" when the database already keeps one.
+    seen: set[str] = set()
+    kept: list[NewsItem] = []
+    for row in rows:
+        if row.title_key:
+            if row.title_key in seen:
+                continue
+            seen.add(row.title_key)
+        kept.append(row)
+    return [(row, analyses.get(row.id)) for row in kept[:limit]]
 
 
 def _events(
@@ -285,25 +325,27 @@ def _events(
     return payload, note
 
 
-def _fetch_since(item_id: int, limit: int) -> list[dict[str, object]]:
-    with session_scope() as session:
-        rows = session.execute(
-            select(NewsItem)
-            .where(NewsItem.id > item_id)
-            .where(or_(NewsItem.relevant.is_(True), NewsItem.relevant.is_(None)))
-            .order_by(NewsItem.id)
-            .limit(limit)
-        ).scalars().all()
-        analyses = _analyses_in(session, list(rows))
-        return [_serialise(row, analyses.get(row.id)) for row in rows]
+def _refresh_due(cursor: int, settings: Settings | None = None) -> int | None:
+    """The newest story that could change the banner, or ``None`` if none could.
 
+    **A cursor, not a payload.** This used to return the stories themselves, which left
+    the client to decide what the banner should show -- and it decided differently: every
+    relevant story, in id order, one entry per story, up to forty of them displacing the
+    fifteen the server had curated. Saying only *that* something changed lets `_events`
+    render the update exactly as it renders the first paint.
 
-def _fetch_latest(limit: int) -> list[dict[str, object]]:
+    The same materiality floor `_ranked` applies is applied here, so a story that could
+    never be displayed does not wake every open tab to re-render identical HTML.
+    """
+    settings = settings or get_settings()
+    floor = materiality_floor_values(settings.news.ticker_min_materiality)
     with session_scope() as session:
-        # Reversed so the client receives them oldest-first and each new event
-        # lands to the right of the last, which is how the track is built.
-        events, _ = _events(session, window=RANKING_WINDOW, limit=limit)
-        return list(reversed(events))
+        return session.execute(
+            select(func.max(NewsItem.id))
+            .where(NewsItem.id > cursor)
+            .where(NewsItem.relevant.is_(True))
+            .where(NewsItem.materiality.in_(floor))
+        ).scalar()
 
 
 @router.get("/api/news", summary="Recent news items")
@@ -431,12 +473,19 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
 async def news_stream(
     request: Request,
     last_event_id: int = Query(0, ge=0, alias="last_id"),
-    replay: int = Query(20, ge=0, le=200),
 ) -> StreamingResponse:
-    """Push new material news items as they are ingested.
+    """Tell the ticker when the banner it is already showing has gone stale.
 
-    Honours ``Last-Event-ID`` so a reconnecting client resumes without gaps or
-    duplicates.
+    **It carries a cursor, not the stories.** The ticker is rendered by :func:`_events`;
+    sending stories here would mean a second renderer and a second answer to "what belongs
+    in the ticker", which is exactly what went wrong -- the live path appended every
+    relevant story, one entry per story, and pushed the curated entries off the end of the
+    track. The client now re-fetches the fragment, so what it shows cannot disagree with
+    what the server would have sent on first paint.
+
+    Honours ``Last-Event-ID`` so a reconnecting client neither replays a refresh it has
+    already applied nor misses one: a refresh is idempotent, and the cursor is the id of
+    the newest story considered.
     """
     header_cursor = request.headers.get("last-event-id")
     if header_cursor and header_cursor.isdigit():
@@ -445,14 +494,8 @@ async def news_stream(
     async def event_source() -> AsyncIterator[bytes]:
         cursor = last_event_id
 
-        # Prime the client with recent history so the ticker is never empty.
-        if cursor == 0 and replay:
-            history = await run_in_threadpool(_fetch_latest, replay)
-            for item in history:
-                cursor = max(cursor, int(item["id"]))  # type: ignore[arg-type]
-                yield format_sse(item, event="news", event_id=int(item["id"]))  # type: ignore[arg-type]
-
-        # Tell proxies not to buffer, then keep the connection warm.
+        # Tell proxies not to buffer, then keep the connection warm. The first paint is
+        # already in the DOM, so there is no history to replay.
         yield format_comment("connected")
 
         idle = 0.0
@@ -463,7 +506,7 @@ async def news_stream(
             idle += POLL_SECONDS
 
             try:
-                items = await run_in_threadpool(_fetch_since, cursor, 50)
+                newest = await run_in_threadpool(_refresh_due, cursor)
             except Exception as exc:  # pragma: no cover - transient DB error
                 yield format_sse(
                     {"error": str(exc), "at": dt.datetime.now(dt.UTC).isoformat()},
@@ -471,11 +514,10 @@ async def news_stream(
                 )
                 continue
 
-            if items:
+            if newest is not None and newest > cursor:
                 idle = 0.0
-                for item in items:
-                    cursor = max(cursor, int(item["id"]))  # type: ignore[arg-type]
-                    yield format_sse(item, event="news", event_id=int(item["id"]))  # type: ignore[arg-type]
+                cursor = newest
+                yield format_sse({"latest_id": newest}, event="refresh", event_id=newest)
             else:
                 # A comment frame keeps intermediaries from closing the stream.
                 yield format_comment("keepalive")
