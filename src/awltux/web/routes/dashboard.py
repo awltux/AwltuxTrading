@@ -518,33 +518,42 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
 def _log_target(session, run) -> str | None:
     """The instrument a refresh's log belongs to, or ``None``.
 
-    The run states its target when it starts, and that is the answer for everything recorded
-    since. A run opened before that existed has no target, so the lease it held is the
-    fallback -- bounded to the run's own window, because a refresh takes the lease *before*
-    its run row is written and gives it up after the row closes, so the lease that started
-    inside this window is this run's. Anything else returns ``None`` and the page falls back
-    to its Operations link rather than guessing at a company.
-    """
-    from awltux.db import InstrumentRefresh
+    The run states its target when it starts, and that answers it for every run recorded
+    since. A run recorded before that existed has none, so the lease is the fallback -- the
+    one whose window *contains the moment this run started*, which is exact rather than
+    approximate: the refresh takes the lease before its run row is written and gives it up
+    after the row's work ends, so this run's own lease always brackets its start, and an
+    earlier attempt of the same instrument has been overwritten into a later window.
+    Measured on the live rows, 2026-10-08: run 797 started 11:38:40.837 and its lease spans
+    11:38:40.834 to 11:40:24.185 -- 4 ms before it, 2 ms before the run itself closed.
 
+    A lease from outside that moment names some other refresh, so it is refused rather than
+    matched by nearness. Three refresh runs are in the history and all three predate the
+    target; naming one of them from an approximate match would be a wrong company on a page
+    about a holding, which is worse than the Operations link it falls back to.
+    """
     detail = (run.detail or {}) if run is not None else {}
     target = detail.get("target")
     if isinstance(target, str) and target:
         return target
-    if run is None:
-        return None
-
-    started = as_utc(run.started_at)
+    started = as_utc(run.started_at) if run is not None else None
     if started is None:
         return None
-    finished = as_utc(run.finished_at) or dt.datetime.now(dt.UTC)
-    return session.execute(
-        select(InstrumentRefresh.instrument_t212_ticker)
-        .where(InstrumentRefresh.started_at >= started)
-        .where(InstrumentRefresh.started_at <= finished)
+
+    from awltux.db import InstrumentRefresh
+
+    row = session.execute(
+        select(InstrumentRefresh)
+        .where(InstrumentRefresh.started_at <= started)
         .order_by(desc(InstrumentRefresh.started_at))
         .limit(1)
-    ).scalar()
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    released = as_utc(row.finished_at)
+    if released is not None and released < started:
+        return None
+    return row.instrument_t212_ticker
 
 
 @router.get("/jobs/{job_id}/log", response_class=HTMLResponse, include_in_schema=False)

@@ -390,17 +390,17 @@ class TestThePage:
     ):
         """Every refresh run in the history predates `JobSpec.target`.
 
-        The lease is the fallback, bounded to the run's own window: a refresh takes the lease
-        *before* its run row is written and gives it up after the row closes, so the lease
-        that started inside the window is that run's. Measured 2026-10-08: the live database
-        held three `instrument_refresh` runs and one of them -- the interrupted one -- has no
-        detail at all.
+        The lease is the fallback, and the rule is containment rather than nearness: the
+        refresh takes the lease *before* its run row is written and gives it up after the
+        row's work ends, so the lease whose window contains this run's start is this run's.
+        Measured on the live rows 2026-10-08: run 797 started 11:38:40.837 while its lease
+        spans 11:38:40.834 to 11:40:24.185.
         """
         from awltux.db import IngestRun
-        from awltux.ingest.lease import acquire
+        from awltux.ingest import lease
         from tests.helpers import make_instrument
 
-        run_start = dt.datetime(2026, 10, 8, 11, 38, 40, tzinfo=dt.UTC)
+        run_start = dt.datetime(2026, 10, 8, 11, 38, 40, 837739, tzinfo=dt.UTC)
         session.add(make_instrument("GWW_US_EQ"))
         session.add(
             IngestRun(
@@ -410,33 +410,42 @@ class TestThePage:
                 ok=True,
             )
         )
-        acquire(session, "GWW_US_EQ", now=run_start + dt.timedelta(seconds=1))
+        row = lease.acquire(session, "GWW_US_EQ", now=run_start - dt.timedelta(milliseconds=4))
+        lease.release(
+            session, "GWW_US_EQ", token=row.token, state="done", note="14 of 14 steps"
+        )
         session.commit()
 
         body = client.get("/jobs/instrument_refresh/log").text
 
         assert 'href="/instrument/GWW_US_EQ"' in body
 
-    def test_a_lease_from_outside_the_runs_window_is_not_attributed_to_it(
+    def test_a_lease_that_ended_before_the_run_started_is_not_attributed_to_it(
         self, client, session
     ):
         """Refused rather than guessed: a company named wrongly is worse than a link to
-        Operations, which is at least true."""
+        Operations, which is at least true.
+
+        This is the shape of the interrupted run: its own lease has been overwritten by a
+        later refresh of the same instrument, so the only lease left ended hours earlier.
+        """
         from awltux.db import IngestRun
-        from awltux.ingest.lease import acquire
+        from awltux.ingest import lease
         from tests.helpers import make_instrument
 
-        run_start = dt.datetime(2026, 10, 8, 11, 0, 0, tzinfo=dt.UTC)
+        run_start = dt.datetime(2026, 10, 8, 14, 46, 35, tzinfo=dt.UTC)
         session.add(make_instrument("GWW_US_EQ"))
         session.add(
             IngestRun(
                 job="instrument_refresh",
                 started_at=run_start,
                 finished_at=run_start + dt.timedelta(seconds=60),
-                ok=True,
+                ok=False,
             )
         )
-        acquire(session, "GWW_US_EQ", now=run_start + dt.timedelta(hours=1))
+        earlier = run_start - dt.timedelta(hours=3)
+        row = lease.acquire(session, "GWW_US_EQ", now=earlier)
+        lease.release(session, "GWW_US_EQ", token=row.token, state="done", note="done")
         session.commit()
 
         body = client.get("/jobs/instrument_refresh/log").text
