@@ -409,6 +409,36 @@ class TestTemplatesRenderWithData:
         # And the sale itself is still stated, which is what made the claim wrong.
         assert "sell" in text
 
+    def test_the_model_answers_carry_their_scales(self, client, populated):
+        """Reported from the page: *unclear what each of these rows represents and how to
+        read the values.*
+
+        `short_term_setup 1.0` is a poor setup and `short_term_drawdown_risk 1.0` is low
+        risk, and the two rows look identical. Each row now carries the question's meaning
+        and its scale, generated from the same definitions the model is given, and the two
+        numeric columns are explained in their headers.
+        """
+        body = client.get("/instrument/TEST_US_EQ").text
+
+        assert "Model answers" in body
+        assert "Rated 0 to 4:" in body, "a score row must say what 0 and 4 mean"
+        assert "One of:" in body or "probability between 0 and 1" in body
+        assert "not a calibrated probability" in body, "the Confidence column's hint"
+        assert "will not always sum to exactly 100%" in body, "the Distribution column's hint"
+        # The generated keys are for lookup, not for reading.
+        assert "answer_margin_of_safety" not in body
+
+    def test_the_help_is_a_data_attribute_and_not_a_title(self, client, populated):
+        """Same mechanism as the dashboard's field help: hover *and* keyboard focus.
+
+        A `title` would wait a second, truncate and never appear on touch, and the
+        instrument page is where the longest of these texts live.
+        """
+        body = client.get("/instrument/TEST_US_EQ").text
+
+        assert 'data-help="' in body
+        assert 'tabindex="0"' in body
+
     def test_the_run_button_sits_with_the_job_it_runs(self, client):
         """The button belongs beside the name, not in a column at the far right.
 

@@ -219,9 +219,85 @@ FIELDS: tuple[Field, ...] = (
         "Below 'price-mapped' means the pipeline has not reached them yet; the "
         "Operations page shows which job is behind.",
     ),
+    # ------------------------------------------------------- the model's answers
+    Field(
+        "answer_confidence",
+        "Confidence",
+        "The model's own certainty in the answer beside it, as it reported it.",
+        "Self-reported certainty, and not a calibrated probability: a model saying 30% does "
+        "not mean it is right 30% of the time. That is exactly why the gate declines these "
+        "decisions -- every stored decision is uncalibrated, and the engine refuses to act "
+        "below a confidence floor rather than issuing a weak call. A blank means the "
+        "question was answered yes/no, which carries no confidence.",
+    ),
+    Field(
+        "answer_distribution",
+        "Distribution",
+        "The model's probability for each possible answer to that row's question.",
+        "Its own estimate, uncalibrated, and it will not always sum to exactly 100%. Read "
+        "it as the shape of the model's uncertainty rather than as odds: a flat spread means "
+        "it could not tell the options apart, and a blank means the question is numeric or "
+        "yes/no rather than a choice between named options.",
+    ),
 )
 
 BY_KEY: dict[str, Field] = {field.key: field for field in FIELDS}
+
+
+def _scale_sentence(question) -> str:
+    """How to read one question's answer, from the question's own option definitions."""
+    criteria = question.criteria
+    if question.type == "score" and isinstance(criteria, list):
+        levels = "; ".join(
+            f"{index} {text.rstrip('.')}" for index, text in enumerate(criteria)
+        )
+        return f"Rated 0 to {len(criteria) - 1}: {levels}."
+    if isinstance(criteria, dict):
+        options = "; ".join(
+            f"{key.replace('_', ' ')} — {text.rstrip('.')}" for key, text in criteria.items()
+        )
+        if question.type == "noul":
+            return (
+                "Answered as the model's probability between 0 and 1 rather than as a "
+                "verdict, so 0.03 is a judgement of about 3% — the deterministic rules, when "
+                f"they answer it instead, say yes or no: {options}."
+            )
+        return f"One of: {options}."
+    return ""
+
+
+def _question_fields() -> dict[str, Field]:
+    """A tooltip for every question put to the decision model, derived from the question set.
+
+    **Read from `decision/questions.py` rather than written again here**, and this is the one
+    entry group that does. That module already states each question's meaning and what every
+    level of every option means -- it has to, because `criteria` is what the model is given --
+    so a second copy in this file would be a second answer to "what does 3 mean on this row",
+    and the two would drift the first time a scale changed.
+
+    The table's whole problem was that a reader saw `short_term_setup 1.0` and had no way to
+    know whether 1 was good: the answer is in the scale, and the scale is here.
+
+    **Keyed with an `answer_` prefix, deliberately.** The dashboard already explains
+    `margin_of_safety` as *the percentage column on the recommendations table*, which is a
+    different thing from the model's 0-4 score for the same question -- one key cannot be
+    both, and quietly overwriting the dashboard's text would have been the collision rather
+    than the fix.
+    """
+    from awltux.decision.questions import QUESTION_DEFS
+
+    return {
+        f"answer_{question.name}": Field(
+            key=f"answer_{question.name}",
+            label=question.name.replace("_", " ").title(),
+            what=question.meaning,
+            reading=_scale_sentence(question),
+        )
+        for question in QUESTION_DEFS
+    }
+
+
+QUESTION_FIELDS: dict[str, Field] = _question_fields()
 
 
 def explanation(key: str) -> str:
@@ -231,13 +307,13 @@ def explanation(key: str) -> str:
     no tooltip, and an unknown key here is a template referring to something this file
     has not been told about, which is a real gap rather than a state to display.
     """
-    field = BY_KEY.get(key)
+    field = BY_KEY.get(key) or QUESTION_FIELDS.get(key)
     if field is None:
         return ""
-    return f"{field.what} {field.reading}"
+    return f"{field.what} {field.reading}".strip()
 
 
 def label(key: str, fallback: str = "") -> str:
     """The field's display label, for a page that would rather read it from here."""
-    field = BY_KEY.get(key)
+    field = BY_KEY.get(key) or QUESTION_FIELDS.get(key)
     return field.label if field else fallback

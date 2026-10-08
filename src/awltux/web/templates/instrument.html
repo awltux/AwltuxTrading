@@ -315,12 +315,23 @@
     {% endif %}
 
     <h3>Model answers</h3>
+    {# Fourteen typed questions, asked together in one call. The hints are generated from
+       `decision/questions.py` -- the same definitions the model is given -- so the tooltip
+       says what the row means and what every level of it means, which is the part a reader
+       cannot guess: `short_term_setup 1.0` is bad and `business_quality 1.0` is also bad,
+       but `short_term_drawdown_risk 1.0` is good. #}
     <table class="grid compact">
-      <thead><tr><th>Question</th><th>Answer</th><th class="num">Confidence</th><th>Distribution</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Question</th><th>Answer</th>
+          <th class="num">Confidence{{ help('answer_confidence') }}</th>
+          <th>Distribution{{ help('answer_distribution') }}</th>
+        </tr>
+      </thead>
       <tbody>
       {% for name, answer in (decision.answers or {}).items() %}
         <tr>
-          <td>{{ name | replace('_', ' ') }}</td>
+          <td>{{ name | replace('_', ' ') }}{{ help('answer_' ~ name) }}</td>
           {# `.get()` throughout: answers are stored dicts, and a `noul` answer
              legitimately carries no confidence, so attribute access raises rather
              than rendering blank. #}

@@ -83,8 +83,12 @@ class TestTheExplanations:
         Markdown emphasis written here is not rendered, it is *displayed* -- the first
         version of the margin-of-safety entry reached the browser reading
         `**Bigger is safer**`. Emphasis in a tooltip has to be carried by the sentence.
+
+        The derived question entries are checked too: their text comes from
+        `decision/questions.py`, where a criterion written with a bracket or a backtick would
+        reach a tooltip the same way.
         """
-        for field in glossary.FIELDS:
+        for field in (*glossary.FIELDS, *glossary.QUESTION_FIELDS.values()):
             for half in (field.what, field.reading):
                 for markup in ("**", "__", "[", "]", "`", "<"):
                     assert markup not in half, (
@@ -98,6 +102,84 @@ class TestTheExplanations:
         text = glossary.explanation("confidence")
 
         assert "not as a probability" in text
+
+
+class TestTheModelAnswers:
+    """The Question column of the instrument page's Model answers table.
+
+    Asked for by a reader: *"It is currently unclear what each of these rows represents and
+    how to read the values."* The rows are the typed questions put to the model, and the
+    answer is a level on a scale whose direction differs by row -- `short_term_setup 1` is
+    poor, `business_quality 1` is weak, `short_term_drawdown_risk 1` is low risk -- so a
+    bare number cannot be read without the scale.
+    """
+
+    def test_every_question_has_a_tooltip(self):
+        """Derived from `QUESTION_DEFS`, so a question added to the engine gets one
+        automatically rather than rendering an unexplained row."""
+        from awltux.decision.questions import QUESTION_DEFS
+
+        for question in QUESTION_DEFS:
+            text = glossary.explanation(f"answer_{question.name}")
+            assert text.strip(), f"{question.name} has no tooltip"
+            assert question.meaning in text, "the tooltip must say what the row means"
+
+    def test_a_scored_question_names_every_level(self):
+        """The scale is the answer to "how do I read 1.0", and 0-4 with no key is a
+        number a reader has to guess at."""
+        text = glossary.explanation("answer_short_term_setup")
+
+        assert "Rated 0 to 4" in text
+        for level in range(5):
+            assert f"{level} " in text, f"level {level} is not named"
+        assert "well-confirmed setup" in text
+
+    def test_a_score_is_not_read_as_good_in_the_same_direction_everywhere(self):
+        """The distinction a reader cannot guess: a high score is good for quality and
+        bad for risk, and both rows look identical."""
+        quality = glossary.explanation("answer_business_quality")
+        risk = glossary.explanation("answer_short_term_drawdown_risk")
+
+        assert "Excellent" in quality, "4 is an excellent business"
+        assert "Minimal" in risk, "0 is minimal risk"
+        assert "Severe" in risk, "and 4 is severe"
+
+    def test_a_yes_no_question_says_it_is_a_probability(self):
+        """`going_concern 0.03` is not "no": the model answers in 0..1, while the
+        deterministic rules answer yes or no, and the row shows whichever engine ran."""
+        text = glossary.explanation("answer_going_concern")
+
+        assert "probability between 0 and 1" in text
+        assert "say yes or no" in text
+
+    def test_a_choice_question_lists_its_options(self):
+        text = glossary.explanation("answer_horizon_fit")
+
+        assert "One of:" in text
+        for option in ("long term", "short term", "both", "neither"):
+            assert option in text, option
+
+    def test_the_derived_keys_do_not_shadow_the_written_ones(self):
+        """`margin_of_safety` is already explained as the percentage column on the
+        recommendations table -- a different thing from the model's 0-4 score for the same
+        question. One key cannot be both, so the derived entries are prefixed."""
+        from awltux.decision.questions import QUESTION_DEFS
+
+        for question in QUESTION_DEFS:
+            assert question.name not in glossary.QUESTION_FIELDS
+            assert f"answer_{question.name}" in glossary.QUESTION_FIELDS
+        assert "discount" in glossary.explanation("margin_of_safety")
+        assert "Rated 0 to 4" in glossary.explanation("answer_margin_of_safety")
+
+    def test_the_confidence_and_distribution_columns_are_explained(self):
+        """The two numbers beside every row, and the two a reader is most likely to
+        mistake for probabilities the system stands behind."""
+        confidence = glossary.explanation("answer_confidence")
+        distribution = glossary.explanation("answer_distribution")
+
+        assert "not a calibrated probability" in confidence
+        assert "uncalibrated" in distribution
+        assert "will not always sum to exactly 100%" in distribution
 
 
 class TestItReachesThePage:
