@@ -515,45 +515,56 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
     )
 
 
-def _log_target(session, run) -> str | None:
-    """The instrument a refresh's log belongs to, or ``None``.
+def _lease_rows(session) -> list[tuple[Any, Any, str]]:
+    """Every refresh lease as ``(taken at, released at, ticker)``.
 
-    The run states its target when it starts, and that answers it for every run recorded
-    since. A run recorded before that existed has none, so the lease is the fallback -- the
-    one whose window *contains the moment this run started*, which is exact rather than
-    approximate: the refresh takes the lease before its run row is written and gives it up
-    after the row's work ends, so this run's own lease always brackets its start, and an
-    earlier attempt of the same instrument has been overwritten into a later window.
-    Measured on the live rows, 2026-10-08: run 797 started 11:38:40.837 and its lease spans
-    11:38:40.834 to 11:40:24.185 -- 4 ms before it, 2 ms before the run itself closed.
+    Read in one query for a whole page of runs: the rule that matches a run to its lease is
+    in `_target_of`, and it needs them all to pick the right one.
+    """
+    from awltux.db import InstrumentRefresh
 
-    A lease from outside that moment names some other refresh, so it is refused rather than
-    matched by nearness. Three refresh runs are in the history and all three predate the
-    target; naming one of them from an approximate match would be a wrong company on a page
-    about a holding, which is worse than the Operations link it falls back to.
+    return [
+        (as_utc(row.started_at), as_utc(row.finished_at), row.instrument_t212_ticker)
+        for row in session.execute(select(InstrumentRefresh)).scalars()
+        if row.instrument_t212_ticker
+    ]
+
+
+def _target_of(run, leases: list[tuple[Any, Any, str]]) -> str | None:
+    """The instrument a refresh run was about, or ``None``.
+
+    The run states its target when it starts (`JobSpec.target`), and that answers it for
+    every run recorded since -- including one that failed, since a failure returns no result
+    at all. A run recorded before that existed has none, so the *lease* is the fallback: the
+    one whose window contains the moment this run started.
+
+    **Containment, not nearness**, which is what makes the fallback exact rather than a guess:
+    the refresh takes the lease before its run row is written and gives it up after the row's
+    work ends, so a run's own lease always brackets its start, while an earlier attempt of the
+    same instrument has been overwritten into a later window. Measured on the live rows,
+    2026-10-08: run 797 started 11:38:40.837 and its lease spans 11:38:40.834 to 11:40:24.185.
+
+    A run that no lease window contains gets ``None`` rather than the nearest one. All three
+    refresh runs in the history predate the target, and one of them -- interrupted -- has no
+    lease left to identify it; naming a company from an approximate match would be a wrong
+    holding on a page about a company, which is worse than saying nothing.
     """
     detail = (run.detail or {}) if run is not None else {}
     target = detail.get("target")
     if isinstance(target, str) and target:
         return target
+
     started = as_utc(run.started_at) if run is not None else None
     if started is None:
         return None
-
-    from awltux.db import InstrumentRefresh
-
-    row = session.execute(
-        select(InstrumentRefresh)
-        .where(InstrumentRefresh.started_at <= started)
-        .order_by(desc(InstrumentRefresh.started_at))
-        .limit(1)
-    ).scalar_one_or_none()
-    if row is None:
-        return None
-    released = as_utc(row.finished_at)
-    if released is not None and released < started:
-        return None
-    return row.instrument_t212_ticker
+    holding = [
+        (taken, ticker)
+        for taken, released, ticker in leases
+        if taken is not None
+        and taken <= started
+        and (released is None or released >= started)
+    ]
+    return max(holding)[1] if holding else None
 
 
 @router.get("/jobs/{job_id}/log", response_class=HTMLResponse, include_in_schema=False)
@@ -586,7 +597,7 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
         # know from the job id which one it is showing -- and its back link went to
         # Operations, which is the wrong place to return to after pressing Refresh on an
         # instrument. Read while the session is open, like the run itself.
-        target = _log_target(session, run) if job_id == scoped.REFRESH_JOB else None
+        target = _target_of(run, _lease_rows(session)) if job_id == scoped.REFRESH_JOB else None
 
     text, offset, _size = progress.read(job_id, 0)
     # Normalised, because SQLite returns these naive however the column was declared
@@ -727,6 +738,10 @@ def jobs_page(
         # should benefit from a better explanation instead of being frozen at the
         # phrasing that happened to be current when it ran.
         outcomes = {run.id: outcome_for(run) for run in runs}
+        # Which instrument each of these runs was about, for the refresh runs that are older
+        # than `JobSpec.target`. One read of the leases for the whole page, not one per row.
+        leases = _lease_rows(session)
+        run_targets = {run.id: _target_of(run, leases) for run in runs}
 
     # What each job still owes, and which ones are worth running now. Computed
     # from the data rather than the run history: "never run" and "its dependency
@@ -768,6 +783,7 @@ def jobs_page(
             # one.
             "in_flight": in_flight,
             "outcomes": outcomes,
+            "run_targets": run_targets,
             "job_names": job_names,
             "run_total": total,
             "run_page": run_page,

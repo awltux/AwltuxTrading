@@ -420,6 +420,10 @@ class TestThePage:
 
         assert 'href="/instrument/GWW_US_EQ"' in body
 
+        # The run history says it too, from the same rule: the two pages describe one run.
+        history = client.get("/jobs?run_job=instrument_refresh").text
+        assert "GWW_US_EQ" in history.split("instrument_refresh</code></a>")[1][:200]
+
     def test_a_lease_that_ended_before_the_run_started_is_not_attributed_to_it(
         self, client, session
     ):
