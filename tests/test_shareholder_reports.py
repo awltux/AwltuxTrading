@@ -22,7 +22,7 @@ import pytest
 
 from awltux.db import Filing, Instrument, session_scope
 from awltux.ingest import documents
-from awltux.providers.edgar import Document, EdgarProvider, _FilingRow
+from awltux.providers.edgar import DATA_BASE, Document, EdgarProvider, _FilingRow
 from tests.helpers import make_instrument
 
 TICKER = "TEST_US_EQ"
@@ -98,7 +98,7 @@ class TestFilingDiscovery:
         """An EdgarProvider whose submissions pages are supplied, not fetched."""
         provider = EdgarProvider.__new__(EdgarProvider)
 
-        def fake_rows(cik, *, cache_ttl):
+        def fake_rows(cik, *, cache_ttl, since=None):
             yield from rows
 
         monkeypatch.setattr(provider, "_filing_rows", fake_rows)
@@ -141,6 +141,111 @@ class TestFilingDiscovery:
             == "https://www.sec.gov/Archives/edgar/data/320193/000032019326000111/"
             "aapl-20250927.htm"
         )
+
+
+class _JsonResponse:
+    """What the HTTP client hands back, as far as `_filing_rows` is concerned."""
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class TestTheOlderSubmissionsPages:
+    """EDGAR's older filings live on the submissions host, not in the archive.
+
+    ``filings.files[].name`` is served from ``data.sec.gov/submissions/``. This asked
+    ``www.sec.gov/Archives/edgar/data/<cik>/<name>``, a path that does not exist, and the CDN
+    answers a non-existent path with an HTTP 403 *Access Denied* page rather than a 404 -- so
+    a plain URL mistake read as a permission wall, complete with "check the User-Agent / key
+    scope", for months.
+
+    Measured on 2026-10-08 against the live endpoint for CIK 277135 (GWW): the wrong address
+    returns **403**, the right one returns **200** with the same parallel arrays the recent
+    window uses -- 1,762 filings from 1994-03-04 to 2016-09-15, including 18 10-Ks -- and
+    `_rows_from_page` reads them unchanged.
+    """
+
+    PAGE = "CIK0000277135-submissions-001.json"
+
+    RECENT = {
+        "filings": {
+            "recent": {
+                "form": ["8-K"],
+                "filingDate": ["2026-10-01"],
+                "accessionNumber": ["000027713526000001"],
+                "primaryDocument": ["gww-8k.htm"],
+            },
+            "files": [
+                {
+                    "name": PAGE,
+                    "filingCount": 2,
+                    "filingFrom": "1994-03-04",
+                    "filingTo": "2016-09-15",
+                }
+            ],
+        }
+    }
+
+    OLDER = {
+        "form": ["10-K", "10-K"],
+        "filingDate": ["2016-02-29", "1996-03-01"],
+        "accessionNumber": ["000027713516000037", "000027713596000002"],
+        "primaryDocument": ["gww20151231-10k.htm", "gww19951231-10k.htm"],
+        "reportDate": ["2015-12-31", "1995-12-31"],
+    }
+
+    def _provider(self, monkeypatch, *, fails: bool = False):
+        provider = EdgarProvider.__new__(EdgarProvider)
+        asked: list[str] = []
+
+        class _Client:
+            def request(self, method, url, **kwargs):
+                asked.append(url)
+                if fails:
+                    from awltux.providers.http import ProviderError
+
+                    raise ProviderError("edgar", "HTTP 403 (check the User-Agent / key scope)")
+                return _JsonResponse(TestTheOlderSubmissionsPages.OLDER)
+
+        provider._client = _Client()  # type: ignore[assignment]
+        monkeypatch.setattr(provider, "get_submissions", lambda cik, cache_ttl: self.RECENT)
+        return provider, asked
+
+    def test_the_older_page_is_requested_from_the_submissions_host(self, monkeypatch):
+        provider, asked = self._provider(monkeypatch)
+
+        rows = list(provider._filing_rows("0000277135", cache_ttl=0.0, since=dt.date(1990, 1, 1)))
+
+        assert asked == [f"{DATA_BASE}/submissions/{self.PAGE}"]
+        assert "Archives" not in asked[0]
+        # And the rows are actually read, which is the half a URL fix alone would not give:
+        # the older pages are the same parallel arrays as the recent window.
+        assert [row.filed_on for row in rows] == ["2026-10-01", "2016-02-29", "1996-03-01"]
+        assert rows[-1].report_date == "1995-12-31"
+
+    def test_a_page_older_than_the_cutoff_is_not_requested_at_all(self, monkeypatch):
+        """The recent window already covers this call, so there is nothing to look for.
+
+        `deepen_annual_history` asks for two years while the window holds ten, so walking the
+        older pages here would spend a 267 KB request per filer per run for nothing.
+        """
+        provider, asked = self._provider(monkeypatch)
+
+        rows = list(provider._filing_rows("0000277135", cache_ttl=0.0, since=dt.date(2024, 1, 1)))
+
+        assert asked == [], "the older page was fetched for a period the window already covers"
+        assert [row.filed_on for row in rows] == ["2026-10-01"]
+
+    def test_a_refused_older_page_costs_history_and_not_the_run(self, monkeypatch):
+        provider, asked = self._provider(monkeypatch, fails=True)
+
+        rows = list(provider._filing_rows("0000277135", cache_ttl=0.0, since=dt.date(1990, 1, 1)))
+
+        assert asked, "it has to be tried to be refused"
+        assert [row.filed_on for row in rows] == ["2026-10-01"], "the recent window is kept"
 
 
 class TestWhereADocumentLands:

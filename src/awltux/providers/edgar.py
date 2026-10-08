@@ -168,6 +168,18 @@ def _rows_from_page(page: dict[str, Any]) -> Iterator[_FilingRow]:
 _CIK_RE = re.compile(r"^\d{1,10}$")
 
 
+def _newest_row_is_before(page: dict[str, Any], since: dt.date) -> bool:
+    """Whether a ``filings.files`` entry ends before the caller's cutoff.
+
+    EDGAR states each page's own range as ``filingFrom``/``filingTo``, so the question "can
+    this page hold anything I want" is answered without requesting it. A page with no
+    usable range is treated as possibly relevant, which costs a request rather than a
+    silently missing year.
+    """
+    newest = _parse_iso_date(page.get("filingTo"))
+    return newest is not None and newest < since
+
+
 def normalise_cik(value: str | int | None) -> str | None:
     """Zero-pad a CIK to the ten digits EDGAR requires in URLs."""
     if value is None:
@@ -293,15 +305,14 @@ class EdgarProvider:
           many 8-Ks would have its older 10-Ks cut off by the limit rather than by
           the date;
         * EDGAR keeps roughly the last thousand filings in ``filings.recent`` and
-          moves everything older into additional ``filings.files`` pages, whose
-          contents look nothing like the recent window. A company filing 200
-          documents a year exhausts the recent window before six years are up, so
-          the older pages have to be followed rather than assumed empty.
+          moves everything older into additional ``filings.files`` pages. A company
+          filing 200 documents a year exhausts the recent window before six years
+          are up, so the older pages have to be followed rather than assumed empty.
         """
         padded = self._require_cik(cik)
 
         annual: list[dict[str, Any]] = []
-        for row in self._filing_rows(cik, cache_ttl=cache_ttl):
+        for row in self._filing_rows(cik, cache_ttl=cache_ttl, since=since):
             if row.form not in ANNUAL_FORMS:
                 continue
             filed = _parse_iso_date(row.filed_on)
@@ -324,13 +335,27 @@ class EdgarProvider:
         annual.sort(key=lambda entry: entry["filed_on"], reverse=True)
         return annual[:limit]
 
-    def _filing_rows(self, cik: str | int, *, cache_ttl: float) -> Iterator[_FilingRow]:
+    def _filing_rows(
+        self, cik: str | int, *, cache_ttl: float, since: dt.date | None = None
+    ) -> Iterator[_FilingRow]:
         """Every stored filing as a :class:`_FilingRow`.
 
-        Walks the recent window and then any older pages, newest page first, so a
-        caller filtering by date can stop as soon as it is looking at filings older
-        than it wants. Nothing is sorted here: EDGAR already returns each page in
-        reverse-chronological order.
+        Walks the recent window and then any older pages, newest page first. Nothing is
+        sorted here: EDGAR already returns each page in reverse-chronological order.
+
+        ``since`` is the date the caller stops caring, and it is what keeps the older pages
+        from being fetched for nothing: a page is requested only while the newest row read so
+        far is still on or after it. A company whose recent window already covers the period
+        asked for therefore makes one request, not two.
+
+        **The older pages live on the submissions host, not in the archive.** They are named
+        by ``filings.files[].name`` and served from ``data.sec.gov/submissions/``. Asking
+        ``www.sec.gov/Archives/edgar/data/<cik>/<name>`` for one -- which is what this did
+        until 2026-10-08 -- gets an HTTP 403 *Access Denied* page, because that path does not
+        exist, and the CDN answers with a refusal rather than a 404. It read as a permission
+        wall for months; measured, the same name on the submissions host returns 200 and the
+        identical parallel arrays the recent window uses, so `_rows_from_page` reads it
+        unchanged. GWW's page alone carries 1,762 filings back to 1994.
         """
         payload = self.get_submissions(cik, cache_ttl=cache_ttl)
         yield from _rows_from_page(((payload.get("filings") or {}).get("recent")) or {})
@@ -339,16 +364,22 @@ class EdgarProvider:
             name = page.get("name")
             if not name:
                 continue
+            if since is not None and _newest_row_is_before(page, since):
+                # Every page after this one is older still, so none of them can hold a
+                # filing the caller asked for.
+                return
             try:
                 older = self._client.request(
                     "GET",
-                    f"{WWW_BASE}/Archives/edgar/data/{int(self._require_cik(cik))}/{name}",
+                    f"{DATA_BASE}/submissions/{name}",
                     cache_ttl=cache_ttl,
                 ).json()
             except (ProviderError, ValueError) as exc:
                 # A missing older page costs history, not the run: the recent window
                 # has already been yielded, so the caller still gets what it can.
                 logger.warning("could not read the older submissions page %s: %s", name, exc)
+                continue
+            if not isinstance(older, dict):
                 continue
             yield from _rows_from_page(older)
 
