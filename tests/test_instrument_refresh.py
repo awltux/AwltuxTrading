@@ -664,6 +664,63 @@ class TestTheButton:
         assert calls == [("TEST_US_EQ",)]
         assert lease.current(session, "TEST_US_EQ").state == "done"
 
+    def test_the_run_names_the_instrument_the_log_page_must_offer_back(
+        self, client, session, monkeypatch
+    ):
+        """Reported from the page: pressing Refresh and following the live log landed on a
+        page whose only way back was Operations.
+
+        Every instrument's refresh writes to the *same* log file under the same job id, so
+        the job id cannot say which company the log belongs to. The run row carries it from
+        the moment it starts -- which is when the log is being watched.
+        """
+        from sqlalchemy import desc, select
+
+        from awltux.db import IngestRun
+        from awltux.ingest import refresh
+        from awltux.scheduler import scoped
+
+        _seed(session)
+        session.commit()
+        monkeypatch.setattr(
+            refresh,
+            "_steps_from_registry",
+            lambda: (refresh.Step("prices", "Prices", lambda scope: JobResult(note="did it")),),
+        )
+
+        client.post("/instrument/TEST_US_EQ/refresh", follow_redirects=False)
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            session.expire_all()
+            state = lease.current(session, "TEST_US_EQ")
+            if state is not None and state.state != "running":
+                break
+            time.sleep(0.05)
+
+        run = session.execute(
+            select(IngestRun)
+            .where(IngestRun.job == scoped.REFRESH_JOB)
+            .order_by(desc(IngestRun.id))
+            .limit(1)
+        ).scalar_one()
+        assert run.detail["target"] == "TEST_US_EQ"
+
+        body = client.get(f"/jobs/{scoped.REFRESH_JOB}/log").text
+        assert 'href="/instrument/TEST_US_EQ"' in body
+
+        # And the run history says which company, because every refresh shares the job id:
+        # three refresh runs were listed as three identical rows on 2026-10-08.
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(client.get("/jobs").text, "lxml")
+        row = next(
+            tr
+            for tr in soup.find_all("tr")
+            if tr.find("a", href=f"/jobs/{scoped.REFRESH_JOB}/log")
+        )
+        assert "TEST_US_EQ" in row.get_text(" ", strip=True)
+
     def test_pressing_it_twice_refuses_the_second(self, client, session, monkeypatch):
         """A refusal is an ordinary outcome of pressing a button twice, not an error."""
         from awltux.ingest import refresh

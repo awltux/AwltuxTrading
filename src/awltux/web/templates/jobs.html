@@ -222,7 +222,17 @@
   <tbody>
   {% for run in runs %}
     <tr>
-      <td>{{ job_name(run.job) }}</td>
+      <td>
+        {{ job_name(run.job) }}
+        {# Which instrument, when the run was about one. Every scoped refresh shares the job
+           id `instrument_refresh`, so the history listed them as identical rows: measured
+           2026-10-08, three runs of it, two of them distinguishable only by opening the log.
+           Recorded when the run starts, which is also why a run that was interrupted
+           mid-flight can still say what it was working on. #}
+        {% if run.detail and run.detail.get('target') %}
+          <span class="muted small">&middot; {{ run.detail.get('target') }}</span>
+        {% endif %}
+      </td>
       <td class="small">{{ run.started_at | datetime }}</td>
       <td class="num small">{{ run.started_at | duration(run.finished_at) }}</td>
       <td class="num">{{ run.items_seen }}</td>

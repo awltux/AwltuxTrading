@@ -105,6 +105,10 @@ def _run(ticker: str, token: str) -> None:
         interval_seconds=3600,
         max_instances=1,
         description=f"Refresh {ticker}",
+        # The run row names the instrument from the moment it starts, so the log page can
+        # offer the way back to the company it is about -- every refresh writes to the same
+        # one log file, so the job id alone does not say which.
+        target=ticker,
     )
     try:
         execute_job(spec)

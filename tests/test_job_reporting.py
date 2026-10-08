@@ -208,12 +208,83 @@ class TestARunningJobIsVisibleWhileItRuns:
         from awltux.scheduler import jobs as jobs_module
         from awltux.scheduler.jobs import JobResult, execute_job
 
-        monkeypatch.setattr(jobs_module, "start_run", lambda job_id, started: None)
+        monkeypatch.setattr(
+            jobs_module, "start_run", lambda job_id, started, target=None: None
+        )
         execute_job(self._spec(lambda: JobResult(items_written=1)))
 
         row = self._newest()
         assert row.ok is True
         assert row.items_written == 1
+
+
+class TestARunSaysWhatItIsAbout:
+    """A run's detail used to arrive only when it closed.
+
+    The log page follows a job *while it runs*, so it could not name the instrument of the
+    refresh it was showing -- and every instrument's refresh writes to the same log file
+    under the same job id, so the job id cannot answer it either. The target is therefore
+    recorded at the start, and the job's own detail is merged over it at the end.
+    """
+
+    def _spec(self, func, target=None):
+        from awltux.scheduler.jobs import JobSpec
+
+        return JobSpec(id="probe", func=func, interval_seconds=60, target=target)
+
+    def _newest(self):
+        from sqlalchemy import desc, select
+
+        from awltux.db import IngestRun
+
+        with session_scope() as session:
+            return session.execute(
+                select(IngestRun).order_by(desc(IngestRun.id)).limit(1)
+            ).scalar_one()
+
+    def test_the_target_is_on_the_row_while_the_job_is_still_running(self, settings):
+        from awltux.scheduler.jobs import execute_job
+
+        seen: dict[str, object] = {}
+
+        def func():
+            seen["detail"] = self._newest().detail
+            return None
+
+        execute_job(self._spec(func, target="GWW_US_EQ"))
+
+        assert seen["detail"] == {"target": "GWW_US_EQ"}
+
+    def test_the_jobs_own_detail_is_merged_over_the_target(self, settings):
+        """Neither half may overwrite the other: one says what the run was about, the
+        other what it did."""
+        from awltux.scheduler.jobs import JobResult, execute_job
+
+        execute_job(self._spec(lambda: JobResult(detail={"steps_done": 7}), target="GWW_US_EQ"))
+
+        detail = self._newest().detail
+        assert detail["target"] == "GWW_US_EQ"
+        assert detail["steps_done"] == 7
+
+    def test_a_failed_run_still_names_its_target(self, settings):
+        """The run whose page most needs it: a failure returns no result at all."""
+        from awltux.scheduler.jobs import execute_job
+
+        def func():
+            raise RuntimeError("provider exploded")
+
+        execute_job(self._spec(func, target="GWW_US_EQ"))
+
+        row = self._newest()
+        assert row.ok is False
+        assert row.detail["target"] == "GWW_US_EQ"
+
+    def test_a_job_with_no_target_records_none(self, settings):
+        from awltux.scheduler.jobs import execute_job
+
+        execute_job(self._spec(lambda: None))
+
+        assert "target" not in (self._newest().detail or {})
 
 
 class TestInterruptedRunsAreClosed:

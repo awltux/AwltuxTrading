@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ job_id }} — progress — {{ app_name }}{% endblock %}
+{% block title %}{% if target %}{{ target }} — {% endif %}{{ job_id }} — progress — {{ app_name }}{% endblock %}
 
 {# The progress log of one job, following it while it runs.
 
@@ -9,13 +9,27 @@
    likely thing to be broken.
 
    Only the most recent run is kept, by design: the file is truncated when the next
-   run starts, so there is nothing here that can be mistaken for the current run. #}
+   run starts, so there is nothing here that can be mistaken for the current run.
+
+   **The way back is the instrument, when the run is about one.** Every scoped refresh
+   writes to the same log file under the same job id, so this page used to send a reader
+   who had pressed "Refresh now" on a company back to the Operations list instead. The
+   run row names its target from the moment it starts -- see `JobSpec.target` -- and
+   Operations stays one click away for a reader who came from there. #}
 
 {% block content %}
-<p class="muted small"><a href="/jobs">&larr; Operations</a></p>
+<p class="muted small">
+  {% if target %}
+    <a href="/instrument/{{ target }}">&larr; {{ target }}</a>
+    <span class="muted">&middot; <a href="/jobs">Operations</a></span>
+  {% else %}
+    <a href="/jobs">&larr; Operations</a>
+  {% endif %}
+</p>
 
 <h1>
   <code>{{ job_id }}</code>
+  {% if target %}<span class="muted">for {{ target }}</span>{% endif %}
   {% if running %}
     <span class="badge warn" id="job-state">running</span>
   {% elif run and run.ok %}

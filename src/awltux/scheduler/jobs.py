@@ -74,6 +74,14 @@ class JobSpec:
     backfill: bool = False
     enabled: bool = True
     requires: tuple[str, ...] = ()
+    #: What this run is about, when it is about one thing -- an instrument ticker today.
+    #:
+    #: Recorded on the run row when the run *starts*, because a run's detail otherwise only
+    #: arrives when it closes: the page that follows a job in flight is exactly the page
+    #: that wants to say which company it is watching, and a log belonging to one instrument
+    #: out of many is unreadable without it. A scoped refresh writes every instrument's log
+    #: to the same file, so the job id alone cannot answer it.
+    target: str | None = None
 
 
 def running_jobs(session) -> set[str]:
@@ -170,7 +178,7 @@ def close_orphaned_runs() -> int:
     return closed
 
 
-def start_run(job_id: str, started: dt.datetime) -> int | None:
+def start_run(job_id: str, started: dt.datetime, target: str | None = None) -> int | None:
     """Record that a run has begun, and return its row id.
 
     A row used to be written only when the job *finished*, so a job that takes
@@ -182,10 +190,19 @@ def start_run(job_id: str, started: dt.datetime) -> int | None:
 
     ``ok`` is left NULL, which the template already renders as "running". Nothing
     wrote a NULL before, so that branch was dead.
+
+    ``target`` is stored as the run's detail immediately, so a run in flight can say what it
+    is about. `finish_run` merges the job's own detail over it rather than replacing it.
     """
     try:
         with session_scope() as session:
-            row = IngestRun(job=job_id, started_at=started, finished_at=None, ok=None)
+            row = IngestRun(
+                job=job_id,
+                started_at=started,
+                finished_at=None,
+                ok=None,
+                detail={"target": target} if target else None,
+            )
             session.add(row)
             session.flush()
             return row.id
@@ -222,7 +239,12 @@ def finish_run(
             row.items_seen = result.items_seen if result else 0
             row.items_written = result.items_written if result else 0
             row.error = error
-            row.detail = result.detail if result else None
+            # Merged, not replaced: what the run was about was written when it started and
+            # is still true when it ends. A run that failed, or was stopped, returns no
+            # result at all -- and that is the run whose page most needs to name its target.
+            detail = dict(row.detail or {})
+            detail.update(result.detail if result else {})
+            row.detail = detail or None
     except Exception:  # pragma: no cover - observability must not break the job
         logger.exception("failed to record ingest run for %s", job_id)
 
@@ -321,7 +343,7 @@ def execute_job(spec: JobSpec, cause: str | None = None) -> JobResult | None:
     replaces the previous run's. See :mod:`awltux.scheduler.progress`.
     """
     started = dt.datetime.now(dt.UTC)
-    run_id = start_run(spec.id, started)
+    run_id = start_run(spec.id, started, spec.target)
 
     with progress.capture(spec.id, run_id, started) as run_log:
         return _execute_captured(spec, started, run_id, run_log, cause)

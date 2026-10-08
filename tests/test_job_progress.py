@@ -351,6 +351,40 @@ class TestThePage:
         # assertion that the subtraction actually ran rather than being skipped.
         assert "stat-value" in response.text
 
+    def test_the_back_link_is_the_instrument_a_refresh_is_working_on(self, client):
+        """Every refresh writes to the same log file under the same job id.
+
+        So the page could not tell which company it was showing and sent a reader who had
+        pressed "Refresh now" on an instrument back to the Operations list (reported
+        2026-10-08). The run row names its target from the moment it starts, which is also
+        the moment this page is read.
+        """
+        execute_job(
+            JobSpec(
+                id="instrument_refresh",
+                func=_noop,
+                interval_seconds=3600,
+                target="GWW_US_EQ",
+            )
+        )
+
+        body = client.get("/jobs/instrument_refresh/log").text
+
+        assert 'href="/instrument/GWW_US_EQ"' in body
+        # Named in the heading too: a reader arriving from a bookmark has to be able to see
+        # which company's refresh this log is.
+        assert "for GWW_US_EQ" in body
+        # And Operations stays one click away for a reader who came from there.
+        assert 'href="/jobs"' in body
+
+    def test_a_job_that_is_about_nothing_still_returns_to_operations(self, client):
+        execute_job(_job("probe"))
+
+        body = client.get("/jobs/probe/log").text
+
+        assert 'href="/jobs"' in body
+        assert "/instrument/" not in body
+
     def test_the_job_name_on_the_operations_page_links_to_its_log(self, client, session):
         """The entry point. A panel nobody can reach is not a feature."""
         from tests.helpers import make_instrument

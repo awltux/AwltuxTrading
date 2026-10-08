@@ -555,6 +555,13 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
         elapsed = ((finished or dt.datetime.now(dt.UTC)) - started).total_seconds()
 
     detail = (run.detail or {}) if run and run.detail else {}
+    # What the run is about, when it is about one instrument. A scoped refresh writes every
+    # company's log to the *same* file under the same job id, so the page cannot know from
+    # the job id which one it is showing -- and its back link went to Operations, which is
+    # the wrong place to return to after pressing Refresh on an instrument. Recorded when
+    # the run starts, so it is there while the run is still going, which is when this page
+    # is read.
+    target = detail.get("target")
     return templates.TemplateResponse(
         request,
         "job_log.html",
@@ -567,6 +574,7 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
             "running": run is not None and finished is None,
             "elapsed": elapsed,
             "note": detail.get("note") or (run.error if run else None),
+            "target": target if isinstance(target, str) and target else None,
         },
     )
 
