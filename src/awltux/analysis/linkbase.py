@@ -136,6 +136,27 @@ def _named(tags: Iterable[str]) -> str:
     return shown
 
 
+def accession(period: FundamentalPeriod) -> str:
+    """The accession this period's figures were filed under, or ``""``.
+
+    Read from the provenance rather than from ``filing_id``: an XBRL period is written
+    straight from the companyfacts payload and never linked to a ``Filing`` row, so the
+    accession in ``metric_sources`` is the only route from a stored period to the filing
+    -- and therefore to the linkbase published beside it.
+
+    A summed metric (``other_current_assets`` is one for a filer whose bucket is several
+    captions) records both accessions joined by a comma. The first is the filing that
+    reported the period, which is the one whose linkbase declares these subtotals.
+    """
+    for source in (period.metric_sources or {}).values():
+        if not isinstance(source, dict):
+            continue
+        found = str(source.get("accession") or "").split(",")[0].strip()
+        if found:
+            return found
+    return ""
+
+
 def tag_index(period: FundamentalPeriod) -> dict[str, str]:
     """``taxonomy:Tag`` -> canonical metric, from the tags this period actually used.
 

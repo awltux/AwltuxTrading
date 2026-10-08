@@ -196,6 +196,19 @@ FIELDS: tuple[Field, ...] = (
         "'Stated'. A large difference means the statement is built on a small part of "
         "the real accounts, which is worth knowing before trusting a ratio from it.",
     ),
+    Field(
+        "filer_arithmetic",
+        "The filer's own arithmetic",
+        "The subtotals the filing itself declares, read from the calculation linkbase "
+        "published beside it -- the machine-readable version of the additions a person "
+        "does by eye when reconciling a 10-K.",
+        "It is the stronger check of the two on this page: the table above measures our "
+        "figures against our own account of how a balance sheet is built, and this one "
+        "measures them against the filer's. So 'not computable' here is this project's "
+        "coverage -- the filer declares lines we hold no figure for, named in the row -- "
+        "and only a row where every declared line is held and the sum still disagrees is "
+        "a contradiction between the filing's arithmetic and the figures we read.",
+    ),
     # ------------------------------------------------------------ the counters
     Field(
         "universe_size",

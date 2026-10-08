@@ -193,6 +193,9 @@ button {
 }
 button:hover:not(:disabled) { border-color: #5a6878; }
 button:disabled { opacity: .55; cursor: not-allowed; }
+/* A form that is a control inside a sentence rather than a block of its own -- the
+   "read the filing's arithmetic" button sits in the paragraph that explains it. */
+form.inline { display: inline; margin-left: 6px; }
 .controls { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 12px 0; }
 .views a {
   padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px;

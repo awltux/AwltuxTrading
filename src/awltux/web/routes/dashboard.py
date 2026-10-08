@@ -8,6 +8,7 @@ updates (the news ticker) are the only thing that requires JS.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -29,6 +30,8 @@ from awltux.scheduler import scoped
 from awltux.timezones import as_utc
 from awltux.web import filters, queries
 from awltux.web.templating import templates
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["dashboard"])
 
@@ -342,6 +345,7 @@ def accounts_page(
                 else None
             ),
             "health": ledger.checks(period, previous),
+            **_filer_arithmetic(session, detail["instrument"], period, request),
             "snapshot": snapshot,
             "empty": not metrics,
             "currency": period.currency or "",
@@ -349,6 +353,101 @@ def accounts_page(
             "source": period.source,
             "metric_sources": (period.metric_sources or {}),
         },
+    )
+
+
+def _filer_arithmetic(
+    session: Any, instrument: Any, period: Any, request: Request
+) -> dict[str, Any]:
+    """The filer's own declared subtotals, and what is stored about its linkbase.
+
+    A named step rather than lines inside the route, because it is the one part of the
+    accounts page that is about the *filing* rather than about our figures: the stored
+    linkbase is read here, reconciled against this period, and the button's outcome is
+    carried in from the redirect. ``filer_checks`` is empty until somebody presses it,
+    which the template renders as the button rather than as an empty table.
+    """
+    from awltux.analysis import linkbase as reconciliation
+    from awltux.ingest import linkbase as linkbases
+
+    accession = reconciliation.accession(period)
+    stored = linkbases.stored(session, accession) if accession else None
+    return {
+        "filer_checks": reconciliation.checks(period, stored[0]) if stored else [],
+        "linkbase": {
+            "accession": accession,
+            "file": stored[1] if stored else "",
+            "outcome": request.query_params.get("linkbase", ""),
+            "cik": instrument.sec_cik if instrument is not None else None,
+        },
+    }
+
+
+@router.post("/accounts/{period_id}/linkbase", include_in_schema=False)
+def read_filing_linkbase(period_id: int) -> RedirectResponse:
+    """Fetch this filing's own calculation linkbase, and return to the health tab.
+
+    A POST because it is a network call to EDGAR, and because the *page* reads SQLite:
+    a GET that fetched would put a provider request on the critical path of a page that
+    is normally a database read, and the week-long cache would only hide that.
+
+    The outcome travels as a query parameter, the shape the instrument refresh and the
+    story appraisal already use, so the page can say what happened without keeping state.
+    """
+    from awltux.analysis import linkbase as reconciliation
+    from awltux.ingest import linkbase as linkbases
+    from awltux.providers.edgar import EdgarProvider, ProviderError
+
+    # Phase one: what the stored period says about which filing to read. The session is
+    # closed before the request goes out, so no database lock is held across it.
+    with session_scope() as session:
+        detail = queries.accounts_detail(session, period_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        period, instrument = detail["period"], detail["instrument"]
+        accession = reconciliation.accession(period)
+        cik = instrument.sec_cik if instrument is not None else None
+
+    if not cik or not accession:
+        # A period from a Yahoo snapshot or a model's reading of a document has no filing
+        # behind it, and so no linkbase to read.
+        outcome = "no-filing"
+    else:
+        # Phase two: the network, with nothing open.
+        try:
+            linkbase, name = linkbases.fetch(EdgarProvider(), cik=cik, accession=accession)
+        except ProviderError as exc:
+            logger.warning("linkbase read failed for %s: %s", accession, exc)
+            outcome = "failed"
+        else:
+            # Phase three: store what came back, or record that the filer published none.
+            outcome = "read" if linkbase is not None and name else "none-published"
+            if outcome == "read":
+                with session_scope() as session:
+                    linkbases.save(session, accession, linkbase, source=name, cik=cik)
+
+    return RedirectResponse(
+        url=f"/accounts/{period_id}/health?linkbase={outcome}#filer-arithmetic",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/accounts/{period_id}/linkbase/forget", include_in_schema=False)
+def forget_filing_linkbase(period_id: int) -> RedirectResponse:
+    """Drop the stored linkbase for this filing, so a wrong read is not permanent."""
+    from awltux.analysis import linkbase as reconciliation
+    from awltux.ingest import linkbase as linkbases
+
+    with session_scope() as session:
+        detail = queries.accounts_detail(session, period_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        accession = reconciliation.accession(detail["period"])
+        linkbases.forget(session, accession)
+
+    return RedirectResponse(
+        url=f"/accounts/{period_id}/health?linkbase=forgotten#filer-arithmetic",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

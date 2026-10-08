@@ -250,12 +250,10 @@ and it outranks all three.
 
 What is unused:
 
-- **The calculation linkbase** (`_cal.xml`) — the filer declaring, machine-readably,
-  which lines sum to which subtotal. That is the issuer publishing its own double-entry
-  arithmetic, and it is precisely the cross-check the accounting-health tab does not
-  have: today `ledger.composition` compares our components against our own assertions.
 - **The presentation linkbase** (`_pre.xml`) — which statement and section a tag belongs
-  to, instead of the order `TAG_MAP` asserts.
+  to, instead of the order `TAG_MAP` asserts. 647 KB for `DAC_US_EQ`'s 20-F against the
+  calculation linkbase's 68 KB, so it is the expensive one; the label linkbase (`_lab.xml`,
+  928 KB) is what would print the filer's own line names.
 - **The document's own inline XBRL** — nothing in the repo parses `ix:nonFraction`, even
   though `shareholder_reports` downloads the 10-K bytes. The document *is* read, by the
   model: `extract_filing` (`llm/extractors.py:267`) is called from
@@ -264,11 +262,23 @@ What is unused:
   a model's reading of the prose and tables, and never from the tags embedded in the
   document the model was given.
 
-**Why it matters now:** it is the most likely explanation for the accounting-equation
-failures recorded under Operations (DFPH out by 95% of assets, AMBQ by 362%). Those are
-a tag meaning something different for that filer — a different context, a restated
-value, a concept whose definition moved — and the filer's own calculation linkbase is
-what would settle it.
+**The half of the calculation linkbase that is still owed.** The linkbase is now fetched
+(`ingest/linkbase.py`), parsed, stored and reconciled against a stored period
+(`analysis/linkbase.py`), and the accounting-health tab prints the filer's declared
+subtotals beside our own component check. What has not changed is `ledger.composition`
+itself: it still sums `CURRENT_ASSET_KEYS` and its siblings — a hand-written list in this
+codebase — so the page shows two verdicts where the filer's declaration should be the one
+that binds, and the "out by" on a statement line is still partly our vocabulary rather
+than entirely the children we failed to read. That is the next stage, and the entry below
+records why it cannot be done by widening the key list.
+
+**Why it matters:** the accounting-equation failures recorded under Operations (DFPH out
+by 95% of assets, AMBQ by 362%) are now *classified* rather than explained away --
+`analysis/linkbase.py` separates "the filer declares lines we do not hold" from "we hold
+every declared line and it still does not sum", and only the second is a contradiction
+between the filing's arithmetic and the figures we read. DFPH turns out to be the first
+kind. Which filers are the second kind is not yet measured, and cannot be until the
+composition check itself reads the declaration.
 
 ### Two captions that close real composition gaps and must not be added globally
 

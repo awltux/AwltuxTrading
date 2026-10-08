@@ -166,6 +166,81 @@
     </tbody>
   </table>
 
+  <h2 id="filer-arithmetic">The filer's own arithmetic{{ help('filer_arithmetic') }}</h2>
+  {# The checks above compare our figures against *our* account of how a balance sheet is
+     built. The filer publishes its own, machine-readably, in the calculation linkbase
+     beside the filing -- and reading it is the difference between "our components do not
+     sum" and "the filer declares six lines here and we hold three of them". #}
+  {% if filer_checks %}
+    <p class="muted small">
+      Read from <code>{{ linkbase.file }}</code> for accession
+      <code>{{ linkbase.accession }}</code>. Each row is a subtotal the filer declares,
+      against the lines we hold for it. A row reading <em>not computable</em> is this
+      project's coverage, not the filer's error; only a row where we hold every declared
+      line and it still does not sum is a contradiction.
+      <form method="post" action="/accounts/{{ period.id }}/linkbase" class="inline">
+        <button type="submit" class="small">Re-read it</button>
+      </form>
+      <form method="post" action="/accounts/{{ period.id }}/linkbase/forget" class="inline">
+        <button type="submit" class="small">Forget it</button>
+      </form>
+    </p>
+    <table class="grid compact">
+      <thead>
+        <tr><th>Declared subtotal</th><th>Result</th><th class="num">Stated</th>
+            <th class="num">Declared sum</th><th>What the filer declares</th></tr>
+      </thead>
+      <tbody>
+      {% for check in filer_checks %}
+        <tr>
+          <td>{{ check.label }}{% if check.inputs.role %}
+            <span class="muted small">{{ check.inputs.role }}</span>{% endif %}</td>
+          <td>
+            {% if check.status == 'ok' %}<span class="good">agrees</span>
+            {% elif check.status == 'imbalance' %}<span class="warn">out</span>
+            {% else %}<span class="muted">not computable</span>{% endif %}
+          </td>
+          <td class="num">{{ check.inputs.stated | number(0) }}</td>
+          <td class="num">
+            {% if check.inputs.declared_sum is not none %}{{ check.inputs.declared_sum | number(0) }}
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="small muted">{{ check.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% elif linkbase.outcome == 'none-published' %}
+    <p class="muted small">
+      This filing publishes no calculation linkbase, so there is no declared arithmetic to
+      check against. The rows above are the only verdict available.
+    </p>
+  {% elif linkbase.outcome == 'no-filing' %}
+    <p class="muted small">
+      These figures did not come from an XBRL filing, so there is no machine-readable
+      arithmetic published beside them.
+    </p>
+  {% elif linkbase.outcome == 'failed' %}
+    <p class="muted small">
+      The filing's linkbase could not be read just now — see the job log for the reason.
+      Nothing has changed about the figures above.
+    </p>
+  {% elif not linkbase.accession %}
+    <p class="muted small">
+      This period carries no accession, so the filing behind it cannot be identified —
+      which happens for periods stored before provenance was recorded.
+    </p>
+  {% else %}
+    <p class="muted small">
+      Not read yet. The filing beside these accounts declares its own subtotals; reading
+      them shows which lines it breaks a total into and which of them this project does
+      not hold — by name, from the filer rather than from a search.
+      <form method="post" action="/accounts/{{ period.id }}/linkbase" class="inline">
+        <button type="submit" class="small">Read the filing's arithmetic</button>
+      </form>
+    </p>
+  {% endif %}
+
   <h2>What the markers measured</h2>
   {% if snapshot.periods_used %}
     <p class="muted small">

@@ -418,6 +418,37 @@ class EdgarProvider:
         )
 
 
+    def get_filing_index(
+        self, cik: str | int, accession: str, *, cache_ttl: float = 604_800.0
+    ) -> list[str]:
+        """The filenames in one filing's directory, as EDGAR lists them.
+
+        **A listing rather than a guessed name.** The linkbase beside a filing is called
+        ``dac-20251231_cal.xml``, ``toi-20251231_cal.xml`` -- the filer's own prefix and
+        its own period label -- so the name cannot be constructed from the accession.
+        EDGAR serves the directory as JSON, which is one small request cached for a week
+        because a filed directory never changes.
+
+        Empty rather than raising when the payload is not the directory shape the endpoint
+        documents: a filing we cannot list is a filing whose linkbase we cannot read, and
+        the caller says so.
+        """
+        padded = self._require_cik(cik)
+        url = self.document_url(padded, accession).replace("-index.htm", "/index.json")
+        try:
+            payload = self._client.get_json(url, cache_ttl=cache_ttl)
+        except ProviderError as exc:
+            raise ProviderError(SOURCE, f"could not list {url}: {exc}") from exc
+        items = ((payload or {}).get("directory") or {}).get("item")
+        if not isinstance(items, list):
+            return []
+        return sorted(
+            str(item.get("name"))
+            for item in items
+            if isinstance(item, dict) and item.get("name")
+        )
+
+
     # ------------------------------------------------------------ XBRL facts
     def get_company_facts(self, cik: str | int, *, cache_ttl: float = 86400.0) -> dict[str, Any]:
         """Every XBRL fact a company has ever tagged. Large; cache it hard."""

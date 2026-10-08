@@ -13,10 +13,10 @@ which is the issuer publishing its own double-entry arithmetic. Checking our sub
 against that instead of against ourselves is what turns a plausible check into an
 authoritative one.
 
-**Reading is separate from deciding.** This module parses bytes into arcs and nothing
-else; it never sees a stored period. The reconciliation lives in
-``analysis/linkbase.py``, so the rules are testable against a captured linkbase with no
-network and no database.
+**Reading is separate from deciding.** :func:`parse_calculation_linkbase` parses bytes
+into arcs and nothing else, and it never sees a stored period; the fetch and the stored
+copy live beside it here, and the reconciliation lives in ``analysis/linkbase.py``. So the
+rules are testable against a captured linkbase with no network and no database.
 
 **Tags are joined on ``taxonomy:Tag``.** A locator's ``xlink:href`` is a fragment like
 ``#us-gaap_Assets`` -- the taxonomy prefix and the tag name joined by an underscore --
@@ -31,7 +31,9 @@ have never seen is the expected case and must not be treated as a parse failure.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +46,19 @@ XLINK = "{http://www.w3.org/1999/xlink}"
 #: The XBRL specification's linkbase namespace. A literal because it is the
 #: specification's URI, not ours to change.
 LINK_NS = "http://www.xbrl.org/2003/linkbase"
+
+#: What the calculation linkbase is called, after the filer's own prefix and period label
+#: (`dac-20251231_cal.xml`). The suffix is the only part that is the same on every filing.
+CALCULATION_SUFFIX = "_cal.xml"
+
+#: One `app_setting` row per filing. The linkbase is read whole for one accession and
+#: joined on by nothing else, which is the shape `analysis/metric_fields` already stores
+#: its discovered vocabulary in -- see the reasoning there.
+SETTING_PREFIX = "linkbase:"
+
+
+def setting_key(accession: str) -> str:
+    return f"{SETTING_PREFIX}{accession.strip()}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,10 +297,113 @@ def declared_tags(linkbase: Linkbase) -> set[str]:
     return tags
 
 
+# --------------------------------------------------------------------------- #
+# getting one, and remembering it
+# --------------------------------------------------------------------------- #
+
+
+def find_calculation(names: Iterable[str]) -> str | None:
+    """The calculation linkbase among a filing's filenames, if it filed one.
+
+    Filers are not required to publish one, and the ones that do call it whatever their
+    filing agent chose, so this is a suffix test over the directory listing rather than a
+    constructed name. ``None`` is an ordinary answer: the reconciliation then has nothing
+    to check against and the page says so instead of showing an empty table.
+    """
+    for name in names:
+        if name.lower().endswith(CALCULATION_SUFFIX):
+            return name
+    return None
+
+
+def fetch(
+    provider: Any,
+    *,
+    cik: str,
+    accession: str,
+    cache_ttl: float = 604_800.0,
+) -> tuple[Linkbase | None, str]:
+    """Fetch and parse one filing's calculation linkbase. No database, no session.
+
+    Returns the linkbase (``None`` when the filing published none) and the filename it
+    came from, which is what the page cites so a reader can open the document.
+
+    **Deliberately sessionless**, so the caller can fetch between two database phases
+    rather than holding SQLite's write lock across an EDGAR request -- the rule
+    ``ingest/xbrl.py`` releases the lock for, applied here by not taking it.
+
+    A filing that published no calculation linkbase is not an error: filers are not
+    required to publish one, so ``None`` is an ordinary answer and the page says so
+    instead of showing an empty table.
+    """
+    names = provider.get_filing_index(cik, accession, cache_ttl=cache_ttl)
+    name = find_calculation(names)
+    if name is None:
+        logger.info("no calculation linkbase among %d file(s) for %s", len(names), accession)
+        return None, ""
+
+    document = provider.fetch_document(
+        provider.document_url(cik, accession, name), cache_ttl=cache_ttl
+    )
+    return parse_calculation_linkbase(document.body), name
+
+
+def stored(session: Any, accession: str) -> tuple[Linkbase, str] | None:
+    """The remembered linkbase for one filing, with the filename it came from."""
+    from awltux.db import AppSetting
+
+    if not accession:
+        return None
+    row = session.get(AppSetting, setting_key(accession))
+    payload = row.value if row is not None else None
+    if not isinstance(payload, dict) or not payload.get("calculations"):
+        return None
+    # The filename comes out of the stored payload, not out of `note`: the note is prose
+    # for a human and parsing it would make the citation depend on its wording.
+    return Linkbase.from_dict(payload), str(payload.get("source") or "")
+
+
+def save(session: Any, accession: str, linkbase: Linkbase, *, source: str, cik: str) -> None:
+    """Remember one filing's declared arithmetic, replacing any earlier read of it."""
+    from awltux.db import AppSetting
+
+    payload = linkbase.as_dict()
+    payload["cik"] = cik
+    payload["source"] = source
+    payload["read_at"] = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    row = session.get(AppSetting, setting_key(accession))
+    if row is None:
+        row = AppSetting(key=setting_key(accession))
+        session.add(row)
+    row.value = payload
+    # The filename, because it is the provenance a reader needs to open the document --
+    # kept in `note` so the row is legible on the settings page as well as in code.
+    row.note = f"{len(linkbase.calculations)} declaration(s) from {source}"
+    session.flush()
+
+
+def forget(session: Any, accession: str) -> bool:
+    """Drop one filing's stored linkbase, so a wrong read is not permanent."""
+    from awltux.db import AppSetting
+
+    row = session.get(AppSetting, setting_key(accession))
+    if row is None:
+        return False
+    session.delete(row)
+    session.flush()
+    return True
+
+
 __all__ = [
     "Calculation",
     "Linkbase",
     "declared_tags",
+    "fetch",
+    "find_calculation",
+    "forget",
     "parse_calculation_linkbase",
     "qualification",
+    "save",
+    "stored",
 ]
