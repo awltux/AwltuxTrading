@@ -230,6 +230,54 @@ def run(
     return {"steps_done": len(sequence), "results": results}
 
 
+def run_under_lease(ticker: str, token: str) -> dict[str, object]:
+    """Run the sequence under a lease this caller already holds, then give the lease up.
+
+    The one place that does, because the release has to happen on the failure path as well:
+    a refresh that dies still holding its lease keeps the instrument out of every sweep until
+    the TTL expires, which is the one thing the lease cannot recover from on its own.
+
+    Two callers, and they differ only in how the lease was taken: the web button claims it
+    before starting a thread (so pressing the button twice refuses the second), and the
+    scheduled held-name sweep claims one per instrument as it reaches it.
+
+    Returns what :func:`run` produced, or ``{"failed": ...}`` when a step raised out of the
+    sequence itself. It does not raise: whether that failure ends the caller's run is the
+    caller's decision, and they make it differently.
+    """
+    from awltux.db.session import session_scope
+    from awltux.ingest.lease import release
+
+    outcome: dict[str, object] = {}
+    failed: str | None = None
+    try:
+        with session_scope() as session:
+            outcome = run(session, ticker, token=token)
+    except Exception as exc:  # noqa: BLE001 - the lease must be released either way
+        failed = f"{type(exc).__name__}: {exc}"
+        logger.exception("instrument refresh failed for %s", ticker)
+
+    with session_scope() as session:
+        release(
+            session,
+            ticker,
+            token=token,
+            state="failed" if failed else "done",
+            note=failed or summary(outcome),
+        )
+
+    if failed:
+        return {"failed": failed, **outcome}
+    return outcome
+
+
+def summary(outcome: dict[str, object]) -> str:
+    """One line naming what the refresh did, for the lease row the page reads."""
+    results = outcome.get("results") or []
+    ok = sum(1 for row in results if row.get("ok"))
+    return f"{ok} of {len(results)} steps completed"
+
+
 def _summarise(result: object) -> str | None:
     """A one-line outcome from a ``JobResult`` that carries no note of its own."""
     written = getattr(result, "items_written", None)
@@ -254,6 +302,8 @@ __all__ = [
     "Step",
     "instrument_or_none",
     "run",
+    "run_under_lease",
     "step_ids",
     "steps",
+    "summary",
 ]

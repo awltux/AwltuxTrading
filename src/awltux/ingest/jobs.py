@@ -389,6 +389,167 @@ def sync_orders() -> JobResult:
     )
 
 
+#: How long one run of the held-name sweep may take, in seconds.
+#:
+#: Each instrument's own refresh is bounded separately (``refresh.TOTAL_BUDGET_SECONDS``,
+#: 900); this bounds the *set*. Measured 2026-10-08: one instrument's refresh takes about
+#: 100 seconds, so the cap is only reachable with a large number of holdings -- and it exists
+#: for the case where a wedged provider makes each instrument burn its whole budget. Without
+#: it, an hourly job could spend the hour and hold up every other job behind the single
+#: worker, which is exactly what the interval is supposed to prevent.
+HELD_REFRESH_BUDGET_SECONDS = 2_700
+
+
+def refresh_held(tickers: list[str] | None = None) -> JobResult:
+    """Run the full refresh for every instrument the account holds, one after another.
+
+    The instrument page's Refresh button does this for one company on its own thread. This is
+    the scheduled version of the same sequence for the positions actually at risk, so a
+    holding's filings, news, valuation and decision stay current without anyone pressing
+    anything.
+
+    **Sequential, and through the same lease.** Each holding is refreshed under its own
+    instrument lease, which is what stops a scheduled run and a button press writing one
+    company at once -- a name another refresh already holds is *skipped and named*, not
+    waited for, because a refresh that has been running for ten minutes is not a lock worth
+    blocking an hourly job behind. The scheduler's single worker means one job at a time
+    anyway; going one instrument at a time also keeps each step's provider and model calls
+    inside the per-instrument budget.
+
+    **Cooperative stop between instruments.** `progress.checkpoint` leaves at an item
+    boundary, where the previous instrument is committed and its lease released, so
+    `awltux quiet` before a deploy does not leave a half-refreshed company behind.
+    """
+    from awltux.db import utcnow
+    from awltux.ingest import refresh
+    from awltux.ingest.lease import acquire, expire_stale
+
+    with session_scope() as session:
+        held = _held_instruments(session)
+        outside = _held_outside_the_universe(session)
+
+    if tickers is not None:
+        scope = set(tickers)
+        held = [row for row in held if row.t212_ticker in scope]
+
+    if not held:
+        return JobResult(
+            note=(
+                f"nothing to refresh: {outside} held instrument(s) are outside the analysed "
+                "universe"
+                if outside
+                else "nothing held, or positions have not been read yet"
+            ),
+            detail={"held": 0, "outside_universe": outside},
+        )
+
+    started = utcnow()
+    refreshed: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    partial: list[str] = []
+    failed_steps: list[str] = []
+    truncated: str | None = None
+
+    for position, row in enumerate(held, start=1):
+        progress.checkpoint(f"{position} of {len(held)}: {row.t212_ticker}")
+
+        if (utcnow() - started).total_seconds() > HELD_REFRESH_BUDGET_SECONDS:
+            truncated = (
+                f"stopped after {position - 1} of {len(held)}: the run's budget of "
+                f"{HELD_REFRESH_BUDGET_SECONDS}s was spent"
+            )
+            progress.note(truncated)
+            break
+
+        with session_scope() as session:
+            expire_stale(session)
+            lease_row = acquire(session, row.t212_ticker, note="scheduled held refresh")
+            token = lease_row.token if lease_row is not None else None
+
+        if token is None:
+            skipped.append(row.t212_ticker)
+            progress.note(f"{row.t212_ticker} is already being refreshed; skipping it")
+            continue
+
+        outcome = refresh.run_under_lease(row.t212_ticker, token)
+
+        # A step that fails does not fail the refresh -- `refresh.run` records it and carries
+        # on, and the instrument's own page shows which step it was. Counted here so a run
+        # whose steps all failed does not read as a clean one, without pretending the
+        # *instrument* was not refreshed.
+        for step_result in outcome.get("results") or []:
+            if not step_result.get("ok"):
+                failed_steps.append(f"{row.t212_ticker}/{step_result.get('step')}")
+
+        if isinstance(outcome.get("failed"), str):
+            failed.append(f"{row.t212_ticker}: {outcome['failed']}")
+        elif outcome.get("stopped"):
+            # The sequence gave up: it lost the lease to somebody else, or spent its own
+            # per-instrument budget. Not a failure of this job, and not a refreshed
+            # instrument either.
+            partial.append(f"{row.t212_ticker}: {outcome['stopped']}")
+        else:
+            refreshed.append(row.t212_ticker)
+
+    return JobResult(
+        items_seen=len(held),
+        items_written=len(refreshed),
+        note=truncated,
+        detail={
+            "held": len(held),
+            "refreshed": refreshed,
+            "skipped": skipped,
+            "failed": failed,
+            "partial": partial,
+            "failed_steps": failed_steps,
+            "outside_universe": outside,
+        },
+    )
+
+
+def _held_instruments(session) -> list[Instrument]:
+    """What the account holds, in ticker order, for the refresh to walk.
+
+    ``in_universe`` because that is what every scoped step filters on and what the Refresh
+    button itself requires (`refresh.instrument_or_none`): a holding outside it has no
+    analysed data to refresh. How many are outside is reported separately rather than
+    dropped silently -- it means the pipeline is not looking at something the account owns.
+    """
+    from sqlalchemy import select
+
+    from awltux.db import Instrument
+
+    return list(
+        session.execute(
+            select(Instrument)
+            .where(Instrument.is_held.is_(True))
+            .where(Instrument.in_universe.is_(True))
+            .where(Instrument.excluded.is_(False))
+            .order_by(Instrument.t212_ticker)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _held_outside_the_universe(session) -> int:
+    """Held instruments the pipeline does not analyse, counted so the run can say so."""
+    from sqlalchemy import func, select
+
+    from awltux.db import Instrument
+
+    return int(
+        session.execute(
+            select(func.count())
+            .select_from(Instrument)
+            .where(Instrument.is_held.is_(True))
+            .where((Instrument.in_universe.is_(False)) | (Instrument.excluded.is_(True)))
+        ).scalar_one()
+        or 0
+    )
+
+
 def _record_capabilities(session, holds_readable: bool, metadata_ok: bool) -> dict[str, Any]:
     """Cache what this key can do, so the UI can explain a reduced feature set."""
     from awltux.db import AppSetting, utcnow

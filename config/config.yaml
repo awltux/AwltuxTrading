@@ -57,6 +57,9 @@ universe:
 schedule:
   t212_instruments: 86400        # daily; T212 rate limit is 1 req / 50s
   t212_account: 3600
+  # Every held instrument through the full refresh sequence. About 100 seconds each and a
+  # handful of model calls, so this is the setting that decides what a fresh position costs.
+  held_refresh: 3600
   prices_intraday: 3600          # was 15 min; quotes are a display feed, not an input
   prices_eod: 86400              # once after the close
   quotes_held: 3600              # was 5 min

@@ -36,6 +36,7 @@ from awltux.db import (
     FundamentalPeriod,
     IngestRun,
     Instrument,
+    InstrumentRefresh,
     NewsAnalysis,
     NewsItem,
     PriceBar,
@@ -465,6 +466,40 @@ def _probe_decision(session: Session) -> Coverage:
     return Coverage.counted(missing, len(rows), _note(missing, len(rows), "a decision on record"))
 
 
+def _probe_held_refresh(session: Session) -> Coverage:
+    """What the refresh has not yet brought up to date, read as the freshness of each holding.
+
+    Not a queue of missing rows: a held instrument that has everything is still refreshed on
+    the next tick, because the point of this job is the *age* of the analysis rather than the
+    presence of it. So the coverage it reports is the count of holdings and how recently each
+    was last refreshed -- a number that reads as work outstanding only when a refresh has
+    never run, which is the one case where the page should say so.
+    """
+    held = session.execute(
+        select(Instrument.t212_ticker, InstrumentRefresh.finished_at)
+        .select_from(Instrument)
+        .outerjoin(InstrumentRefresh, InstrumentRefresh.instrument_t212_ticker == Instrument.t212_ticker)
+        .where(Instrument.is_held.is_(True))
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+    ).all()
+    if not held:
+        return Coverage.none("nothing is held, so there is nothing to keep fresh")
+
+    never = [ticker for ticker, finished in held if finished is None]
+    if never:
+        return Coverage.counted(
+            len(never),
+            len(held),
+            f"{len(never)} of {len(held)} held instruments have never been refreshed on "
+            "their own; the rest are kept fresh on the interval",
+        )
+    return Coverage.none(
+        f"all {len(held)} held instruments have been refreshed; the job re-runs them on the "
+        "interval rather than because anything is missing"
+    )
+
+
 def _probe_t212_orders(session: Session) -> Coverage:
     """Nothing depends on the trade history, so there is no queue to report.
 
@@ -607,6 +642,7 @@ PROBES = {
     "decision": _probe_decision,
     "calibration": _probe_calibration,
     "t212_orders": _probe_t212_orders,
+    "held_refresh": _probe_held_refresh,
     "retention": _probe_retention,
 }
 

@@ -373,6 +373,7 @@ sources cannot support that:
 | News headlines | 1–5 minutes |
 | Prices | 15-minute delayed, or end-of-day |
 | UK regulatory news | best-effort only — real-time RNS is a paid licence |
+| Everything you **hold** | the whole pipeline — filings, news, valuation, decision — re-run hourly (`held_refresh`), rather than waiting for each stage's own sweep to reach it |
 
 ---
 

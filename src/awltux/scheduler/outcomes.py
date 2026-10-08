@@ -456,6 +456,42 @@ def _t212_orders(detail: dict[str, Any]) -> str:
     return f"{_n(read)} orders read, {_n(new)} new"
 
 
+def _held_refresh(detail: dict[str, Any]) -> str:
+    """What the sweep did, naming the holdings it could not do.
+
+    A refresh that was skipped because the button was already refreshing that company, or
+    that failed, or that ran out of its own step budget, is a *different* state from one that
+    succeeded -- and "3 refreshed" beside a holding that was silently left alone is the kind
+    of zero this file exists to explain.
+    """
+    held = _get(detail, "held")
+    if not held:
+        outside = _get(detail, "outside_universe")
+        if outside:
+            return (
+                f"{_n(outside)} held instrument(s) are outside the analysed universe, so "
+                "there was nothing to refresh"
+            )
+        return "nothing is held, or positions have not been read yet"
+
+    refreshed = detail.get("refreshed") or []
+    line = f"{_n(len(refreshed))} of {_n(held)} held instruments refreshed"
+    for key, word in (("skipped", "already being refreshed"), ("failed", "failed")):
+        values = detail.get(key) or []
+        if values:
+            line += f"; {_n(len(values))} {word} ({_first_names(values)})"
+    partial = detail.get("partial") or []
+    if partial:
+        line += f"; {_n(len(partial))} stopped part-way ({_first_names(partial)})"
+    steps = detail.get("failed_steps") or []
+    if steps:
+        line += f"; {_n(len(steps))} step(s) failed ({_first_names(steps)})"
+    outside = _get(detail, "outside_universe")
+    if outside:
+        line += f"; {_n(outside)} held instrument(s) are outside the universe"
+    return line
+
+
 def _symbol_resolution(detail: dict[str, Any]) -> str:
     looked = _get(detail, "looked_up")
     resolved = _get(detail, "resolved")
@@ -575,6 +611,7 @@ SUMMARISERS: dict[str, Summariser] = {
     "decision": _decision,
     "calibration": _calibration,
     "t212_orders": _t212_orders,
+    "held_refresh": _held_refresh,
     "retention": _retention,
 }
 

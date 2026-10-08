@@ -21,15 +21,12 @@ like a scheduled one, which is what makes the live panel work without new machin
 
 from __future__ import annotations
 
-import logging
 import threading
 
 from awltux.db.session import session_scope
 from awltux.ingest import refresh
 from awltux.scheduler import progress
 from awltux.scheduler.jobs import JobResult, JobSpec, execute_job
-
-logger = logging.getLogger(__name__)
 
 #: The run id this appears under in the history and in `data/joblogs/`. Named rather
 #: than inlined because the page links to `/jobs/instrument_refresh/log` by string.
@@ -117,28 +114,17 @@ def _run(ticker: str, token: str) -> None:
 
 
 def _body(ticker: str, token: str) -> JobResult:
-    """Run the sequence and close the lease out, whatever happened."""
-    from awltux.ingest.lease import release
+    """Run the sequence and close the lease out, whatever happened.
 
-    outcome: dict[str, object] = {}
-    failed: str | None = None
-    try:
-        with session_scope() as session:
-            outcome = refresh.run(session, ticker, token=token)
-    except Exception as exc:  # noqa: BLE001 - the lease must be released either way
-        failed = f"{type(exc).__name__}: {exc}"
-        logger.exception("instrument refresh failed for %s", ticker)
+    Everything about the lease and the sequence is in `refresh.run_under_lease`; what is
+    left here is this caller's own reporting -- one run for one instrument, so a failure is
+    the run's failure and a stop is the run's note. The scheduled held-name sweep calls the
+    same helper and reports across instruments instead.
+    """
+    outcome = refresh.run_under_lease(ticker, token)
 
-    with session_scope() as session:
-        release(
-            session,
-            ticker,
-            token=token,
-            state="failed" if failed else "done",
-            note=failed or _summary(outcome),
-        )
-
-    if failed:
+    failed = outcome.get("failed")
+    if isinstance(failed, str):
         raise RuntimeError(failed)
 
     results = outcome.get("results") or []
@@ -150,13 +136,6 @@ def _body(ticker: str, token: str) -> JobResult:
         progress.note(note)
         return JobResult(items_seen=len(results), items_written=written, note=note)
     return JobResult(items_seen=len(results), items_written=written, detail=outcome)
-
-
-def _summary(outcome: dict[str, object]) -> str:
-    """One line naming what the refresh did, for the lease row the page reads."""
-    results = outcome.get("results") or []
-    ok = sum(1 for row in results if row.get("ok"))
-    return f"{ok} of {len(results)} steps completed"
 
 
 __all__ = ["REFRESH_JOB", "Started", "start"]

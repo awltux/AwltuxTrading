@@ -80,6 +80,23 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             requires=("T212_API_KEY", "T212_API_SECRET"),
         ),
         JobSpec(
+            id="held_refresh",
+            func=ingest_jobs.refresh_held,
+            interval_seconds=schedule.held_refresh,
+            description=(
+                "Run the full refresh for every instrument the account holds, so a "
+                "position's filings, news, valuation and decision stay current"
+            ),
+            # Held instruments are marked by the positions read inside `t212_instruments`,
+            # so that is what this reads. Not `price_eod` or the rest: the refresh runs those
+            # itself, for one company at a time.
+            depends_on=("t212_instruments",),
+            # A key that cannot read positions marks nothing as held, so the job would run
+            # hourly and do nothing. Gated visibly instead.
+            enabled=t212_ready,
+            requires=("T212_API_KEY", "T212_API_SECRET"),
+        ),
+        JobSpec(
             id="symbol_resolution",
             # Only has work while its coverage probe reports a gap.
             backfill=True,

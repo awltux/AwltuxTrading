@@ -230,6 +230,15 @@ class ScheduleConfig(BaseModel):
     #: the newest order it already holds.
     t212_orders: int = 3_600
     t212_account: int = 3_600
+    #: How often every *held* instrument is put through the full refresh sequence.
+    #:
+    #: One instrument's refresh costs about 100 seconds and a handful of model calls, so this
+    #: is the setting that decides what keeping a position current costs. At an hour it is
+    #: the floor (`test_scheduler` asserts nothing runs faster) and it re-runs the same
+    #: probes the universe-wide jobs run -- the point is that for these instruments the
+    #: answer is fresh rather than up to a day old, which is what the instrument page's own
+    #: Refresh button exists for.
+    held_refresh: int = 3_600
     prices_intraday: int = 3_600
     prices_eod: int = 86_400
     #: Instruments the end-of-day price job asks for in one run. ``0`` prices the
