@@ -14,9 +14,6 @@ the reason, so it is not re-litigated.
 
 `tests/test_repo_hygiene.py` fails on a closed item left in place.
 
-Priority: **P1** wrong or missing data, **P2** broken or fragile behaviour,
-**P3** documentation and polish.
-
 ---
 
 ---
@@ -82,11 +79,8 @@ Fetched 2026-10-16, verbatim:
 | `www.bankofengland.co.uk` | disallows `/boeapps/database/_iadb-FromShowColumns.asp` | exactly that path, for the gilt curve |
 | `stooq.com` | allows only `Googlebot` and `Bingbot`; no longer keyless | nothing: no Stooq provider exists in the tree |
 
-Two more findings from the same pass, both already true and neither a rate limit:
+One more finding from the same pass, already true and not a rate limit:
 
-* **The README claims a Stooq fallback that is not implemented.** `stooq` had a budget
-  entry in `config.yaml` and a mention in `providers/http.py`'s docstring; there is no
-  adapter. The budget entry is gone; the README claim is still there.
 * **`macro_rates` and `gilt` may be better served by a different endpoint** — the Treasury
   publishes the same par curve as an XML feed, which is allowed (`Allow: /`), and the BoE's
   disallowed path is only its CSV export.
@@ -94,8 +88,12 @@ Two more findings from the same pass, both already true and neither a rate limit
 **This is a decision, not a bug to fix silently**, which is why it is written here rather
 than worked around. Nothing has been done to evade any of it: the client sends one honest,
 declared User-Agent and no browser impersonation. The options are to accept the position in
-writing, or to move off the endpoint — and moving off Google News RSS for company coverage
-means the batched-query entry above becomes the only route to it.
+writing, or to move off the endpoint. **The obvious move is closed**, and the entry above
+used to point at it: pooling companies into one `q=` was measured on 2026-10-07 and does not
+work — Google caps a response at ~100 items, so five companies share that window rather than
+adding to it, and at ten or more terms the query collapses to ~27 items with one company
+visible. Accepting the position is the honest option until a different source of
+per-company coverage exists.
 
 The two bugs before the above — a cache key that ignored the query string, and a
 `uk_companies` walk that attempted the same eleven instruments on every run — were found
@@ -108,11 +106,12 @@ Found 2026-10-16 while wiring `llm_extraction`. `analysis/fundamental.py:36` ran
 `yahoo_info` 1, and `_dedupe_by_period` compares `SOURCE_PREFERENCE.get(period.source, 0)`.
 No writer in the repo ever writes `source="edgar_xbrl"`; `ingest/xbrl.py` writes
 **`xbrl_companyfacts`**, which is absent from the map and therefore scores **0** — below
-both Yahoo sources. Measured on the live database the same day: 277 periods, 226 of them
-`xbrl_companyfacts` and 41 `yahoo_statements`. So wherever the two describe the same
-`(period_end, period_type)` the scraped snapshot wins and the filer's tagging is dropped,
-which is the inverse of the comment above the map ("A figure extracted from the filed
-document with a citation beats a scraped snapshot").
+both Yahoo sources. Measured 2026-10-08: **295 periods, 226 `xbrl_companyfacts`, 53
+`yahoo_statements`, 14 `yahoo_info`, 2 `llm_extraction`** (the entry read "277 periods, 226
+and 41" when written; the picture it describes is unchanged). So wherever the two describe
+the same `(period_end, period_type)` the scraped snapshot wins and the filer's tagging is
+dropped, which is the inverse of the comment above the map ("A figure extracted from the
+filed document with a citation beats a scraped snapshot").
 
 The fix is one line, but which value is a decision: `xbrl_companyfacts` is the SEC's
 aggregate of the filer's tags rather than our reading of the document, so it is arguably
@@ -154,27 +153,27 @@ invisible to git while `git status` reported a clean tree.
 
 ## Correctness questions still open
 
-### Not one decision in 1,495 has been allowed, and it is a data gap rather than a verdict
+### Not one decision in 1,614 has been allowed, and it is a data gap rather than a verdict
 
-Measured 2026-10-07. `decision_run` holds **1,495** rows and `gate_allowed` is **0** on
-every one. 1,344 are `avoid`, 146 `hold`, 4 `reduce`, 1 `buy`. The question was whether
+Measured 2026-10-08. `decision_run` holds **1,614** rows and `gate_allowed` is **0** on
+every one. 1,451 are `avoid`, 158 `hold`, 4 `reduce`, 1 `buy`. The question was whether
 the gate is too strict or the universe is genuinely unattractive; the answer is neither.
 
 **What binds.** Two rules, and almost nothing else:
 
-    982  confidence_below_floor   "confidence 25% is below the 55% floor"
-    499  price_stale              "price data is 37h old (limit for long term is 36h)"
-     13  (none)                   `avoid` produces no suggestion anyway
+  1,079  confidence_below_floor   "confidence 25% is below the 55% floor"
+    516  price_stale              "price data is 37h old (limit for long term is 36h)"
+     15  (none)                   `avoid` produces no suggestion anyway
       1  probability_below_floor
 
-**Short term is not the same story, and it is the control.** 7 of the 1,495 pass its gate
+**Short term is not the same story, and it is the control.** 7 of the 1,614 pass its gate
 -- all seven of the `strong_buy` calls -- against **0** for long term. So this is
 specifically the long-term checks rather than a gate that refuses everything, which is
 what the entry this replaced had established at 81 decisions and could not explain.
-`horizon_fit` agrees: 1,478 `neither`, 16 `short_term`, 1 `long_term`.
+`horizon_fit` agrees: 1,597 `neither`, 16 `short_term`, 1 `long_term`.
 
 **The scores are not being suppressed -- there is nothing to suppress.** Across the whole
-universe the composite score runs 0.6 to **63.5**, median 32, and only **6 decisions
+universe the composite score runs 0.6 to **63.5**, median 33, and only **6 decisions
 clear 60**. A gate refusing good opportunities would leave a pile of them at the door;
 there is no pile.
 
@@ -453,19 +452,20 @@ stories that already agree on what kind of thing happened, not the decision.
 and vetoes 439 of those 672 joins today.
 
 **What is missing is the third key.** `metric`, `period` and `magnitude` are new columns
-and almost every row is NULL. Re-measured 2026-10-07 against **20,168** stored stories --
-the entry said 5,800, which was right when written and is 3.4x out now:
+and most rows are still NULL. Re-measured 2026-10-08 against **26,301** stored stories --
+the entry said 5,800 when first written and 20,168 when last corrected, so this needed
+re-measuring again:
 
-    metric      694 set (3%)     19,474 null
-    period      124 set (1%)     20,044 null
-    magnitude    98 set (0%)     20,070 null
+    metric     6,827 set (26%)    19,474 null
+    period     1,180 set (4%)     25,121 null
+    magnitude  1,526 set (6%)     24,775 null
 
-The veto reads an absent key as "not stated" rather than "different" -- the alternative
-would veto every join until the data caught up, silently -- so the metric half is inert
-until rows are re-classified. `news_relevance` backfills at **200 model calls per run**
-(`news.relevance_backfill_per_run`), which against 19,474 rows is roughly 97 runs rather
-than the 29 this entry used to claim. `event_type` and `direction` are separate and much
-further along: 16,761 (83%) and 20,111 (100%).
+**The metric half is no longer inert.** It was 3% when this was written; every story
+classified since carries a metric, so 26% do now and the veto is doing real work on new
+rows while the 19,474 older ones stay "not stated". `news_relevance` backfills at **200
+model calls per run** (`news.relevance_backfill_per_run`), which against 19,474 rows is
+still roughly 97 runs. `event_type` and `direction` are separate and much further along:
+22,894 (87%) and 26,244 (100%).
 
 `metric` is the one that matters and the reason the columns exist at all. On the five
 pairs that decided the threshold, the *true* EasyJet takeover pair scores **0.7925** and
@@ -533,11 +533,12 @@ shown — and if it blocks, make the refusal reason name the flag.
 written before migration `0004` are `NULL`, and primary-source routing falls back to
 nothing for them.
 
-**Re-measured 2026-10-07: 16,512 of 19,919 stories (83%) carry one**, so this is much
-smaller than it was and much smaller than it reads. The 3,407 without are the sector
-stories `news_sectors` captures -- a sector feed has no company to classify against, so
-the classifier was never asked -- plus older rows. Worth correcting the framing rather
-than the code.
+**Re-measured 2026-10-08: 22,894 of 26,301 stories (87%) carry one**, so this is much
+smaller than it was and much smaller than it reads. The **3,407** without are unchanged
+since the last measurement -- the sector stories `news_sectors` captures (a sector feed has
+no company to classify against, so the classifier was never asked) plus older rows -- so
+the count is static while the proportion keeps falling as ordinary stories arrive. Worth
+correcting the framing rather than the code.
 
 ### A story from a loose feed is still attributed to the instrument that fed it
 
@@ -620,6 +621,23 @@ the second, the three rows above are the only level-1 blockers in the live table
 run can clear.
 
 ---
+### Every currency but USD and GBP is valued at the wrong risk-free rate
+
+`analysis/macro.py:58` `CURRENCY_CURVES` maps only `USD -> treasury` and `GBP -> gilt`, and
+`curve_for_currency` (`macro.py:127`) is `CURRENCY_CURVES.get(...)` -- so any other currency
+returns `None` and `resolve_risk_free_rate` falls back to the single configured constant.
+That constant is USD-shaped, and the function's own default argument is `currency="USD"`.
+
+Measured 2026-10-08 on the live universe: **384 USD, 114 GBX, 1 GBP, 1 EUR**. GBX aliases to
+GBP (`CURRENCY_ALIASES`, `macro.py:66`), so the exposure today is one EUR instrument valued
+off a dollar-shaped number -- small, but silent, and the map is the documented place for the
+coupling to be visible ("adding a currency means adding a provider that can read its curve").
+
+Found in `docs/research/FINDINGS.md` section 3 and filed here because it was queued nowhere:
+`grep -n 'CURRENCY_CURVES\|risk-free' TODO.md` returned nothing. Not urgent on one
+instrument; it becomes wrong-by-default the moment a non-USD listing is added, which is a
+data change nobody would connect to this map.
+
 
 ## Operations
 
@@ -1015,203 +1033,30 @@ script's own docstring warns about. **Pay this off with the two packages present
 change the four hex values, run `python tools/render_icons.py`, and commit the SVG
 with the regenerated PNGs/ICO together.
 
----
 
-## Ingest Education Videos on Value Investment
+### The value-investing education ingest has 83 core videos left to acquire
 
-A long-running background task: read six value-investing channels, extract the
-concepts that could improve the rating app, and merge them into
-`docs/research/FINDINGS.md` alongside the existing literature.
-First find the Youtube terms and conditions on rate limiting when downloading transcripts. 
-This IP address has been locked out previously, I'd like to avoid that in future.
-Rate limiting should be an integral part of the solution. 
+The tooling is built and lives in `ingest_youtube/` (`run.py plan|fetch|distill|report|quota`,
+54 offline tests, its policy and pacing in `ingest_youtube/README.md`). The remaining work is
+acquisition, not construction:
 
-**Scope, measured rather than assumed** (enumerated 2026-10-06 with
-`yt_enumerate.py --playlists` and `--limit 150`):
+    23 transcripts held of a 94-video core tier (100 raw, 6 dropped as duplicates/overlap)
+    83 core videos outstanding;  15/day at a 24h cooldown -> about six days
 
-| Channel | playlists | videos listed |
-|---|---|---|
-| @Value-Investing | 287 | 301 |
-| @ThePlainBagel | 11 | 160 |
-| @BenFelixCSI | 7 | 159 |
-| @AswathDamodaranonValuation | 26 | 150 (hit the cap) |
-| @CstewartCFA | 9 | 306 |
-| @PBoyle | 47 | 157 |
-| **total** | **387** | **1,233** |
+Two things it needs before the next run, both measured 2026-10-08:
 
-Selecting by title narrows that to **42 playlists and 181 videos** — about 220 items,
-not 1,600. That is the difference between a task and an infinite one.
+* **`.tmp/probe-out/PRfXq-NlJqo.txt` is a transcript the ledger cannot see.**
+  `PRfXq-NlJqo` is `core` in the inventory and is absent from `ingest_youtube/transcripts`,
+  but `fetch.adopt_existing` only reads `.tmp/transcripts` (`fetch.py:49`, `fetch.py:506`), so
+  the next fetch spends a request re-fetching a transcript already on disk. Move it into
+  `ingest_youtube/transcripts` or it is paid for twice.
+* **The 42 selected playlists have never been expanded into their videos.** They are the
+  larger half of the coverage the plan describes, and expanding them may change what "core"
+  means before the remaining 83 are fetched -- cheaper to decide first than to re-fetch.
 
-### Read the core tier first, and prefer playlists for method
-
-The selector ranks by how much a title bears on the subject rather than including or
-excluding it, because a flat list was the first attempt and it rated *"40 QUOTES BY
-CHARLIE MUNGER"* level with *"Intrinsic Value Calculation Examples"*. Tiers, and what
-they are for:
-
-| Tier | Count (playlists / videos) | Use |
-|---|---|---|
-| **core** — intrinsic value, DCF, discount rates, cost of capital, margin of safety | 37 / 100 | the concepts this task exists to find |
-| **supporting** — accounting quality, filings, fraud markers | 1 / 9 | corroboration; the app already holds a literature base on this |
-| **context** — moats, capital allocation, buybacks, risk | 4 / 48 | worth reading, weaker bearing on the arithmetic |
-| **example** — one company analysed | — / ~24 | *checking*, not teaching: a worked valuation to compare the app's own against |
-
-Damodaran's `Valuation MBA` and `Valuation Undergraduate` courses (2016–2025) are
-pure method and are the highest-value material in the set.
-
-**Prefer playlists over raw video titles for method.** A curated course playlist is a
-syllabus; a channel's individual uploads are mostly company commentary. Title
-heuristics are a first pass and not a classifier — they still admit "Costco's
-Explosive Free Cash Flow Growth", because nothing in that title distinguishes it from
-a lecture on cash flow. Read the selection rather than trusting it.
-
-### How to run it
-
-The `youtube-transcripts` skill does the work; its scripts are at
-`~/.agents/skills/youtube-transcripts/scripts/`.
-
-```bash
-python yt_enumerate.py --playlists --out lists.json --append "<channel>/playlists"
-python yt_enumerate.py --out videos.json --limit 150 --append "<channel>"
-python yt_select.py --in lists.json  --out want_lists.json
-python yt_select.py --in videos.json --out want_videos.json
-python yt_transcripts.py --in want_videos.json --out-dir transcripts --max-per-run 40
-```
-
-Expand the selected **playlists** into videos before fetching — the playlist inventory
-names the courses, and the videos inside them are what carry the method.
-
-**Ration it.** At the scripts' defaults — 5s spacing, serial — 220 items is well over
-two hours of wall time and 220 caption requests. `--max-per-run 40` means six runs,
-spread over days rather than chained. The scripts refuse to run again for 12 hours after
-a block; that gate is the reason this is a background task rather than an afternoon's
-work. **The 12 hours is this project's own conservative default, not YouTube's
-number** — see the state note below.
-
-### Edge cases that will bite
-
-**A video can *suggest* a marker; it cannot be the evidence for one.** The
-companion reports carry a tier system (A/B/C/D) and an appendix of verified primary
-sources. A YouTube lecture is Tier D by construction — it is one person's summary,
-frequently of a paper that has since been challenged. Anything FINDINGS records must
-name the primary source and be graded on that, with the video recorded as *where the
-idea was noticed*. Otherwise this becomes the "sophisticated way of losing money"
-that `investment-markers.md` opens by warning against.
-
-**Separate method from worked example.** "Valuation MBA Spring 2025" teaches a
-technique; "MCD Stock Intrinsic Value" applies one to a ticker whose numbers are
-stale within a year and which may not be in the universe. Concepts come from the
-first. The second is worth keeping separately, as a way to check the app's own
-arithmetic against a worked case someone else did.
-
-**Expect promotional bias.** Value-investing YouTube runs on sponsorships and
-affiliate links, and titles are optimised for clicks. A concept that arrives attached
-to a product recommendation is suspect, and the transcript will usually say so
-somewhere.
-
-**Time-sensitivity cuts both ways.** Method ages slowly; examples, rates, tax rules
-and named tickers age fast. A 2019 valuation lecture predates IFRS 16 and its
-treatment of leases — record the video's date with every concept and do not carry a
-pre-2019 accounting assumption into the app.
-
-**No track record.** "I called the crash" is hindsight, not evidence, and a channel
-that posts ten predictions a year will be right sometimes. Nothing here is a
-performance claim.
-
-**Transcripts are machine-recognised.** Unpunctuated, no speaker labels, and numbers
-and ticker symbols are the least reliable part — "fifteen" and "50" are one
-mishearing apart. A figure taken from a transcript must never enter FINDINGS as a
-fact; find it in a filing or a paper or leave it out.
-
-**Duplicates and re-uploads.** The same talk appears on several of these channels,
-and channels re-upload. Dedupe on video id during enumeration and keep an eye on
-near-identical titles across channels.
-
-**Absent is not failed.** Some videos have no English captions at all. The manifest
-records `failed` with a reason so "no transcript exists" stays distinct from "we were
-blocked" — merging them turns a fetch failure into a silent gap in the research.
-
-**Attribution.** Many videos are interviews; the view expressed may be the guest's,
-not the channel's. Record who actually said it.
-
-**Copyright.** Quote briefly and link. Do not reproduce transcripts, and treat
-videos that read a book aloud (there is a Seth Klarman *Margin of Safety* reading in
-this set) as a copyright surface: analyse the ideas, do not copy the text.
-
-### What "done" looks like
-
-Every concept gets a **disposition**, not just a paragraph:
-
-| Disposition | Meaning |
-|---|---|
-| **implement** | worth building, with the primary source that justifies it and a tier |
-| **already covered** | link to where the app or `investment-markers.md` already does it |
-| **rejected** | with the reason, so it is not re-proposed |
-
-A FINDINGS entry with no disposition is a wish list, which is what the marker note
-and `TODO.md` section 6 both exist to prevent. Merge against
-`docs/investment-markers.md` rather than duplicating it: where a video and the
-literature describe the same marker, the literature entry is the record and the video
-becomes a citation on it.
-
-Where FINDINGS lives: `docs/research/FINDINGS.md`, next to the reports it grades
-against, so its claims sit beside the evidence base rather than apart from it.
-
-### Current state: the block has lifted, and the selection is already done
-
-**Re-probed once, 2026-10-07 09:58:40 +01:00, and it succeeded** — one caption request
-(`--max-per-run 1 --attempts 1`), `PRfXq-NlJqo` returned 775 words in 3.96s with no
-`429` and no bot check. Enumeration always worked; the transcripts are what was blocked,
-and they are not any more.
-
-The block began with a run at 2026-10-06 16:52:10 +01:00 that retried a `429`, so the
-next successful request was **17h 06m** later. That does *not* measure the block: the
-local gate is 12 hours, so any block shorter than 12 hours would have produced the same
-result. One probe cannot measure a duration and a second was not made, deliberately —
-the post-mortem in the skill names repeated probing as what caused the ban.
-
-**The 12-hour figure belongs to this project, not to YouTube.** `yt_common.py` has
-`DEFAULT_COOLDOWN_HOURS = 12.0` with the comment *"The measured block outlived the
-process that caused it by more than an hour"* — the measured fact is "> 1 hour", and 12
-is a conservative local default the comment does not derive from anything.
-`TODO.md` had been repeating it as though it were YouTube's behaviour.
-
-What the sources actually say, for the next reader:
-
-- **Official YouTube/Google terms state no duration.** [YouTube ToS](https://www.youtube.com/t/terms)
-  forbids automated access (*"robots, botnets or scrapers"*) and circumventing limits;
-  [YouTube API Services ToS](https://developers.google.com/youtube/terms/api-services-terms-of-service)
-  §15 "Usage and Quotas" lets YouTube set quotas and forbids exceeding them. Neither
-  gives a cooldown, a retry interval or a penalty period. That silence is the finding.
-- **The maintainer's own reading** ([youtube-transcript-api#467](https://github.com/jdepoix/youtube-transcript-api/issues/467)):
-  YouTube *"started to roll out much stricter rate limits on the endpoint needed to
-  fetch the transcripts"*, hit after roughly **2–3 caption requests**, with rotating
-  residential proxies as the only reliable workaround. The vendored README's "Working
-  around IP bans" section gives no retry interval, and its `IpBlocked` text warns that
-  cookie auth risks a *permanent* ban of the account used — so do not reach for
-  credentials to get past a block.
-- Community claims of "a few minutes", "an hour", "12–24 hours" and "permanent" are
-  mutually contradictory and unsourced. Treat them as folklore.
-
-**So the budget is 2–3 requests before a block, which is the number to design around.**
-Proceed at the scripts' defaults (5s spacing, serial, `--max-per-run 40`, six runs over
-days) and, if a run exits 3, wait the local 12 hours before the *next single* probe —
-do not health-check with repeated probes. **The selection is already done and does not
-need re-enumerating:** the playlists and videos are committed to
-`docs/research/education-sources.json` (42 playlists, 181 videos), so re-walking six
-channels would spend ~30 requests against an endpoint that blocks after 2–3. Start by
-expanding the selected playlists into videos, then fetch. The probe left
-`.tmp\probe-out\PRfXq-NlJqo.txt` fetched; move it into the run's transcript directory or
-the next run spends one of its few requests re-fetching it.
-
-### The channels
-
-1. https://www.youtube.com/@Value-Investing
-2. https://www.youtube.com/@ThePlainBagel
-3. https://www.youtube.com/@BenFelixCSI
-4. https://www.youtube.com/@AswathDamodaranonValuation
-5. https://www.youtube.com/@CstewartCFA
-6. https://www.youtube.com/@PBoyle
+`docs/research/education-sources.json` (42 playlists / 181 videos) is read by no code; the
+tool reads `ingest_youtube/inventory/edu_*_tiered.json` (`run.py:40-43`). Two records of the
+same selection, so one should go.
 
 ---
 
