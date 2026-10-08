@@ -317,6 +317,25 @@ reporting our own coverage, not a filer error, and the current wording ("Compone
 to stated total assets") does not say which. That is the first thing the linkbase makes
 sayable.
 
+### Four of GWW's annual reports would be stored as index pages, not reports
+
+Measured 2026-10-08, once the older-submissions fix made deep history reachable:
+`get_annual_filings("0000277135", since=1990-01-01)` now returns **28 10-Ks back to
+1994-03-28** (it stopped at the recent window's ten before), and **4 of them have no
+`primaryDocument`** -- 1999-03-26, 1996-03-25, 1995-03-27, 1994-03-28. EDGAR leaves that
+field empty for the pre-HTML-era filings, so `EdgarProvider.document_url` falls back to
+`<accession>-index.htm`, which is the filing *index*, and `Document.is_document` accepts it:
+`text/html`, non-empty, not a refusal page. A backfill past about 2001 would therefore store
+four index pages as shareholders' reports, and the accounts pipeline would read a table of
+links out of them.
+
+**Not reachable today**: `deepen_annual_history` asks for two years, which the recent window
+already covers, which is also why the older pages are not requested for it at all. This is a
+constraint on raising `years`, not a live fault. Paying it means reading the accession
+directory listing (`/Archives/edgar/data/<cik>/<accession-without-dashes>/`) for the
+accessions with no primary document and choosing the file that is the report, or refusing
+the row and recording why -- the fallback URL is the one thing that must not be stored.
+
 ### A manual Run now executes outside the scheduler's one-worker limit
 
 `SchedulerService.run_now` calls `execute_job(spec)` **directly** rather than
