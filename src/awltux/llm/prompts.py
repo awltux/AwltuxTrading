@@ -227,6 +227,36 @@ Return JSON:
 
 {_ABOUT_FALSE_RULE}"""
 
+#: The same task, many headlines at once, asked of a batch rather than one call each.
+#:
+#: The system prompt and the schema are the same objects, so a field added to the single
+#: form cannot go missing here. What differs is only the envelope: each answer carries the
+#: `index` of the headline it belongs to.
+#:
+#: **A batch that cannot be aligned is discarded, not guessed at.** The closing paragraph
+#: says so to the model because the failure it prevents is silent and specific: a short
+#: array would otherwise pair answer two with headline three, and nothing downstream could
+#: tell -- `normalise_classification` drops what it does not recognise, so an offset batch
+#: parses perfectly and files every verdict one story out. `classify_headlines` re-checks
+#: the indices rather than trusting this wording, and the caller re-asks one at a time.
+NEWS_BATCH_INSTRUCTION = f"""Classify each numbered headline below for the named company.
+
+Return JSON: an array containing exactly one object per headline, in the same order, and
+each object repeats its own `index` so an answer can be matched to the headline it is
+about.
+
+[{{"index": 0, "classification": {_CLASSIFICATION_SCHEMA}}}, ...]
+
+{_MATERIALITY_GUIDANCE}
+
+{_METRIC_GUIDANCE}
+
+{_ABOUT_FALSE_RULE}
+
+Answer every headline. Do not merge two headlines into one answer and do not skip one: an
+array that is not exactly as long as the list cannot be matched to it, and the whole batch
+is then thrown away and asked again one at a time."""
+
 #: The same task with an industry sector as the subject, for the sector news poll. It
 #: exists because a sector story has no ticker to be about: `news_item.tickers` is empty
 #: and `news_item.sectors` carries the sector, so a company-shaped classification would

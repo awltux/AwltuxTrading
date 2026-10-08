@@ -97,11 +97,15 @@ class Completion:
     raw: dict[str, Any] | None = None
     finish_reason: str | None = None
 
-    def json_object(self) -> dict[str, Any]:
+    def json_value(self) -> Any:
         """Parse the completion as JSON, tolerating a fenced code block.
 
         Models occasionally wrap JSON in ```json fences even in JSON mode, and
         failing the whole extraction over that would be wasteful.
+
+        Returns whatever the model sent -- an object for the single-record prompts, an
+        array for the batched classifier. Callers that need a particular shape check it
+        themselves: see `json_object`.
         """
         text = self.text.strip()
         if text.startswith("```"):
@@ -145,6 +149,17 @@ class Completion:
                     "raise max_tokens or ask for a shorter answer"
                 ) from exc
             raise DeepSeekError(f"model did not return valid JSON: {exc}") from exc
+        return parsed
+
+    def json_object(self) -> dict[str, Any]:
+        """The completion parsed as a JSON *object*.
+
+        The single-record prompts answer with an object; the batched news classifier
+        answers with an array, so the parsing lives in `json_value` and this only adds
+        the shape check. One parser, because a second copy of the fence handling is how
+        two callers end up disagreeing about what the model sent.
+        """
+        parsed = self.json_value()
         if not isinstance(parsed, dict):
             raise DeepSeekError("model returned JSON that was not an object")
         return parsed

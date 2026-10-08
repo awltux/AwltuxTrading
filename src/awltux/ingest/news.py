@@ -351,59 +351,93 @@ def _reusable_verdict(
     return None
 
 
-def _judge(
+def _ask(
     session: Session,
-    row: NewsItem,
     item: RawNewsItem,
+    instrument: Instrument | None,
+    classifier: Classifier,
+) -> dict[str, Any] | None:
+    """One classifier call about one headline.
+
+    Releases SQLite's write lock first. The previous iteration's flush left a
+    transaction open, and a model call takes seconds: holding it here is what made a
+    concurrent job fail with "database is locked". The lock is also released inside the
+    model client; this is the same guarantee stated where the slow call is.
+
+    A failure returns ``None`` rather than raising, because a classifier that fell over
+    must not lose the headline that was already fetched.
+    """
+    release_write_lock(session)
+    try:
+        return classifier(item, instrument)
+    except Exception as exc:
+        logger.warning("classification failed for %r: %s", item.title[:80], exc)
+        return None
+
+
+def _judge_awaiting(
+    session: Session,
+    awaiting: list[tuple[NewsItem, RawNewsItem]],
     *,
     instrument: Instrument | None,
     classifier: Classifier | None,
     report: NewsIngestReport,
 ) -> None:
-    """Settle this story's verdict: reuse a judged copy of the headline, or buy one.
+    """Buy the verdicts still owed for this batch of rows, then settle relevance.
 
-    Two ways to arrive at the same place, and which one applies is a property of the
-    *story* rather than of the caller -- so it is named here instead of being a branch
-    threaded through the insert loop.
+    **The whole batch is asked at once when the classifier can do that**, which is the
+    point: twenty headlines in one call cost 1,988 input tokens against 11,760 for twenty
+    calls, with the same output. A classifier that cannot (a plain function, or the
+    sector one) is simply called per item -- `many` is an extra capability, not a
+    replacement signature, so nothing that predates it has to change.
 
-    A reused verdict copies ``relevant`` as well as the classification fields.
-    ``is_about_this_company`` was answered against the earlier row's subject and is not
-    recoverable from the columns, so re-running the rule here would re-derive it from a
-    guess rather than reproduce the verdict that was actually reached.
+    Relevance is settled *after* the verdict, for a reused row as much as a bought one:
+    it is the rule's answer to a judgement, so there is nothing to apply until the
+    judgement exists.
     """
-    reused = _reusable_verdict(session, item, instrument)
-    if reused is not None:
-        report.reused += 1
-        apply_classification(row, _verdict_of(reused))
-        row.relevant = reused.relevant
+    if not awaiting:
         return
 
-    # The classifier's answer to "is this even about that company", kept so the
-    # relevance rule can tell a connection from a passing mention.
-    about: bool | None = None
-    if classifier is not None:
-        # Release SQLite's write lock before classifying. The previous iteration's
-        # flush left a transaction open, and a model call takes seconds: holding it
-        # here is what made a concurrent job fail with "database is locked". The lock
-        # is also released inside the model client; this is the same guarantee stated
-        # where the slow call is.
+    if classifier is None:
+        for row, _item in awaiting:
+            _apply_relevance(row, about=None)
+        return
+
+    many = getattr(classifier, "many", None)
+    if many is None:
+        verdicts = [_ask(session, item, instrument, classifier) for _row, item in awaiting]
+    else:
+        # One lock release for the whole batch: `many` makes its own sequence of calls.
         release_write_lock(session)
         try:
-            updates = classifier(item, instrument)
+            verdicts = many([item for _row, item in awaiting], instrument)
         except Exception as exc:
-            # A classifier failure must not lose the headline.
-            logger.warning("classification failed for %r: %s", item.title[:80], exc)
-            updates = None
-        if updates:
-            report.classified += 1
-            about = updates.get("is_about_this_company")
-            apply_classification(row, updates)
-            if updates.get("tickers"):
-                row.tickers = list({*row.tickers, *updates["tickers"]})
-            if updates.get("sectors"):
-                row.sectors = list({*row.sectors, *updates["sectors"]})
+            logger.warning("batch classification failed, storing unclassified: %s", exc)
+            verdicts = [None] * len(awaiting)
 
-    _apply_relevance(row, about=about)
+    if len(verdicts) != len(awaiting):
+        # `many` promises one verdict per headline. A short list would silently leave
+        # the tail unjudged -- and worse, `zip` would pair answers with the wrong rows
+        # if the list were reordered. Refuse the whole batch instead.
+        logger.warning(
+            "classifier returned %d verdicts for %d headlines; storing them unclassified",
+            len(verdicts),
+            len(awaiting),
+        )
+        verdicts = [None] * len(awaiting)
+
+    for (row, _item), updates in zip(awaiting, verdicts, strict=True):
+        if not updates:
+            _apply_relevance(row, about=None)
+            continue
+
+        report.classified += 1
+        apply_classification(row, updates)
+        if updates.get("tickers"):
+            row.tickers = list({*row.tickers, *updates["tickers"]})
+        if updates.get("sectors"):
+            row.sectors = list({*row.sectors, *updates["sectors"]})
+        _apply_relevance(row, about=updates.get("is_about_this_company"))
 
 
 def _merge_duplicate(existing: NewsItem, item: RawNewsItem, report: NewsIngestReport) -> None:
@@ -437,16 +471,24 @@ def persist_items(
 ) -> NewsIngestReport:
     """Insert new items, skipping ones already stored. Returns a report."""
     report = report or NewsIngestReport()
+    #: Rows whose verdict is still to be bought. Collected rather than classified where
+    #: they are found, because the model can answer twenty headlines in the time and a
+    #: fifth of the tokens of twenty calls -- see `NewsBatchClassifier`.
+    awaiting: list[tuple[NewsItem, RawNewsItem]] = []
 
     for item in items:
         # Checked *between* articles, because that is where a story ends: the flag is
-        # read here rather than raised on so that the articles already classified for
-        # this instrument are still committed by the caller. Leaving by exception here
-        # would throw away up to a feed's worth of model calls, which is the one thing a
-        # stop must not do -- it is meant to save work, not repeat it.
+        # read here rather than raised on so that the articles already gathered for
+        # this instrument are still judged and committed by the caller. Leaving by
+        # exception here would throw away up to a feed's worth of model calls, which is
+        # the one thing a stop must not do -- it is meant to save work, not repeat it.
+        #
+        # `break` rather than `return`: the rows gathered so far are judged once after
+        # the loop, and leaving now would abandon the batch the stop arrived in the
+        # middle of.
         if progress.stop_requested():
             report.stopped_early = True
-            return report
+            break
 
         report.fetched += 1
         # Every tenth article, and the count is the one that has just been reached --
@@ -483,14 +525,16 @@ def persist_items(
             created_at=utcnow(),
         )
 
-        _judge(
-            session,
-            row,
-            item,
-            instrument=instrument,
-            classifier=classifier,
-            report=report,
-        )
+        reused = _reusable_verdict(session, item, instrument)
+        if reused is not None:
+            # The same headline, already judged, under a different masthead. Settled
+            # here because it costs nothing and must not wait for a batch that may
+            # never come.
+            report.reused += 1
+            apply_classification(row, _verdict_of(reused))
+            row.relevant = reused.relevant
+        else:
+            awaiting.append((row, item))
 
         # Flush inside the loop so the dedupe lookup sees rows added in this same
         # batch; without it, two copies of one story in a single feed both insert.
@@ -511,6 +555,13 @@ def persist_items(
             continue
         report.written += 1
 
+    _judge_awaiting(
+        session,
+        awaiting,
+        instrument=instrument,
+        classifier=classifier,
+        report=report,
+    )
     return report
 
 
