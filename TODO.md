@@ -280,96 +280,27 @@ between the filing's arithmetic and the figures we read. DFPH turns out to be th
 kind. Which filers are the second kind is not yet measured, and cannot be until the
 composition check itself reads the declaration.
 
-### Two captions that close real composition gaps and must not be added globally
+### The attention filter still cannot see a filer whose declared lines hold and do not sum
 
-Measured 2026-10-08 while closing `DAC_US_EQ`'s balance sheet, over the **98 companyfacts
-payloads archived on the volume** (1,153 periods, each re-derived with and without the
-candidate; the payloads are at `/data/raw/edgar/<date>/companyfacts_<cik>.json` and need no
-network calls to re-measure):
+The linkbase work is now wired: ingest/linkbase.py fetches and parses the calculation,
+presentation and label linkbases, nalysis/linkbase.py reconciles a stored period
+against the filer's declaration, and the accounts page shows the declared subtotals with
+the lines we do not hold named, valued and labelled in the filer's own words. A caption the
+declaration *proves* belongs on a line (the absent leaves account for the whole residual)
+is adopted into that line **for that filer only** and the period re-derived -- measured on
+DAC_US_EQ FY2025-12-31, all four composition checks went from out by 484,596,000 /
+39,243,000 / 2,093,000 / 36,625,000 to **agrees, out by 0**, with the provenance naming
+every tag summed in.
 
-    candidate                          checks closed   worse   newly failing
-    AccruedLiabilitiesCurrent (alt)               20       0               0     KEPT
-    OtherReceivablesNetCurrent (add)               4       0               0     KEPT
-    PrepaidExpenseCurrent (add)                    8       0              15     rejected
-    ContractWithCustomerLiabilityCurrent (add)     5      14               4     rejected
-
-Both rejected captions are *parts of a residual caption we already read*, which is why the
-addition double counts: `other_current_assets`'s winning tag is
-`PrepaidExpenseAndOtherAssetsCurrent` in **42** of the 87 stored periods that hold it, and
-that tag already contains `PrepaidExpenseCurrent`; `OtherLiabilitiesCurrent` often already
-contains the deferred revenue `ContractWithCustomerLiabilityCurrent` names. Adding them
-closes `DAC_US_EQ`'s current liabilities exactly (65,397,000 → 0) and breaks fifteen other
-filers, so it is refused.
-
-**What this leaves open.** `DAC_US_EQ` FY2025-12-31 current liabilities remain out by
-36,625,000 for exactly that reason, and `assets_composition` by 484,596,000 — a gap no
-two-caption search closes (`gap.MAX_COMBINATION` is 2). The general answer is to apply an
-addition **per filer and per period, only where the stated subtotal proves it** (the
-arithmetic `analysis/gap.py` already does), which needs somewhere to store the proven
-mapping — a registry consulted by `annual_periods` beside `TAG_MAP`. A blanket code map is
-what these numbers rule out, and re-proposing one costs another investigation.
-
-**Next:** fetch `_cal.xml` alongside the filing and check `ledger`'s subtotals against
-the filer's declared sums, rather than against ours. Self-contained, and it upgrades a
-plausible check into an authoritative one. Also worth knowing: `companyfacts` is the
-undimensioned aggregate, so a figure that exists only per-segment or per-class-of-stock
-is simply absent, and the linkbase path is the only route to it.
-
-**Half of it is built and tested; the wiring is what is left.** `ingest/linkbase.py`
-parses a `_cal.xml` into weighted parent/child declarations (pure; 20 tests in
-`tests/test_linkbase.py` against `tests/fixtures/dfph_20251231_cal.xml`, DFPH's real
-FY2025-12-31 linkbase, pinned by sha256). `analysis/linkbase.py` reconciles a stored
-period against it and returns `ledger.Check`s, separating the three cases below. What
-is *not* done: nothing fetches a linkbase from EDGAR, nothing stores one, and no page
-passes one to `checks()` -- so the reconciliation runs only in tests today. The
-remaining steps are (1) a provider call that resolves `*_cal.xml` from the accession
-directory's `index.json`, (2) an additive column on `filing` to cache
-`Linkbase.as_dict()` with its digest and source URL, (3) a bounded fetch step in the
-`filings_edgar` or `xbrl_statements` job, and (4) routing it into the accounts page.
-
-**And it would give the attention filter its second real signal.** Today the only
-accounting reason `analysis/attention.py` can raise is the equation, because
-`assets_composition` fails for 36 of the 43 instruments holding accounts and most of
-those are our own missing lines. A stored linkbase turns that into
-`reconciliation.contradictions` -- every declared line held and still not summing --
-which is a genuine discrepancy and belongs at level 1 beside the equation.
-
-**The route is now open.** `Filing.period_end` was populated on 0 of 4,958 rows and is
-now set from EDGAR's `reportDate` (4,602 of 4,958 after one `filings_edgar` run; the
-356 without it are S-1s and the forms whose `reportDate` EDGAR leaves empty). So a
-stored `FundamentalPeriod` can be matched to the annual filing that reports it on
-`period_end`, and `Filing.url` already carries the CIK and accession the linkbase path
-is built from. Probed on DFPH's 10-K for FY2025-12-31
-(`.../1799191/000179919126000007/toi-20251231.htm`): the accession directory's
-`index.json` lists `toi-20251231_cal.xml`, 91,210 bytes, and it parses into 14 roles
-with 28 arcs on the balance sheet alone -- including `us-gaap_Assets` as exactly six
-declared children. Two things that probe settled: the filer also declares its *own*
-extension tags (DFPH has `toi_DerivativeWarrantLiabilitiesNoncurrent`), which no
-hand-maintained `TAG_MAP` can know, and the filer states subtotals we do not model at
-all (`us-gaap_OperatingCostsAndExpenses`). So the check has to separate "the filer
-declares a line we do not hold" from "we hold every declared line and it still does
-not sum" -- only the second is a contradiction.
-
-**Use `metric_sources`, not a reversed `TAG_MAP`.** `FundamentalPeriod.metric_sources`
-already records, per metric, the exact tag the figure came from
-(`span = "us-gaap:Assets"`, plus the accession and form), so the mapping from a
-declared linkbase tag to the value we hold needs no guessing at all -- and it is the
-*right* tag rather than the preferred one, which matters for exactly the filers whose
-`TAG_MAP` entry is the unusual case. Verified on DFPH's FY2025-12-31 period: 27 of its
-metrics carry provenance and every tag matches the linkbase's declared tag verbatim.
-Linkbase `xlink:href` fragments are `us-gaap_Assets` (underscore), so the join key is
-the fragment with its first `_` replaced by `:`.
-
-**What the failures actually look like, before blaming the tags.** Re-measured
-2026-10-07: DFPH's equation itself is `ok` (180,376,000 liabilities less 15,720,000
-equity reconciles to 164,656,000 of assets). What fails is `composition` -- and the
-stored period holds no `cash`, no `other_current_assets`, no `operating_lease_assets`
-and no `other_noncurrent_assets` at all, while the linkbase declares each of them. A
-component check that fails because we hold four lines fewer than the filer declares is
-reporting our own coverage, not a filer error, and the current wording ("Components sum
-to stated total assets") does not say which. That is the first thing the linkbase makes
-sayable.
-
+What is still owed is the reader: nalysis/attention.py raises a level for exactly one
+accounting reason, ledger.equation_check (line 237). 
+econciliation.contradictions --
+a subtotal where **every** declared line is held and it still does not sum -- is the
+genuine discrepancy the ledger's own composition checks cannot express, and it belongs
+beside the equation at level 1. The measurement that makes it worth doing is in that
+module's docstring: 36 of the 43 instruments holding accounts fail ssets_composition,
+and most of those failures are our missing lines rather than the filer's arithmetic --
+which is exactly the confusion the declaration separates.
 ### Four of GWW's annual reports would be stored as index pages, not reports
 
 Measured 2026-10-08, once the older-submissions fix made deep history reachable:
