@@ -377,13 +377,72 @@ class TestThePage:
         # And Operations stays one click away for a reader who came from there.
         assert 'href="/jobs"' in body
 
-    def test_a_job_that_is_about_nothing_still_returns_to_operations(self, client):
+    def test_a_run_that_is_about_nothing_still_returns_to_operations(self, client):
         execute_job(_job("probe"))
 
         body = client.get("/jobs/probe/log").text
 
         assert 'href="/jobs"' in body
         assert "/instrument/" not in body
+
+    def test_a_run_recorded_before_targets_existed_names_the_lease_it_held(
+        self, client, session
+    ):
+        """Every refresh run in the history predates `JobSpec.target`.
+
+        The lease is the fallback, bounded to the run's own window: a refresh takes the lease
+        *before* its run row is written and gives it up after the row closes, so the lease
+        that started inside the window is that run's. Measured 2026-10-08: the live database
+        held three `instrument_refresh` runs and one of them -- the interrupted one -- has no
+        detail at all.
+        """
+        from awltux.db import IngestRun
+        from awltux.ingest.lease import acquire
+        from tests.helpers import make_instrument
+
+        run_start = dt.datetime(2026, 10, 8, 11, 38, 40, tzinfo=dt.UTC)
+        session.add(make_instrument("GWW_US_EQ"))
+        session.add(
+            IngestRun(
+                job="instrument_refresh",
+                started_at=run_start,
+                finished_at=run_start + dt.timedelta(seconds=103),
+                ok=True,
+            )
+        )
+        acquire(session, "GWW_US_EQ", now=run_start + dt.timedelta(seconds=1))
+        session.commit()
+
+        body = client.get("/jobs/instrument_refresh/log").text
+
+        assert 'href="/instrument/GWW_US_EQ"' in body
+
+    def test_a_lease_from_outside_the_runs_window_is_not_attributed_to_it(
+        self, client, session
+    ):
+        """Refused rather than guessed: a company named wrongly is worse than a link to
+        Operations, which is at least true."""
+        from awltux.db import IngestRun
+        from awltux.ingest.lease import acquire
+        from tests.helpers import make_instrument
+
+        run_start = dt.datetime(2026, 10, 8, 11, 0, 0, tzinfo=dt.UTC)
+        session.add(make_instrument("GWW_US_EQ"))
+        session.add(
+            IngestRun(
+                job="instrument_refresh",
+                started_at=run_start,
+                finished_at=run_start + dt.timedelta(seconds=60),
+                ok=True,
+            )
+        )
+        acquire(session, "GWW_US_EQ", now=run_start + dt.timedelta(hours=1))
+        session.commit()
+
+        body = client.get("/jobs/instrument_refresh/log").text
+
+        assert "/instrument/" not in body
+        assert 'href="/jobs"' in body
 
     def test_the_job_name_on_the_operations_page_links_to_its_log(self, client, session):
         """The entry point. A panel nobody can reach is not a feature."""

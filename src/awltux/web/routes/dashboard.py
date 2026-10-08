@@ -515,6 +515,38 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
     )
 
 
+def _log_target(session, run) -> str | None:
+    """The instrument a refresh's log belongs to, or ``None``.
+
+    The run states its target when it starts, and that is the answer for everything recorded
+    since. A run opened before that existed has no target, so the lease it held is the
+    fallback -- bounded to the run's own window, because a refresh takes the lease *before*
+    its run row is written and gives it up after the row closes, so the lease that started
+    inside this window is this run's. Anything else returns ``None`` and the page falls back
+    to its Operations link rather than guessing at a company.
+    """
+    from awltux.db import InstrumentRefresh
+
+    detail = (run.detail or {}) if run is not None else {}
+    target = detail.get("target")
+    if isinstance(target, str) and target:
+        return target
+    if run is None:
+        return None
+
+    started = as_utc(run.started_at)
+    if started is None:
+        return None
+    finished = as_utc(run.finished_at) or dt.datetime.now(dt.UTC)
+    return session.execute(
+        select(InstrumentRefresh.instrument_t212_ticker)
+        .where(InstrumentRefresh.started_at >= started)
+        .where(InstrumentRefresh.started_at <= finished)
+        .order_by(desc(InstrumentRefresh.started_at))
+        .limit(1)
+    ).scalar()
+
+
 @router.get("/jobs/{job_id}/log", response_class=HTMLResponse, include_in_schema=False)
 def job_log_page(request: Request, job_id: str) -> HTMLResponse:
     """One job's most recent progress log, following it while it runs.
@@ -540,6 +572,12 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
             .order_by(desc(IngestRun.id))
             .limit(1)
         ).scalar_one_or_none()
+        # What the run is about, when it is about one instrument. A scoped refresh writes
+        # every company's log to the *same* file under the same job id, so the page cannot
+        # know from the job id which one it is showing -- and its back link went to
+        # Operations, which is the wrong place to return to after pressing Refresh on an
+        # instrument. Read while the session is open, like the run itself.
+        target = _log_target(session, run) if job_id == scoped.REFRESH_JOB else None
 
     text, offset, _size = progress.read(job_id, 0)
     # Normalised, because SQLite returns these naive however the column was declared
@@ -555,13 +593,6 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
         elapsed = ((finished or dt.datetime.now(dt.UTC)) - started).total_seconds()
 
     detail = (run.detail or {}) if run and run.detail else {}
-    # What the run is about, when it is about one instrument. A scoped refresh writes every
-    # company's log to the *same* file under the same job id, so the page cannot know from
-    # the job id which one it is showing -- and its back link went to Operations, which is
-    # the wrong place to return to after pressing Refresh on an instrument. Recorded when
-    # the run starts, so it is there while the run is still going, which is when this page
-    # is read.
-    target = detail.get("target")
     return templates.TemplateResponse(
         request,
         "job_log.html",
@@ -574,7 +605,7 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
             "running": run is not None and finished is None,
             "elapsed": elapsed,
             "note": detail.get("note") or (run.error if run else None),
-            "target": target if isinstance(target, str) and target else None,
+            "target": target,
         },
     )
 
