@@ -11,6 +11,7 @@ import datetime as dt
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi.templating import Jinja2Templates
 
@@ -193,6 +194,24 @@ def fmt_age(value: Any) -> str:
     return f"{count}{unit} ago"
 
 
+def sector_url(name: Any) -> str:
+    """The sector page for a label, or ``""`` when that label has no page of its own.
+
+    **Not every sector label on a story is one of the eleven.** `ingest/edgar.py` stores the
+    *instrument's* industry string against the story it came from, so the stored values
+    include Yahoo's own vocabulary and SIC industries as well as the sector pages -- measured
+    2026-10-08 over the live table: 27 distinct labels, of which 11 are pages and 1,829 of the
+    ~1,900 tagged stories carry one of those; the other 65 say "Healthcare" (24),
+    "Financial Services" (21), "Technology" (6), "Silver Ores", "State Commercial Banks" and
+    so on. Linking those to `/sectors/...` would 404, which is why this answers with the
+    empty string and the template renders the label without a link.
+    """
+    text = str(name) if name is not None else ""
+    if not text or not sector_map.is_sector_page(text):
+        return ""
+    return f"/sectors/{quote(text)}"
+
+
 def fmt_interval(seconds: Any) -> str:
     """A schedule interval as the schedule it actually is.
 
@@ -312,6 +331,7 @@ def create_templates() -> Jinja2Templates:
             "interval": fmt_interval,
             "ago": fmt_ago,
             "age": fmt_age,
+            "sector_url": sector_url,
             "action_class": action_class,
             "materiality_class": materiality_class,
             "grade_class": grade_class,

@@ -749,6 +749,44 @@ class TestTheNewsItemPage:
         session.flush()
         return row
 
+    def test_a_sector_story_links_to_the_sector_page(self, client, universe_instrument, session):
+        """Reported from the page: the sector was listed and went nowhere.
+
+        A sector story names no instrument -- the row's whole content is the sector -- so a
+        reader who wants "what else is happening in Materials" had to find the page by hand.
+        """
+        row = self._story(session, tickers=[], sectors=["Materials"])
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+
+        assert 'href="/sectors/Materials"' in body
+        assert "Materials" in body
+
+    def test_a_sector_with_a_space_is_url_encoded(self, client, universe_instrument, session):
+        """`Consumer Discretionary` is a sector page, and a raw space is not a URL."""
+        row = self._story(session, tickers=[], sectors=["Consumer Discretionary"])
+        session.commit()
+
+        assert 'href="/sectors/Consumer%20Discretionary"' in client.get(f"/news/{row.id}").text
+
+    def test_an_industry_label_is_shown_without_a_link(self, client, universe_instrument, session):
+        """Not every stored sector label is one of the eleven.
+
+        Measured 2026-10-08: 65 of the ~1,900 sector-tagged stories carry Yahoo's vocabulary
+        or a SIC industry ("Healthcare", "Financial Services", "Technology", "Silver Ores"),
+        because the EDGAR feed stores its *instrument's* industry string. Linking those to
+        `/sectors/...` would 404, so they stay plain labels and the page says which they are.
+        """
+        row = self._story(session, tickers=[], sectors=["Healthcare"])
+        session.commit()
+
+        body = client.get(f"/news/{row.id}").text
+
+        assert "Healthcare" in body, "the label is still shown"
+        assert "/sectors/Healthcare" not in body
+        assert "no sector page of its own" in body
+
     def test_the_page_renders_with_the_verdict_and_the_reason(self, client, universe_instrument, session):
         row = self._story(session)
         session.commit()

@@ -75,9 +75,20 @@
     </tr>
   {% endfor %}
   {% for sector in item.sectors or [] %}
+    {# Linked to the sector's page when the label has one. It often does not: a story the
+       EDGAR feed produced carries its instrument's *industry* string, and "Healthcare",
+       "Technology" and "Silver Ores" are not sectors with pages -- `sector_url` returns
+       nothing for those rather than a link that 404s. #}
+    {% set url = sector | sector_url %}
     <tr>
-      <td><span class="chip">{{ sector }}</span></td>
-      <td class="small muted" colspan="4">sector, not a specific instrument</td>
+      <td>
+        {% if url %}<a href="{{ url }}" title="Open the {{ sector }} sector page"><span class="chip">{{ sector }}</span></a>
+        {% else %}<span class="chip">{{ sector }}</span>{% endif %}
+      </td>
+      <td class="small muted" colspan="4">
+        {%- if url %}sector, not a specific instrument
+        {%- else %}an industry label with no sector page of its own{% endif -%}
+      </td>
     </tr>
   {% endfor %}
   </tbody>
