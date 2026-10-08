@@ -690,7 +690,12 @@
       {% set item = event.lead %}
       {% set analysis = news_analysis.get(item.id) %}
       <li class="mat-{{ item.materiality | materiality_class }}">
-        <a href="{{ item.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>
+        {# This app's own page, not the publisher's. The headline is the least useful
+           thing here -- everything that makes it worth reading is on the story page
+           (the appraisal, the carriers, what it leaves out), and sending the reader to
+           the publisher instead is what the news page's own external link is for. The
+           sector page has always linked this way; this list did not. #}
+        <a href="/news/{{ item.id }}">{{ item.title }}</a>
 
         <span class="muted small">
           {% if analysis and analysis.source_name %}
@@ -728,7 +733,10 @@
             <ul class="muted small">
               {% for other in event.others %}
                 <li>
-                  <a href="{{ other.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ other.title }}</a>
+                  {# The app's summary of each similar report too, for the same reason as
+                     the lead: the reader is checking a grouping, and the appraisal is
+                     what they are checking it against. #}
+                  <a href="/news/{{ other.id }}">{{ other.title }}</a>
                   <span class="muted">— {{ other.source }}</span>
                 </li>
               {% endfor %}

@@ -201,3 +201,24 @@ class TestThePageItself:
         body = client.get("/instrument/TEST_US_EQ").text
 
         assert "30 stories" in body
+
+    def test_a_headline_links_to_the_story_page_not_the_publisher(self, client, session):
+        """The headline is the doorway to the appraisal, not to the article.
+
+        This list linked `item.url` with `target="_blank"`, so every headline left the
+        app -- past the appraisal, the carrier count, the claims and the omissions, which
+        are the reason the list exists. The sector page has always linked `/news/{id}`;
+        the instrument page now does too. Asked for directly: "It should link the app's
+        summary of the article."
+        """
+        session.add(make_instrument("TEST_US_EQ", name="Test Industries", sector="Industrials"))
+        row = make(session, "a story worth appraising", tickers=["TEST_US_EQ"])
+        session.commit()
+
+        body = client.get("/instrument/TEST_US_EQ").text
+
+        assert f'href="/news/{row.id}"' in body, "the headline links to this app's page"
+        assert f'href="{row.url}"' not in body, "and no longer to the publisher"
+        # The link is followed rather than assumed: a heading pointing at a 404 would
+        # satisfy the assertion above and be worse than the external link it replaced.
+        assert client.get(f"/news/{row.id}").status_code == 200
