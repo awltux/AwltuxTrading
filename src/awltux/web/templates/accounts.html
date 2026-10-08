@@ -250,6 +250,47 @@
     </p>
   {% endif %}
 
+  {% if adoption.proven or adoption.tags %}
+    {# The proof, and the one action that changes the stored figures rather than the
+       display of them. See `analysis/adopted.py` for why the mapping is per filer. #}
+    <h3 id="adoption">Adopting the lines this filing proves</h3>
+    {% if adoption.tags %}
+      <p class="muted small">
+        <strong>{{ adoption.tags.values() | map('length') | sum }}</strong> caption(s) are
+        already adopted for this filer — summed into
+        {% for metric, tags in adoption.tags.items() %}<code>{{ metric }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        because this filing's own arithmetic proved they belong there.
+        {% if adoption.evidence %}
+          The most recent proof: accession <code>{{ adoption.evidence.accession }}</code>,
+          where the lines we held fell short of the stated
+          <code>{{ adoption.evidence.side }}</code> by exactly
+          {{ adoption.evidence.residual | number(0) }}.
+        {% endif %}
+        <form method="post" action="/accounts/{{ period.id }}/adopt/forget" class="inline">
+          <button type="submit" class="small">Forget and re-derive</button>
+        </form>
+      </p>
+    {% endif %}
+    {% if adoption.proven %}
+      <p class="muted small">
+        This filing declares
+        {% for proof in adoption.proven %}
+          {{ proof.additions.values() | map('join', ', ') | join(', ') }}
+          (which closes <code>{{ proof.side }}</code> exactly, out by
+          {{ proof.residual | number(0) }})
+          {%- if not loop.last %}; {% endif %}
+        {% endfor %} —
+        lines this project holds no figure for. The arithmetic is the proof: they add up to
+        the whole residual, to the pound. Adopting them sums them into the line they belong
+        to <strong>for this filer only</strong>, and re-derives these accounts so every other
+        page sees a complete balance sheet too.
+        <form method="post" action="/accounts/{{ period.id }}/adopt" class="inline">
+          <button type="submit" class="small">Adopt them and re-derive</button>
+        </form>
+      </p>
+    {% endif %}
+  {% endif %}
+
   <h2>What the markers measured</h2>
   {% if snapshot.periods_used %}
     <p class="muted small">

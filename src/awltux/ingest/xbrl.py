@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -551,14 +552,21 @@ def _first_tag(
 
 
 def _metric_facts(
-    facts: dict[str, Any], spec: MetricTag, *, instant: bool
+    facts: dict[str, Any],
+    spec: MetricTag,
+    *,
+    instant: bool,
+    adopted: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[dict[dt.date, dict[str, Any]], str | None]:
     """The facts for one metric: the winning tag, plus the captions added to it.
 
     ``_first_tag`` answers "which tag supplies this figure", and for a figure a filer
     names once that is the whole answer. A bucket line is the exception: a filer presents
     *other current assets* as several captions, and picking one of them leaves the
-    composition check out by the rest -- which is what :data:`EXTRA_TAGS` records.
+    composition check out by the rest -- which is what :data:`EXTRA_TAGS` records for every
+    filer, and what ``adopted`` records **for one**, proven from that filer's own
+    calculation linkbase. See :mod:`awltux.analysis.adopted` for why the second is per
+    filer: the same caption that closes `DAC_US_EQ` breaks fifteen other filers.
 
     **An addition never creates a period.** It is only summed onto a period end the
     winning tag already established, so a filer that tags one part-line at a date we hold
@@ -570,10 +578,23 @@ def _metric_facts(
         return chosen, span
 
     taxonomy, _, primary = span.partition(":")
+    additions = list(EXTRA_TAGS.get(primary, ()))
+    additions.extend((adopted or {}).get(spec.key, ()))
+
     added: list[str] = []
-    for tag in EXTRA_TAGS.get(primary, ()):
+    for entry in additions:
+        #  An adopted caption comes from the filing's declaration, so it is qualified --
+        #  and it may live in a taxonomy of its own, which is the usual case for a filer's
+        #  own extension (`dac:StraightLiningOfCompanySRevenueCurrentAssets`).
+        own_taxonomy, _, tag = entry.partition(":")
+        if not tag:
+            own_taxonomy, tag = taxonomy, own_taxonomy
+        #  Never the tag already supplying the figure, and never twice: a caption summed
+        #  onto itself is a doubling that looks like a bigger account.
+        if tag == primary or tag in added:
+            continue
         extra = _pick_per_period(
-            _select(facts, tag, taxonomy, instant=instant, kind=spec.kind)
+            _select(facts, tag, own_taxonomy, instant=instant, kind=spec.kind)
         )
         onto = [end for end in extra if end in chosen]
         if not onto:
@@ -599,7 +620,17 @@ def _summed(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
     return {
         **first,
         "val": float(first["val"]) + float(second["val"]),
-        "_tag": f"{first['_tag']}+{second['_tag']}",
+        #  Each part keeps its own taxonomy, because an adopted caption is often the
+        #  filer's own extension: `us-gaap:OtherAssetsCurrent+dac:StraightLining...`.
+        #  `as_source` prefixes the *first* taxonomy and `analysis._members` qualifies only
+        #  the parts that carry none, so a mixed pair reads back correctly -- while a bare
+        #  `OtherAssetsCurrent+StraightLining...` would claim the extension was us-gaap and
+        #  the reconciliation would then report a line we hold as one we do not.
+        "_tag": (
+            f"{first['_tag']}+{second['_tag']}"
+            if first["_taxonomy"] == second["_taxonomy"]
+            else f"{first['_tag']}+{second['_taxonomy']}:{second['_tag']}"
+        ),
         "accn": ",".join(
             sorted(
                 accession
@@ -723,12 +754,20 @@ def _is_year_end(period_end: dt.date, fact: dict[str, Any], established: set[dt.
     return str(fact.get("form") or "").upper() in ANNUAL_REPORT_FORMS
 
 
-def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
+def annual_periods(
+    facts_payload: dict[str, Any],
+    *,
+    adopted: Mapping[str, tuple[str, ...]] | None = None,
+) -> list[ExtractedPeriod]:
     """Annual figures per fiscal year, newest last.
 
     Returns only periods that yielded at least one metric -- an empty shell would
     create a ``FundamentalPeriod`` row with no figures, which a coverage count
     cannot tell from a period that was successfully extracted.
+
+    ``adopted`` adds captions proven to belong to a line **for this filer** -- see
+    :mod:`awltux.analysis.adopted`. It is the same mechanism as :data:`EXTRA_TAGS` with a
+    narrower reach, and it is what turns a proven balance sheet into a complete one.
     """
     facts = facts_payload.get("facts")
     if not isinstance(facts, dict):
@@ -744,7 +783,7 @@ def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
         return per_period[period_end]
 
     for spec in (s for s in TAG_MAP if s.key not in INSTANT_METRICS):
-        chosen, span = _metric_facts(facts, spec, instant=False)
+        chosen, span = _metric_facts(facts, spec, instant=False, adopted=adopted)
         if span is None:
             continue
         for period_end, fact in chosen.items():
@@ -762,7 +801,7 @@ def annual_periods(facts_payload: dict[str, Any]) -> list[ExtractedPeriod]:
     established = set(per_period)
 
     for spec in (s for s in TAG_MAP if s.key in INSTANT_METRICS):
-        chosen, span = _metric_facts(facts, spec, instant=True)
+        chosen, span = _metric_facts(facts, spec, instant=True, adopted=adopted)
         if span is None:
             continue
         for period_end, fact in chosen.items():
@@ -1022,9 +1061,14 @@ def _write_periods(
     and a field that always reads zero is worse than an absent one, since it looks
     like a measurement.
     """
+    from awltux.analysis.adopted import load as adopted_for
     from awltux.ingest.fundamentals import _upsert_period, derive_metrics
 
-    periods = annual_periods(payload)[-KEEP_YEARS:]
+    #  The captions this filer's own linkbase proved belong to a line. Read here, per
+    #  instrument, because the mapping is per filer -- see `analysis/adopted.py`.
+    adopted = adopted_for(session, instrument.sec_cik)
+
+    periods = annual_periods(payload, adopted=adopted)[-KEEP_YEARS:]
     written = 0
     metric_total = 0
     for period in periods:

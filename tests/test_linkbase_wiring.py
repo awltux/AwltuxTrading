@@ -17,6 +17,7 @@ import pytest
 
 from awltux.db import AppSetting, FundamentalPeriod
 from awltux.ingest import linkbase as linkbases
+from awltux.ingest import xbrl
 from tests.helpers import make_instrument
 
 CAL = Path(__file__).parent / "fixtures" / "dac-20251231_cal.xml"
@@ -732,7 +733,182 @@ class TestTheOtherLinkbases:
         assert loaded.files["lab"] == "dac-20251231_lab.xml"
 
 
-class TestKeepingIt:
+class TestAdoptingTheProvenLines:
+    """The stored mapping, made to use the declaration -- per filer, proven by arithmetic.
+
+    This is the half a code-level `TAG_MAP` entry cannot do. Measured over 98 archived
+    payloads, adding `PrepaidExpenseCurrent` to `other_current_assets` for *every* filer
+    closes 8 checks and breaks 15, because for most of them the winning tag already
+    contains it. The filing's own arithmetic says which it is for this one, and that is
+    what these tests pin.
+    """
+
+    FIGURES = {
+        "us-gaap:PrepaidExpenseCurrent": 2_093_000.0,
+        "us-gaap:DepositsAssetsNoncurrent": 428_147_000.0,
+        "us-gaap:DeferredCosts": 54_356_000.0,
+        "us-gaap:ContractWithCustomerLiabilityCurrent": 36_625_000.0,
+        "us-gaap:ContractWithCustomerLiabilityNoncurrent": 2_618_000.0,
+    }
+
+    def _period(self):
+        from tests.test_linkbase_wiring import TestTheFilersArithmeticReplacingOurs
+
+        return TestTheFilersArithmeticReplacingOurs()._period()
+
+    def _read(self):
+        return linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+
+    def _proven(self, figures=None):
+        from awltux.analysis import linkbase as reconciliation
+
+        read = self._read()
+        return reconciliation.provable(
+            self._period(),
+            read.calculation,
+            figures=self.FIGURES if figures is None else figures,
+            names=read.labels.names,
+        )
+
+    def test_it_proves_which_caption_belongs_on_which_line(self):
+        proven = self._proven()
+
+        assert [proof.side for proof in proven] == ["total_assets", "total_liabilities"]
+        assert proven[0].additions == {
+            "other_current_assets": ("us-gaap:PrepaidExpenseCurrent",),
+            "other_noncurrent_assets": (
+                "us-gaap:DepositsAssetsNoncurrent",
+                "us-gaap:DeferredCosts",
+            ),
+        }
+        assert proven[0].residual == 484_596_000.0
+        assert proven[1].additions == {
+            "other_current_liabilities": ("us-gaap:ContractWithCustomerLiabilityCurrent",),
+            "other_noncurrent_liabilities": (
+                "us-gaap:ContractWithCustomerLiabilityNoncurrent",
+            ),
+        }
+        assert proven[1].residual == 39_243_000.0
+
+    def test_a_partly_priced_gap_proves_nothing(self):
+        """One unpriced absent leaf is enough: the rest would not account for the residual.
+
+        Adopting on a partial price would put a caption on a line with part of the
+        difference still unexplained, which is the same failure as plugging it.
+        """
+        proven = self._proven({"us-gaap:PrepaidExpenseCurrent": 2_093_000.0})
+
+        assert proven == ()
+
+    def test_the_mapper_sums_an_adopted_caption_into_its_line(self):
+        """`annual_periods` with an adoption, which is where the stored figure is decided."""
+        facts = {
+            "us-gaap": {
+                "OtherAssetsCurrent": {
+                    "units": {"USD": [{"end": "2025-12-31", "val": 171_137_000.0,
+                                       "form": "20-F", "filed": "2026-02-27", "accn": "x"}]}
+                },
+                "PrepaidExpenseCurrent": {
+                    "units": {"USD": [{"end": "2025-12-31", "val": 2_093_000.0,
+                                       "form": "20-F", "filed": "2026-02-27", "accn": "x"}]}
+                },
+                "Revenues": {
+                    "units": {"USD": [{"start": "2025-01-01", "end": "2025-12-31",
+                                       "val": 1_000_000.0, "form": "20-F",
+                                       "filed": "2026-02-27", "accn": "x"}]}
+                },
+            }
+        }
+
+        [period] = xbrl.annual_periods(
+            {"facts": facts}, adopted={"other_current_assets": ("us-gaap:PrepaidExpenseCurrent",)}
+        )
+
+        assert period.facts["other_current_assets"].value == 173_230_000.0
+        assert "PrepaidExpenseCurrent" in period.facts["other_current_assets"].tag
+
+    def test_without_the_adoption_the_caption_is_not_summed(self):
+        """The control, and the reason the mapping is per filer rather than global."""
+        facts = {
+            "us-gaap": {
+                "OtherAssetsCurrent": {
+                    "units": {"USD": [{"end": "2025-12-31", "val": 171_137_000.0,
+                                       "form": "20-F", "filed": "2026-02-27", "accn": "x"}]}
+                },
+                "Revenues": {
+                    "units": {"USD": [{"start": "2025-01-01", "end": "2025-12-31",
+                                       "val": 1_000_000.0, "form": "20-F",
+                                       "filed": "2026-02-27", "accn": "x"}]}
+                },
+            }
+        }
+
+        [period] = xbrl.annual_periods({"facts": facts})
+
+        assert period.facts["other_current_assets"].value == 171_137_000.0
+
+    def test_a_proof_is_discharged_once_the_captions_are_held(self):
+        """After the re-derive the arithmetic has nothing left to prove.
+
+        The captions are no longer absent, so the side's declared leaves all have figures
+        and the residual is zero -- which is what makes the button vanish rather than
+        inviting a second adoption of the same line.
+        """
+        from awltux.analysis import linkbase as reconciliation
+
+        period = self._period()
+        read = self._read()
+        #  Give each adopted caption a metric of its own, as the re-derivation does by
+        #  summing it into the line: then the tag resolves and the leaf is held.
+        held = dict(period.metric_sources or {})
+        metrics = dict(period.metrics or {})
+        for metric, tag in (
+            ("adopted_prepaid", "PrepaidExpenseCurrent"),
+            ("adopted_deposits", "DepositsAssetsNoncurrent"),
+            ("adopted_deferred", "DeferredCosts"),
+            ("adopted_contract_current", "ContractWithCustomerLiabilityCurrent"),
+            ("adopted_contract_noncurrent", "ContractWithCustomerLiabilityNoncurrent"),
+        ):
+            metrics[metric] = self.FIGURES[f"us-gaap:{tag}"]
+            held[metric] = {"span": f"us-gaap:{tag}", "accession": ACCESSION}
+        period.metrics = metrics
+        period.metric_sources = held
+
+        assert reconciliation.provable(
+            period, read.calculation, figures=self.FIGURES, names=read.labels.names
+        ) == ()
+
+    def test_the_store_keeps_the_evidence_and_merges_across_filings(self, session):
+        from awltux.analysis import adopted as adopted_map
+
+        proven = self._proven()
+
+        assert adopted_map.record(session, "0001369241", proven) == 5
+        assert adopted_map.load(session, "0001369241") == {
+            "other_current_assets": ("us-gaap:PrepaidExpenseCurrent",),
+            "other_noncurrent_assets": (
+                "us-gaap:DepositsAssetsNoncurrent",
+                "us-gaap:DeferredCosts",
+            ),
+            "other_current_liabilities": ("us-gaap:ContractWithCustomerLiabilityCurrent",),
+            "other_noncurrent_liabilities": (
+                "us-gaap:ContractWithCustomerLiabilityNoncurrent",
+            ),
+        }
+        #  Recording the same proof again adds no captions, and keeps the first evidence:
+        #  one entry per side per proof, so two calls over two sides leave four -- each
+        #  dated, because a mapping nobody can date is one nobody can undo with confidence.
+        assert adopted_map.record(session, "0001369241", proven) == 0
+        stored = adopted_map.read(session, "0001369241")
+        assert len(stored.evidence) == 4
+        assert {entry["side"] for entry in stored.evidence} == {
+            "total_assets",
+            "total_liabilities",
+        }
+        assert stored.evidence[0]["accession"] == ACCESSION
+
+        assert adopted_map.forget(session, "0001369241") is True
+        assert adopted_map.load(session, "0001369241") == {}
     def test_a_stored_linkbase_round_trips_with_its_filename(self, session):
         """The page reads SQLite; the filename is the citation it prints.
 
@@ -957,6 +1133,108 @@ class TestThePage:
 
         assert "4,629,334,000" in body
         assert "the filer" not in body.split("Total assets")[1][:400]
+
+    def test_adopting_stores_the_mapping_and_re_derives(self, client, session, filer, monkeypatch):
+        """The one action that changes the *stored* figures rather than the display of them.
+
+        Re-deriving is stubbed here because it re-reads the filing; what this asserts is
+        that the proof is recorded, the redirect says how many captions joined a line, and
+        the page then shows the adoption rather than offering it again.
+        """
+        from awltux.analysis import adopted as adopted_map
+
+        period = self._period(session)
+        read = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbases.save(
+            session,
+            ACCESSION,
+            read.calculation,
+            source=read.source,
+            cik="1369241",
+            values={"2025-12-31": dict(TestAdoptingTheProvenLines.FIGURES)},
+            presentation=read.presentation,
+            labels=read.labels,
+        )
+        session.commit()
+        derived: list[list[str]] = []
+        monkeypatch.setattr(
+            "awltux.ingest.xbrl.sync_xbrl_fundamentals",
+            lambda session, **kwargs: derived.append(kwargs.get("tickers")),
+        )
+
+        response = client.post(f"/accounts/{period.id}/adopt", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert "linkbase=adopted-" in response.headers["location"], (
+            "the redirect says captions were adopted"
+        )
+        assert derived == [["DAC_US_EQ"]], "the period is re-derived, or the figures do not move"
+        adopted_tags = {
+            tag for tags in adopted_map.load(session, "0001369241").values() for tag in tags
+        }
+        #  The assets side is proven and adopted. The liabilities side is *not*, and that
+        #  is the control working: this fixture holds no liability lines at all, so its
+        #  residual is not accounted for by priced absent leaves and nothing is adopted.
+        assert adopted_tags == {
+            "us-gaap:PrepaidExpenseCurrent",
+            "us-gaap:DeferredCosts",
+        }, adopted_tags
+
+        body = " ".join(client.get(f"/accounts/{period.id}/health").text.split())
+        assert "already adopted for this filer" in body
+        assert "Forget and re-derive" in body
+        #  The proof still shows as offered here because the re-derive is stubbed: on this
+        #  page the figures are still the incomplete ones, so the arithmetic still closes
+        #  the gap. That the proof disappears once the captions are *held* is asserted by
+        #  `test_a_proof_is_discharged_once_the_captions_are_held`.
+
+    def test_the_page_offers_the_adoption_the_filing_proves(self, client, session, filer):
+        """With every absent leaf priced, the proof is shown as something to press."""
+        period = self._period(session)
+        read = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbases.save(
+            session,
+            ACCESSION,
+            read.calculation,
+            source=read.source,
+            cik="1369241",
+            values={"2025-12-31": dict(TestAdoptingTheProvenLines.FIGURES)},
+            presentation=read.presentation,
+            labels=read.labels,
+        )
+        session.commit()
+
+        body = " ".join(client.get(f"/accounts/{period.id}/health").text.split())
+
+        # The filer's own words for the lines, and the residual they close exactly.
+        assert "Prepaid expenses" in body
+        assert "Adopt them and re-derive" in body
+        assert "for this filer only" in body
+
+    def test_nothing_is_offered_when_the_gap_is_not_explained(self, client, session, filer):
+        """One unpriced absent leaf and there is no proof, so no button.
+
+        This is the control for the whole feature: the button must not appear where the
+        arithmetic has not closed the residual, or "adopt" becomes a way to plug a gap.
+        """
+        period = self._period(session)
+        read = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbases.save(
+            session,
+            ACCESSION,
+            read.calculation,
+            source=read.source,
+            cik="1369241",
+            values={"2025-12-31": {"us-gaap:PrepaidExpenseCurrent": 2_093_000.0}},
+            presentation=read.presentation,
+            labels=read.labels,
+        )
+        session.commit()
+
+        body = " ".join(client.get(f"/accounts/{period.id}/health").text.split())
+
+        assert "Adopt them and re-derive" not in body
+        assert "already adopted" not in body
 
     def test_reading_it_stores_it_and_says_so(self, client, session, filer, monkeypatch):
         period = self._period(session)

@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import desc, select
 
 from awltux import __version__, version
+from awltux.analysis import adopted as adopted_map
 from awltux.analysis import ledger
 from awltux.analysis import sectors as sector_map
 from awltux.analysis.fundamental import build_snapshot
@@ -402,6 +403,7 @@ def _filer_arithmetic(
             if stored
             else []
         ),
+        "adoption": _adoption(session, instrument, period, stored, figures, names),
         "linkbase": {
             "accession": accession,
             "file": stored.source if stored else "",
@@ -410,6 +412,42 @@ def _filer_arithmetic(
             "outcome": request.query_params.get("linkbase", ""),
             "cik": instrument.sec_cik if instrument is not None else None,
         },
+    }
+
+
+def _adoption(
+    session: Any, instrument: Any, period: Any, stored: Any, figures: dict, names: dict
+) -> dict[str, Any]:
+    """What this filing's arithmetic proves, and what has already been adopted from it.
+
+    Both halves of the one question the adoption answers: *which lines does this filing
+    prove we are missing, and which of them have we already taken?* Reading them together
+    is what lets the page offer the action only while there is something to adopt -- a
+    proof the figures have already absorbed is not an offer, it is a receipt.
+    """
+    from awltux.analysis import linkbase as reconciliation
+
+    proven = (
+        reconciliation.provable(period, stored.linkbase, figures=figures, names=names)
+        if stored
+        else ()
+    )
+    adoption = adopted_map.read(session, instrument.sec_cik if instrument else None)
+    return {
+        "proven": [
+            {
+                "side": proof.side,
+                "residual": proof.residual,
+                # The filer's own words for the lines; the tags are in the store.
+                "additions": {
+                    metric: [names.get(tag) or tag for tag in tags]
+                    for metric, tags in proof.additions.items()
+                },
+            }
+            for proof in proven
+        ],
+        "tags": adoption.tags,
+        "evidence": adoption.evidence[-1] if adoption.evidence else None,
     }
 
 
@@ -499,6 +537,78 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
 
     return RedirectResponse(
         url=f"/accounts/{period_id}/health?linkbase={outcome}#filer-arithmetic",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/accounts/{period_id}/adopt", include_in_schema=False)
+def adopt_declared_lines(period_id: int) -> RedirectResponse:
+    """Adopt the captions this filing's own arithmetic proves belong to a line.
+
+    The proof is that the declared leaves we do not hold add up to the residual to the
+    pound (`analysis/linkbase.py::provable`), which is why this is a decision the code can
+    make rather than a person: it is arithmetic, per filing. What it changes is the
+    *stored* figures, not the display of them -- the period is re-derived so the balance
+    sheet in the database is the complete one the filer describes, and every consumer of
+    those figures (markers, sentiment, decisions) sees it.
+
+    A POST, and it re-reads the filing, so it spends one cached EDGAR request.
+    """
+    from awltux.analysis import linkbase as reconciliation
+    from awltux.ingest import linkbase as linkbases
+
+    outcome = "no-filing"
+    with session_scope() as session:
+        detail = queries.accounts_detail(session, period_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        stored = linkbases.stored(session, reconciliation.accession(period))
+        if instrument is None or not cik or stored is None:
+            pass
+        else:
+            figures = dict(stored.values.get(period.period_end.isoformat()) or {})
+            proven = reconciliation.provable(
+                period, stored.linkbase, figures=figures, names=dict(stored.labels.names)
+            )
+            outcome = (
+                f"adopted-{adopted_map.record(session, cik, proven)}"
+                if proven
+                else "nothing-proven"
+            )
+
+    if outcome.startswith("adopted-"):
+        #  Re-derive, so the adopted captions are in the stored figures rather than only in
+        #  the page's arithmetic. This is the one place the mapping takes effect.
+        from awltux.ingest.xbrl import sync_xbrl_fundamentals
+
+        with session_scope() as session:
+            sync_xbrl_fundamentals(session, tickers=[instrument.t212_ticker])
+
+    return RedirectResponse(
+        url=f"/accounts/{period_id}/health?linkbase={outcome}#filer-arithmetic",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/accounts/{period_id}/adopt/forget", include_in_schema=False)
+def forget_adopted_lines(period_id: int) -> RedirectResponse:
+    """Drop this filer's adopted captions and re-derive, so the figures revert too."""
+    from awltux.ingest.xbrl import sync_xbrl_fundamentals
+
+    with session_scope() as session:
+        detail = queries.accounts_detail(session, period_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        instrument = detail["instrument"]
+        if instrument is None or not instrument.sec_cik:
+            raise HTTPException(status_code=404, detail="no filer for this period")
+        adopted_map.forget(session, instrument.sec_cik)
+        sync_xbrl_fundamentals(session, tickers=[instrument.t212_ticker])
+
+    return RedirectResponse(
+        url=f"/accounts/{period_id}/health?linkbase=forgotten-adoptions#filer-arithmetic",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

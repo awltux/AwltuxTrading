@@ -124,6 +124,7 @@ def declared_sums(
     *,
     figures: Mapping[str, float] | None = None,
     names: Mapping[str, str] | None = None,
+    subtotals: Mapping[str, str] | None = None,
 ) -> dict[str, Declared]:
     """What each declared subtotal adds up to, from the figures this project holds.
 
@@ -152,7 +153,7 @@ def declared_sums(
     prices = dict(figures or {})
 
     out: dict[str, Declared] = {}
-    for metric, concept in _SUBTOTALS.items():
+    for metric, concept in (subtotals or _SUBTOTALS).items():
         specs = linkbase.for_parent(concept)
         if not specs:
             continue
@@ -163,6 +164,7 @@ def declared_sums(
             continue
         total = 0.0
         missing: list[str] = []
+        missing_tags: list[str] = []
         absent_total: float | None = 0.0
         counted: set[str] = set()
         for tag, weight in declared:
@@ -173,6 +175,7 @@ def declared_sums(
                 # says which line to look at, and the price is what says whether it is the
                 # whole of the residual.
                 missing.append(_priced_name(tag, prices, names))
+                missing_tags.append(tag)
                 if tag in prices and absent_total is not None:
                     absent_total += prices[tag] * weight
                 else:
@@ -187,6 +190,7 @@ def declared_sums(
         out[metric] = Declared(
             total=total if total or not missing else None,
             missing=tuple(missing),
+            missing_tags=tuple(missing_tags),
             # Only when the filer tagged every absent line: a partial price would look
             # like an explanation while leaving part of the residual unexplained.
             missing_total=absent_total if missing else None,
@@ -208,6 +212,114 @@ def _priced_name(
     label = (names or {}).get(tag) or tag
     value = figures.get(tag)
     return f"{label} ({value:,.0f})" if value is not None else label
+
+
+#: The bucket each side's subtrees extend, and which of its subtrees they are.
+#:
+#: A declared leaf we do not hold belongs on the *side* it was declared under, and the
+#: bucket is the line for "everything else on this side" -- the same place `_reading` puts
+#: a caption it cannot name. Keyed by the side's own subtotal, because that is the figure
+#: whose stated total the proof is measured against: the filer says what total assets is,
+#: and the leaves under it are what add up to it.
+_SIDES: Mapping[str, tuple[str, Mapping[str, str]]] = {
+    "total_assets": (
+        "us-gaap:Assets",
+        {
+            "us-gaap:AssetsCurrent": "other_current_assets",
+            "us-gaap:AssetsNoncurrent": "other_noncurrent_assets",
+        },
+    ),
+    "total_liabilities": (
+        "us-gaap:Liabilities",
+        {
+            "us-gaap:LiabilitiesCurrent": "other_current_liabilities",
+            "us-gaap:LiabilitiesNoncurrent": "other_noncurrent_liabilities",
+        },
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Proven:
+    """Captions the filing's own arithmetic proves belong to a line, for this filer.
+
+    **The proof is that the gap is exactly them.** The filer states a subtotal, declares
+    the leaves that make it up, and tags a figure for each; when the leaves *we do not
+    hold* add up to the residual to the pound, the declaration has said which lines the
+    total is short by and what each of them is worth. That is arithmetic, not a judgement
+    about the accounts -- and it is per filing, which is what a code-level mapping cannot
+    be: measured over 98 archived payloads, adding `PrepaidExpenseCurrent` to
+    `other_current_assets` for *every* filer closes 8 checks and breaks 15, because for
+    most filers the winning tag already contains it.
+    """
+
+    #: The filing the proof came from, which is what makes it checkable later.
+    accession: str
+    #: The side's subtotal metric (`total_assets`), whose stated figure was the test.
+    side: str
+    #: What the residual was, and therefore what the absent leaves added up to.
+    residual: float
+    #: bucket metric -> the tags proven to belong to it.
+    additions: Mapping[str, tuple[str, ...]]
+
+
+def provable(
+    period: FundamentalPeriod,
+    linkbase: Linkbase,
+    *,
+    figures: Mapping[str, float] | None = None,
+    names: Mapping[str, str] | None = None,
+) -> tuple[Proven, ...]:
+    """What this filing's declaration proves about the lines we do not hold.
+
+    One proof per side of the balance sheet. A side qualifies only when **every** absent
+    leaf has the filer's own figure and those figures account for the whole residual: a
+    partial price would prove nothing, and adopting on one would put a caption on a line
+    with part of the difference still unexplained.
+
+    The side's subtotal is our metric (`total_assets`), which the ledger already checks --
+    see :func:`declared_sums` -- so the two cannot disagree about the residual.
+    """
+    from awltux.analysis.ledger import tolerance
+
+    metrics = period.metrics or {}
+    prices = dict(figures or {})
+    out: list[Proven] = []
+
+    for side, (concept, subtrees) in _SIDES.items():
+        declared = declared_sums(
+            period, linkbase, figures=prices, names=names, subtotals={side: concept}
+        ).get(side)
+        stated = value_of(metrics, side)
+        if declared is None or stated is None:
+            continue
+        residual = stated - (declared.total or 0.0)
+        if not declared.missing_tags or declared.missing_total is None:
+            continue
+        if abs(residual - declared.missing_total) > tolerance(stated):
+            # Not explained: the filer tagged nothing for some absent leaf, or the figures
+            # do not add up to the difference. Either way there is nothing to adopt.
+            continue
+
+        specs = linkbase.for_parent(concept)
+        if not specs:
+            continue
+        role = specs[0].role
+        additions: dict[str, list[str]] = {}
+        for subtree, bucket in subtrees.items():
+            for tag, _weight in leaves(linkbase, subtree, role=role):
+                if tag in declared.missing_tags:
+                    additions.setdefault(bucket, []).append(tag)
+        if additions:
+            out.append(
+                Proven(
+                    accession=accession(period),
+                    side=side,
+                    residual=residual,
+                    additions={bucket: tuple(tags) for bucket, tags in additions.items()},
+                )
+            )
+    return tuple(out)
 
 
 #: Which of our subtotals each declared concept is. The filer names `us-gaap:Assets`;

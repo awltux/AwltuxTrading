@@ -815,6 +815,10 @@ class Declared:
     total: float | None
     missing: tuple[str, ...] = ()
     missing_total: float | None = None
+    #: The same lines as :attr:`missing`, as ``taxonomy:Tag`` rather than as display text.
+    #: A reader needs "Prepaid expenses"; the *fix* -- adopting that caption into a line
+    #: for this filer -- is a mapping, and a mapping is keyed by the tag.
+    missing_tags: tuple[str, ...] = ()
 
     @property
     def complete(self) -> bool:
