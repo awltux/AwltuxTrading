@@ -144,6 +144,25 @@ def _recommendations_region(request: Request, page: int, per_page: int) -> dict[
     }
 
 
+def _price_chart(session, ticker: str, detail: dict[str, Any]) -> dict[str, Any]:
+    """The price panel's three facts: the bars, the reader's fills on them, and what it is
+    waiting for.
+
+    One helper because they are one panel and two of them derive from the first -- the
+    markers are placed on the very bars that are plotted, so the chart and the tables below
+    cannot describe different date windows. The waiting sentence is computed here rather
+    than in the template because reaching it is four different reads.
+    """
+    history = queries.price_history(session, ticker, limit=400)
+    return {
+        "history": history,
+        "markers": queries.price_markers(history, detail["trades"], detail["instrument"]),
+        "waiting_note": queries.price_history_waiting_note(
+            session, ticker, bars=len(history)
+        ),
+    }
+
+
 @router.get("/instrument/{ticker}", response_class=HTMLResponse, include_in_schema=False)
 def instrument_page(
     request: Request,
@@ -154,11 +173,7 @@ def instrument_page(
         detail = queries.instrument_detail(session, ticker, news_page=news_page)
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown instrument {ticker}")
-        history = queries.price_history(session, ticker, limit=400)
-        # The chart frame is drawn whether or not there is anything to put in it,
-        # so the panel needs a sentence saying what it is waiting for. Computed
-        # here rather than in the template because it is four different reads.
-        waiting_note = queries.price_history_waiting_note(session, ticker, bars=len(history))
+        chart = _price_chart(session, ticker, detail)
         # The page used to show only the latest decision, so "what did it say last
         # week, and was it right" had no answer anywhere.
         predictions, prediction_count = queries.decision_history(
@@ -177,8 +192,9 @@ def instrument_page(
             "instrument": detail["instrument"],
             "decision": detail["decision"],
             "valuation": detail["valuation"],
-            "history": history,
-            "waiting_note": waiting_note,
+            "history": chart["history"],
+            "markers": chart["markers"],
+            "waiting_note": chart["waiting_note"],
             "filings": detail["filings"],
             "fundamentals": detail["fundamentals"],
             "news": detail["news"],
@@ -194,6 +210,13 @@ def instrument_page(
             "news_page": detail["news_page"],
             "news_pages": detail["news_pages"],
             "outcomes": detail["outcomes"],
+            # The reader's own executions. `instrument_detail` has always returned these
+            # and the route never named them, which Jinja does not complain about: an
+            # undefined name is falsy, so "Your trades" -- and the position panel's whole
+            # reason for existing -- rendered as nothing at all. Same trap as `news_events`
+            # below it, one commit later.
+            "trades": detail["trades"],
+            "trades_truncated": detail["trades_truncated"],
             "predictions": predictions,
             "prediction_count": prediction_count,
             "horizon_windows": HORIZON_WINDOWS,

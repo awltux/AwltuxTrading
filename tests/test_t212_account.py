@@ -202,6 +202,123 @@ class TestPagingPastTheFirstPage:
             f"{BASE_URL}/equity/history/orders?cursor=1720618206583&limit=50",
         ]
 
+    def test_an_overlapping_page_does_not_serve_the_same_order_twice(self):
+        """The cursor is a timestamp and several fills share one, so a page repeats a bucket.
+
+        Measured 2026-10-08: `get_order_history(limit=200)` returned 200 items with only
+        **148 distinct ids** -- 28 repeated up to six times. Those repeats consumed the
+        caller's limit and reached the ingest as duplicates.
+        """
+        provider, _ = _paging_provider(
+            [
+                {"items": [{"order": {"id": 3}}, {"order": {"id": 2}}], "nextPagePath": CURSOR_PATH},
+                {"items": [{"order": {"id": 2}}, {"order": {"id": 1}}]},
+            ]
+        )
+        id_of = lambda item: (item.get("order") or {}).get("id")  # noqa: E731
+
+        items = provider._paginate("/equity/history/orders", 50, id_of=id_of)
+
+        assert [id_of(item) for item in items] == [3, 2, 1]
+
+
+class TestTheBuyPointOnTheChart:
+    """The chart drew the market and nothing the account did.
+
+    `queries.price_markers` places each execution on a *stored bar*, because the x axis is
+    the bar dates and a fill can land on a weekend, and it carries the price actually paid
+    rather than that day's close -- the two are different facts and the reader bought at one
+    of them.
+    """
+
+    HISTORY = [
+        {"date": "2026-10-01", "close": 100.0, "volume": 1},
+        {"date": "2026-10-02", "close": 101.0, "volume": 1},
+        {"date": "2026-10-05", "close": 102.0, "volume": 1},
+    ]
+
+    def _trade(self, order_id, day, price, side="BUY"):
+        import datetime as dt
+
+        return T212Order(
+            order_id=order_id,
+            side=side,
+            fill_price=price,
+            filled_at=dt.datetime.fromisoformat(day).replace(tzinfo=dt.UTC),
+        )
+
+    def test_a_fill_on_a_saturday_is_placed_on_the_next_bar(self):
+        from awltux.web.queries import price_markers
+
+        markers = price_markers(self.HISTORY, [self._trade(1, "2026-10-03", 99.5)], None)
+
+        assert markers == [{"date": "2026-10-05", "price": 99.5, "letter": "B"}]
+
+    def test_a_sell_is_marked_as_one(self):
+        from awltux.web.queries import price_markers
+
+        markers = price_markers(
+            self.HISTORY, [self._trade(1, "2026-10-02", 110.0, side="SELL")], None
+        )
+
+        assert markers[0]["letter"] == "S"
+
+    def test_a_trade_before_the_plotted_window_is_dropped_not_clamped(self):
+        """An edge dot would read as a date the trade did not happen on."""
+        from awltux.web.queries import price_markers
+
+        markers = price_markers(self.HISTORY, [self._trade(1, "2024-01-02", 5.0)], None)
+
+        assert markers == []
+
+    def test_a_trade_after_the_last_bar_takes_the_last_bar(self):
+        """Prices are stored end-of-day, so today's fill has no bar yet.
+
+        Dropping it would hide the most recent execution -- the one the reader just made --
+        and the chart cannot put a point past its own last bar.
+        """
+        from awltux.web.queries import price_markers
+
+        markers = price_markers(self.HISTORY, [self._trade(1, "2026-10-09", 111.0)], None)
+
+        assert markers == [{"date": "2026-10-05", "price": 111.0, "letter": "B"}]
+
+    def test_the_position_is_marked_when_no_individual_trade_is_stored(self):
+        """Bought before the order history reaches, or transferred in: still a real cost."""
+        import datetime as dt
+
+        from awltux.web.queries import price_markers
+
+        instrument = _HeldPosition(average=95.0, opened=dt.datetime(2026, 10, 2, tzinfo=dt.UTC))
+
+        markers = price_markers(self.HISTORY, [], instrument)
+
+        assert markers == [{"date": "2026-10-02", "price": 95.0, "letter": "A"}]
+
+    def test_stored_trades_win_over_the_positions_average(self):
+        import datetime as dt
+
+        from awltux.web.queries import price_markers
+
+        instrument = _HeldPosition(average=95.0, opened=dt.datetime(2026, 10, 2, tzinfo=dt.UTC))
+
+        markers = price_markers(self.HISTORY, [self._trade(1, "2026-10-02", 110.0)], instrument)
+
+        assert [marker["letter"] for marker in markers] == ["B"], "one marker per execution"
+
+    def test_an_instrument_with_no_bars_has_no_markers(self):
+        from awltux.web.queries import price_markers
+
+        assert price_markers([], [self._trade(1, "2026-10-02", 110.0)], None) == []
+
+
+class _HeldPosition:
+    """The three `Instrument` attributes the marker fallback reads."""
+
+    def __init__(self, average, opened):
+        self.position_average_price = average
+        self.position_opened_at = opened
+
 
 class TestStoringAnOrder:
     def test_a_trade_is_stored_with_its_execution_date(self, session):
@@ -226,6 +343,22 @@ class TestStoringAnOrder:
         assert _store_order(session, ORDER) is False, "the second write is not new"
         session.flush()
 
+        assert session.query(T212Order).count() == 1
+
+    def test_a_repeat_is_caught_before_the_flush(self, session):
+        """The one that cost a whole batch: two repeats inside one transaction.
+
+        Sessions run with `autoflush=False`, so the `SELECT` in `_store_order` cannot see
+        the row it added a moment ago. Two pending `INSERT`s of one `order_id` then raise
+        `UNIQUE constraint failed`, and because the batch shares a transaction every order
+        in the run is discarded -- which is what the first production run of `t212_orders`
+        did, reporting `items_written: 0` and storing nothing for 148 distinct orders.
+        """
+        first = _store_order(session, ORDER)
+        second = _store_order(session, ORDER)
+
+        assert (first, second) == (True, False), "the second call is not a new order"
+        session.flush()
         assert session.query(T212Order).count() == 1
 
     def test_a_re_read_updates_rather_than_duplicating(self, session):

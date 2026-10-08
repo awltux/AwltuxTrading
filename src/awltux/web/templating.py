@@ -124,6 +124,26 @@ def _as_moment(value: Any) -> dt.datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=dt.UTC)
 
 
+def _age_units(seconds: float) -> tuple[int, str]:
+    """An elapsed span in the largest unit that keeps it a whole number, and that unit.
+
+    Shared by `fmt_ago` and `fmt_age`, which differ only in what they do past a month: a
+    freshness column standing alone falls back to a date, and one printed *beside* a
+    timestamp cannot.
+    """
+    if seconds < 90:
+        return int(seconds), "s"
+    if seconds < 5400:
+        return int(seconds // 60), "m"
+    if seconds < 172800:
+        return int(seconds // 3600), "h"
+    if seconds < 2592000:
+        return int(seconds // 86400), "d"
+    if seconds < 31557600:
+        return int(seconds // 2629800), "mo"
+    return int(seconds // 31557600), "y"
+
+
 def fmt_ago(value: Any) -> str:
     """Human-readable age, e.g. "3h ago". Used for the freshness column.
 
@@ -144,15 +164,29 @@ def fmt_ago(value: Any) -> str:
     seconds = (dt.datetime.now(dt.UTC) - when).total_seconds()
     if seconds < 0:
         return "just now"
-    if seconds < 90:
-        return f"{int(seconds)}s ago"
-    if seconds < 5400:
-        return f"{int(seconds // 60)}m ago"
-    if seconds < 172800:
-        return f"{int(seconds // 3600)}h ago"
     if seconds < 2592000:
-        return f"{int(seconds // 86400)}d ago"
+        count, unit = _age_units(seconds)
+        return f"{count}{unit} ago"
     return format_moment(when, "%Y-%m-%d")
+
+
+def fmt_age(value: Any) -> str:
+    """Age in words -- "3h ago", "8mo ago" -- and never a date.
+
+    For places where the timestamp is already on screen. `fmt_ago` ends in a bare
+    ``%Y-%m-%d`` once a value is over a month old, which is right for a freshness column
+    standing on its own and wrong beside a printed timestamp: the instrument page's opened
+    date read "2025-01-31 17:29 GMT · 2025-01-31", stating the same day twice and adding
+    nothing (reported 2026-10-08).
+    """
+    when = None if value is None else _as_moment(value)
+    if when is None:
+        return "\u2014"
+    seconds = (dt.datetime.now(dt.UTC) - when).total_seconds()
+    if seconds < 0:
+        return "just now"
+    count, unit = _age_units(seconds)
+    return f"{count}{unit} ago"
 
 
 def fmt_interval(seconds: Any) -> str:
@@ -273,6 +307,7 @@ def create_templates() -> Jinja2Templates:
             "duration": fmt_duration,
             "interval": fmt_interval,
             "ago": fmt_ago,
+            "age": fmt_age,
             "action_class": action_class,
             "materiality_class": materiality_class,
             "grade_class": grade_class,

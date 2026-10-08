@@ -254,6 +254,21 @@ class Instrument(Base, TimestampMixin):
         """Symbol to use for price lookups, or ``None`` if unresolved."""
         return self.yahoo_symbol
 
+    @property
+    def position_return(self) -> float | None:
+        """Unrealised profit as a fraction of what was paid, or ``None``.
+
+        The broker states both figures in the same currency, so the ratio needs no FX step
+        and no price series of our own. ``None`` rather than zero when the cost is missing
+        or zero: "no basis to measure against" and "exactly flat" are different answers, and
+        the page renders the first as a dash.
+        """
+        cost = self.position_cost_gbp
+        unrealised = self.position_unrealised_gbp
+        if not cost or unrealised is None:
+            return None
+        return unrealised / cost
+
 
 class InstrumentAlias(Base, TimestampMixin):
     """History of symbol mappings, plus human overrides.

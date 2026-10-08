@@ -1159,6 +1159,100 @@ def price_history(session: Session, ticker: str, *, limit: int = 400) -> list[di
 #: Bars a line needs. One point is a dot, and a dot is not a trend.
 MIN_BARS_FOR_CHART = 2
 
+#: Markers put on the price chart at most. The plot is 180px tall and a marker is a dot
+#: with a letter on it, so past this they stop being readable, let alone informative.
+MAX_CHART_MARKERS = 30
+
+#: What a marker is, and the letter the chart draws for it. `average` is not an execution:
+#: it is the broker's cost basis, used when no individual trade is stored.
+MARKER_LETTERS = {"buy": "B", "sell": "S", "average": "A"}
+
+
+def price_markers(
+    history: list[dict[str, Any]],
+    trades: list[T212Order],
+    instrument: Instrument | None,
+) -> list[dict[str, Any]]:
+    """Where the reader's own executions fall on the price line.
+
+    The chart drew the market and nothing else, so the one thing a reader who holds the
+    instrument wants to see -- what they paid against what it costs now -- was only ever in
+    a table beside it.
+
+    **Placed on a bar, not on the trade's own date.** A fill can land on a weekend or a
+    holiday, and the plot's x axis is the stored bar dates, so each marker is snapped to the
+    nearest bar -- see `_bar_on_or_after` for which way each edge resolves.
+
+    **The price is the execution price**, which may sit outside the stored series' range;
+    `app.js` widens the axis to include it rather than hiding the cost.
+    """
+    if not history:
+        return []
+    first_day, last_day = history[0]["date"], history[-1]["date"]
+
+    markers = []
+    for trade in trades:
+        when = trade.filled_at or trade.created_at
+        side = (trade.side or "").upper()
+        if when is None or trade.fill_price is None or side not in ("BUY", "SELL"):
+            continue
+        day = _bar_on_or_after(history, when.date(), first_day, last_day)
+        if day is None:
+            continue
+        markers.append(
+            {
+                "date": day,
+                "price": float(trade.fill_price),
+                "letter": MARKER_LETTERS[side.lower()],
+            }
+        )
+
+    # Only when nothing individual is stored. A position whose buys predate the order
+    # history -- or that arrived by transfer -- still has a date and a price, and a chart
+    # with no marker at all would say the position does not exist.
+    if not markers and instrument is not None and instrument.position_average_price:
+        opened = instrument.position_opened_at
+        day = _bar_on_or_after(
+            history,
+            opened.date() if opened else dt.date.fromisoformat(last_day),
+            first_day,
+            last_day,
+        )
+        if day is not None:
+            markers.append(
+                {
+                    "date": day,
+                    "price": float(instrument.position_average_price),
+                    "letter": MARKER_LETTERS["average"],
+                }
+            )
+
+    # `trades` arrives newest execution first, so the cap keeps the most recent ones.
+    return markers[:MAX_CHART_MARKERS]
+
+
+def _bar_on_or_after(
+    history: list[dict[str, Any]], day: dt.date, first_day: str, last_day: str
+) -> str | None:
+    """The bar a marker sits on: the first one on or after ``day``.
+
+    **A trade newer than the last stored bar takes the last bar.** Prices are stored
+    end-of-day, so a fill made today has no bar yet, and dropping it would hide the most
+    recent -- and most interesting -- execution on the chart. The right edge is a day or two
+    out at most, which the legend says.
+
+    A trade older than the first bar is dropped instead: the left edge is up to 400 bars
+    back, and snapping an old buy onto it would park it at a date it was never near.
+    """
+    if day.isoformat() < first_day:
+        return None
+    if day.isoformat() > last_day:
+        return last_day
+    for bar in history:
+        if bar["date"] >= day.isoformat():
+            return bar["date"]
+    return last_day
+
 
 def price_history_waiting_note(session: Session, ticker: str, *, bars: int) -> str | None:
     """What the price panel is waiting for, or ``None`` once it can draw.

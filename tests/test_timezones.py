@@ -26,7 +26,7 @@ from awltux.timezones import (
     utc_today,
     zone_label,
 )
-from awltux.web.templating import fmt_ago, fmt_datetime
+from awltux.web.templating import fmt_age, fmt_ago, fmt_datetime
 
 LONDON = "Europe/London"
 NEW_YORK = "America/New_York"
@@ -195,6 +195,32 @@ class TestTemplateFilters:
             rendered = fmt_ago(old)
         assert rendered.startswith("20")
         assert ":" not in rendered
+
+
+class TestTheAgeThatMayNotRepeatADate:
+    """`fmt_age` is for places where the timestamp is already on screen.
+
+    `fmt_ago` ends in a bare `%Y-%m-%d` past a month, so the instrument page's opened date
+    read "2025-01-31 17:29 GMT · 2025-01-31" -- the same day twice, and the second copy
+    told the reader nothing (reported from the page, 2026-10-08).
+    """
+
+    def test_a_short_age_reads_like_fmt_ago(self):
+        recent = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=5)
+        assert fmt_age(recent) == fmt_ago(recent) == "5m ago"
+
+    def test_an_old_value_is_never_rendered_as_a_date(self):
+        for days in (40, 90, 400, 3000):
+            rendered = fmt_age(dt.datetime.now(dt.UTC) - dt.timedelta(days=days))
+            assert not rendered.startswith("20"), f"{days}d rendered as a date: {rendered}"
+            assert rendered.endswith(" ago"), rendered
+
+    def test_months_and_years_are_the_units_past_a_month(self):
+        assert fmt_age(dt.datetime.now(dt.UTC) - dt.timedelta(days=60)).endswith("mo ago")
+        assert fmt_age(dt.datetime.now(dt.UTC) - dt.timedelta(days=800)).endswith("y ago")
+
+    def test_a_future_timestamp_does_not_go_negative(self):
+        assert fmt_age(dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)) == "just now"
 
 
 class TestKnownZones:

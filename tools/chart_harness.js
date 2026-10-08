@@ -27,11 +27,12 @@ const PALETTE = {
   "--line": "#39434f",
   "--muted": "#afb9c6",
   "--good": "#4fd35f",
-  "--bad": "#ff7b72"
+  "--bad": "#ff7b72",
+  "--link": "#8cc8ff"
 };
 const ROOT_FONT_PX = 17;
 
-function makeContext() {
+function makeContext(rootFontPx) {
   const calls = [];
   const record = (name) => (...args) => { calls.push({ name, args }); };
 
@@ -92,7 +93,7 @@ function makeContext() {
     },
     getComputedStyle: () => ({
       getPropertyValue: (name) => PALETTE[name] || "",
-      fontSize: ROOT_FONT_PX + "px"
+      fontSize: (rootFontPx || ROOT_FONT_PX) + "px"
     }),
     console,
     URL,
@@ -102,10 +103,11 @@ function makeContext() {
   return { sandbox, canvas, calls };
 }
 
-function draw(series, dates) {
-  const { sandbox, canvas, calls } = makeContext();
+function draw(series, dates, markers, rootFontPx) {
+  const { sandbox, canvas, calls } = makeContext(rootFontPx);
   canvas.dataset.series = JSON.stringify(series);
   canvas.dataset.dates = JSON.stringify(dates || []);
+  canvas.dataset.markers = JSON.stringify(markers || []);
 
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(SOURCE, "utf8"), sandbox, { filename: SOURCE });
@@ -166,8 +168,32 @@ check("a rising series strokes with --good, a falling one with --bad", () => {
   assert(values(falling.calls, "strokeStyle").includes(PALETTE["--bad"]), "falling line should be --bad");
 });
 
-console.log("\n=== the chart reads the stylesheet rather than a literal");
+console.log("\n=== the reader's own executions on the line");
 
+const MARKER = { date: "2026-10-05", price: 2.5, letter: "B" };
+
+check("a marker draws a dot and its letter", () => {
+  const { calls } = draw([1, 2, 3, 2, 4], ["2026-10-01", "2026-10-05"], [MARKER]);
+  assert(calls.some((c) => c.name === "arc"), "no dot was drawn");
+  assert(texts(calls).includes("B"), `expected the marker letter, got ${JSON.stringify(texts(calls))}`);
+  assert(values(calls, "fillStyle").includes(PALETTE["--link"]),
+    "the marker should be --link, which no trend colour uses");
+});
+
+check("a marker on a date the chart does not have is skipped, not misplaced", () => {
+  const { calls } = draw([1, 2, 3, 2, 4], ["2026-10-01", "2026-10-05"],
+    [{ date: "1999-01-01", price: 2, letter: "S" }]);
+  assert(!texts(calls).includes("S"), "a marker with no bar must not be drawn anywhere");
+});
+
+// The position may have been bought above today's whole range -- the case worth seeing.
+check("the axis widens to reach a marker outside the stored series", () => {
+  const { calls } = draw([1, 2, 3], ["2026-10-01", "2026-10-05"],
+    [{ date: "2026-10-05", price: 9.5, letter: "B" }]);
+  assert(texts(calls).includes("9.50"), `the top of the axis should reach the paid price, got ${JSON.stringify(texts(calls))}`);
+});
+
+console.log("\n=== the chart reads the stylesheet rather than a literal");
 check("the axes are stroked in --line", () => {
   const { calls } = draw([1, 2, 3], []);
   assert(values(calls, "strokeStyle").includes(PALETTE["--line"]), "the frame should be --line");
@@ -179,12 +205,30 @@ check("the axis labels are filled with --muted", () => {
 });
 
 // The point of `chartFont`: a canvas has no `rem`, so the stylesheet's single
-// `html { font-size }` has to reach it by arithmetic. 0.8rem at 17px is 14px.
+// `html { font-size }` has to reach it by arithmetic. The property is that every font
+// *scales with* that one number, so the same page is drawn at two root sizes and each
+// font must be the other's ratio -- which a hardcoded 12px literal cannot be. (It used
+// to be checked against a list of literals, and 0.75rem rounded to 13px at 17px, so a
+// correct size read as the bug.)
 check("the canvas type scale follows the root font size", () => {
-  const { calls } = draw([1, 2, 3], []);
-  const fonts = values(calls, "font");
-  assert(fonts.some((f) => f.startsWith("14px ")), `expected a 14px axis font from 0.8rem, got ${JSON.stringify(fonts)}`);
-  assert(fonts.every((f) => !/\b(11|12|13)px\b/.test(f)), `a pre-change font size survived: ${JSON.stringify(fonts)}`);
+  const series = [1, 2, 3];
+  const dates = ["2026-10-01", "2026-10-05"];
+  const markers = [{ date: "2026-10-05", price: 2, letter: "B" }];
+  const at17 = values(draw(series, dates, markers, 17).calls, "font");
+  const at34 = values(draw(series, dates, markers, 34).calls, "font");
+
+  assert(at17.length > 0, "no font was set at all");
+  assert(at17.length === at34.length, "the two runs set a different number of fonts");
+  at17.forEach((font, index) => {
+    // Within a pixel: each size is rounded to a whole pixel, so doubling the *rounded*
+    // value can be half a pixel out at the second scale.
+    const doubled = parseFloat(font) * 2;
+    const scaled = parseFloat(at34[index]);
+    assert(Math.abs(scaled - doubled) <= 1,
+      `${font} at 17px became ${at34[index]} at 34px -- not the root size times a rem`);
+  });
+  assert(at17.some((f) => f.startsWith("14px ")),
+    `expected a 14px axis font from 0.8rem at 17px, got ${JSON.stringify(at17)}`);
 });
 
 console.log(failures === 0 ? "\nAll chart paths drew without throwing." : `\n${failures} chart check(s) failed.`);

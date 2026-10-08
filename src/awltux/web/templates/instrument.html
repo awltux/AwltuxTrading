@@ -43,7 +43,7 @@
       <div><dt>Average price paid</dt><dd>{{ instrument.position_average_price | number(4) }}
         {{ instrument.currency_code or '' }}</dd></div>
       <div><dt>Opened</dt><dd>{{ instrument.position_opened_at | datetime }}
-        <span class="muted small">· {{ instrument.position_opened_at | ago }}</span></dd></div>
+        <span class="muted small">· {{ instrument.position_opened_at | age }}</span></dd></div>
       <div><dt>Cost</dt><dd>{{ instrument.position_cost_gbp | number }}
         {{ instrument.position_currency or '' }}</dd></div>
       <div><dt>Value now</dt><dd>{{ instrument.position_value_gbp | number }}
@@ -51,6 +51,9 @@
       <div><dt>Unrealised</dt>
         <dd class="{% if (instrument.position_unrealised_gbp or 0) >= 0 %}good{% else %}bad{% endif %}">
           {{ instrument.position_unrealised_gbp | number }} {{ instrument.position_currency or '' }}
+          {# Against what was paid, which is the only basis the broker states both figures
+             in -- so the ratio needs no FX step and no price series of ours. #}
+          <span class="small nowrap">({{ instrument.position_return | pct(1, false) }})</span>
         </dd></div>
       {% if instrument.position_in_pies %}
         <div><dt>In pies</dt><dd>{{ instrument.position_in_pies | number(4) }}</dd></div>
@@ -505,8 +508,24 @@
   <canvas id="price-chart" height="180"
           data-series='{{ history | map(attribute="close") | list | tojson }}'
           data-dates='{{ history | map(attribute="date") | list | tojson }}'
+          data-markers='{{ markers | tojson }}'
           {% if waiting_note %}title="{{ waiting_note }}"{% endif %}></canvas>
 </div>
+{% if markers %}
+  {#
+    The legend is in the page, not on the canvas. Canvas text is not selectable, not
+    translatable and not reachable by a screen reader, so a key drawn into the pixels is
+    one nobody who needs a key can read.
+  #}
+  <p class="muted small">
+    {{ markers | selectattr("letter", "equalto", "B") | list | length }} bought,
+    {{ markers | selectattr("letter", "equalto", "S") | list | length }} sold
+    {%- if markers | selectattr("letter", "equalto", "A") | list %},
+      cost basis from the position (no stored executions){% endif %}.
+    A marker sits at the price you actually paid or received — not that day's close — on the
+    nearest daily bar.
+  </p>
+{% endif %}
 {% if history | length >= 2 %}
   <p class="muted small">
     {{ history | length }} daily bars, {{ history[0].date }} to {{ history[-1].date }}.

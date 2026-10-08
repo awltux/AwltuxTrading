@@ -268,8 +268,19 @@ class T212Provider:
         incremental run asks only for what is new. T212 returns history newest-first, but
         this does not *depend* on that: the caller upserts by id, so a page that arrived
         out of order would still be correct -- merely slower.
+
+        **The cursor is not unique, so pages overlap and the same order arrives again.**
+        `nextPagePath` carries a millisecond timestamp, and several fills share one, so the
+        boundary bucket is served in full on both sides of it. Measured 2026-10-08 with
+        `get_order_history(limit=200)`: 200 items, **148 distinct ids** -- 28 of them
+        repeated up to six times, and the id sequence not strictly descending. Without the
+        `seen` set those repeats both consume the caller's `limit` and hand the ingest the
+        same order twice, which is a `UNIQUE constraint failed: t212_order.order_id` and a
+        whole batch lost, because the session it writes on does not autoflush (`db/session.py`)
+        and so cannot see a row it added a moment ago.
         """
         items: list[dict[str, Any]] = []
+        seen: set[int] = set()
         next_path: str | None = path
         pages = 0
         client = self.client(SCOPE_HISTORY)
@@ -281,11 +292,14 @@ class T212Provider:
             page = payload.get("items") or []
             finished = False
             for item in page:
-                if stop_at_id is not None and id_of is not None:
-                    item_id = id_of(item)
-                    if isinstance(item_id, int) and item_id <= stop_at_id:
+                item_id = id_of(item) if id_of is not None else None
+                if isinstance(item_id, int):
+                    if stop_at_id is not None and item_id <= stop_at_id:
                         finished = True
                         break
+                    if item_id in seen:
+                        continue
+                    seen.add(item_id)
                 items.append(item)
                 if len(items) >= limit:
                     finished = True

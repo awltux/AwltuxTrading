@@ -256,6 +256,82 @@ class TestTemplatesRenderWithData:
     def test_the_operations_page_renders_run_history(self, client, populated):
         assert client.get("/jobs").status_code == 200
 
+    @pytest.fixture
+    def held(self, populated, session):
+        """`populated`, plus the broker's own view of the account.
+
+        Separate from `populated` because an instrument that is *held* renders a different
+        half of the page -- the position panel, the trades table and the chart's markers --
+        and a test that needs none of those should not have to know the columns.
+        """
+        import datetime as dt
+
+        from awltux.db import Instrument, T212Order
+
+        row = session.get(Instrument, "TEST_US_EQ")
+        row.is_held = True
+        row.position_quantity = 0.95851493
+        row.position_average_price = 347.6
+        row.position_opened_at = dt.datetime(2025, 1, 31, 17, 29, tzinfo=dt.UTC)
+        row.position_cost_gbp = 280.0
+        row.position_value_gbp = 324.0
+        row.position_unrealised_gbp = 44.0
+        row.position_currency = "GBP"
+        row.position_synced_at = dt.datetime(2026, 10, 8, 9, 0, tzinfo=dt.UTC)
+        session.add(
+            T212Order(
+                order_id=58419120582,
+                instrument_t212_ticker="TEST_US_EQ",
+                side="BUY",
+                status="FILLED",
+                filled_quantity=0.95851493,
+                fill_price=347.6,
+                net_value=252.47,
+                currency="GBP",
+                filled_at=dt.datetime(2026, 10, 5, 16, 0, tzinfo=dt.UTC),
+            )
+        )
+        session.commit()
+        return row
+
+    def test_the_position_panel_states_the_return_as_well_as_the_money(self, client, held):
+        """44 on a cost of 280 is 15.7%, and a figure without its basis is not a return."""
+        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+
+        assert "Your position" in text
+        assert "44.00 GBP" in text
+        assert "(+15.7%)" in text
+
+    def test_the_opened_date_is_not_stated_twice(self, client, held):
+        """`ago` falls back to a bare date past a month, which repeated the date beside it.
+
+        The page read "Opened: 2025-01-31 17:29 GMT · 2025-01-31" (reported 2026-10-08).
+        """
+        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+        opened = text[text.index("Opened") : text.index("Opened") + 140]
+
+        assert "2025-01-31 17:29" in opened, "the timestamp must still be there"
+        assert "· 2025-01-31" not in opened, "the age repeated the date"
+
+    def test_the_trades_table_is_reachable_from_the_route(self, client, held):
+        """It was dead markup for a commit, and this is the test that would have caught it.
+
+        `instrument_detail` has always returned `trades`; the route never named the key, and
+        Jinja renders an undefined name as empty rather than raising -- so `{% if trades %}`
+        was false for every instrument and "Your trades" never appeared. The same trap is
+        documented above `news_events` in the same route, one commit earlier.
+        """
+        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+
+        assert "Your trades" in text
+        assert "0.9585" in text, "the stored execution is not on the page"
+
+    def test_the_chart_carries_the_price_that_was_paid(self, client, held):
+        body = client.get("/instrument/TEST_US_EQ").text
+
+        assert "data-markers='" in body, "the canvas has no marker attribute"
+        assert "347.6" in body.split("data-markers='")[1].split("'")[0]
+
     def test_the_run_button_sits_with_the_job_it_runs(self, client):
         """The button belongs beside the name, not in a column at the far right.
 

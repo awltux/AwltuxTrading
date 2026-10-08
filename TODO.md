@@ -1034,6 +1034,31 @@ recency -- or embed only stories that clear `ticker_min_materiality`. Both are a
 pipeline (`Identity.conflicts`) depends on the newest-first order before changing it; if it
 does, the selection needs two queues rather than one reordering.
 
+### The order-history cursor repeats itself, and a truncated backfill never resumes
+
+Two properties of `/equity/history/orders`, measured 2026-10-08 while landing the trades
+table:
+
+- **The cursor is a timestamp and several fills share one, so pages overlap.** Walked with
+  `limit=200`: 200 items, **148 distinct ids** -- 28 ids repeated, some six times -- and the
+  id sequence not strictly descending. `_paginate` now drops ids it has already seen, so the
+  repeats cost requests rather than correctness. The whole history is 263 distinct orders in
+  367 items over eight requests, from 2024-03-18.
+- **A backfill that hits `ORDERS_PER_RUN` cannot be resumed.** The walk starts from the
+  newest and stops at the newest id already stored (`since_order_id`), so it only ever moves
+  *forward*: whatever the first run does not reach is unreachable for every later run.
+  `ORDERS_PER_RUN` is now 1,000 (the paginator caps at 40 pages of 50 either way), which
+  covers this account with room to spare, and a ceiling hit is reported in the run's note
+  instead of claiming "more will arrive next run".
+
+What is owed: an account whose history exceeds 2,000 raw items silently keeps only the
+newest slice. Resuming means walking from the newest while *skipping* everything at or above
+the oldest stored id, which re-reads the newest pages every run until the backfill closes;
+worth doing only if a real account ever needs it, and it needs a `since_order_id`-shaped
+parameter that filters rather than stops.
+
+---
+
 ### More of the Trading 212 account is readable than is stored: dividends, cash and pies
 
 The positions and order-history work put two endpoints on the graph. Probing the same key on

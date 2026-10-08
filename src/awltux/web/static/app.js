@@ -145,7 +145,8 @@
     "--line": "#39434f",
     "--muted": "#afb9c6",
     "--good": "#4fd35f",
-    "--bad": "#ff7b72"
+    "--bad": "#ff7b72",
+    "--link": "#8cc8ff"
   };
 
   // Read once each. `getComputedStyle` forces a style recalculation, and the chart
@@ -198,6 +199,7 @@
     // on the attribute quoting in instrument.html.
     var series = parseList(canvas.dataset.series);
     var dates = parseList(canvas.dataset.dates);
+    var markers = parseList(canvas.dataset.markers);
 
     var line = styleValue("--line");
     var muted = styleValue("--muted");
@@ -246,6 +248,16 @@
 
     var min = Math.min.apply(null, series);
     var max = Math.max.apply(null, series);
+
+    // The axis must reach the reader's own prices too. A position bought above today's
+    // range is exactly the case worth seeing, and clipping the marker to the stored
+    // series' range would draw it on a price it never traded at.
+    markers.forEach(function (marker) {
+      var price = Number(marker.price);
+      if (!isFinite(price)) return;
+      if (price < min) min = price;
+      if (price > max) max = price;
+    });
     if (max === min) { max = min + 1; }
 
     function x(i) { return pad + (i / (series.length - 1)) * plotWidth; }
@@ -282,6 +294,26 @@
       var lastLabel = dates[dates.length - 1];
       ctx.fillText(lastLabel, width - pad - ctx.measureText(lastLabel).width, height - 3);
     }
+
+    // Markers last, so the fill under the line cannot paint over them. Blue rather than
+    // green or red: those already mean "rising" and "falling" on this chart, and a dot
+    // whose colour contradicts the line beside it is worse than no colour at all -- the
+    // letter is what says which side the trade was.
+    ctx.fillStyle = styleValue("--link");
+    ctx.font = chartFont(0.75);
+    ctx.textAlign = "center";
+    markers.forEach(function (marker) {
+      var index = dates.indexOf(marker.date);
+      var price = Number(marker.price);
+      if (index < 0 || !isFinite(price)) return;
+      var markerX = x(index);
+      var markerY = y(price);
+      ctx.beginPath();
+      ctx.arc(markerX, markerY, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillText(String(marker.letter || ""), markerX, markerY - 6);
+    });
+    ctx.textAlign = "start";
   }
 
   /** Parse a JSON list out of a data attribute; [] if absent or malformed. */

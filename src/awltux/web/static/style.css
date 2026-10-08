@@ -64,6 +64,9 @@ a:hover { text-decoration: underline; }
 
 .muted { color: var(--muted); }
 .small { font-size: 0.88rem; }
+/* A figure and its percentage are one reading, so a line break between them turns
+   "+155.73 GBP" and "(+15.9%)" into two unrelated numbers. */
+.nowrap { white-space: nowrap; }
 .good { color: var(--good); }
 .bad { color: var(--bad); }
 .warn { color: var(--warn); }

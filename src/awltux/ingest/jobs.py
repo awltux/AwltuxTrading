@@ -250,10 +250,35 @@ def _apply_positions(session, positions: list[dict[str, Any]]) -> int:
 
 
 #: How many orders one run will read. The API's page size is 50 and the paginator caps at
-#: 40 pages, so this bounds a first-run backfill at two pages' worth of new trades per run
-#: and lets the rest arrive over subsequent runs. Trading is a handful of orders a day; a
-#: larger ration would only make a backfill finish sooner.
-ORDERS_PER_RUN = 200
+#: 40 pages, so this is a ceiling of 2,000 raw items either way.
+#:
+#: **Above the whole history, deliberately.** Measured 2026-10-08: the account's entire
+#: order history is 263 distinct orders (367 items, 28% of them cursor repeats) over eight
+#: requests, from 2024-03-18. At the 200 this used to be, the first run read only the newest
+#: 148 and -- because the next run starts from the newest id it holds -- **the older ones
+#: were never read at all**. Trading is a handful of orders a day, so one complete backfill
+#: on the first run is cheaper than any scheme for resuming a partial one; see `TODO.md` for
+#: what happens on an account whose history genuinely exceeds this.
+ORDERS_PER_RUN = 1_000
+
+
+def _pending_order(session, order_id: int):
+    """The row this session has already added for ``order_id``, if it has one.
+
+    The lookup in `_store_order` cannot see it. Sessions here run with
+    ``autoflush=False`` (`db/session.py`), so a ``SELECT`` goes to the database and a row
+    added a moment ago is invisible; the second ``add`` then makes two pending ``INSERT``s
+    of the same ``order_id`` and the flush raises
+    ``UNIQUE constraint failed: t212_order.order_id``. Since the whole batch shares one
+    transaction, that single repeat discards every order read in the run -- measured
+    2026-10-08, when the cursor returned 200 items with only 148 distinct ids.
+    """
+    from awltux.db import T212Order
+
+    for obj in session.new:
+        if isinstance(obj, T212Order) and obj.order_id == order_id:
+            return obj
+    return None
 
 
 def _store_order(session, item: dict[str, Any]) -> bool:
@@ -272,9 +297,11 @@ def _store_order(session, item: dict[str, Any]) -> bool:
     if not isinstance(order_id, int):
         return False
 
-    row = session.execute(
-        select(T212Order).where(T212Order.order_id == order_id)
-    ).scalar_one_or_none()
+    row = _pending_order(session, order_id)
+    if row is None:
+        row = session.execute(
+            select(T212Order).where(T212Order.order_id == order_id)
+        ).scalar_one_or_none()
     created = row is None
     if row is None:
         row = T212Order(order_id=order_id)
@@ -306,9 +333,12 @@ def sync_orders() -> JobResult:
     """Store Trading 212's order history: the buy and sell dates the pages were missing.
 
     **Incremental.** The newest `order_id` already stored is the cursor and the walk stops
-    there, so an hourly run reads only what is new. The first run backfills up to
-    ``ORDERS_PER_RUN`` and the rest arrive over later runs, which the job's detail records
-    so a truncated backfill is visible rather than silent.
+    there, so an hourly run reads only what is new. That cursor is also why the first run
+    must read the whole history: it can only ever walk *newer* than what it holds, so
+    anything older than the first run's window is out of reach for good. `ORDERS_PER_RUN`
+    is set above the measured size of the account's history for exactly that reason, and a
+    run that does hit the ceiling says so in its note rather than claiming the rest will
+    follow.
 
     **A key without `history:orders` is a supported configuration**, not a fault: the same
     way a metadata-only key cannot read positions. It is reported as a note, which the
@@ -350,7 +380,8 @@ def sync_orders() -> JobResult:
         items_seen=len(orders),
         items_written=written,
         note=(
-            f"backfill truncated at {ORDERS_PER_RUN} orders; more will arrive next run"
+            f"read the newest {ORDERS_PER_RUN} orders and stopped there; the incremental "
+            "cursor cannot reach the older ones, so a bigger ORDERS_PER_RUN is needed"
             if len(orders) >= ORDERS_PER_RUN
             else None
         ),
