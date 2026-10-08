@@ -21,6 +21,41 @@
   </p>
 {% endif %}
 
+{# ---- the sector's own price line ---------------------------------------- #}
+{#
+  One line for the sector, from its constituents' bars: each instrument rebased to 100 at
+  its first bar in the window, the level the mean of those ratios. `sector_index` rebuilds
+  it after the price job; the arithmetic and the reasoning are in `analysis/sectors.py`.
+
+  Not a tradable index and the note says so: equal-weighted, price only (no dividends), and
+  membership changes as the universe does.
+#}
+<section>
+  <h2>Price</h2>
+  {% if index %}
+    <div class="sparkline" data-points="{{ index | length }}">
+      <canvas id="sector-chart" height="180"
+              data-series='{{ index | map(attribute="level") | list | tojson }}'
+              data-dates='{{ index | map(attribute="date") | list | tojson }}'></canvas>
+    </div>
+    <p class="muted small">
+      {{ index | length }} trading days, {{ index[0].date }} to {{ index[-1].date }}.
+      Index level 100 on {{ index_basis.base_date }};
+      {{ index_basis.contributors }} instrument{{ '' if index_basis.contributors == 1 else 's' }}
+      behind the latest point. Equal-weighted, each instrument rebased to its own first bar,
+      which is what lets a £30 share and a 3,000p share contribute the same and what makes
+      the mixed currencies cancel. Price only — no dividends — and it is not a tradable index.
+    </p>
+  {% else %}
+    <p class="muted">
+      No price line for this sector yet. It is derived from its constituents' stored bars, so
+      it appears once <code>price_eod</code> has priced them and the
+      <code>sector_index</code> job has run over the result — see
+      <a href="/jobs">Operations</a>.
+    </p>
+  {% endif %}
+</section>
+
 {# ---- sentiment ---------------------------------------------------------- #}
 <section class="summary">
   <h2>Sentiment</h2>

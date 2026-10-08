@@ -62,6 +62,7 @@ schedule:
   held_refresh: 3600
   prices_intraday: 3600          # was 15 min; quotes are a display feed, not an input
   prices_eod: 86400              # once after the close
+  sector_index: 86400            # derived from those bars; more often rewrites the same line
   quotes_held: 3600              # was 5 min
   fundamentals_rotation_per_day: 70
   # The decision sweep is bounded and rotated, for the same reason fundamentals is:

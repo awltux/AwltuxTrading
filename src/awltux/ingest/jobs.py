@@ -622,6 +622,168 @@ def refresh_universe() -> JobResult:
     )
 
 
+#: How many trading days a sector's index covers. The same 400 the instrument page charts,
+#: so the two lines a reader compares are the same length.
+SECTOR_INDEX_DAYS = 400
+
+
+def rebuild_sector_index(tickers: list[str] | None = None) -> JobResult:
+    """Rebuild every sector's equal-weighted price index from its constituents' bars.
+
+    A sector page lists its instruments and each instrument's page draws its own price line,
+    so the sector itself had no price view. This is the aggregation behind one line: each
+    constituent rebased to 100 at its first bar in the window, the level the mean of those
+    ratios -- see `analysis.sectors.index_from_closes` for why rebasing rather than averaging
+    raw closes, and why that makes mixed currencies a non-issue.
+
+    **Whole series per sector, replaced not extended.** The base is the oldest date in the
+    window, so a row from an earlier run is on a different basis and the two cannot be one
+    line. Every run deletes the sector's rows and writes the new set, which also keeps the
+    table bounded: 400 rows × twelve sectors.
+
+    **After the prices, because the bars are its input.** `depends_on=("price_eod",)`, and it
+    is cheap enough not to care: measured 2026-10-08 on the live database, the whole sweep --
+    5 sectors' worth of queries at 20,000-60,000 bars each -- is about two seconds, against
+    135-445 ms *per sector page view* for deriving it there.
+
+    ``tickers`` is accepted for the scoped-refresh convention and **deliberately ignored**: an
+    index of one instrument is that instrument's own line, which its page already draws. A
+    refresh of one company must not rewrite the sector's series from a single constituent.
+    """
+    from awltux.analysis import sectors as sector_map
+
+    del tickers  # see the docstring: an index needs the whole sector, not a scope
+
+    with session_scope() as session:
+        members = _sector_constituents(session)
+
+    written = 0
+    skipped: list[str] = []
+    sectors: dict[str, Any] = {}
+
+    for group in (*sector_map.SECTOR_NAMES, None):
+        sector = group if group is not None else sector_map.UNCLASSIFIED
+        names = members.get(group) or []
+        progress.checkpoint(f"{sector}: {len(names)} instruments")
+        if not names:
+            skipped.append(sector)
+            sectors[sector] = {"instruments": 0, "points": 0}
+            continue
+
+        with session_scope() as session:
+            series = _sector_series(session, names)
+            if not series:
+                skipped.append(sector)
+                sectors[sector] = {"instruments": len(names), "points": 0}
+                continue
+            _replace_sector_series(session, sector, series)
+            written += len(series)
+            sectors[sector] = {
+                "instruments": len(names),
+                "points": len(series),
+                "base_date": series[0][0].isoformat(),
+                "first": round(series[0][1], 2),
+                "last": round(series[-1][1], 2),
+                "contributors": series[-1][2],
+            }
+
+    return JobResult(
+        items_seen=len(members),
+        items_written=written,
+        note=(
+            "no sector has both constituents and stored prices yet" if not written else None
+        ),
+        detail={"days": SECTOR_INDEX_DAYS, "sectors": sectors, "skipped": skipped},
+    )
+
+
+def _sector_constituents(session) -> dict[str | None, list[str]]:
+    """Every in-universe instrument's ticker, grouped by its sector, ticker order.
+
+    One read for the whole run: the job needs each sector's membership, and asking per sector
+    would be twelve queries for one table.
+    """
+    from sqlalchemy import select
+
+    from awltux.db import Instrument
+
+    members: dict[str | None, list[str]] = {}
+    rows = session.execute(
+        select(Instrument.sector_group, Instrument.t212_ticker)
+        .where(Instrument.in_universe.is_(True))
+        .where(Instrument.excluded.is_(False))
+        .order_by(Instrument.t212_ticker)
+    ).all()
+    for group, ticker in rows:
+        members.setdefault(group, []).append(ticker)
+    return members
+
+
+def _sector_series(session, names: list[str]) -> list[tuple[dt.date, float, int]]:
+    """One sector's index points, from the bars of the instruments in ``names``.
+
+    The window is the newest ``SECTOR_INDEX_DAYS`` distinct dates the sector trades on, taken
+    across its constituents: bounding by rows *per instrument* would give a thinly traded
+    constituent a longer history than a busy one, and the two lines would then cover different
+    spans.
+    """
+    from sqlalchemy import desc, select
+
+    from awltux.analysis import sectors as sector_map
+    from awltux.db import PriceBar
+
+    cutoff = session.execute(
+        select(PriceBar.date)
+        .where(PriceBar.instrument_t212_ticker.in_(names))
+        .group_by(PriceBar.date)
+        .order_by(desc(PriceBar.date))
+        .offset(SECTOR_INDEX_DAYS - 1)
+        .limit(1)
+    ).scalar()
+
+    # Fewer distinct dates than the window -- a young database, or a sector whose constituents
+    # are newly listed -- so there is no cutoff and the whole stored history is the window.
+    # `None` here would otherwise become `date >= NULL`, which matches nothing and would
+    # silently index nothing at all.
+    bars = select(PriceBar.instrument_t212_ticker, PriceBar.date, PriceBar.close).where(
+        PriceBar.instrument_t212_ticker.in_(names)
+    )
+    if cutoff is not None:
+        bars = bars.where(PriceBar.date >= cutoff)
+    return sector_map.index_from_closes(session.execute(bars.order_by(PriceBar.date)).all())
+
+
+def _replace_sector_series(session, sector: str, series: list[tuple[dt.date, float, int]]) -> None:
+    """Replace one sector's stored line, whole.
+
+    Whole, because the level is rebased to the oldest date in the window: rows from an earlier
+    run are on a different basis, so mixing them would draw a jump that never happened.
+    """
+    from sqlalchemy import delete
+
+    from awltux.db import SectorPriceIndex, utcnow
+
+    base_date = series[0][0]
+    now = utcnow()
+    session.execute(delete(SectorPriceIndex).where(SectorPriceIndex.sector == sector))
+    session.add_all(
+        [
+            SectorPriceIndex(
+                sector=sector,
+                date=date,
+                level=level,
+                contributors=contributors,
+                base_date=base_date,
+                computed_at=now,
+            )
+            for date, level, contributors in series
+        ]
+    )
+    # Flushed per sector, not once at the end: a series is replaced as one unit, so a run that
+    # stops at the next sector's checkpoint has either written this one whole or not at all.
+    session.flush()
+
+
 def refresh_prices_eod(tickers: list[str] | None = None) -> JobResult:
     """End-of-day OHLCV for the universe, plus FX for the majors.
 

@@ -492,6 +492,31 @@ def _held_refresh(detail: dict[str, Any]) -> str:
     return line
 
 
+def _sector_index(detail: dict[str, Any]) -> str:
+    """One line naming the index's basis, because the level means nothing without it.
+
+    A level of 156.9 says "up 56.9% since 2025-03-20" only when the reader knows both halves;
+    the summariser is where the run history can say them, since a stored number whose basis is
+    unstated is the kind of figure this codebase refuses to print.
+    """
+    sectors = detail.get("sectors")
+    if not isinstance(sectors, dict) or not sectors:
+        return "no sector index was rebuilt; there are no stored bars to derive one from"
+    built = {name: row for name, row in sectors.items() if row.get("points")}
+    if not built:
+        return "no sector had both constituents and stored bars"
+    latest = max(built.values(), key=lambda row: row.get("points") or 0)
+    line = (
+        f"{_n(len(built))} sector indices rebuilt over {_n(detail.get('days'))} trading days "
+        f"(base {latest.get('base_date')}, latest level {latest.get('last')} from "
+        f"{_n(latest.get('contributors'))} instruments)"
+    )
+    skipped = detail.get("skipped") or []
+    if skipped:
+        line += f"; {_n(len(skipped))} had nothing to index"
+    return line
+
+
 def _symbol_resolution(detail: dict[str, Any]) -> str:
     looked = _get(detail, "looked_up")
     resolved = _get(detail, "resolved")
@@ -612,6 +637,7 @@ SUMMARISERS: dict[str, Summariser] = {
     "calibration": _calibration,
     "t212_orders": _t212_orders,
     "held_refresh": _held_refresh,
+    "sector_index": _sector_index,
     "retention": _retention,
 }
 

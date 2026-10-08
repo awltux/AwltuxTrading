@@ -139,6 +139,23 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             enabled=True,
         ),
         JobSpec(
+            id="sector_index",
+            func=ingest_jobs.rebuild_sector_index,
+            interval_seconds=schedule.sector_index,
+            description=(
+                "Rebuild each sector's equal-weighted price index from its constituents' "
+                "bars, so a sector page has a line of its own"
+            ),
+            # The bars are its input, so it runs after the prices that produce them and
+            # never before. Nothing depends on it: it is a page's line, not a decision input.
+            depends_on=("price_eod",),
+            # Two seconds of work, and the sector pages would otherwise show no line until
+            # the daily price job's next run. Not `backfill`: there is nothing missing to
+            # catch up on, only a derived line being one day old.
+            run_on_start=True,
+            enabled=True,
+        ),
+        JobSpec(
             id="price_intraday",
             func=ingest_jobs.refresh_prices_intraday,
             interval_seconds=schedule.prices_intraday,

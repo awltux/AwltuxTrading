@@ -190,8 +190,15 @@
     return Math.round(rem * rootFontSize()) + "px ui-sans-serif, system-ui, sans-serif";
   }
 
-  function drawChart() {
-    var canvas = document.getElementById("price-chart");
+  /** Draw every chart on the page: the instrument's price line and a sector's index. */
+  function drawCharts() {
+    var canvases = document.querySelectorAll("canvas[data-series]");
+    for (var index = 0; index < canvases.length; index += 1) {
+      drawChart(canvases[index]);
+    }
+  }
+
+  function drawChart(canvas) {
     if (!canvas) return;
 
     // Parsed independently: the dates only label the axis, so a malformed date
@@ -527,10 +534,10 @@
 
   function init() {
     startTicker();
-    drawChart();
+    drawCharts();
     wireJobButtons();
     wirePartialPaging();
-    window.addEventListener("resize", drawChart);
+    window.addEventListener("resize", drawCharts);
   }
 
   if (document.readyState === "loading") {

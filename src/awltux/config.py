@@ -241,6 +241,10 @@ class ScheduleConfig(BaseModel):
     held_refresh: int = 3_600
     prices_intraday: int = 3_600
     prices_eod: int = 86_400
+    #: How often each sector's price index is rebuilt. Daily, and declared separately from
+    #: `prices_eod` so the two can be moved apart: the index is derived from the end-of-day
+    #: bars, so running it more often than they arrive just rewrites the same line.
+    sector_index: int = 86_400
     #: Instruments the end-of-day price job asks for in one run. ``0`` prices the
     #: whole universe, which is what a daily job on 500 names can afford.
     #:

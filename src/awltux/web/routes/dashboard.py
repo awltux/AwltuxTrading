@@ -490,6 +490,8 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
         )
         news = queries.sector_news(session, name)
         series = queries.sector_sentiment_series(session, name, days=60)
+        index = queries.sector_price_index(session, name)
+        index_basis = queries.sector_index_basis(session, name)
         size = queries.universe_size(session)
 
     pages = max(1, -(-total // per_page))
@@ -508,6 +510,8 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
             "list_base": f"/sectors/{quote(name, safe='')}",
             "news": news,
             "series": series,
+            "index": index,
+            "index_basis": index_basis,
             "latest": series[-1] if series else None,
             "instrument_count": counts.get(name if name != sector_map.UNCLASSIFIED else None, 0),
             "is_unclassified": name == sector_map.UNCLASSIFIED,

@@ -77,8 +77,10 @@ function makeContext(rootFontPx) {
       documentElement: {},
       createElement: () => ({ style: {}, appendChild() {}, remove() {}, classList: { add() {}, remove() {} } }),
       getElementById: (id) => (id === "price-chart" ? canvas : null),
-      querySelector: () => null,
-      querySelectorAll: () => [],
+      // The chart draws every canvas carrying a series -- an instrument's price line and a
+      // sector's index -- so the stub answers that selector rather than only the one id.
+      querySelectorAll: (selector) =>
+        selector === "canvas[data-series]" ? [canvas] : [],
       addEventListener: () => {}
     },
     window: {

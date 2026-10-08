@@ -1121,6 +1121,36 @@ class AppSetting(Base, TimestampMixin):
     note: Mapped[str | None] = mapped_column(Text)
 
 
+class SectorPriceIndex(Base):
+    """One sector's equal-weighted price index, rebuilt whole by the `sector_index` job.
+
+    **Stored rather than derived on the page**, because the derivation reads every bar of
+    every constituent: measured 2026-10-08 on the live database, 20,753 `price_bar` rows and
+    135 ms for Information Technology's 56 instruments, 61,728 rows and 445 ms for the 174
+    unclassified ones -- and a column sort or a page click re-renders the sector page, so
+    that would be paid again on each. `sentiment_series` is stored for the same reason.
+
+    **Every run rewrites the whole series** rather than extending it: the level is rebased to
+    100 at the oldest date in the window, so rows written by an earlier run are on a
+    different basis and the two must never be plotted as one line. `base_date` is carried on
+    each row for that reason -- a stored level with no basis is not a readable number.
+    """
+
+    __tablename__ = "sector_price_index"
+
+    #: The sector page's own name, including ``Unclassified`` for instruments with no group.
+    sector: Mapped[str] = mapped_column(String(96), primary_key=True)
+    date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    #: 100 on `base_date`; the mean of each constituent's close over its own close that day.
+    level: Mapped[float] = mapped_column(Float, nullable=False)
+    #: How many instruments contributed a bar on this date, so the line's weight is visible.
+    contributors: Mapped[int] = mapped_column(Integer, default=0)
+    base_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    computed_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 class IngestRun(Base):
     """One execution of a scheduled job: observability for the background loop."""
 

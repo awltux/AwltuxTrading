@@ -32,6 +32,7 @@ from awltux.db import (
     NewsItem,
     PriceBar,
     Quote,
+    SectorPriceIndex,
     SentimentSeries,
     T212Order,
     ValuationRun,
@@ -1089,6 +1090,63 @@ def sector_sentiment_series(session: Session, name: str, *, days: int = 60) -> l
     """One sector's sentiment series, oldest first. Empty when it has none yet."""
     series = sector_sentiment(session, days=days)
     return series.get(name, [])
+
+
+#: Points the sector chart draws. The same 400 the index is built over, so the line is the
+#: whole series rather than a truncated view of it.
+SECTOR_INDEX_POINTS = 400
+
+
+def sector_price_index(
+    session: Session, name: str, *, limit: int = SECTOR_INDEX_POINTS
+) -> list[dict[str, Any]]:
+    """One sector's stored price index, oldest first, in the chart's own shape.
+
+    Read from `sector_price_index` rather than derived here: deriving it means reading every
+    constituent's bars (measured 2026-10-08: 20,753 rows and 135 ms for Information
+    Technology, 61,728 and 445 ms for the unclassified bucket) and this page re-renders on a
+    column sort. `sector_index` rebuilds it after the prices land.
+
+    `level` is the field, not `close`: the number is an index level rebased to 100, and
+    calling it a price would invite a reader to compare it with a share price.
+    """
+    rows = session.execute(
+        select(SectorPriceIndex)
+        .where(SectorPriceIndex.sector == name)
+        .order_by(desc(SectorPriceIndex.date))
+        .limit(limit)
+    ).scalars().all()
+    return [
+        {
+            "date": row.date.isoformat(),
+            "level": row.level,
+            "contributors": row.contributors,
+        }
+        for row in reversed(rows)
+    ]
+
+
+def sector_index_basis(session: Session, name: str) -> dict[str, Any] | None:
+    """What the index's 100 is anchored to, and how many instruments are behind the last point.
+
+    Returned separately from the series because it describes the whole line rather than any
+    point on it -- and because a level printed without its base is the kind of number this
+    module refuses to hand a template.
+    """
+    row = session.execute(
+        select(SectorPriceIndex)
+        .where(SectorPriceIndex.sector == name)
+        .order_by(desc(SectorPriceIndex.date))
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return {
+        "base_date": row.base_date.isoformat(),
+        "contributors": row.contributors,
+        "as_of": row.date.isoformat(),
+        "computed_at": row.computed_at,
+    }
 
 
 def sector_sentiment(session: Session, *, days: int = 30) -> dict[str, list[dict[str, Any]]]:

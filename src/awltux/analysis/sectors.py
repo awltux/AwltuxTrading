@@ -29,7 +29,9 @@ recognises, and it is small enough that every entry has instruments behind it.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
+from collections.abc import Iterable
 from typing import Any
 
 #: The eleven, in the order a page should offer them. Not alphabetical: this is the
@@ -255,6 +257,43 @@ def is_sector_page(name: str | None) -> bool:
 def is_sector(name: str | None) -> bool:
     """Whether ``name`` is one of the eleven, for validating a URL or a form value."""
     return name in SECTOR_NAMES
+
+
+def index_from_closes(
+    closes: Iterable[tuple[str, dt.date, float]],
+) -> list[tuple[dt.date, float, int]]:
+    """An equal-weighted index from ``(instrument, date, close)`` rows.
+
+    **Rebased, not averaged.** The mean of the raw closes would be dominated by whichever
+    constituent happens to have the largest price -- a 3,000p share beside a 30p one is not
+    an average of anything -- so each instrument is divided by its *own* first close in this
+    input and the level is 100 times the mean of those ratios. Two consequences are the point
+    of doing it this way:
+
+    * **Currencies cancel**, so a sector of US and UK listings needs no FX rate. A ratio is
+      dimensionless, and pence against pounds is a constant factor per instrument.
+    * **A constituent that lists mid-window joins at its own 100**, so it does not move the
+      line on the day it appears. `contributors` is returned with each date precisely so that
+      changing membership is visible rather than inferred from the shape.
+
+    Each instrument's base is its first bar *in this input*, so the caller decides the window
+    and every row of the result is on one basis. Rows with a non-positive close are dropped:
+    a zero would divide the instrument out of the index on every later date, and a negative
+    one would invert it.
+    """
+    base: dict[str, float] = {}
+    per_date: dict[dt.date, list[float]] = {}
+    for instrument, date, close in closes:
+        if close is None or close <= 0:
+            continue
+        if instrument not in base:
+            base[instrument] = close
+        per_date.setdefault(date, []).append(close / base[instrument])
+
+    return [
+        (date, 100.0 * sum(ratios) / len(ratios), len(ratios))
+        for date, ratios in sorted(per_date.items())
+    ]
 
 
 #: What to ask a news search for, per sector.

@@ -40,6 +40,7 @@ from awltux.db import (
     NewsAnalysis,
     NewsItem,
     PriceBar,
+    SectorPriceIndex,
     SentimentSeries,
     T212Order,
     ValuationRun,
@@ -500,6 +501,23 @@ def _probe_held_refresh(session: Session) -> Coverage:
     )
 
 
+def _probe_sector_index(session: Session) -> Coverage:
+    """How many sectors have a line, and how stale the oldest one is.
+
+    Not a queue of missing rows: like sentiment, the line is rewritten on the interval whether
+    or not anything changed, so what a reader needs is whether it exists and how old it is.
+    """
+    sectors = session.execute(
+        select(func.count(func.distinct(SectorPriceIndex.sector)))
+    ).scalar_one()
+    if not sectors:
+        return Coverage.none(
+            "no sector index has been built yet; the job derives it from the stored bars"
+        )
+    newest = session.execute(select(func.max(SectorPriceIndex.date))).scalar()
+    return Coverage.none(f"{sectors} sectors indexed, latest bar {newest}")
+
+
 def _probe_t212_orders(session: Session) -> Coverage:
     """Nothing depends on the trade history, so there is no queue to report.
 
@@ -643,6 +661,7 @@ PROBES = {
     "calibration": _probe_calibration,
     "t212_orders": _probe_t212_orders,
     "held_refresh": _probe_held_refresh,
+    "sector_index": _probe_sector_index,
     "retention": _probe_retention,
 }
 
