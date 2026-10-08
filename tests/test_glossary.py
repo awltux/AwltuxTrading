@@ -182,6 +182,48 @@ class TestTheModelAnswers:
         assert "will not always sum to exactly 100%" in distribution
 
 
+class TestTheScepticismAppraisal:
+    """What the term means, where a reader meets it.
+
+    Asked of the page: *"What is a scepticism appraisal?"* -- it appears in a sentence
+    saying one has not run, and a reader who does not know what it is cannot judge whether
+    they want one.
+    """
+
+    def test_it_says_what_the_appraisal_does_and_what_comes_out(self):
+        text = glossary.explanation("appraisal")
+
+        assert "who published it" in text
+        assert "independent sources" in text
+        assert "weight" in text, "the output is a weight, not a verdict"
+
+    def test_it_says_that_a_weak_story_is_not_hidden(self):
+        """"Weak" must not read as "suppressed": the score is kept and only its
+        influence is cut, which is the difference between scepticism and censorship."""
+        text = glossary.explanation("appraisal")
+
+        assert "not deleted" in text
+        assert "loses most of its influence" in text
+
+    def test_the_grade_says_the_bands_and_what_it_is_not(self):
+        """'unsupported' is a statement about evidence, not about truth, and the bands are
+        not guessable from the word."""
+        text = glossary.explanation("evidence_grade")
+
+        assert "unsupported below 20%" in text
+        assert "strong above it" in text
+        assert "not the truth of the story" in text
+
+    def test_the_weight_says_it_is_influence_rather_than_belief(self):
+        """2% beside a headline looks like "2% likely true" unless the page says
+        otherwise."""
+        text = glossary.explanation("credibility")
+
+        assert "influence rather than as belief" in text
+        assert "stops moving the sentiment score" in text
+        assert "computed in code" in text, "and it is not the model's own judgement"
+
+
 class TestItReachesThePage:
     def test_the_dashboard_columns_carry_their_explanations(self, client):
         body = client.get("/dashboard").text

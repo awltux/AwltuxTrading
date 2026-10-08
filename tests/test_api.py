@@ -823,7 +823,9 @@ class TestTheNewsItemPage:
         """The tag was a statement; it is now the thing to press.
 
         A story the daily sweep declines (`is_interesting`) stays unappraised for good
-        otherwise, so the page has to offer the one action that changes it.
+        otherwise, so the page has to offer the one action that changes it -- and say what
+        an appraisal *is*, because the sentence naming it is the first place this page uses
+        the term (asked of the page: "what is a scepticism appraisal").
         """
         row = self._story(session)
         session.commit()
@@ -832,6 +834,10 @@ class TestTheNewsItemPage:
 
         assert f'action="/news/{row.id}/appraise"' in body
         assert "Appraise this story now" in body
+        # Collapsed: template prose wraps, so the sentence is not one run of characters.
+        flat = " ".join(body.split())
+        assert "checked who published it, who else carries it" in flat, "the term is defined"
+        assert 'data-help="The critical read of one story' in body, "and explained in full"
         assert "unassessed default" in body, "the reason it matters is still stated"
 
     def test_pressing_it_appraises_and_returns_to_the_story(self, client, session):

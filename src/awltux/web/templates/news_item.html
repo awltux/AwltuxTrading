@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ item.title | truncate(70) }} — {{ app_name }}{% endblock %}
+{% from "partials/_help.html" import help %}
 
 {% block content %}
 {#
@@ -111,7 +112,10 @@
 </p>
 
 {# ----------------------------------------------------------- scepticism #}
-<h2 id="appraisal">How much should this be believed?</h2>
+{# The term is defined where a reader meets it: "no scepticism appraisal has run" is the
+   first place this page uses the phrase, and a reader who does not know what it is cannot
+   judge whether they want one. #}
+<h2 id="appraisal">How much should this be believed?{{ help('appraisal') }}</h2>
 {% if appraise %}
   {# What pressing the button did. Four outcomes, and three of them are not a failure:
      the reader asked for one story, so the page says which of them happened rather
@@ -137,8 +141,8 @@
 {% endif %}
 {% if analysis %}
   <section class="kv">
-    <div><dt>Evidence grade</dt><dd><span class="badge {{ analysis.evidence_grade | grade_class }}">{{ analysis.evidence_grade or 'unrated' }}</span></dd></div>
-    <div><dt>Weight</dt><dd>{{ analysis.credibility | pct0 if analysis.credibility is not none else '—' }}</dd></div>
+    <div><dt>Evidence grade{{ help('evidence_grade') }}</dt><dd><span class="badge {{ analysis.evidence_grade | grade_class }}">{{ analysis.evidence_grade or 'unrated' }}</span></dd></div>
+    <div><dt>Weight{{ help('credibility') }}</dt><dd>{{ analysis.credibility | pct0 if analysis.credibility is not none else '—' }}</dd></div>
     <div><dt>Publisher</dt><dd>{{ analysis.source_name or 'unrated' }}
       {% if analysis.source_kind %}<span class="muted small">({{ analysis.source_kind | replace('_', ' ') }})</span>{% endif %}</dd></div>
     <div><dt>Publisher reliability</dt><dd>{{ analysis.source_reliability | pct0 if analysis.source_reliability is not none else 'unrated' }}</dd></div>
@@ -195,8 +199,9 @@
   {% endif %}
 {% else %}
   <p class="muted">
-    No scepticism appraisal has run for this story. Until it does, the headline is
-    shown but weighted at the unassessed default rather than treated as a finding.
+    No scepticism appraisal has run for this story. Nothing has yet checked who published
+    it, who else carries it, what it claims or what it leaves out — so the headline is
+    shown, but weighted at the unassessed default rather than treated as a finding.
   </p>
   {# The tag the reader is looking at, made actionable. A POST, not a link: it spends a
      model call, and a prefetcher following a GET would spend it for them. #}

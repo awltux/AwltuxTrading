@@ -221,6 +221,44 @@ FIELDS: tuple[Field, ...] = (
     ),
     # ------------------------------------------------------- the model's answers
     Field(
+        "appraisal",
+        "Scepticism appraisal",
+        "The critical read of one story: who published it and what they stand to gain, how "
+        "many independent sources carry it, what it actually claims, what it leaves out, and "
+        "whether the wording is doing work the evidence is not.",
+        "It exists because every headline is a claim by an interested party, and what "
+        "comes out is a weight -- the fraction of the story's sentiment that survives it, "
+        "and so how far the story is allowed to move anything -- plus a grade for that "
+        "weight. The cheap half (the source registry, the wording scan and the "
+        "corroboration count) always runs; the "
+        "model's read adds the claims, the omissions and where the underlying fact would be "
+        "recorded. A story judged weak is not deleted, hidden or flipped: it keeps its "
+        "sentiment and loses most of its influence, which is the difference between "
+        "scepticism and censorship.",
+    ),
+    Field(
+        "evidence_grade",
+        "Evidence grade",
+        "The band the weight falls in: unsupported below 20%, weak to 35%, mixed to 50%, "
+        "moderate to 70%, strong above it.",
+        "It grades the *evidence*, not the truth of the story: 'unsupported' means nothing "
+        "checkable was carrying the claim -- a company blog quoting itself, single-source "
+        "coverage, no primary record -- which is a different statement from 'false'. The "
+        "ceiling is deliberate: a single-source story from an unrated publisher written in "
+        "shock language cannot exceed a low weight however favourable everything else looks.",
+    ),
+    Field(
+        "credibility",
+        "Weight",
+        "How much of this story's sentiment survives its own appraisal, from 0% to 100%: the "
+        "number the sentiment aggregate multiplies by.",
+        "Read it as influence rather than as belief. A story at 2% still exists, is still "
+        "shown and still counts as coverage; it simply stops moving the sentiment score, "
+        "which is what a claim nobody independently carries should do. It is computed in "
+        "code from the publisher, the corroboration, the framing and the claim types -- not "
+        "asked of the model, which would be judging its own input.",
+    ),
+    Field(
         "answer_confidence",
         "Confidence",
         "The model's own certainty in the answer beside it, as it reported it.",
