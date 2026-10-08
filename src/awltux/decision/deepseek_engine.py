@@ -45,7 +45,7 @@ from awltux.llm.prompts import UNTRUSTED_CONTENT_RULE, prompt_fingerprint
 logger = logging.getLogger(__name__)
 
 PURPOSE = "decision_fallback"
-PROMPT_VERSION = "2026-02-1"
+PROMPT_VERSION = "2026-10-8"
 
 SYSTEM = f"""You are a disciplined equity analyst making a judgement about one share for a long-only private investor.
 
@@ -124,7 +124,7 @@ def build_schema(questions: dict[str, Any]) -> str:
 
 def build_instruction(questions: dict[str, Any]) -> str:
     """The full per-instrument instruction, including the question text."""
-    parts = ["Answer these questions about the company in the state above.", ""]
+    parts = ["Answer these questions about the company in the state below.", ""]
     for name, definition in questions.items():
         parts.append(f"- {name}: {definition.get('instructions')}")
         definition_criteria = definition.get("criteria")
@@ -174,10 +174,26 @@ class DeepSeekDecisionEngine(DecisionEngine):
         instruction = build_instruction(questions)
         messages = build_messages(
             system=SYSTEM,
-            # The state is the large, stable part: keeping it as the document
-            # position lets DeepSeek's prefix cache hit across the questions.
-            document=state_text,
-            instruction=instruction,
+            # **The instruction is the large, stable part, so it goes first.** It holds the
+            # fifteen questions and their answer schema -- ~3,940 tokens, byte-identical on
+            # every decision ever made. The per-instrument state is what varies, and it goes
+            # last where its variability costs nothing.
+            #
+            # This was the other way round, with a comment claiming the state was "the
+            # large, stable part". It is not: it is one company's figures, different on
+            # every call. DeepSeek's cache is a *prefix* cache, so with the state ahead of
+            # the instruction only the 276-token system message could ever hit -- measured
+            # 2026-10-08, 128 cached of 4,931 mean input (2.6%), while the 3,940-token
+            # instruction was re-sent at full price every time.
+            #
+            # Verified on a real call before deploying, because `parse_answers` drops what
+            # it does not recognise and would have reported a silent loss as success: the
+            # same state sent both ways returned 15/15 answers with a value either way, and
+            # the second call in the new order cached 6,400 of 6,622 input tokens for
+            # $0.001595 against $0.003453 -- 54% off. Production states are smaller, so the
+            # expected saving is ~31% of the input half.
+            document=instruction,
+            instruction=state_text,
         )
 
         # Two budgets, and the second one exists because the first is sometimes

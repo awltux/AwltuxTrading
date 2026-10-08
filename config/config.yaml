@@ -293,7 +293,15 @@ decision:
   # instrument falls through to the deterministic engine with the reason recorded.
   # Measured before this was configurable: the median response was ~3,500 tokens
   # against a hardcoded 4,000, so one decision in four was lost to the ceiling.
-  deepseek_max_tokens: 6000
+  #
+  # Raised 6000 -> 8000 on 2026-10-08 to remove the retry path. Measured: 12 of 1,626
+  # decision calls (0.7%) still landed exactly on 6000 and were retried at
+  # `llm.max_output_tokens` (8000), so each of those decisions cost two calls. The retry
+  # list in `deepseek_engine.decide` is `dict.fromkeys((deepseek_max_tokens,
+  # max_output_tokens))`, so at 8000 it collapses to a single attempt and a long answer is
+  # asked for once rather than twice. `max_tokens` is a cap and not a reservation, so this
+  # costs nothing on the 99.3% of calls that never approach it.
+  deepseek_max_tokens: 8000
 
 # --- composite scoring --------------------------------------------------------
 # Weights are per horizon, because the two verdicts are built from different

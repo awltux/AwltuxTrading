@@ -111,28 +111,50 @@ class TestATruncatedAnswerIsRetried:
             questions=_questions(),
         )
 
-    def test_a_truncated_response_is_retried_with_more_room(self, settings):
-        client = _FakeClient(
-            [
-                _completion('{"answers": {"valuation_verdict": {"choice": "fai', "length"),
-                _completion(GOOD),
-            ]
+    def _configured_budgets(self, settings) -> list[int]:
+        """The attempts the engine will make, derived from the same config it reads."""
+        return list(
+            dict.fromkeys(
+                (settings.decision.deepseek_max_tokens, settings.llm.max_output_tokens)
+            )
         )
-        response = self._decide(settings, client)
-        assert response.answers
-        assert client.budgets == [6_000, 8_000], "the retry must ask for more"
 
-    def test_the_retry_budget_comes_from_configuration(self, settings):
+    def test_a_truncated_answer_is_asked_again_only_if_there_is_more_room(self, settings):
+        """The retry exists to ask for *more*. When the first budget already equals the
+        ceiling there is nothing to ask for, and a second identical call would only spend
+        money to truncate in the same place.
+
+        Raised to 8000 on 2026-10-08 so that the first attempt has the room the retry used
+        to provide: 12 of 1,626 calls were hitting the old 6000 exactly and paying twice.
+        """
+        budgets = self._configured_budgets(settings)
+        truncated = _completion('{"answers": {"valuation_verdict": {"choice": "fai', "length")
+
+        if len(budgets) == 1:
+            client = _FakeClient([truncated])
+            with pytest.raises(DecisionEngineError, match="did not fit"):
+                self._decide(settings, client)
+            assert client.budgets == budgets, "one attempt, at the configured ceiling"
+        else:
+            client = _FakeClient([truncated, _completion(GOOD)])
+            response = self._decide(settings, client)
+            assert response.answers
+            assert client.budgets == budgets, "the retry must ask for more"
+            assert budgets[-1] > budgets[0]
+
+    def test_the_budget_comes_from_configuration(self, settings):
         """It was a magic 4,000 buried in the engine, with the observed median
         already at ~3,500."""
         assert settings.decision.deepseek_max_tokens > 4_000
 
-    def test_a_second_truncation_fails_rather_than_looping(self, settings):
+    def test_an_answer_that_never_fits_fails_rather_than_looping(self, settings):
+        budgets = self._configured_budgets(settings)
         truncated = _completion('{"answers": {"valuation_verdict": {"choice": "fai', "length")
-        client = _FakeClient([truncated, truncated])
+        client = _FakeClient([truncated] * len(budgets))
+
         with pytest.raises(DecisionEngineError, match="did not fit"):
             self._decide(settings, client)
-        assert len(client.budgets) == 2, "exactly one retry, not an unbounded loop"
+        assert len(client.budgets) == len(budgets), "bounded attempts, not a loop"
 
     def test_malformed_json_is_not_retried(self, settings):
         """Only truncation is worth another call; nonsense will be nonsense again,
@@ -146,7 +168,7 @@ class TestATruncatedAnswerIsRetried:
     def test_a_successful_first_attempt_is_not_retried(self, settings):
         client = _FakeClient([_completion(GOOD)])
         self._decide(settings, client)
-        assert client.budgets == [6_000]
+        assert client.budgets == [settings.decision.deepseek_max_tokens]
 
     def test_an_unusable_answer_is_still_an_error(self, settings):
         """The retry must not paper over a response that fits but answers nothing."""
