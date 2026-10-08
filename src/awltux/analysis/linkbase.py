@@ -33,7 +33,14 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from awltux.analysis.ledger import IMBALANCE, OK, UNKNOWN, Check, tolerance
+from awltux.analysis.ledger import (
+    IMBALANCE,
+    OK,
+    UNKNOWN,
+    Check,
+    Declared,
+    tolerance,
+)
 from awltux.db import FundamentalPeriod
 from awltux.ingest.linkbase import Calculation, Linkbase
 from awltux.ingest.xbrl import TAG_MAP
@@ -62,6 +69,141 @@ def knows(tag: str) -> bool:
     the period carries.
     """
     return tag.split(":", 1)[-1] in VOCABULARY
+
+
+#: How deep a declaration is walked before the walk is abandoned. The trees are the
+#: filing's, so a cycle would be its bug rather than ours -- and a page that cannot finish
+#: rendering is a worse outcome than a check that reports what it managed.
+MAX_DEPTH = 6
+
+
+def leaves(
+    linkbase: Linkbase, concept: str, *, role: str | None = None, _depth: int = 0
+) -> tuple[tuple[str, float], ...]:
+    """Every bottom-level declared child of ``concept``, with its weight on the path.
+
+    **To the leaves, not one level down.** ``Assets`` is declared as ``AssetsCurrent`` and
+    ``AssetsNoncurrent`` -- subtotals the filer states and this project has no metric for
+    -- so a one-level sum reaches two concepts we cannot value and stops. The money is at
+    the bottom: cash, receivables, PP&E, deposits. Weights multiply along the path because
+    a subtotal can be declared with a negative weight (treasury stock is the case
+    `test_linkbase.py` pins), and a leaf found through one has to carry that sign.
+
+    **One role only, and that is not a detail.** Measured on `DAC_US_EQ`: its balance
+    sheet declares ``OtherAssetsCurrent`` as a *leaf* of ``AssetsCurrent``, while a
+    footnote role declares ``OtherAssetsCurrent`` as a *parent* of four further captions.
+    Walking every role together therefore expands a line the statement treats as one, and
+    reports the footnote's four children as lines we are missing -- none of which is true
+    of the balance sheet the check is about. A footnote decomposing a caption is a
+    different tree, so the walk stays inside the role that declares the subtotal.
+
+    A concept that is its own descendant is dropped rather than followed, which together
+    with :data:`MAX_DEPTH` is the only protection a filer's malformed tree gets.
+    """
+    if _depth >= MAX_DEPTH:
+        return ()
+    out: list[tuple[str, float]] = []
+    in_role = {spec.parent for spec in linkbase.calculations if role is None or spec.role == role}
+    for spec in linkbase.for_parent(concept):
+        if role is not None and spec.role != role:
+            continue
+        for tag, weight in spec.children:
+            if tag in in_role and tag != concept:
+                out.extend(
+                    (leaf, weight * nested)
+                    for leaf, nested in leaves(linkbase, tag, role=role, _depth=_depth + 1)
+                )
+            else:
+                out.append((tag, weight))
+    return tuple(out)
+
+
+def declared_sums(
+    period: FundamentalPeriod,
+    linkbase: Linkbase,
+    *,
+    figures: Mapping[str, float] | None = None,
+) -> dict[str, Declared]:
+    """What each declared subtotal adds up to, from the figures this project holds.
+
+    The arithmetic the filer publishes, applied to our numbers: for every subtotal in
+    :data:`_SUBTOTALS` that its balance sheet declares, the sum of the declared leaves we
+    hold. The result is handed to :mod:`awltux.analysis.ledger`, which prints it as the
+    computed column and checks it against the stated total -- so "out by" means the lines
+    the *filing* breaks the total into that we do not hold, rather than the size of our
+    own vocabulary.
+
+    A leaf whose metric is a sum of several tags is taken once, exactly as
+    :func:`_reading` does: `other_current_assets` is one line to us and two to `DAC_US_EQ`,
+    and counting it per tag would double the money.
+
+    ``missing_total`` is left unset unless the filer tagged **every** absent line, because
+    a partial price is the most misleading number in this module: it would read as an
+    explanation of the residual while leaving part of it unaccounted for.
+    """
+    index = tag_index(period)
+    sums = summed_members(period)
+    metrics = period.metrics or {}
+    prices = dict(figures or {})
+
+    out: dict[str, Declared] = {}
+    for metric, concept in _SUBTOTALS.items():
+        specs = linkbase.for_parent(concept)
+        if not specs:
+            continue
+        # The role that declares this subtotal, which is the statement to walk. A subtotal
+        # declared in several roles uses the first, in the filing's order.
+        declared = leaves(linkbase, concept, role=specs[0].role)
+        if not declared:
+            continue
+        total = 0.0
+        missing: list[str] = []
+        absent_total: float | None = 0.0
+        counted: set[str] = set()
+        for tag, weight in declared:
+            child_metric = index.get(tag)
+            value = value_of(metrics, child_metric) if child_metric else None
+            if value is None:
+                # Not held. Named whether or not we have a price for it: the name is what
+                # says which line to look at, and the price is what says whether it is the
+                # whole of the residual.
+                missing.append(_priced_name(tag, prices))
+                if tag in prices and absent_total is not None:
+                    absent_total += prices[tag] * weight
+                else:
+                    absent_total = None
+                continue
+            members = sums.get(child_metric or "")
+            if members is not None:
+                if child_metric in counted:
+                    continue
+                counted.add(child_metric)
+            total += weight * value
+        out[metric] = Declared(
+            total=total if total or not missing else None,
+            missing=tuple(missing),
+            # Only when the filer tagged every absent line: a partial price would look
+            # like an explanation while leaving part of the residual unexplained.
+            missing_total=absent_total if missing else None,
+        )
+    return out
+
+
+def _priced_name(tag: str, figures: Mapping[str, float]) -> str:
+    """``us-gaap:PrepaidExpenseCurrent (2,093,000)`` when the filer's figure is known."""
+    value = figures.get(tag)
+    return f"{tag} ({value:,.0f})" if value is not None else tag
+
+
+#: Which of our subtotals each declared concept is. The filer names `us-gaap:Assets`;
+#: this codebase calls the same figure ``total_assets`` -- and only the four *composition*
+#: subtotals are here, because those are the ones the ledger checks against components.
+_SUBTOTALS: Mapping[str, str] = {
+    "total_assets": "us-gaap:Assets",
+    "total_liabilities": "us-gaap:Liabilities",
+    "current_assets": "us-gaap:AssetsCurrent",
+    "current_liabilities": "us-gaap:LiabilitiesCurrent",
+}
 
 
 @dataclass(frozen=True, slots=True)

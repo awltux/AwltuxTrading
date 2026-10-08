@@ -145,6 +145,12 @@
     An imbalance is never plugged. The accounting equation is a fact about the filing,
     so a residual there means <em>this project</em> extracted it wrongly; a composition
     residual is simply the size of the accounts the taxonomy does not carry.
+    {% if filer_checks %}
+      The four composition rows here use the <em>filer's own</em> declared lines, which is
+      why they are checked against a fuller balance sheet than this project's vocabulary
+      carries — a row that cannot be computed names the lines it is missing, and says when
+      those lines account for the whole residual.
+    {% endif %}
   </p>
   <table class="grid compact">
     <thead><tr><th>Check</th><th>Result</th><th class="num">Out by</th><th>What it compared</th></tr></thead>

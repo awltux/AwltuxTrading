@@ -321,6 +321,10 @@ def accounts_page(
     # The same snapshot the instrument page reads, over the periods up to this one, so
     # the markers and red flags here cannot disagree with the ones shown there.
     snapshot = build_snapshot(detail["series"])
+    # Read once, because the filer's declared arithmetic drives both: the statement's
+    # Computed column and the composition checks. See `_filer_arithmetic`.
+    arithmetic = _filer_arithmetic(session, detail["instrument"], period, request)
+    declared = arithmetic.pop("declared")
 
     return templates.TemplateResponse(
         request,
@@ -340,12 +344,12 @@ def accounts_page(
                 for name, label in ledger.TABS
             ],
             "built": (
-                ledger.statement(period, statement)
+                ledger.statement(period, statement, declared=declared)
                 if statement in ledger.STATEMENT_KINDS
                 else None
             ),
-            "health": ledger.checks(period, previous),
-            **_filer_arithmetic(session, detail["instrument"], period, request),
+            "health": ledger.checks(period, previous, declared=declared),
+            **arithmetic,
             "snapshot": snapshot,
             "empty": not metrics,
             "currency": period.currency or "",
@@ -359,28 +363,34 @@ def accounts_page(
 def _filer_arithmetic(
     session: Any, instrument: Any, period: Any, request: Request
 ) -> dict[str, Any]:
-    """The filer's own declared subtotals, and what is stored about its linkbase.
+    """The filer's own declared subtotals, its linkbase state, and its arithmetic.
 
     A named step rather than lines inside the route, because it is the one part of the
     accounts page that is about the *filing* rather than about our figures: the stored
     linkbase is read here, reconciled against this period, and the button's outcome is
     carried in from the redirect. ``filer_checks`` is empty until somebody presses it,
     which the template renders as the button rather than as an empty table.
+
+    ``declared`` is the same declaration expressed as *values* -- what the filer's own
+    children add up to from the figures we hold -- and the caller hands it to the ledger,
+    so the statement's Computed column and the composition checks are the issuer's
+    arithmetic rather than this codebase's key lists. It is popped out of the context
+    because no template needs it.
     """
     from awltux.analysis import linkbase as reconciliation
     from awltux.ingest import linkbase as linkbases
 
     accession = reconciliation.accession(period)
     stored = linkbases.stored(session, accession) if accession else None
+    figures = dict(stored.values.get(period.period_end.isoformat()) or {}) if stored else {}
     return {
-        "filer_checks": (
-            reconciliation.checks(
-                period,
-                stored.linkbase,
-                figures=dict(stored.values.get(period.period_end.isoformat()) or {}),
-            )
+        "declared": (
+            reconciliation.declared_sums(period, stored.linkbase, figures=figures)
             if stored
-            else []
+            else {}
+        ),
+        "filer_checks": (
+            reconciliation.checks(period, stored.linkbase, figures=figures) if stored else []
         ),
         "linkbase": {
             "accession": accession,

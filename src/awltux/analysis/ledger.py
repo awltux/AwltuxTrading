@@ -37,7 +37,7 @@ each one carries the residual it measured.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -632,11 +632,24 @@ def profit_and_loss(period: FundamentalPeriod) -> Statement:
     )
 
 
-def balance_sheet(period: FundamentalPeriod) -> Statement:
-    """What is owned and owed, with the components checked against the stated totals."""
+def balance_sheet(
+    period: FundamentalPeriod, *, declared: Mapping[str, Declared] | None = None
+) -> Statement:
+    """What is owned and owed, with the components checked against the stated totals.
+
+    ``declared`` puts the filer's own children behind the four subtotals where its
+    calculation linkbase has been read, so the residual printed beside a total is the
+    lines *the filing* breaks it into that this project does not hold -- which for a
+    bucket line like `other_current_assets` is a very different figure from the residual
+    against our own key list.
+    """
     metrics = period.metrics or {}
     gaps: list[str] = []
     held = _composition(metrics)
+
+    def sum_of(metric: str, ours: float | None) -> float | None:
+        """The filer's sum for this subtotal where it declares one, else our own list."""
+        return _computed(declared, metric, ours)[0]
 
     if _stated(metrics, "total_equity") is None:
         gaps.append("total equity")
@@ -649,7 +662,7 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
                 _line(metrics, "receivables"),
                 _line(metrics, "inventory"),
                 _line(metrics, "other_current_assets"),
-                _line(metrics, "current_assets", held.current_assets),
+                _line(metrics, "current_assets", sum_of("current_assets", held.current_assets)),
             ],
         ),
         _section(
@@ -660,7 +673,7 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
                 _line(metrics, "goodwill"),
                 _line(metrics, "intangible_assets"),
                 _line(metrics, "other_noncurrent_assets"),
-                _line(metrics, "total_assets", held.assets),
+                _line(metrics, "total_assets", sum_of("total_assets", held.assets)),
             ],
         ),
         _section(
@@ -670,7 +683,11 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
                 _line(metrics, "compensation_and_benefits"),
                 _line(metrics, "other_current_liabilities"),
                 _line(metrics, "short_term_debt"),
-                _line(metrics, "current_liabilities", held.current_liabilities),
+                _line(
+                    metrics,
+                    "current_liabilities",
+                    sum_of("current_liabilities", held.current_liabilities),
+                ),
             ],
         ),
         _section(
@@ -678,7 +695,7 @@ def balance_sheet(period: FundamentalPeriod) -> Statement:
             [
                 _line(metrics, "long_term_debt"),
                 _line(metrics, "other_noncurrent_liabilities"),
-                _line(metrics, "total_liabilities", held.liabilities),
+                _line(metrics, "total_liabilities", sum_of("total_liabilities", held.liabilities)),
                 _line(metrics, "total_equity"),
             ],
         ),
@@ -732,11 +749,17 @@ def cash_flow(period: FundamentalPeriod) -> Statement:
     )
 
 
-def statement(period: FundamentalPeriod, which: str) -> Statement:
+def statement(
+    period: FundamentalPeriod,
+    which: str,
+    *,
+    declared: Mapping[str, Declared] | None = None,
+) -> Statement:
     """One statement by name. Raises for a name that is not a statement."""
+    if which == "balance_sheet":
+        return balance_sheet(period, declared=declared)
     builders = {
         "profit_and_loss": profit_and_loss,
-        "balance_sheet": balance_sheet,
         "cash_flow": cash_flow,
     }
     try:
@@ -772,10 +795,76 @@ class Check:
         return self.status == IMBALANCE
 
 
-def _agree(key: str, label: str, stated: float | None, computed: float | None, detail: str) -> Check:
-    """A stated total against the parts we hold. Unknown when either side is missing."""
+@dataclass(frozen=True, slots=True)
+class Declared:
+    """A subtotal measured from the filer's own declared children.
+
+    Kept as one value with its gaps rather than a bare number, because the two are used
+    differently: the statement prints ``total`` -- the best figure available, and the
+    whole point of reading the declaration -- while the *check* refuses to call it
+    computable when ``missing`` is non-empty, since a subtotal with a line left out has
+    not been checked at all.
+
+    ``missing`` names the declared leaves this project holds no figure for, so a reader
+    is told which line to look at rather than only that something is absent, and
+    ``missing_total`` is what the filer itself tagged those lines at -- when it tagged
+    them all -- which is what turns "out by 2,093,000" into "out by exactly the line we do
+    not hold" instead of leaving a residual that looks unexplained.
+    """
+
+    total: float | None
+    missing: tuple[str, ...] = ()
+    missing_total: float | None = None
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing
+
+
+def _agree(
+    key: str,
+    label: str,
+    stated: float | None,
+    computed: float | None,
+    detail: str,
+    *,
+    missing: tuple[str, ...] = (),
+    missing_total: float | None = None,
+) -> Check:
+    """A stated total against the parts we hold. Unknown when either side is missing.
+
+    ``missing`` is for a declaration-driven sum: the figure is the best available and is
+    still printed by the statement, but a component was left out of it, so the check says
+    *not computable* and names what is absent instead of reporting a residual that is
+    really our coverage.
+
+    When the filer's own figures for the absent lines account for the whole residual, the
+    detail says so. That is the one thing a reader can act on: it means the difference is
+    fully explained by named lines rather than being an unexplained disagreement.
+    """
     if stated is None or computed is None:
         return Check(key=key, label=label, status=UNKNOWN, detail=f"{detail} -- not enough stated")
+    if missing:
+        residual = stated - computed
+        explained = missing_total is not None and abs(residual - missing_total) <= tolerance(
+            stated
+        )
+        sentence = f"{detail}; missing {', '.join(missing)}"
+        if explained:
+            sentence += " -- which is exactly those lines, so nothing else is unexplained"
+        return Check(
+            key=key,
+            label=label,
+            status=UNKNOWN,
+            detail=sentence,
+            residual=residual,
+            inputs={
+                "stated": stated,
+                "computed": computed,
+                "missing": list(missing),
+                "explained": explained,
+            },
+        )
     residual = stated - computed
     status = OK if abs(residual) <= tolerance(stated) else IMBALANCE
     return Check(
@@ -788,36 +877,91 @@ def _agree(key: str, label: str, stated: float | None, computed: float | None, d
     )
 
 
-def composition(period: FundamentalPeriod) -> list[Check]:
+def _computed(
+    declared: Mapping[str, Declared] | None, metric: str, ours: float | None
+) -> tuple[float | None, tuple[str, ...], float | None, str]:
+    """What one subtotal's components add up to, and whose components they are.
+
+    Returns the value, the declared lines left out of it, what the filer tagged those at,
+    and a phrase naming the source -- empty for our own key list, because then there is
+    nothing to attribute. Shared by the check and the statement so the two cannot show
+    different computed columns for the same subtotal.
+    """
+    entry = (declared or {}).get(metric)
+    if entry is None:
+        return ours, (), None, ""
+    return entry.total, entry.missing, entry.missing_total, "; the filer's own declared lines"
+
+
+def _agree_computed(
+    key: str,
+    label: str,
+    stated: float | None,
+    metric: str,
+    ours: float | None,
+    detail: str,
+    declared: Mapping[str, Declared] | None,
+) -> Check:
+    """One composition check, from the filer's declared children where we have them."""
+    computed, missing, missing_total, source = _computed(declared, metric, ours)
+    return _agree(
+        key,
+        label,
+        stated,
+        computed,
+        detail + source,
+        missing=missing,
+        missing_total=missing_total,
+    )
+
+
+def composition(
+    period: FundamentalPeriod, *, declared: Mapping[str, Declared] | None = None
+) -> list[Check]:
     """Whether the components we hold sum to the totals the filing states.
 
     A failure here is **not** a defect in the filing or in our extraction; it is the
     size of the accounts this project does not collect. It is a check rather than a
     note because the residual is what tells a reader whether a statement is usable:
     a hundred pounds of "other" is not the same as a third of the balance sheet.
+
+    ``declared`` replaces our own component lists with the filer's, for the subtotals it
+    covers: the check then measures the *issuer's* arithmetic instead of this codebase's
+    assertion about how a balance sheet is built. That is the stronger claim, and it is
+    why the sums differ -- our list is a subset of the taxonomy, the filer's is its own
+    balance sheet. A subtotal the filer declares and we cannot complete stays *not
+    computable* with the absent lines named; the composition from our own list remains
+    the only verdict available for a subtotal no linkbase covers.
     """
     metrics = period.metrics or {}
-    checks = [
-        _agree(
+    held = _composition(metrics)
+    return [
+        _agree_computed(
             "assets_composition",
             "Components sum to stated total assets",
             _stated(metrics, "total_assets"),
-            _composition(metrics).assets,
+            "total_assets",
+            held.assets,
             "asset lines we hold against total assets",
+            declared,
         ),
-        _agree(
+        _agree_computed(
             "liabilities_composition",
             "Components sum to stated total liabilities",
             _stated(metrics, "total_liabilities"),
-            _composition(metrics).liabilities,
+            "total_liabilities",
+            held.liabilities,
             "liability lines we hold against total liabilities",
+            declared,
         ),
-        _agree(
+        _agree_computed(
             "current_assets_composition",
             "Components sum to stated current assets",
             _stated(metrics, "current_assets"),
-            _composition(metrics).current_assets,
+            "current_assets",
+            held.current_assets,
             "current asset lines we hold against current assets",
+            declared,
         ),
         # The mirror of the line above, and it was missing. Measured 2026-10-07 on
         # `MSFT_US_EQ`: its balance sheet states current liabilities of 168,825 against
@@ -826,15 +970,16 @@ def composition(period: FundamentalPeriod) -> list[Check]:
         # were offered by the 10-K extraction and neither could be promoted, because
         # nothing was checking this subtotal. A gap that is never measured is a caption
         # that is never discovered.
-        _agree(
+        _agree_computed(
             "current_liabilities_composition",
             "Components sum to stated current liabilities",
             _stated(metrics, "current_liabilities"),
-            _composition(metrics).current_liabilities,
+            "current_liabilities",
+            held.current_liabilities,
             "current liability lines we hold against current liabilities",
+            declared,
         ),
     ]
-    return checks
 
 
 def profit_articulation(period: FundamentalPeriod) -> Check:
@@ -973,18 +1118,22 @@ def cash_movement(
 
 
 def checks(
-    period: FundamentalPeriod, previous: FundamentalPeriod | None = None
+    period: FundamentalPeriod,
+    previous: FundamentalPeriod | None = None,
+    *,
+    declared: Mapping[str, Declared] | None = None,
 ) -> list[Check]:
     """Every accounting-health check for one period, equation first.
 
     Order is the order a reader should work in: the equation is pass/fail on our own
     extraction, then whether the figures add up, then the two articulations across
-    years.
+    years. ``declared`` is the filer's own arithmetic, which replaces ours in the
+    composition checks for the subtotals its linkbase covers.
     """
     return [
         equation_check(period),
         profit_articulation(period),
-        *composition(period),
+        *composition(period, declared=declared),
         retained_earnings_rollforward(period, previous),
         cash_movement(period, previous),
     ]

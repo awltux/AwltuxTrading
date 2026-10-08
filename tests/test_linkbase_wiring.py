@@ -376,6 +376,174 @@ class TestPricingTheLinesWeDoNotHold:
         assert values == {}
 
 
+class TestTheFilersArithmeticReplacingOurs:
+    """`declared_sums`: the filer's own children, summed from the figures we hold.
+
+    This is the arithmetic the ledger prints as the computed column and checks against the
+    stated total. Its two failure modes are both measured here: summing one level down
+    (which reaches subtotals we have no metric for and stops) and walking every role at
+    once (which pulls a footnote's breakdown into the balance sheet's sum).
+    """
+
+    PERIOD = None  # built per test from `_period` below
+
+    def _period(self) -> FundamentalPeriod:
+        metrics = {
+            "total_assets": 5_113_930_000.0,
+            "current_assets": 1_319_419_000.0,
+            "current_liabilities": 401_676_000.0,
+            "total_liabilities": 1_318_353_000.0,
+            "cash_and_equivalents": 1_037_292_000.0,
+            "receivables": 38_730_000.0,
+            "inventory": 23_417_000.0,
+            "other_current_assets": 217_887_000.0,
+            "net_ppe": 3_269_703_000.0,
+            "other_noncurrent_assets": 42_305_000.0,
+            "payables": 17_274_000.0,
+            "compensation_and_benefits": 28_772_000.0,
+            "other_current_liabilities": 35_990_000.0,
+            "short_term_debt": 283_015_000.0,
+            "long_term_debt": 872_076_000.0,
+            "other_noncurrent_liabilities": 41_983_000.0,
+        }
+        spans = {
+            "total_assets": "us-gaap:Assets",
+            "current_assets": "us-gaap:AssetsCurrent",
+            "current_liabilities": "us-gaap:LiabilitiesCurrent",
+            "total_liabilities": "us-gaap:Liabilities",
+            "cash_and_equivalents": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+            "receivables": "us-gaap:AccountsReceivableNetCurrent",
+            "inventory": "us-gaap:InventoryNet",
+            "other_current_assets": "us-gaap:OtherAssetsCurrent+OtherReceivablesNetCurrent",
+            "net_ppe": "us-gaap:PropertyPlantAndEquipmentNet",
+            "other_noncurrent_assets": "us-gaap:OtherAssetsNoncurrent",
+            "payables": "us-gaap:AccountsPayableCurrent",
+            "compensation_and_benefits": "us-gaap:AccruedLiabilitiesCurrent",
+            "other_current_liabilities": "us-gaap:OtherLiabilitiesCurrent",
+            "short_term_debt": "us-gaap:LongTermDebtCurrent",
+            "long_term_debt": "us-gaap:LongTermDebtNoncurrent",
+            "other_noncurrent_liabilities": "us-gaap:OtherLiabilitiesNoncurrent",
+        }
+        return FundamentalPeriod(
+            instrument_t212_ticker="DAC_US_EQ",
+            period_end=dt.date(2025, 12, 31),
+            period_type="annual",
+            source="xbrl_companyfacts",
+            currency="USD",
+            metrics=metrics,
+            metric_sources={
+                metric: {"value": metrics[metric], "span": span, "accession": ACCESSION}
+                for metric, span in spans.items()
+            },
+        )
+
+    def _linkbase(self):
+        linkbases_read, _name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        return linkbases_read
+
+    def _sums(self, figures=None):
+        from awltux.analysis import linkbase as reconciliation
+
+        return reconciliation.declared_sums(self._period(), self._linkbase(), figures=figures)
+
+    def test_it_walks_to_the_leaves_rather_than_one_level_down(self):
+        """`Assets` is declared as two subtotals we have no metric for.
+
+        `AssetsCurrent` and `AssetsNoncurrent` are the filer's own subtotals; stopping at
+        them would leave total assets computed from nothing. The money is at the bottom.
+        """
+        sums = self._sums()
+
+        assert sums["current_assets"].total == 1_317_326_000.0
+        # 1,037,292 + 38,730 + 23,417 + 217,887 thousand.
+        assert sums["total_assets"].missing == (
+            "us-gaap:PrepaidExpenseCurrent",
+            "us-gaap:DepositsAssetsNoncurrent",
+            "us-gaap:DeferredCosts",
+        )
+        # Every missing line accounts for the whole residual -- but only once the filer's
+        # own figures for them are to hand, which is what the next test supplies.
+        assert sums["current_assets"].missing == ("us-gaap:PrepaidExpenseCurrent",)
+        assert sums["current_assets"].missing_total is None
+        assert sums["current_assets"].complete is False
+
+    def test_a_footnote_breakdown_does_not_join_the_statement_sum(self):
+        """`OtherAssetsCurrent` is a leaf on the balance sheet and a parent in a footnote.
+
+        Measured on this filing: the balance sheet declares it as one line of
+        `AssetsCurrent`, while `DisclosureOtherCurrentAndNonCurrentAssetsDetails` breaks
+        it into four. Walking every role together expanded it, so `MarketableSecurities`
+        and a custom extension tag appeared as "lines we do not hold" -- none of which is
+        true of the balance sheet the check is about -- and the sum would double count.
+        """
+        sums = self._sums()
+
+        missing = " ".join(sums["current_assets"].missing)
+        assert "MarketableSecuritiesCurrent" not in missing
+        assert "StraightLiningOfCompanySRevenueCurrentAssets" not in missing
+
+    def test_the_filers_own_figures_price_every_missing_line(self):
+        figures = {
+            "us-gaap:PrepaidExpenseCurrent": 2_093_000.0,
+            "us-gaap:DepositsAssetsNoncurrent": 428_147_000.0,
+            "us-gaap:DeferredCosts": 54_356_000.0,
+        }
+
+        sums = self._sums(figures=figures)
+
+        assert sums["total_assets"].missing_total == 484_596_000.0
+        assert "us-gaap:DeferredCosts (54,356,000)" in sums["total_assets"].missing
+        # The current-assets gap is one line, and it is the whole of that residual:
+        # 1,319,419 - 1,317,326 = 2,093,000.
+        assert sums["current_assets"].missing_total == 2_093_000.0
+
+    def test_a_partly_priced_gap_is_not_called_an_explanation(self):
+        """A partial price would read as explaining the residual while leaving some of it.
+
+        Only `PrepaidExpenseCurrent` is priced here, and the assets residual is 484,596,000,
+        so `missing_total` must stay unset rather than showing 2,093,000 as the answer.
+        """
+        sums = self._sums(figures={"us-gaap:PrepaidExpenseCurrent": 2_093_000.0})
+
+        assert sums["total_assets"].missing_total is None
+
+    def test_the_ledger_uses_it_and_says_the_residual_is_those_lines(self):
+        """The verdict a reader acts on: *not computable*, and nothing else unexplained."""
+        from awltux.analysis import ledger
+
+        figures = {
+            "us-gaap:PrepaidExpenseCurrent": 2_093_000.0,
+            "us-gaap:DepositsAssetsNoncurrent": 428_147_000.0,
+            "us-gaap:DeferredCosts": 54_356_000.0,
+            "us-gaap:ContractWithCustomerLiabilityCurrent": 36_625_000.0,
+            "us-gaap:ContractWithCustomerLiabilityNoncurrent": 2_618_000.0,
+        }
+        declared = self._sums(figures=figures)
+
+        checks = {c.key: c for c in ledger.composition(self._period(), declared=declared)}
+
+        assets = checks["assets_composition"]
+        assert assets.status == ledger.UNKNOWN
+        assert assets.residual == 484_596_000.0
+        assert assets.inputs["explained"] is True
+        assert "exactly those lines" in assets.detail
+        assert "the filer's own declared lines" in assets.detail
+        # And the current-assets subtotal, whose only missing line is the prepayment.
+        current = checks["current_assets_composition"]
+        assert current.residual == 2_093_000.0
+        assert current.inputs["explained"] is True
+
+    def test_without_a_declaration_the_check_is_unchanged(self):
+        """The control: no stored linkbase means our own key list, exactly as before."""
+        from awltux.analysis import ledger
+
+        checks = {c.key: c for c in ledger.composition(self._period())}
+
+        assert "the filer's own declared lines" not in checks["assets_composition"].detail
+        assert checks["assets_composition"].residual == 484_596_000.0
+        assert checks["assets_composition"].status == ledger.IMBALANCE
+
+
 class TestKeepingIt:
     def test_a_stored_linkbase_round_trips_with_its_filename(self, session):
         """The page reads SQLite; the filename is the citation it prints.
@@ -442,6 +610,12 @@ class TestThePage:
             "other_current_assets": 217_887_000.0,
             "net_ppe": 3_269_703_000.0,
             "other_noncurrent_assets": 42_305_000.0,
+            # A figure we hold that our *own* component list does not name. It is here
+            # because it is the whole difference the declaration makes: `ledger`'s
+            # NON_CURRENT_ASSET_KEYS has no entry for it, while the filer declares
+            # `DepositsAssetsNoncurrent` as a line of its balance sheet -- so the computed
+            # total moves by exactly this when the declaration is applied.
+            "deposits_noncurrent": 428_147_000.0,
         }
         spans = {
             "total_assets": "us-gaap:Assets",
@@ -454,6 +628,7 @@ class TestThePage:
             "other_current_assets": "us-gaap:OtherAssetsCurrent+OtherReceivablesNetCurrent",
             "net_ppe": "us-gaap:PropertyPlantAndEquipmentNet",
             "other_noncurrent_assets": "us-gaap:OtherAssetsNoncurrent",
+            "deposits_noncurrent": "us-gaap:DepositsAssetsNoncurrent",
         }
         period = FundamentalPeriod(
             instrument_t212_ticker="DAC_US_EQ",
@@ -539,6 +714,55 @@ class TestThePage:
         body = client.get(f"/accounts/{period.id}/health").text
 
         assert "dac-20251231_cal.xml" in body, "and it renders what it has stored"
+
+    def test_the_balance_sheet_computes_from_the_filers_own_lines(self, client, session, filer):
+        """The statement's Computed column is the declaration's sum once one is stored.
+
+        Built so the two disagree: our key list holds no `DepositsAssetsNoncurrent`, so the
+        old computed total assets was short by it; the filer declares it, so with the
+        declaration the figure includes it and the residual shrinks to the one line
+        neither of us can supply without a metric.
+        """
+        period = self._period(session)
+        linkbase, name = linkbases.fetch(StubEdgar(), cik="1369241", accession=ACCESSION)
+        linkbases.save(
+            session,
+            ACCESSION,
+            linkbase,
+            source=name,
+            cik="1369241",
+            values={
+                "2025-12-31": {
+                    "us-gaap:PrepaidExpenseCurrent": 2_093_000.0,
+                    "us-gaap:DepositsAssetsNoncurrent": 428_147_000.0,
+                    "us-gaap:DeferredCosts": 54_356_000.0,
+                }
+            },
+        )
+        session.commit()
+
+        with_declaration = " ".join(
+            client.get(f"/accounts/{period.id}/balance_sheet").text.split()
+        )
+
+        # The filer declares `DepositsAssetsNoncurrent`, which we hold and our own key list
+        # ignores: 4,629,334,000 + 428,147,000 = 5,057,481,000.
+        assert "5,057,481,000" in with_declaration, with_declaration[
+            with_declaration.find("Total assets"): with_declaration.find("Total assets") + 200
+        ]
+        # And the health tab explains the residual rather than leaving it open.
+        health = " ".join(client.get(f"/accounts/{period.id}/health").text.split())
+        assert "exactly those lines" in health
+        assert "the filer&#39;s own declared lines" in health or "the filer's own declared lines" in health
+
+    def test_the_page_does_not_use_a_declaration_it_does_not_have(self, client, session, filer):
+        """No stored linkbase means the old computed column, exactly as before."""
+        period = self._period(session)
+
+        body = " ".join(client.get(f"/accounts/{period.id}/balance_sheet").text.split())
+
+        assert "4,629,334,000" in body
+        assert "the filer" not in body.split("Total assets")[1][:400]
 
     def test_reading_it_stores_it_and_says_so(self, client, session, filer, monkeypatch):
         period = self._period(session)
