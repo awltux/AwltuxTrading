@@ -640,6 +640,66 @@ class TestTheOtherLinkbases:
 
         assert Labels().name("us-gaap:SomethingNobodyLabelled") == "us-gaap:SomethingNobodyLabelled"
 
+    def test_the_rows_come_out_in_the_order_the_filing_prints_them(self):
+        """The presentation tree is what puts a row where a reader finds it in the filing.
+
+        The calculation linkbase lists whatever order the filing agent wrote its arcs in;
+        the presentation linkbase is the order of the printed statements. This asserts the
+        mechanism, because the two happen to agree on this filing for the balance sheet --
+        which is exactly why a test that only checked *that* would pass with the ordering
+        removed.
+        """
+        from awltux.analysis import linkbase as reconciliation
+
+        read = self._read()
+        assert read.presentation is not None
+
+        def check(role, parent):
+            from awltux.analysis import ledger
+
+            return ledger.Check(
+                key=parent, label=parent, status=ledger.OK, detail="",
+                inputs={"role": role, "parent": parent},
+            )
+
+        #  Reversed input, and the cash-flow statement declared first in the tree: the
+        #  balance sheet must still come out first, in the tree's own leaf order.
+        rows = [
+            check("StatementConsolidatedStatementsOfCashFlows", "us-gaap:NetCashProvidedByUsedInOperatingActivities"),
+            check("StatementConsolidatedBalanceSheets", "us-gaap:Liabilities"),
+            check("StatementConsolidatedBalanceSheets", "us-gaap:Assets"),
+        ]
+
+        ordered = reconciliation.ordered(rows, read.presentation)
+
+        assert [row.inputs["parent"] for row in ordered] == [
+            "us-gaap:Assets",
+            "us-gaap:Liabilities",
+            "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+        ], "the balance sheet prints first, and Assets before Liabilities"
+
+    def test_a_row_the_presentation_does_not_place_is_kept_at_the_end(self):
+        """A note's breakdown is still a row; it just has no place in the statement."""
+        from awltux.analysis import ledger
+        from awltux.analysis import linkbase as reconciliation
+
+        read = self._read()
+        assert read.presentation is not None
+        rows = [
+            ledger.Check(
+                key="x", label="Declared: us-gaap:SomethingNobodyPrints", status=ledger.UNKNOWN,
+                detail="", inputs={"role": "DisclosureNobodyPrints", "parent": "us-gaap:Assets"},
+            ),
+            ledger.Check(
+                key="y", label="Declared: us-gaap:Assets", status=ledger.UNKNOWN,
+                detail="", inputs={"role": "StatementConsolidatedBalanceSheets", "parent": "us-gaap:Assets"},
+            ),
+        ]
+
+        ordered = reconciliation.ordered(rows, read.presentation)
+
+        assert [row.key for row in ordered] == ["y", "x"]
+
     def test_the_trees_survive_the_round_trip_through_the_store(self, session):
         read = self._read()
         linkbases.save(

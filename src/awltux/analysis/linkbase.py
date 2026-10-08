@@ -29,7 +29,7 @@ is reporting our own coverage as if it were the filer's error.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,7 +42,7 @@ from awltux.analysis.ledger import (
     tolerance,
 )
 from awltux.db import FundamentalPeriod
-from awltux.ingest.linkbase import Calculation, Linkbase
+from awltux.ingest.linkbase import Calculation, Linkbase, Presentation
 from awltux.ingest.xbrl import TAG_MAP
 from awltux.metrics import value_of
 
@@ -285,6 +285,9 @@ class Declaration:
                 "unmodelled": list(self.unmodelled),
                 "pooled": list(self.pooled),
                 "role": self.role,
+                #  The concept itself, so a caller can place this row in the filing's own
+                #  statement order -- see `ordered`.
+                "parent": self.parent,
             },
         )
 
@@ -631,3 +634,36 @@ def checks(
 def contradictions(declarations: Iterable[Declaration]) -> list[Declaration]:
     """Only the declarations where we hold every line and it still does not sum."""
     return [item for item in declarations if item.status == IMBALANCE]
+
+
+def ordered(checks: Sequence[Check], presentation: Presentation) -> list[Check]:
+    """The checks in the order the filing prints them, statement by statement.
+
+    A table of declarations in the order the calculation linkbase lists them is the order
+    of *our* reading of the file. The presentation linkbase is the order a person finds
+    them in the document, so a reader comparing the page with their printed accounts meets
+    the same lines in the same sequence.
+
+    A subtotal the presentation does not place -- a note's breakdown, a line the filer
+    prints somewhere else -- keeps its place at the end rather than being dropped, because
+    a row that is not in the document's order is still a row.
+    """
+    rank: dict[tuple[str, str], tuple[int, int]] = {}
+    parents = {link.parent for link in presentation.links}
+    for statement, role in enumerate(presentation.roles):
+        position = 0
+        for link in presentation.links:
+            if link.role != role:
+                continue
+            for child in link.children:
+                if child in parents:
+                    continue
+                position += 1
+                rank.setdefault((role, child), (statement, position))
+    return sorted(
+        checks,
+        key=lambda check: rank.get(
+            (str(check.inputs.get("role") or ""), str(check.inputs.get("parent") or "")),
+            (len(presentation.roles) + 1, 0),
+        ),
+    )

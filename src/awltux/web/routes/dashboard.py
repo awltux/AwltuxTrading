@@ -393,8 +393,11 @@ def _filer_arithmetic(
             else {}
         ),
         "filer_checks": (
-            reconciliation.checks(
-                period, stored.linkbase, figures=figures, names=names
+            reconciliation.ordered(
+                reconciliation.checks(
+                    period, stored.linkbase, figures=figures, names=names
+                ),
+                stored.presentation,
             )
             if stored
             else []

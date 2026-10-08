@@ -183,10 +183,10 @@
       {% for kind, name in linkbase.files.items() %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
       for accession <code>{{ linkbase.accession }}</code> — the calculation linkbase for
       the arithmetic, the presentation for the statement order, and the label linkbase for
-      the filer's own names for its lines. Each row is a subtotal the filer declares,
-      against the lines we hold for it. A row reading <em>not computable</em> is this
-      project's coverage, not the filer's error; only a row where we hold every declared
-      line and it still does not sum is a contradiction.
+      the filer's own names for its lines. Each row is a subtotal the filer declares, in
+      the order its statements print them, against the lines we hold for it. A row reading
+      <em>not computable</em> is this project's coverage, not the filer's error; only a row
+      where we hold every declared line and it still does not sum is a contradiction.
       <form method="post" action="/accounts/{{ period.id }}/linkbase" class="inline">
         <button type="submit" class="small">Re-read it</button>
       </form>
