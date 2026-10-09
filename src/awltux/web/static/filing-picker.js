@@ -388,11 +388,12 @@
      * has to be escaped, and that escaping is the kind of detail that works until the day it
      * does not.
      *
-     * The facts carry no `tabindex` and no `role`: a 10-K holds over three thousand of them
-     * (measured: 3,166 in Microsoft's 2026 filing), and three thousand tab stops would make the
-     * document unnavigable by keyboard -- worse than an affordance that is pointer-only. The
-     * tray's own links are ordinary anchors and are reachable by keyboard once a figure is
-     * picked, which is what the reader needs the keyboard for.
+     * The facts carry no `tabindex` and no `role`: a 10-K holds well over a thousand of them
+     * (measured: 1,583 in Microsoft's 2026 filing -- 1,583 `<ix:nonFraction>` elements, or 3,166
+     * if the closing tags are counted too), and that many tab stops would make the document
+     * unnavigable by keyboard -- worse than an affordance that is pointer-only. The tray's own
+     * links are ordinary anchors, and reachable by keyboard once a figure is picked, which is
+     * what the reader needs the keyboard for.
      *
      * The HTML parser uppercases `tagName`, so it is lowercased here.
      */

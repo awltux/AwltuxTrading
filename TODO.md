@@ -253,13 +253,21 @@ What is unused:
   to, instead of the order `TAG_MAP` asserts. 647 KB for `DAC_US_EQ`'s 20-F against the
   calculation linkbase's 68 KB, so it is the expensive one; the label linkbase (`_lab.xml`,
   928 KB) is what would print the filer's own line names.
-- **The document's own inline XBRL** — nothing in the repo parses `ix:nonFraction`, even
+- **The document's own inline XBRL** — nothing in the *Python* parses `ix:nonFraction`, even
   though `shareholder_reports` downloads the 10-K bytes. The document *is* read, by the
   model: `extract_filing` (`llm/extractors.py:267`) is called from
   `ingest/parsing.py::extract_held_filings`, which stores what it reads as an
   `llm_extraction` period. So the figures come from a machine-readable aggregate or from
   a model's reading of the prose and tables, and never from the tags embedded in the
   document the model was given.
+  **Corrected 2026-10-09:** the *browser* now reads them —
+  `web/static/filing-picker.js` is served by `/filing/{id}/pick` and reads the `name`,
+  `scale`, `sign`, `format`, `unitRef` and `contextRef` of a figure the reader clicks, plus
+  the row's caption and the context's date. That is not a parse of the document: it extracts
+  nothing on its own, no fact is stored from it without a person pressing a button, and
+  Python still has no reader for the tags. What it changes is that a figure can now be put
+  on a line *from the tags in the document the model was given* rather than only from the
+  aggregate — one figure at a time, by a reader who is looking at it.
 
 **The half of the calculation linkbase that is still owed.** The linkbase is now fetched
 (`ingest/linkbase.py`), parsed, stored and reconciled against a stored period
@@ -1139,6 +1147,26 @@ green suite because the tests never had rows. Templates and pages are now covere
 with a populated database, but the *empty* states are mostly asserted only for a
 200.
 
+### The filing picker's tray and its pointer event have no test
+
+Added 2026-10-09. `tests/js/filing_picker.test.mjs` runs under `node --test` from
+`tests/test_filing_picker.py`, and covers everything from `transform` (the value rule) through
+`pick` (which fact a click found, what it says, the filing's caption for its line, its context's
+date) to `confirmUrl` (the query string the confirmation page receives). The seam between those
+and the page — `addFigure`'s DOM assembly, the `document.addEventListener("click", …, true)`
+registration, and `mount()` — is not covered by anything; a typo there reads as "clicking a
+figure does nothing" with nothing in any log.
+
+Verified by hand instead, on 2026-10-09: the tray mounts on the live picker page for filing 278
+(Microsoft's 2026 10-K) through the `sandbox allow-scripts` policy, so `document.createElement`,
+`appendChild` and the injected `<style>` all work there. The click itself was not driven — the
+browser tooling available in that session could not target an `ix:nonFraction` element, because
+the accessibility tree gives refs to rows and controls and these carry neither.
+
+Closing it needs either a click-targeting browser harness or a small DOM stand-in. The second is
+~60 lines of stub and was judged not worth it while the logic above it is exported and tested;
+that judgement is the thing to revisit, not the tests.
+
 ### The build's `--paths` list and the image's `COPY` list can drift
 
 `--paths` is what stops the builder calling itself dirty, so it has to name
@@ -1417,6 +1445,12 @@ which source it describes, or reconcile the declaration against the chosen row's
 so the comparison is inside one source. The first is smaller and keeps the declaration's
 figures adjacent to the lines they add up. Either way the panel has to say which source it is
 measuring, because a reader cannot currently tell.
+
+**Partly mitigated 2026-10-09, not fixed.** The "out by" figures on that page are now links into
+the filing (see the README), so the mixed-source residual on Microsoft's FY2026 page can be
+followed to the figure the filer actually tagged — which is what makes it visible that the
+extracted SG&A line, not the filer's arithmetic, is the problem. That is a way to *repair* one
+line by hand; the page still does not say which source it is measuring.
 
 ---
 

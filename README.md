@@ -351,6 +351,66 @@ A price per share and a share count are not magnitudes of a statement's currency
 `awltux repair-scaled` corrects rows written before that rule existed, reading each
 correction out of the span the figure was quoted from rather than re-extracting.
 
+### Correcting the accounts by hand
+
+Automated extraction is wrong often enough that a reader who can see the mistake has to be
+able to fix it. On a year's page every stated line carries a **remove** link, each section
+heading an **add a line**, and both go to a confirmation page that asks what the line itself
+cannot say: which side a figure is posted on, and whether a removal is for this period or for
+every period the filer has.
+
+**A correction reaches the stored figures, not the display of them.** The corrected values are
+written into `fundamental_period.metrics` and `metric_sources`, so the ledger, the hover
+working, the composition checks, the markers, the valuation and the decisions all read the
+corrected accounts rather than one page honouring them. What was changed is recorded beside
+them, in a `corrections` column: the figure a removal displaced, the tag a clicked value came
+from, the filing it was read out of, when, and why. `ingest/fundamentals._upsert_period`
+re-applies it after it rewrites a row, so a `companyfacts` re-derive cannot quietly undo it.
+
+- **A removal can apply to every period the filer has**, recorded once against the CIK in
+  `app_setting`, and it reaches all of them at once — two years of one company disagreeing on
+  screen about one line is a page nobody can use. A value cannot: a figure belongs to the period
+  it was stated for.
+- **Undoing puts back what the correction displaced**, which is why each one records it. A
+  hand-typed figure has no filing to re-read, and a provider that stores no provenance still gets
+  an entry written for the removal so the line can come back.
+- **The later act on a line supersedes the earlier one**, and a hand-typed figure is applied
+  after the filer-wide rules, so a period can override a rule its own page cannot undo.
+
+### Reading a value out of the filing
+
+Where a year's accounts are the filer's own XBRL (`xbrl_companyfacts`) *and* the document is
+stored, the **"out by" figure becomes a link** into the filing, in a new tab, carrying the
+period and the line it is against. The accounting-health rows for the four composition subtotals
+link the same way, because each audits one caption; the accounting equation, the roll-forward
+and the cash movement measure the accounts rather than one line and stay plain. The link is
+offered only where the accounts are the filer's own submission and the bytes are held — a link
+into a copy, or into an EDGAR fetch on the reader's click, is a different offer.
+
+`/filing/{id}/pick` serves the stored document with a script that makes its tagged figures
+clickable. It is a URL of its own so that the ordinary `/filing/{id}/document` keeps its bare
+`sandbox` policy, and the difference is a whole route rather than a flag: this one needs
+`allow-scripts`, the filing's own `<script>` elements are stripped, `script-src` names this
+application's origin so the filing's inline handlers cannot run, and `allow-same-origin` is
+absent. `allow-popups-to-escape-sandbox` is what makes the click work at all — without it the
+confirmation page opened from here would inherit the sandbox and load in an opaque origin.
+
+Clicking a figure reads it the way the stored one was read: the printed text through its `format`
+transform, times `10^scale`, negated by `sign="-"`, with a nil or continued fact refused rather
+than read as zero. Two things come from around it, and both are measured on Microsoft's 2026
+10-K — 1,583 tagged figures, of which 1,465 sit inside a table row and 454 of the 476 rows that
+hold one are captioned. The row's first cell names the line in the filer's own words (the "Total
+assets" row is captioned exactly that), and the `contextRef` dates it, which matters because that
+row carries `us-gaap:Assets` twice, 758,376 and 619,003, under the one caption. A figure clicked
+out of the prior-year column is marked as the wrong period rather than written onto the line as
+if it were this year's.
+
+**A click never writes anything.** It builds a link to the confirmation page with the metric, the
+figure, the tag and the filing's caption for the line, in a new tab of this application; a person
+chooses the side and presses the button there. The picker runs in an opaque origin with nothing
+but its own document, which is exactly the position from which it should not be trusted with a
+write.
+
 ---
 
 ## Deep-dive research
