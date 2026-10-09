@@ -758,11 +758,11 @@ class TestTheFiguresReachTheAnalysis:
         """Both read a document and both quote what they read, but the filing extractor's
         whole job is one document and its figures, while a deep-dive is a synthesis. When
         they disagree about the same period, the focused read is the one to trust."""
-        from awltux.analysis.fundamental import SOURCE_PREFERENCE
+        from awltux.analysis.collate import SOURCE_RANK
 
-        assert SOURCE_PREFERENCE["deep_research"] < SOURCE_PREFERENCE["llm_extraction"]
+        assert SOURCE_RANK["deep_research"] < SOURCE_RANK["llm_extraction"]
         # And above the scraped snapshots, because it quotes the document.
-        assert SOURCE_PREFERENCE["deep_research"] > SOURCE_PREFERENCE["yahoo_statements"]
+        assert SOURCE_RANK["deep_research"] > SOURCE_RANK["yahoo_statements"]
 
 
 class TestTheDraftPrompt:

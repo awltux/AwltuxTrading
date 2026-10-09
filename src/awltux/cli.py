@@ -197,6 +197,37 @@ def cmd_settings(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repair_scaled(args: argparse.Namespace) -> int:
+    """Correct extraction figures a document's unit scale should never have multiplied.
+
+    A price per share and a share count are not magnitudes of the statement's currency: a
+    10-K presented in millions still states ``Diluted $ 17.95``, and multiplying it stored
+    MSFT's EPS as 17,950,000. The write-time rule is fixed; this repairs the rows already
+    written, from the span each figure was quoted from rather than by re-extraction, which
+    would cost a model call per filing and change figures for unrelated reasons.
+
+    ``--dry-run`` prints what it would change and writes nothing.
+    """
+    from awltux.db.session import session_scope
+    from awltux.ingest import parsing
+
+    with session_scope() as session:
+        report = parsing.repair_scaled_figures(session, dry_run=args.dry_run)
+
+    for entry in report["changed"]:
+        arrow = "would be" if args.dry_run else "now"
+        print(
+            f"{entry['ticker']} {entry['period_end']} {entry['metric']}: "
+            f"{entry['was']:,.4g} {arrow} {entry['now']:,.4g}"
+        )
+    note = "would change" if args.dry_run else "changed"
+    print(
+        f"{len(report['changed'])} figure(s) {note} across {report['checked']} period(s); "
+        f"{report['unreadable']} had no readable span and were left alone"
+    )
+    return 0
+
+
 def cmd_jobs(_args: argparse.Namespace) -> int:
     from awltux.config import get_settings
     from awltux.scheduler.registry import build_job_specs
@@ -558,6 +589,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     job.set_defaults(func=cmd_job)
+
+    repair = sub.add_parser(
+        "repair-scaled",
+        help="correct stored figures a filing's unit scale should not have multiplied",
+    )
+    repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would change and write nothing",
+    )
+    repair.set_defaults(func=cmd_repair_scaled)
 
     quiet = sub.add_parser(
         "quiet",

@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
+from sqlalchemy import select
 
 from awltux.db import Filing
 from awltux.ingest import parsing
@@ -369,6 +370,66 @@ class TestWritingThePeriod:
         assert period.metrics["revenue"] == 331_839_000_000.0
         assert period.confidence == 0.95
 
+    def test_a_price_per_share_is_not_multiplied_by_the_statements_units(
+        self, session, settings, monkeypatch
+    ):
+        """Measured 2026-10-09 on the ten stored extraction periods: every `eps_diluted` and
+        `dividend_per_share` had been multiplied by the document's scale, so MSFT's EPS was
+        stored as **17,950,000** and its dividend per share as 3,320,000. A price per share is
+        a price: "$17.95" in a statement presented in millions is still seventeen dollars and
+        ninety-five cents."""
+        result = self._result()
+        result.metrics["eps_diluted"] = ExtractedMetric(
+            name="eps_diluted", value=17.95, span="Diluted $ 17.95", location="Income Statements"
+        )
+        result.metrics["dividend_per_share"] = ExtractedMetric(
+            name="dividend_per_share",
+            value=3.32,
+            span="Cash dividends declared per common share $ 3.32",
+            location="Income Statements",
+        )
+
+        self._run(session, settings, monkeypatch, result)
+        session.flush()
+
+        period = self._period(session)
+        assert period.metrics["eps_diluted"] == 17.95
+        assert period.metrics["dividend_per_share"] == 3.32
+        # The monetary figures in the same period are still scaled.
+        assert period.metrics["revenue"] == 331_839_000_000.0
+
+    def test_a_share_count_stated_in_millions_is_scaled(self, session, settings, monkeypatch):
+        """A count is the one non-monetary figure where the scale can be right: MSFT's balance
+        sheet prints "outstanding 7,427 and 7,434", which is millions of shares."""
+        result = self._result()
+        result.metrics["shares_outstanding"] = ExtractedMetric(
+            name="shares_outstanding",
+            value=7_427.0,
+            span="outstanding 7,427 and 7,434",
+            location="Balance Sheets",
+        )
+
+        self._run(session, settings, monkeypatch, result)
+        session.flush()
+
+        assert self._period(session).metrics["shares_outstanding"] == 7_427_000_000.0
+
+    def test_a_share_count_stated_in_full_is_not_scaled(self, session, settings, monkeypatch):
+        """And the case the magnitude test exists for: GWW, DAC and ATMU all quote the count
+        itself, and scaling it produced 47,418,781,000,000 shares."""
+        result = self._result()
+        result.metrics["shares_outstanding"] = ExtractedMetric(
+            name="shares_outstanding",
+            value=47_418_781.0,
+            span="Balance at end of period 47,418,781",
+            location="Balance Sheets",
+        )
+
+        self._run(session, settings, monkeypatch, result)
+        session.flush()
+
+        assert self._period(session).metrics["shares_outstanding"] == 47_418_781.0
+
     def test_the_citation_survives(self, session, settings, monkeypatch):
         """A figure with a span and a location is the whole reason this source outranks a
         scraped snapshot."""
@@ -470,10 +531,196 @@ class TestWritingThePeriod:
         assert self._period(session) is None
 
     def test_the_source_outranks_the_providers_it_shares_a_period_with(self):
-        """The reason the scaling matters, asserted where it is decided."""
-        from awltux.analysis.fundamental import SOURCE_PREFERENCE
+        """The reason the scaling matters, asserted where it is decided.
 
-        assert SOURCE_PREFERENCE["llm_extraction"] == max(SOURCE_PREFERENCE.values())
+        Our reading of the filed document outranks a scraped copy of it -- and the filer's own
+        tagged accounts outrank both, which is the reader's rule: *"the accounts from
+        government sites take precedence"*. The extraction still matters because most periods
+        have no other source, and because a disagreement with the filer's own tags is what the
+        accounts page reports.
+        """
+        from awltux.analysis.collate import GOVERNMENT_SOURCES, SOURCE_RANK
+
+        assert SOURCE_RANK["llm_extraction"] > SOURCE_RANK["yahoo_statements"]
+        assert SOURCE_RANK["xbrl_companyfacts"] > SOURCE_RANK["llm_extraction"]
+        assert SOURCE_RANK["xbrl_companyfacts"] == max(SOURCE_RANK.values())
+        assert "xbrl_companyfacts" in GOVERNMENT_SOURCES
+
+
+class TestRepairingStoredFigures:
+    """The write-time fix stops new mis-scaled figures; these rows already exist.
+
+    Measured 2026-10-09 on the live database: 10 extraction periods, whose `eps_diluted` and
+    `dividend_per_share` carry the document's scale (MSFT EPS stored as 17,950,000) and three
+    of whose share counts are past a trillion. The repair reads the span each figure was
+    quoted from rather than re-extracting, which would cost a model call per filing and could
+    change figures for unrelated reasons.
+    """
+
+    def test_a_mis_scaled_price_per_share_is_restored_from_its_span(self, session):
+        from awltux.db import FundamentalPeriod
+        from awltux.ingest import parsing
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Co"))
+        session.flush()
+        session.add(
+            FundamentalPeriod(
+                instrument_t212_ticker="TEST_US_EQ",
+                source="llm_extraction",
+                period_end=dt.date(2026, 6, 30),
+                period_type="annual",
+                currency="USD",
+                metrics={"eps_diluted": 17_950_000.0, "revenue": 331_839_000_000.0},
+                metric_sources={
+                    "eps_diluted": {"span": "Diluted $ 17.95", "location": "IS"},
+                    "revenue": {"span": "Total revenue 331,839", "location": "IS"},
+                },
+                confidence=0.8,
+            )
+        )
+        session.flush()
+
+        report = parsing.repair_scaled_figures(session)
+
+        assert len(report["changed"]) == 1
+        assert report["changed"][0]["metric"] == "eps_diluted"
+        assert report["changed"][0]["was"] == 17_950_000.0
+        assert report["changed"][0]["now"] == 17.95
+
+        row = session.execute(select(FundamentalPeriod)).scalar_one()
+        assert row.metrics["eps_diluted"] == 17.95
+        assert row.metrics["revenue"] == 331_839_000_000.0, "a monetary figure is untouched"
+
+    def test_an_impossible_share_count_is_restored_from_its_span(self, session):
+        """GWW, DAC and ATMU each quoted the count itself and the scale made it past a
+        trillion shares; MSFT's 7,427 really is millions and must be left alone."""
+        from awltux.db import FundamentalPeriod
+        from awltux.ingest import parsing
+
+        for ticker, stored, span in (
+            ("GWW_US_EQ", 4.742e13, "Balance at end of period 47,418,781"),
+            ("MSFT_US_EQ", 7.427e9, "outstanding 7,427 and 7,434"),
+        ):
+            session.add(make_instrument(ticker, name="Test Co"))
+            session.flush()
+            session.add(
+                FundamentalPeriod(
+                    instrument_t212_ticker=ticker,
+                    source="llm_extraction",
+                    period_end=dt.date(2025, 12, 31),
+                    period_type="annual",
+                    currency="USD",
+                    metrics={"shares_outstanding": stored},
+                    metric_sources={"shares_outstanding": {"span": span, "location": "BS"}},
+                    confidence=0.8,
+                )
+            )
+        session.flush()
+
+        report = parsing.repair_scaled_figures(session)
+
+        assert [entry["ticker"] for entry in report["changed"]] == ["GWW_US_EQ"]
+        assert report["changed"][0]["now"] == 47_418_781.0
+        rows = {
+            row.instrument_t212_ticker: row
+            for row in session.execute(select(FundamentalPeriod)).scalars()
+        }
+        assert rows["MSFT_US_EQ"].metrics["shares_outstanding"] == 7.427e9
+
+    def test_a_figure_already_right_is_left_alone(self, session):
+        from awltux.db import FundamentalPeriod
+        from awltux.ingest import parsing
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Co"))
+        session.flush()
+        session.add(
+            FundamentalPeriod(
+                instrument_t212_ticker="TEST_US_EQ",
+                source="xbrl_companyfacts",
+                period_end=dt.date(2025, 12, 31),
+                period_type="annual",
+                metrics={"eps_diluted": 17.95},
+                metric_sources={"eps_diluted": {"span": "Diluted $ 17.95"}},
+                confidence=0.8,
+            )
+        )
+        session.flush()
+
+        assert parsing.repair_scaled_figures(session)["changed"] == []
+
+    def test_a_dry_run_writes_nothing(self, session):
+        from awltux.db import FundamentalPeriod
+        from awltux.ingest import parsing
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Co"))
+        session.flush()
+        session.add(
+            FundamentalPeriod(
+                instrument_t212_ticker="TEST_US_EQ",
+                source="llm_extraction",
+                period_end=dt.date(2026, 6, 30),
+                period_type="annual",
+                metrics={"eps_diluted": 17_950_000.0},
+                metric_sources={"eps_diluted": {"span": "Diluted $ 17.95"}},
+                confidence=0.8,
+            )
+        )
+        session.flush()
+
+        report = parsing.repair_scaled_figures(session, dry_run=True)
+
+        assert len(report["changed"]) == 1
+        session.expire_all()
+        assert session.execute(select(FundamentalPeriod)).scalar_one().metrics["eps_diluted"] == 17_950_000.0
+
+    def test_a_span_with_no_number_is_counted_not_guessed(self, session):
+        from awltux.db import FundamentalPeriod
+        from awltux.ingest import parsing
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Co"))
+        session.flush()
+        session.add(
+            FundamentalPeriod(
+                instrument_t212_ticker="TEST_US_EQ",
+                source="llm_extraction",
+                period_end=dt.date(2026, 6, 30),
+                period_type="annual",
+                metrics={"eps_diluted": 17_950_000.0},
+                metric_sources={"eps_diluted": {"span": "Diluted earnings per share"}},
+                confidence=0.8,
+            )
+        )
+        session.flush()
+
+        report = parsing.repair_scaled_figures(session)
+
+        assert report["changed"] == []
+        assert report["unreadable"] == 1
+        assert session.execute(select(FundamentalPeriod)).scalar_one().metrics["eps_diluted"] == 17_950_000.0
+
+    def test_it_is_idempotent(self, session):
+        from awltux.db import FundamentalPeriod
+        from awltux.ingest import parsing
+
+        session.add(make_instrument("TEST_US_EQ", name="Test Co"))
+        session.flush()
+        session.add(
+            FundamentalPeriod(
+                instrument_t212_ticker="TEST_US_EQ",
+                source="llm_extraction",
+                period_end=dt.date(2026, 6, 30),
+                period_type="annual",
+                metrics={"eps_diluted": 17_950_000.0},
+                metric_sources={"eps_diluted": {"span": "Diluted $ 17.95"}},
+                confidence=0.8,
+            )
+        )
+        session.flush()
+
+        parsing.repair_scaled_figures(session)
+        second = parsing.repair_scaled_figures(session)
+
+        assert second["changed"] == [], "a second run finds nothing left to correct"
 
 
 class TestLearningACaption:

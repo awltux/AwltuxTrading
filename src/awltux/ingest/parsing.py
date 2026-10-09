@@ -24,6 +24,7 @@ Re-reading one is a deliberate act, not something a scheduler does hourly.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +33,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
-from awltux.db import Filing, Instrument
+from awltux.db import Filing, FundamentalPeriod, Instrument
 from awltux.llm.extractors import extract_filing
+from awltux.metrics import NON_MONETARY_METRICS
 from awltux.scheduler import progress
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,14 @@ EXTRACTOR_VERSION = "filing-extraction/v1"
 #: Documents to read in one scoped run. A refresh is about one company, which has one or
 #: two annual reports on file, so this is a bound on a surprise rather than a ration.
 PARSE_LIMIT = 4
+
+#: Above this, a *scaled* share count is not a share count. The largest listed companies have
+#: tens of billions of shares; a trillion is past any of them, and a scaled count that lands
+#: there means the model had already stated the count in units. See `_scale_metric`.
+MAX_PLAUSIBLE_SHARES = 1e12
+
+#: A number in a quoted span, thousands separators and all.
+_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
 
 def document_text(path: Path) -> str | None:
@@ -289,7 +299,10 @@ def store_cited_period(
     if outcome != "stored":
         return outcome
 
-    metrics = {name: value * scale for name, value in result.metric_values.items()}
+    metrics = {
+        name: _scale_metric(name, value, scale, result)
+        for name, value in result.metric_values.items()
+    }
     # The derived ratios are ours, not the company's, so they are computed from the
     # scaled figures rather than scaled themselves -- and they are added without a
     # citation, exactly as `ingest/xbrl.py` does it. The extraction cannot supply one
@@ -321,8 +334,32 @@ def store_cited_period(
     return "stored"
 
 
-def _prepare_period(
-    session: Session, ticker: str, result: Any, report: dict[str, Any], source: str
+def _scale_metric(name: str, value: float, scale: float, result: Any) -> float:
+    """One extracted figure in actual units.
+
+    **A document's "in millions" does not apply to a price per share or a share count.** See
+    `metrics.NON_MONETARY_METRICS`: a per-share amount is a price, and the scale made MSFT's
+    EPS 17,950,000 rather than 17.95 in all ten stored extraction periods.
+
+    ``shares_outstanding`` is a count, and a filer may state it in millions -- MSFT's balance
+    sheet prints "outstanding 7,427 and 7,434" -- in which case the scale is right. What
+    separates that from a filer printing the count itself is the number's own magnitude: no
+    listed company has a trillion shares, so a scaled count past
+    ``MAX_PLAUSIBLE_SHARES`` is a count the model had already given in units. Measured against
+    the four live filers whose extraction rows carried a count: MSFT 7,427 (scale, 7.4bn),
+    GWW 47,418,781, DAC 18,264,294 and ATMU 83,403,813 (no scale). All four come out right, and
+    a wrong answer here is caught anyway by the accounts page, where the filer's own tagged
+    count outranks this one.
+    """
+    if name in NON_MONETARY_METRICS:
+        if name != "shares_outstanding":
+            return value
+        scaled = value * scale
+        return value if scaled > MAX_PLAUSIBLE_SHARES else scaled
+    return value * scale
+
+
+def _prepare_period(    session: Session, ticker: str, result: Any, report: dict[str, Any], source: str
 ) -> tuple[str, Any, Any, float]:
     """``(outcome, instrument, period_end, scale)`` -- everything the caller needs to store.
 
@@ -359,6 +396,99 @@ def _prepare_period(
         return "unscaled", instrument, period_end, 1.0
 
     return "stored", instrument, period_end, scale
+
+
+def repair_scaled_figures(session: Session, *, dry_run: bool = False) -> dict[str, Any]:
+    """Correct the stored extraction figures that a document's unit scale should not touch.
+
+    The write-time fix in :func:`_scale_metric` stops new periods carrying a price per share
+    multiplied by the statement's "in millions", but the rows already written keep the wrong
+    number -- measured 2026-10-09: **10 extraction periods**, MSFT's EPS stored as 17,950,000
+    and GWW's share count as 47,418,781,000,000. Re-extracting would cost a model call per
+    filing and could change figures for unrelated reasons; the correct value is already
+    recorded, because every one of those figures carries the span it was quoted from.
+
+    So the repair reads the evidence rather than re-deriving it:
+
+    * a **price per share** is the number printed in its span, always -- the span says
+      ``Diluted $ 17.95`` and no document presents that in millions;
+    * a **share count** is repaired only when the stored figure is past
+      ``MAX_PLAUSIBLE_SHARES``, in which case the span's number is the count the filer printed.
+
+    Idempotent, and it touches nothing whose span does not support the correction: a figure
+    whose span cannot be read is left exactly as it is and counted, because a repair that
+    guesses is worse than the defect it is repairing.
+    """
+    rows = list(
+        session.execute(
+            select(FundamentalPeriod)
+            .where(FundamentalPeriod.source.in_(("llm_extraction", "deep_research")))
+        ).scalars().all()
+    )
+    changed: list[dict[str, Any]] = []
+    unreadable = 0
+
+    for period in rows:
+        metrics = dict(period.metrics or {})
+        sources = period.metric_sources or {}
+        touched = False
+        for name in NON_MONETARY_METRICS:
+            value = metrics.get(name)
+            if value is None:
+                continue
+            printed = _printed_number(str((sources.get(name) or {}).get("span") or ""))
+            if printed is None:
+                unreadable += 1
+                continue
+            if name == "shares_outstanding":
+                if abs(value) <= MAX_PLAUSIBLE_SHARES:
+                    continue
+                corrected = printed
+            else:
+                if _same_figure(value, printed):
+                    continue
+                corrected = printed
+            changed.append(
+                {
+                    "period_id": period.id,
+                    "ticker": period.instrument_t212_ticker,
+                    "period_end": period.period_end.isoformat() if period.period_end else None,
+                    "metric": name,
+                    "was": value,
+                    "now": corrected,
+                }
+            )
+            metrics[name] = corrected
+            touched = True
+        if touched and not dry_run:
+            # Reassigned rather than mutated: SQLAlchemy tracks a JSON column by identity.
+            period.metrics = metrics
+
+    if not dry_run:
+        session.flush()
+    return {"checked": len(rows), "changed": changed, "unreadable": unreadable}
+
+
+def _printed_number(span: str) -> float | None:
+    """The first number a span states, or ``None``.
+
+    The first, because a span quoting a statement line reads "Diluted $ 17.95" and one quoting
+    a table row reads "outstanding 7,427 and 7,434" -- the figure is the leading number in both,
+    and taking the last or the largest would pick a comparative column.
+    """
+    for raw in _NUMBER.findall(span or ""):
+        try:
+            return float(raw.replace(",", ""))
+        except ValueError:
+            continue
+    return None
+
+
+def _same_figure(left: float, right: float) -> bool:
+    """To within rounding: the span states the figure as printed, not as stored."""
+    if left == right:
+        return True
+    return abs(left - right) <= 0.01 * max(abs(left), abs(right))
 
 
 def _note_discoveries(session: Session, ticker: str, result: Any, report: dict[str, Any]) -> None:
@@ -444,5 +574,6 @@ __all__ = [
     "TEXT_SUFFIXES",
     "document_text",
     "extract_held_filings",
+    "repair_scaled_figures",
     "store_cited_period",
 ]

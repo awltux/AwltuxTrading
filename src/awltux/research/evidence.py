@@ -610,13 +610,13 @@ def stored_figures(session: Session, ticker: str, *, periods: int = FIGURE_PERIO
 
     # One row per period, best source first, newest period first -- the same preference
     # order the valuation reads, so the deep-dive and the decision see one set of figures.
-    from awltux.analysis.fundamental import SOURCE_PREFERENCE
+    from awltux.analysis.collate import SOURCE_RANK
 
     chosen: dict[Any, FundamentalPeriod] = {}
     for row in rows:
         key = (row.period_end, row.period_type)
         current = chosen.get(key)
-        if current is None or SOURCE_PREFERENCE.get(row.source, 0) > SOURCE_PREFERENCE.get(
+        if current is None or SOURCE_RANK.get(row.source, 0) > SOURCE_RANK.get(
             current.source, 0
         ):
             chosen[key] = row

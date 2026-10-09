@@ -123,6 +123,26 @@ DERIVED_METRICS: tuple[str, ...] = (
 #: reads in, which is the order a model is least likely to skip a section of.
 STATED_METRICS: tuple[str, ...] = INCOME_METRICS + BALANCE_METRICS + CASH_METRICS
 
+#: Figures whose unit is **not** the statement's currency magnitude, so a document's "in
+#: millions" must not multiply them.
+#:
+#: A per-share amount is a price, and a share count is a count: `$17.95` diluted EPS in a 10-K
+#: presented in millions is still seventeen dollars and ninety-five cents, not seventeen
+#: million. Measured 2026-10-09 on the ten stored extraction periods: every `eps_diluted` and
+#: `dividend_per_share` in them had been multiplied by the document's scale, so MSFT's EPS was
+#: stored as **17,950,000** and GWW's as 35,400,000. `ingest/xbrl.py` has classified these tags
+#: (`PER_SHARE`, `SHARES`) since it was written; the extraction path had no such notion.
+#:
+#: `shares_outstanding` is here for the same reason and with one caveat, which
+#: `ingest/parsing.py::_scale_metric` records: a filer may present the count in millions, and
+#: then the scale *is* right. The count's own magnitude decides.
+NON_MONETARY_METRICS: tuple[str, ...] = (
+    "eps_diluted",
+    "eps_basic",
+    "dividend_per_share",
+    "shares_outstanding",
+)
+
 #: Why each stated metric is collected, and what consumes it. This exists so that
 #: a future reader can tell whether a name is load-bearing before removing it.
 METRIC_NOTES: dict[str, str] = {

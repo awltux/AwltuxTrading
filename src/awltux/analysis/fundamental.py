@@ -25,29 +25,17 @@ from awltux.analysis.accounting import (
 from awltux.analysis.accounting import (
     analyse as analyse_accounting,
 )
+from awltux.analysis.collate import annual_set, chosen_set
 from awltux.db import FundamentalPeriod
 from awltux.metrics import value_of
 
 #: Ordering used to build a chronological series; higher is later.
 PERIOD_TYPE_ORDER = {"annual": 3, "ttm": 2, "interim": 1, "quarterly": 0}
 
-#: Preference when two sources describe the same period. A figure extracted from
-#: the filed document with a citation beats a scraped snapshot of the same figure.
-#:
-#: ``deep_research`` sits **below** ``llm_extraction`` deliberately. Both read a document and
-#: both quote what they read, but the filing extractor's whole job is one document and its
-#: figures, while a deep-dive is a synthesis across several documents and a news digest: when
-#: the two disagree about the same period, the focused read is the one to trust. Distinct
-#: values rather than a tie, because `_dedupe_by_period` compares with a strict `>` and a tie
-#: would be resolved by whichever row the query happened to return first.
-SOURCE_PREFERENCE = {
-    "llm_extraction": 6,
-    "deep_research": 5,
-    "edgar_xbrl": 4,
-    "companies_house_ixbrl": 3,
-    "yahoo_statements": 2,
-    "yahoo_info": 1,
-}
+#: **Which source wins is `analysis/collate.py`'s table**, not a copy here. It moved when the
+#: accounts page and this module both started reading one collated set per financial year: two
+#: tables would be two answers to "are these the figures in force", and the page exists to be
+#: argued with.
 
 
 @dataclass(slots=True)
@@ -155,21 +143,6 @@ def _value(period: FundamentalPeriod, key: str) -> float | None:
     return value_of(period.metrics, key)
 
 
-def _dedupe_by_period(periods: list[FundamentalPeriod]) -> list[FundamentalPeriod]:
-    """Keep one row per ``(period_end, period_type)``, preferring better sources."""
-    best: dict[tuple[Any, str], FundamentalPeriod] = {}
-    for period in periods:
-        key = (period.period_end, period.period_type)
-        current = best.get(key)
-        if current is None:
-            best[key] = period
-            continue
-        if SOURCE_PREFERENCE.get(period.source, 0) > SOURCE_PREFERENCE.get(current.source, 0):
-            best[key] = period
-    # Chronological, oldest first, so growth reads the right way round.
-    return sorted(best.values(), key=lambda row: row.period_end)
-
-
 def _cagr(first: float | None, last: float | None, years: int) -> float | None:
     """Compound growth rate. Requires positive endpoints and a real span.
 
@@ -197,17 +170,33 @@ def build_snapshot(periods: list[FundamentalPeriod]) -> FundamentalSnapshot:
         return snapshot
 
     # Prefer annuals; fall back to whatever series exists.
+    #
+    # **The series is the collated one**: one row per financial year, the filer's own accounts
+    # where they exist, the full year over an interim inside a year. It used to be one row per
+    # (period_end, type) chosen by source rank alone, which took the whole of whichever source
+    # won -- so a model's reading of a 10-K, mis-scaled, outranked the filer's own tagged
+    # figures for the same year, and the valuation read it. See `analysis/collate.py`.
     annuals = [period for period in usable if period.period_type == "annual"]
     if len(annuals) >= 2:
-        series = _dedupe_by_period(annuals)
+        series = annual_set(usable)
         snapshot.period_type = "annual"
     else:
         by_type: dict[str, list[FundamentalPeriod]] = {}
         for period in usable:
             by_type.setdefault(period.period_type, []).append(period)
         chosen_type = max(by_type, key=lambda key: (len(by_type[key]), PERIOD_TYPE_ORDER.get(key, 0)))
-        series = _dedupe_by_period(by_type[chosen_type])
+        series = [
+            period
+            for period in chosen_set(usable)
+            if period.period_type == chosen_type
+        ]
         snapshot.period_type = chosen_type
+
+    if not series:
+        # Every row was a rolling snapshot or had no date. Not a crash: the snapshot says the
+        # accounts are stored and unusable, which is the same report as an empty period.
+        snapshot.red_flags.append("accounts stored but no usable period")
+        return snapshot
 
     latest = series[-1]
     snapshot.periods_used = len(series)
