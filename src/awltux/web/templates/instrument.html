@@ -689,7 +689,12 @@
     {% for event in news_events %}
       {% set item = event.lead %}
       {% set analysis = news_analysis.get(item.id) %}
-      <li class="mat-{{ item.materiality | materiality_class }}">
+      <li class="mat-{{ item.materiality | materiality_class }}"
+          {# The classifier's own sentence for why this story is a claim about a price --
+             the same text the story page prints, here on hover because the list is where
+             a reader decides whether to open it. Absent for a story no classifier has
+             judged, and then there is nothing to say rather than an empty tooltip. #}
+          {%- if item.relevance_reason %} title="Relevance: {{ item.relevance_reason }}"{% endif %}>
         {# This app's own page, not the publisher's. The headline is the least useful
            thing here -- everything that makes it worth reading is on the story page
            (the appraisal, the carriers, what it leaves out), and sending the reader to
@@ -732,7 +737,7 @@
             </summary>
             <ul class="muted small">
               {% for other in event.others %}
-                <li>
+                <li{% if other.relevance_reason %} title="Relevance: {{ other.relevance_reason }}"{% endif %}>
                   {# The app's summary of each similar report too, for the same reason as
                      the lead: the reader is checking a grouping, and the appraisal is
                      what they are checking it against. #}

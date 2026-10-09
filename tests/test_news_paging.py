@@ -31,7 +31,15 @@ from awltux.db.news import appraisals_for, news_for_ticker
 from tests.helpers import make_instrument
 
 
-def make(session, title: str, *, tickers, hours_ago: float = 1.0, materiality="material"):
+def make(
+    session,
+    title: str,
+    *,
+    tickers,
+    hours_ago: float = 1.0,
+    materiality="material",
+    relevance_reason: str | None = None,
+):
     row = NewsItem(
         source="test",
         url=f"https://example.com/{title.replace(' ', '-')}",
@@ -43,6 +51,7 @@ def make(session, title: str, *, tickers, hours_ago: float = 1.0, materiality="m
         materiality=materiality,
         direction="neutral",
         relevance=0.5,
+        relevance_reason=relevance_reason,
     )
     session.add(row)
     session.flush()
@@ -191,6 +200,33 @@ class TestThePageItself:
 
         assert response.status_code == 200
         assert "No headlines naming this instrument" in response.text
+
+    def test_a_headline_shows_the_relevance_reason_on_hover(self, client, session):
+        """The classifier's sentence, where the reader decides whether to open the story.
+
+        The story page prints it in full; the list is where the decision is made, so the
+        sentence rides along on hover. A story no classifier has judged has nothing to
+        say, and says nothing -- an empty `title` would be a tooltip that pops up blank.
+        """
+        session.add(make_instrument("TEST_US_EQ", name="Test Industries", sector="Industrials"))
+        make(
+            session,
+            "a judged story",
+            tickers=["TEST_US_EQ"],
+            relevance_reason="Names the instrument and states a direction.",
+        )
+        unjudged = make(session, "an unjudged story", tickers=["TEST_US_EQ"])
+        session.commit()
+
+        body = client.get("/instrument/TEST_US_EQ").text
+
+        assert (
+            'title="Relevance: Names the instrument and states a direction."' in body
+        ), "the stored sentence is shown on hover"
+        assert body.count('title="Relevance:') == 1, (
+            "one judged story, one tooltip -- the unjudged one says nothing"
+        )
+        assert unjudged.relevance_reason is None
 
     def test_the_heading_reports_the_total_not_the_page(self, client, session):
         session.add(make_instrument("TEST_US_EQ", name="Test Industries", sector="Industrials"))

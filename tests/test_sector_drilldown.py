@@ -430,6 +430,35 @@ class TestASectorPage:
             "the sector's own appraisal, not a company's"
         )
 
+    def test_a_headline_shows_the_relevance_reason_on_hover(self, client, session, sectors):
+        """The sector list carries the same sentence the story page prints.
+
+        A sector story's relevance is the classifier's judgement that it is a claim about
+        a price at all; on the list it rides along on hover, and a story that was never
+        judged has no tooltip rather than a blank one.
+        """
+        from awltux.db import NewsItem, utcnow
+
+        judged = NewsItem(
+            source="google_news",
+            url="https://x.test/relevance-judged",
+            url_hash="relevance-judged",
+            title="Drug pricing rules reach committee",
+            published_at=utcnow(),
+            tickers=[],
+            sectors=[GROUP],
+            materiality="material",
+            relevant=True,
+            relevance_reason="Names the sector and states a direction.",
+        )
+        session.add(judged)
+        session.commit()
+
+        body = client.get(f"/sectors/{urllib.parse.quote(GROUP, safe='')}").text
+
+        assert 'title="Relevance: Names the sector and states a direction."' in body
+        assert body.count('title="Relevance:') == 1
+
     def test_sorting_stays_on_the_sector(self, client, sectors):
         """A column heading on a sector page must re-sort the sector. Pointing it at
         `/dashboard` would silently widen the view to the whole universe."""

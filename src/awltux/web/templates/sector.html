@@ -90,7 +90,11 @@
   {% if news %}
     <ul class="news-list sceptic">
       {% for item, analysis in news %}
-        <li class="mat-{{ item.materiality | materiality_class }}">
+        <li class="mat-{{ item.materiality | materiality_class }}"
+            {# The classifier's sentence for why this story is a claim about a price:
+               the story page prints it, and the list is where a reader decides whether
+               to open one. Absent for a story no classifier has judged. #}
+            {%- if item.relevance_reason %} title="Relevance: {{ item.relevance_reason }}"{% endif %}>
           <a href="/news/{{ item.id }}">{{ item.title }}</a>
           <span class="muted small">
             {{ item.source }} · {{ item.published_at | ago }}
