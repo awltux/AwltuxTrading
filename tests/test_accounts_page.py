@@ -11,7 +11,9 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
+from bs4 import BeautifulSoup
 
+from awltux.analysis import ledger
 from awltux.db import FundamentalPeriod
 from tests.helpers import make_instrument, make_period
 
@@ -234,6 +236,120 @@ class TestTheHealthTab:
         body = client.get(f"/accounts/{period.id}/health").text
 
         assert "out" in body
+
+    def test_a_disagreeing_subtotal_shows_the_calculation_on_hover(self, client, session):
+        """Asked for directly: *"When I hover over the Accounts 'out by' entries display the
+        calculations that have been carried out so I can investigate what's gone wrong."*
+
+        The stated total, every component with its sign, the sum, and what was left out --
+        because a residual a reader cannot decompose is a number they can only stare at.
+        """
+        period = _store(
+            session,
+            "TEST_US_EQ",
+            make_period(
+                "TEST_US_EQ",
+                dt.date(2024, 12, 31),
+                # Operating income stated at 160 against components that add to 110, so the
+                # line carries a residual.
+                {**BALANCED, "operating_income": 160.0, "sga_expense": 200.0},
+            ),
+        )
+        session.commit()
+
+        body = client.get(f"/accounts/{period.id}/profit_and_loss").text
+
+        assert "out by" in body
+        soup = BeautifulSoup(body, "lxml")
+        # The disagreeing line, not the first one on the page: most subtotals agree, and
+        # those carry their working too.
+        row = next(
+            item
+            for item in soup.select("table.ledger tbody tr")
+            if "Operating income" in item.get_text(" ")
+        )
+        work = row.select_one(".work[data-work]")
+        assert work is not None, "the residual carries no working"
+        text = work["data-work"]
+        assert "from the filing: 160" in text
+        assert "added up" in text
+        # The components, with their signs and in the words the lines above are printed in.
+        assert "Gross profit" in text and "Selling, general and administrative" in text
+        assert "\u2212" in text, "a deduction is marked as one"
+        assert "= 110 computed" in text
+        assert "out by 50 (stated \u2212 computed)" in text
+
+    def test_the_working_adds_up_to_the_figure_beside_it(self, client, session):
+        """The point of showing it: a reader can check the arithmetic rather than trust it."""
+        period = _store(
+            session,
+            "TEST_US_EQ",
+            make_period("TEST_US_EQ", dt.date(2024, 12, 31), dict(BALANCED)),
+        )
+        session.commit()
+        line = next(
+            item
+            for item in ledger.statement(period, "profit_and_loss").lines
+            if item.key == "gross_profit"
+        )
+
+        assert sum(part.contribution for part in line.parts) == pytest.approx(line.computed)
+        assert f"= {line.computed:,.0f} computed" in line.show_work()
+
+    def test_the_health_check_shows_the_same_working(self, client, session):
+        """The column is headed "Out by" there too, and it measures the same subtractions --
+        so a reader who hovers it gets the calculation, not just the difference."""
+        period = _store(
+            session,
+            "TEST_US_EQ",
+            make_period(
+                "TEST_US_EQ",
+                dt.date(2024, 12, 31),
+                {**BALANCED, "total_assets": 900.0},
+            ),
+        )
+        session.commit()
+
+        check = next(
+            item for item in ledger.checks(period) if item.key == "assets_composition"
+        )
+
+        assert check.label == "Components sum to stated total assets"
+        assert "from the filing: 900" in check.work
+        assert "added up" in check.work
+        assert "Cash and equivalents" in check.work
+        assert "out by 50 (stated \u2212 computed)" in check.work
+
+    def test_a_line_with_no_arithmetic_has_no_working(self):
+        """A figure with nothing behind it has nothing to investigate, and a tooltip that said
+        so would be noise on every row."""
+        line = ledger.Line(
+            key="revenue", label="Revenue", stated=1_000.0, computed=None, side="credit"
+        )
+
+        assert line.show_work() == ""
+
+    def test_a_figure_that_agrees_still_shows_how_it_was_reached(self):
+        """It is not only failures a reader wants to check: "agrees" is a claim about two
+        figures, and the arithmetic behind it is the evidence for that claim."""
+        line = ledger.Line(
+            key="gross_profit",
+            label="Gross profit",
+            stated=400.0,
+            computed=400.0,
+            side="credit",
+            parts=(
+                ledger.Part(label="Revenue", contribution=1_000.0),
+                ledger.Part(label="Cost of sales", contribution=-600.0),
+            ),
+        )
+
+        text = line.show_work()
+
+        assert "from the filing: 400" in text
+        assert "+ 1,000  Revenue" in text and "\u2212 600  Cost of sales" in text
+        assert "= 400 computed" in text
+        assert "out by 0 (stated \u2212 computed)" in text
 
     def test_the_markers_are_shown_and_say_which_periods_they_used(
         self, client, session, stored_period

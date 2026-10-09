@@ -165,6 +165,7 @@ def declared_sums(
         total = 0.0
         missing: list[str] = []
         missing_tags: list[str] = []
+        parts: list[tuple[str, float]] = []
         absent_total: float | None = 0.0
         counted: set[str] = set()
         for tag, weight in declared:
@@ -187,6 +188,11 @@ def declared_sums(
                     continue
                 counted.add(child_metric)
             total += weight * value
+            # Named as the ledger names it -- the canonical metric -- because that is the
+            # line printed above this subtotal on the page, and the reader is matching the
+            # two up. The filer's own label is for the lines we do *not* hold, where there is
+            # no line of ours to point at.
+            parts.append((child_metric or tag, weight * value))
         out[metric] = Declared(
             total=total if total or not missing else None,
             missing=tuple(missing),
@@ -194,6 +200,7 @@ def declared_sums(
             # Only when the filer tagged every absent line: a partial price would look
             # like an explanation while leaving part of the residual unexplained.
             missing_total=absent_total if missing else None,
+            parts=tuple(parts),
         )
     return out
 

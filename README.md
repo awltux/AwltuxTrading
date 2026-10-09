@@ -338,11 +338,13 @@ them because it includes lease liabilities, `net_ppe` differs by 2.5x on two and
 
 The Accounts tab lists one row per financial year; a year's page lays out the chosen
 accounts and a "where these figures came from" panel naming each displaced source, why it
-was not used, the figures only it stated, and every disagreement with both values. The
-analysis reads the same collated set, so the page and the verdict cannot disagree about
-what a year's figures are. Nothing is stored: the collated set is derived on read, and
-the rows stay exactly as the writers left them, because they are the record of what each
-source said.
+was not used, the figures only it stated, and every disagreement with both values. **Hover a
+figure in the Computed column** — or an "out by" in the accounting-health table — for the
+calculation behind it: the stated total, every component with its sign, the sum, and the
+lines left out of it. The analysis reads the same collated set, so the page and the verdict
+cannot disagree about what a year's figures are. Nothing is stored: the collated set is
+derived on read, and the rows stay exactly as the writers left them, because they are the
+record of what each source said.
 
 A price per share and a share count are not magnitudes of a statement's currency, so a
 10-K presented "in millions" does not multiply them — see `metrics.NON_MONETARY_METRICS`.

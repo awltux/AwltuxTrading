@@ -312,16 +312,35 @@ class TestTheNonOperatingLines:
             }
         )
 
-        assert cascade["operating_income"] == pytest.approx(100.0)
-        assert cascade["pretax_income"] == pytest.approx(80.0), "the expense was dropped"
+        assert cascade["operating_income"].total == pytest.approx(100.0)
+        assert cascade["pretax_income"].total == pytest.approx(80.0), "the expense was dropped"
 
     def test_a_filer_with_no_non_operating_lines_falls_back_to_operating_income(self):
         cascade = ledger._profit_cascade(
             {"revenue": 1_000.0, "cost_of_goods_sold": 600.0, "sga_expense": 100.0}
         )
 
-        assert cascade["operating_income"] == pytest.approx(300.0)
-        assert cascade["pretax_income"] == pytest.approx(300.0)
+        assert cascade["operating_income"].total == pytest.approx(300.0)
+        assert cascade["pretax_income"].total == pytest.approx(300.0)
+
+    def test_each_subtotal_carries_the_arithmetic_that_produced_it(self):
+        """A page that can show a residual but not how the figure beside it was reached is one
+        a reader cannot investigate, so the value and its working come back together."""
+        cascade = ledger._profit_cascade(
+            {"revenue": 1_000.0, "cost_of_goods_sold": 600.0, "sga_expense": 100.0}
+        )
+
+        operating = cascade["operating_income"]
+        assert [part.label for part in operating.parts] == [
+            "Gross profit",
+            "Selling, general and administrative",
+        ]
+        assert [part.contribution for part in operating.parts] == [400.0, -100.0]
+        # The parts reproduce the figure, which is the whole point of showing them.
+        assert sum(part.contribution for part in operating.parts) == pytest.approx(
+            operating.total
+        )
+        assert operating.parts[1].sign == "\u2212"
 
     def test_the_cascade_builds_from_components_not_from_stated_subtotals(self):
         """Worth stating, because it is what makes the audit mean anything.
@@ -336,7 +355,7 @@ class TestTheNonOperatingLines:
              "operating_income": 999.0}
         )
 
-        assert cascade["operating_income"] == pytest.approx(300.0)
+        assert cascade["operating_income"].total == pytest.approx(300.0)
 
     def test_the_chart_carries_both_lines_and_maps_them(self):
         """A metric the extractor can return but the chart has no account for would be

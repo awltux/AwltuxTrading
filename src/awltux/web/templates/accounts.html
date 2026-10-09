@@ -168,11 +168,15 @@
             {% if line.stated is not none %}{{ line.stated | number(line.decimals) }}{% else %}—{% endif %}
           </td>
           <td class="num small">
+            {# The "out by" figure is the one a reader cannot act on without knowing what
+               produced it, so the working hangs off it on hover: the stated total, every
+               component with its sign, the sum, and the lines left out. Built by
+               `ledger.Line.show_work`, which is the only place that arithmetic exists. #}
             {% if line.computed is none %}<span class="muted">—</span>
             {% elif line.agrees is false %}
               <span class="warn">{{ line.computed | number(line.decimals) }}</span>
-              <span class="muted small">out by {{ line.residual | number(line.decimals) }}</span>
-            {% else %}<span class="muted">{{ line.computed | number(line.decimals) }}</span>{% endif %}
+              <span class="muted small work" data-work="{{ line.show_work() }}">out by {{ line.residual | number(line.decimals) }}</span>
+            {% else %}<span class="muted work" data-work="{{ line.show_work() }}">{{ line.computed | number(line.decimals) }}</span>{% endif %}
           </td>
         </tr>
       {% endfor %}
@@ -251,7 +255,12 @@
           {% else %}<span class="muted">not computable</span>{% endif %}
         </td>
         <td class="num">
-          {% if check.residual is not none %}{{ check.residual | number(0) }}{% else %}<span class="muted">—</span>{% endif %}
+          {# The same working the statement line shows: these checks measure the same
+             subtractions, and `ledger._work_text` builds both so the two cannot describe
+             the arithmetic differently. #}
+          {% if check.residual is not none %}
+            <span class="{{ 'work' if check.work else '' }}" data-work="{{ check.work }}">{{ check.residual | number(0) }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
         </td>
         <td class="small muted">{{ check.detail }}</td>
       </tr>

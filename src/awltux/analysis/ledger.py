@@ -339,6 +339,27 @@ def trial_balance(period: FundamentalPeriod) -> TrialBalance:
 
 
 @dataclass(frozen=True, slots=True)
+class Part:
+    """One component of a computed subtotal: what it is and what it contributed.
+
+    Signed, because the arithmetic is: revenue less cost of sales, gross profit less the
+    operating expenses. ``contribution`` is negative for a deduction and for a line the
+    filer's own declaration weights negatively, so summing the parts reproduces
+    :attr:`Line.computed` exactly -- which is the point of showing them.
+    """
+
+    label: str
+    contribution: float
+    #: Where the component's figure came from: a canonical metric name in this project's
+    #: vocabulary, or ``taxonomy:Tag`` for a line only the filer names.
+    source: str = ""
+
+    @property
+    def sign(self) -> str:
+        return "+" if self.contribution >= 0 else "\u2212"
+
+
+@dataclass(frozen=True, slots=True)
 class Line:
     """One printed line: what was stated, what was computed, and which is which."""
 
@@ -348,6 +369,17 @@ class Line:
     computed: float | None
     side: str
     role: str = "line"
+    #: What the computed figure was made of, in the order it was added. Empty for a line
+    #: with no arithmetic behind it -- a stated figure with nothing to check it against.
+    parts: tuple[Part, ...] = ()
+    #: Whose components those are: empty for this project's own key list, else a phrase
+    #: naming the filer's declaration.
+    parts_source: str = ""
+    #: Declared lines the sum left out, and what the filer tagged them at. Named rather
+    #: than folded into the total, so a reader can tell a line we failed to read from a
+    #: filer whose subtotal does not add up.
+    missing: tuple[str, ...] = ()
+    missing_total: float | None = None
 
     @property
     def amount(self) -> float | None:
@@ -378,6 +410,29 @@ class Line:
         balance sheet of hundreds of millions reads as.
         """
         return 2 if self.key in PER_SHARE_METRICS else 0
+
+    def show_work(self) -> str:
+        """The arithmetic behind this line, as lines of text for a hover tooltip.
+
+        Asked for directly: *"When I hover over the Accounts 'out by' entries display the
+        calculations that have been carried out so I can investigate what's gone wrong."* A
+        residual is only investigable if the reader can see what produced the figure it is
+        measured against, so this prints the stated total, every component with its sign, the
+        sum, and the difference -- and names the lines the sum left out, which is what turns
+        an unexplained remainder into "this is the line nobody read".
+
+        Empty when there is no arithmetic to show: a line that only reports a figure has
+        nothing to investigate, and a tooltip saying so would be noise.
+        """
+        return _work_text(
+            stated=self.stated,
+            computed=self.computed,
+            parts=self.parts,
+            source=self.parts_source,
+            missing=self.missing,
+            missing_total=self.missing_total,
+            decimals=self.decimals,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,11 +515,17 @@ def _memoranda(metrics: dict[str, Any], keys: Sequence[str]) -> Section:
     return _section("Memorandum", [_line(metrics, key) for key in keys])
 
 
-def _line(metrics: dict[str, Any], key: str, computed: float | None = None) -> Line:
+def _line(
+    metrics: dict[str, Any],
+    key: str,
+    computed: float | None = None,
+    work: _Work | None = None,
+) -> Line:
     """One printed line, pulling its label, side and role from the chart.
 
     Shared by all three statements, so a line cannot be labelled one way in the profit
-    and loss and another in the checks that audit it.
+    and loss and another in the checks that audit it. ``work`` is the arithmetic behind
+    ``computed`` -- see :class:`_Work` -- and is what the page shows on hover.
     """
     account = BY_KEY[key]
     return Line(
@@ -474,16 +535,124 @@ def _line(metrics: dict[str, Any], key: str, computed: float | None = None) -> L
         computed=computed,
         side=account.side,
         role=account.role,
+        parts=work.parts if work else (),
+        parts_source=work.source if work else "",
+        missing=work.missing if work else (),
+        missing_total=work.missing_total if work else None,
     )
 
 
-def _profit_cascade(metrics: dict[str, Any]) -> dict[str, float | None]:
+def _worked_line(metrics: dict[str, Any], key: str, work: _Work) -> Line:
+    """A line whose computed figure and whose arithmetic arrive together.
+
+    The balance sheet's subtotals are built by `_work_from`, which decides whether the sum is
+    the filer's declaration or our own key list; this attaches both halves to the line so the
+    page can print the figure and explain it.
+    """
+    return _line(metrics, key, work.total, work)
+
+
+def _label(key: str | None, fallback: str = "") -> str:
+    """A metric's printed label, or the key itself for something not in the chart.
+
+    The tooltip names components in the same words the lines above them are printed in, so a
+    reader matching "Selling, general and administrative" in the sum against the line of that
+    name does not have to translate a metric key.
+    """
+    if not key:
+        return fallback
+    account = BY_KEY.get(key)
+    return account.label if account else fallback or key
+
+
+def _sum_text(value: float | None, decimals: int = 0) -> str:
+    """A figure for the hover tooltip: thousands separated, and an em dash for nothing."""
+    if value is None:
+        return "\u2014"
+    return f"{value:,.{decimals}f}"
+
+
+def _work_text(
+    *,
+    stated: float | None,
+    computed: float | None,
+    parts: tuple[Part, ...] = (),
+    source: str = "",
+    missing: tuple[str, ...] = (),
+    missing_total: float | None = None,
+    decimals: int = 0,
+) -> str:
+    """The arithmetic behind one figure, as the text the page shows on hover.
+
+    One function for the statement's lines and for the checks that audit them: the two
+    describe the same subtraction, and two renderings of it would eventually disagree about
+    what was added up -- which is the failure the whole ledger is arranged to avoid.
+
+    Empty when there is nothing to show. A line that only reports a figure has no arithmetic
+    to investigate, and a tooltip saying so would be noise.
+    """
+    if computed is None and stated is None:
+        return ""
+    # Nothing to explain: a figure the filing reports and nobody derived has no arithmetic
+    # behind it, and a tooltip restating the number would be noise on every row.
+    if not parts and not missing and (stated is None or computed is None):
+        return ""
+    lines: list[str] = []
+    if stated is not None:
+        lines.append(f"from the filing: {_sum_text(stated, decimals)}")
+    if parts:
+        lines.append(
+            "added up" + (f" ({source.strip('; ')})" if source else "") + ":"
+        )
+        lines.extend(
+            f"  {part.sign} {_sum_text(abs(part.contribution), decimals)}  {part.label}"
+            for part in parts
+        )
+        lines.append(f"= {_sum_text(computed, decimals)} computed")
+    elif computed is not None:
+        lines.append(f"computed: {_sum_text(computed, decimals)}")
+    if missing:
+        lines.append("not held, so left out of the sum:")
+        lines.extend(f"  - {name}" for name in missing)
+        if missing_total is not None:
+            lines.append(f"  those lines are {_sum_text(abs(missing_total), decimals)} in total")
+    if stated is not None and computed is not None:
+        lines.append(
+            f"out by {_sum_text(stated - computed, decimals)} (stated \u2212 computed)"
+        )
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class _Work:
+    """The arithmetic behind one computed subtotal, on its way to a :class:`Line`.
+
+    A named object rather than four more arguments to `_line`, because the four travel
+    together and only one of the three call sites has them: the profit cascade derives its
+    own, the balance sheet takes them from the filer's declaration where it has one.
+    """
+
+    #: What the components add up to, so the caller attaches the value and its working in
+    #: one move rather than recomputing one of them.
+    total: float | None = None
+    parts: tuple[Part, ...] = ()
+    source: str = ""
+    missing: tuple[str, ...] = ()
+    missing_total: float | None = None
+
+
+def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
     """The four subtotals this project can derive from the lines it holds.
 
     One cascade rather than one per caller: the profit and loss statement prints these
     and :func:`profit_articulation` audits them against the reported figure, and two
     copies of the same arithmetic would eventually disagree about which lines are
     included -- which is exactly the disagreement the audit exists to detect.
+
+    **Each subtotal comes back with the arithmetic that produced it**, in the same object,
+    because a page that can show a residual but not how the figure beside it was reached is
+    one a reader cannot investigate. Deriving the components again where they are printed
+    would be the duplication this function exists to prevent.
 
     **Profit before tax is not "operating income less interest".** Interest *income* and
     other non-operating items sit between the two as well, and leaving them out put a
@@ -494,7 +663,9 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, float | None]:
     non-operating income (2,743,000) the taxonomy did not carry. With them, the three
     lines reconcile to the reported figure to the dollar.
     """
-    gross = _subtract(_stated(metrics, "revenue"), _stated(metrics, "cost_of_goods_sold"))
+    revenue = _stated(metrics, "revenue")
+    cost = _stated(metrics, "cost_of_goods_sold")
+    gross = _subtract(revenue, cost)
     operating = _subtract(
         gross,
         _stated(metrics, "research_and_development"),
@@ -521,12 +692,67 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, float | None]:
         pretax = operating
     else:
         pretax = operating + non_operating
+    tax = _stated(metrics, "tax_expense")
+
     return {
-        "gross_profit": gross,
-        "operating_income": operating,
-        "pretax_income": pretax,
-        "net_income": _subtract(pretax, _stated(metrics, "tax_expense")),
+        "gross_profit": _Work(
+            total=gross,
+            parts=_components(metrics, ("revenue", 1.0), ("cost_of_goods_sold", -1.0)),
+        ),
+        "operating_income": _Work(
+            total=operating,
+            parts=(
+                _component("gross_profit", gross, 1.0)
+                + _components(
+                    metrics,
+                    ("research_and_development", -1.0),
+                    ("sga_expense", -1.0),
+                    ("depreciation_amortisation", -1.0),
+                )
+            ),
+        ),
+        "pretax_income": _Work(
+            total=pretax,
+            parts=(
+                _component("operating_income", operating, 1.0)
+                + _components(
+                    metrics,
+                    ("interest_income", 1.0),
+                    ("other_nonoperating_income", 1.0),
+                    ("interest_expense", -1.0),
+                )
+            ),
+        ),
+        "net_income": _Work(
+            total=_subtract(pretax, tax),
+            parts=(
+                _component("pretax_income", pretax, 1.0)
+                + _components(metrics, ("tax_expense", -1.0))
+            ),
+        ),
     }
+
+
+def _component(key: str, value: float | None, weight: float) -> tuple[Part, ...]:
+    """One component, or nothing at all when the figure is absent.
+
+    An absent component is left out rather than listed as zero: a sum showing a line at 0
+    claims the filing stated nothing there, which is a different fact from our not holding
+    it -- and the residual is what tells the reader which of the two it is.
+    """
+    if value is None:
+        return ()
+    return (Part(label=_label(key), contribution=weight * value, source=key),)
+
+
+def _components(
+    metrics: dict[str, Any], *weighted: tuple[str, float]
+) -> tuple[Part, ...]:
+    """The present components of a subtotal, each carrying its key and its weight."""
+    out: list[Part] = []
+    for key, weight in weighted:
+        out.extend(_component(key, _stated(metrics, key), weight))
+    return tuple(out)
 
 
 @dataclass(frozen=True, slots=True)
@@ -575,6 +801,23 @@ CURRENT_LIABILITY_KEYS = (
 #: account's definition in :data:`CHART`.
 NON_CURRENT_LIABILITY_KEYS = ("long_term_debt", "other_noncurrent_liabilities")
 
+#: The two totals, as their components. Composed from the four above rather than written out:
+#: a line added to one side must appear in the total's arithmetic too, or the working shown
+#: for the residual would not add up to the figure beside it.
+TOTAL_ASSET_KEYS = CURRENT_ASSET_KEYS + NON_CURRENT_ASSET_KEYS
+TOTAL_LIABILITY_KEYS = CURRENT_LIABILITY_KEYS + NON_CURRENT_LIABILITY_KEYS
+
+#: The key list behind each subtotal, by the metric name the checks and the page use. The
+#: composition writes its sums from these tuples, and the page writes the arithmetic behind
+#: them from the same tuples, so the working a reader hovers cannot list a different set of
+#: lines from the one the figure was computed from.
+COMPONENT_KEYS: dict[str, tuple[str, ...]] = {
+    "current_assets": CURRENT_ASSET_KEYS,
+    "total_assets": TOTAL_ASSET_KEYS,
+    "current_liabilities": CURRENT_LIABILITY_KEYS,
+    "total_liabilities": TOTAL_LIABILITY_KEYS,
+}
+
 
 def _composition(metrics: dict[str, Any]) -> _Composition:
     return _Composition(
@@ -610,7 +853,7 @@ def profit_and_loss(period: FundamentalPeriod) -> Statement:
             [
                 _line(metrics, "revenue"),
                 _line(metrics, "cost_of_goods_sold"),
-                _line(metrics, "gross_profit", cascade["gross_profit"]),
+                _line(metrics, "gross_profit", cascade["gross_profit"].total, cascade["gross_profit"]),
             ],
         ),
         _section(
@@ -619,7 +862,7 @@ def profit_and_loss(period: FundamentalPeriod) -> Statement:
                 _line(metrics, "research_and_development"),
                 _line(metrics, "sga_expense"),
                 _line(metrics, "depreciation_amortisation"),
-                _line(metrics, "operating_income", cascade["operating_income"]),
+                _line(metrics, "operating_income", cascade["operating_income"].total, cascade["operating_income"]),
             ],
         ),
         _section(
@@ -628,9 +871,9 @@ def profit_and_loss(period: FundamentalPeriod) -> Statement:
                 _line(metrics, "interest_expense"),
                 _line(metrics, "interest_income"),
                 _line(metrics, "other_nonoperating_income"),
-                _line(metrics, "pretax_income", cascade["pretax_income"]),
+                _line(metrics, "pretax_income", cascade["pretax_income"].total, cascade["pretax_income"]),
                 _line(metrics, "tax_expense"),
-                _line(metrics, "net_income", cascade["net_income"]),
+                _line(metrics, "net_income", cascade["net_income"].total, cascade["net_income"]),
             ],
         ),
         _memoranda(metrics, INCOME_MEMORANDA),
@@ -662,9 +905,14 @@ def balance_sheet(
     gaps: list[str] = []
     held = _composition(metrics)
 
-    def sum_of(metric: str, ours: float | None) -> float | None:
-        """The filer's sum for this subtotal where it declares one, else our own list."""
-        return _computed(declared, metric, ours)[0]
+    def sum_of(metric: str, ours: float | None, keys: Sequence[str]) -> _Work:
+        """The filer's sum for this subtotal where it declares one, else our own list.
+
+        The keys travel with the call rather than being looked up from a second table: the
+        same tuple that produced the composition figure produces the arithmetic shown for it,
+        so a line added to one cannot be missing from the other.
+        """
+        return _work_from(declared, metric, ours, keys, metrics)
 
     if _stated(metrics, "total_equity") is None:
         gaps.append("total equity")
@@ -677,7 +925,7 @@ def balance_sheet(
                 _line(metrics, "receivables"),
                 _line(metrics, "inventory"),
                 _line(metrics, "other_current_assets"),
-                _line(metrics, "current_assets", sum_of("current_assets", held.current_assets)),
+                _worked_line(metrics, "current_assets", sum_of("current_assets", held.current_assets, CURRENT_ASSET_KEYS)),
             ],
         ),
         _section(
@@ -688,7 +936,7 @@ def balance_sheet(
                 _line(metrics, "goodwill"),
                 _line(metrics, "intangible_assets"),
                 _line(metrics, "other_noncurrent_assets"),
-                _line(metrics, "total_assets", sum_of("total_assets", held.assets)),
+                _worked_line(metrics, "total_assets", sum_of("total_assets", held.assets, TOTAL_ASSET_KEYS)),
             ],
         ),
         _section(
@@ -698,10 +946,10 @@ def balance_sheet(
                 _line(metrics, "compensation_and_benefits"),
                 _line(metrics, "other_current_liabilities"),
                 _line(metrics, "short_term_debt"),
-                _line(
+                _worked_line(
                     metrics,
                     "current_liabilities",
-                    sum_of("current_liabilities", held.current_liabilities),
+                    sum_of("current_liabilities", held.current_liabilities, CURRENT_LIABILITY_KEYS),
                 ),
             ],
         ),
@@ -710,7 +958,7 @@ def balance_sheet(
             [
                 _line(metrics, "long_term_debt"),
                 _line(metrics, "other_noncurrent_liabilities"),
-                _line(metrics, "total_liabilities", sum_of("total_liabilities", held.liabilities)),
+                _worked_line(metrics, "total_liabilities", sum_of("total_liabilities", held.liabilities, TOTAL_LIABILITY_KEYS)),
                 _line(metrics, "total_equity"),
             ],
         ),
@@ -750,7 +998,21 @@ def cash_flow(period: FundamentalPeriod) -> Statement:
                 "Investing",
                 [
                     _line(metrics, "capex"),
-                    _line(metrics, "free_cash_flow", _subtract(operating, capex)),
+                    # Free cash flow is a calculation like any subtotal, so it carries its
+                    # working: operating cash flow less capital expenditure, which is the
+                    # second thing a reader checks after the residual.
+                    _line(
+                        metrics,
+                        "free_cash_flow",
+                        _subtract(operating, capex),
+                        _Work(
+                            total=_subtract(operating, capex),
+                            parts=_components(
+                                metrics, ("operating_cash_flow", 1.0), ("capex", -1.0)
+                            ),
+                            source="this project's own list of component lines",
+                        ),
+                    ),
                 ],
             ),
             _section("Financing", [_line(metrics, "dividends_paid")]),
@@ -804,6 +1066,10 @@ class Check:
     detail: str
     residual: float | None = None
     inputs: dict[str, Any] = field(default_factory=dict)
+    #: The arithmetic behind the residual, as text for the page's hover panel, for the checks
+    #: that have one. Built by :func:`_work_text` -- the same function `Line.show_work` uses,
+    #: so a figure and the check that audits it cannot explain themselves differently.
+    work: str = ""
 
     @property
     def failed(self) -> bool:
@@ -834,6 +1100,13 @@ class Declared:
     #: A reader needs "Prepaid expenses"; the *fix* -- adopting that caption into a line
     #: for this filer -- is a mapping, and a mapping is keyed by the tag.
     missing_tags: tuple[str, ...] = ()
+    #: The declared children this sum was actually made of, as ``(name, contribution)``, in
+    #: the filing's own order. Recorded so the accounts page can show the arithmetic behind
+    #: one subtotal rather than only its result: a reader looking at "out by 26,710,000,000"
+    #: needs to see which lines the declaration added and which of them was worth that much.
+    #: ``contribution`` carries the filer's weight, so a line it declares as a deduction
+    #: appears negative.
+    parts: tuple[tuple[str, float], ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -849,6 +1122,7 @@ def _agree(
     *,
     missing: tuple[str, ...] = (),
     missing_total: float | None = None,
+    work: _Work | None = None,
 ) -> Check:
     """A stated total against the parts we hold. Unknown when either side is missing.
 
@@ -863,6 +1137,14 @@ def _agree(
     """
     if stated is None or computed is None:
         return Check(key=key, label=label, status=UNKNOWN, detail=f"{detail} -- not enough stated")
+    work_text = _work_text(
+        stated=stated,
+        computed=computed,
+        parts=work.parts if work else (),
+        source=work.source if work else "",
+        missing=missing,
+        missing_total=missing_total,
+    )
     if missing:
         residual = stated - computed
         explained = missing_total is not None and abs(residual - missing_total) <= tolerance(
@@ -883,6 +1165,7 @@ def _agree(
                 "missing": list(missing),
                 "explained": explained,
             },
+            work=work_text,
         )
     residual = stated - computed
     status = OK if abs(residual) <= tolerance(stated) else IMBALANCE
@@ -893,6 +1176,41 @@ def _agree(
         detail=detail,
         residual=residual,
         inputs={"stated": stated, "computed": computed},
+        work=work_text,
+    )
+
+
+def _work_from(
+    declared: Mapping[str, Declared] | None,
+    metric: str,
+    ours: float | None,
+    keys: Sequence[str],
+    metrics: dict[str, Any],
+) -> _Work:
+    """A subtotal's value and the arithmetic behind it: the filer's, or our own.
+
+    Two summations can stand behind one printed subtotal and they are not the same sum. Where
+    the linkbase declared this total, the figure is the sum of the filer's own children and
+    the working names those -- which is what makes a residual legible, because it is then the
+    lines *the filing* breaks the total into that we do not hold. Otherwise the figure is our
+    own key list and the working names the lines we added up.
+    """
+    entry = (declared or {}).get(metric)
+    if entry is not None:
+        return _Work(
+            total=entry.total,
+            parts=tuple(
+                Part(label=_label(child, child), contribution=contribution, source=child)
+                for child, contribution in entry.parts
+            ),
+            source="the filer's own declared lines",
+            missing=entry.missing,
+            missing_total=entry.missing_total,
+        )
+    return _Work(
+        total=ours,
+        parts=_components(metrics, *((key, 1.0) for key in keys)),
+        source="this project's own list of component lines",
     )
 
 
@@ -920,9 +1238,16 @@ def _agree_computed(
     ours: float | None,
     detail: str,
     declared: Mapping[str, Declared] | None,
+    metrics: dict[str, Any],
 ) -> Check:
-    """One composition check, from the filer's declared children where we have them."""
+    """One composition check, from the filer's declared children where we have them.
+
+    The working travels with it: a check that reports "out by 26,710,000" without being able
+    to say what it added up is a finding a reader cannot investigate, and the composition is
+    exactly where the arithmetic is a decision (the filer's children or ours).
+    """
     computed, missing, missing_total, source = _computed(declared, metric, ours)
+    work = _work_from(declared, metric, ours, COMPONENT_KEYS.get(metric, ()), metrics)
     return _agree(
         key,
         label,
@@ -931,6 +1256,7 @@ def _agree_computed(
         detail + source,
         missing=missing,
         missing_total=missing_total,
+        work=work,
     )
 
 
@@ -963,6 +1289,7 @@ def composition(
             held.assets,
             "asset lines we hold against total assets",
             declared,
+            metrics,
         ),
         _agree_computed(
             "liabilities_composition",
@@ -972,6 +1299,7 @@ def composition(
             held.liabilities,
             "liability lines we hold against total liabilities",
             declared,
+            metrics,
         ),
         _agree_computed(
             "current_assets_composition",
@@ -981,6 +1309,7 @@ def composition(
             held.current_assets,
             "current asset lines we hold against current assets",
             declared,
+            metrics,
         ),
         # The mirror of the line above, and it was missing. Measured 2026-10-07 on
         # `MSFT_US_EQ`: its balance sheet states current liabilities of 168,825 against
@@ -997,6 +1326,7 @@ def composition(
             held.current_liabilities,
             "current liability lines we hold against current liabilities",
             declared,
+            metrics,
         ),
     ]
 
@@ -1017,7 +1347,7 @@ def profit_articulation(period: FundamentalPeriod) -> Check:
         "profit_articulation",
         "Lines we hold reconcile to reported profit",
         _stated(metrics, "net_income"),
-        _profit_cascade(metrics)["net_income"],
+        _profit_cascade(metrics)["net_income"].total,
         "income and expense lines against reported profit",
     )
 

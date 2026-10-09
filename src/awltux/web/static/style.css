@@ -507,7 +507,13 @@ footer {
 /* What a field is, on hover or on keyboard focus.
    See `partials/_help.html`: the text rides in `data-help`, so this needs no script.
    `cursor: help` and the dotted underline are the affordance -- a bare "?" would be
-   easy to mistake for a footnote marker. */
+   easy to mistake for a footnote marker.
+
+   `.work` is the same tooltip on a *figure* rather than on a separate marker -- the
+   arithmetic behind an accounts residual, which a reader wants explained on the number they
+   are looking at. It is in these selector lists rather than in a block of its own so the
+   drawing has one definition; only the attribute it reads and the line it draws under
+   differ, and those are the two rules after this one. */
 .help {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; margin-left: 4px; border-radius: 50%;
@@ -518,7 +524,7 @@ footer {
 .help:hover, .help:focus-visible {
   color: var(--fg); border-color: var(--muted); background: var(--panel-2); outline: none;
 }
-.help::after {
+.help::after, .work::after {
   content: attr(data-help);
   position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
   z-index: 30; width: max-content; max-width: 380px;
@@ -534,6 +540,15 @@ footer {
   pointer-events: none;
 }
 .help:hover::after, .help:focus-visible::after { opacity: 1; visibility: visible; }
+
+/* An accounts figure that can be explained: the arithmetic behind it, on the number itself
+   rather than beside it, because that is what a reader is looking at when they wonder why a
+   residual is what it is. Inline, so it reads as part of the row; `pre-line` because the
+   working is several lines -- the stated total, each component with its sign, the sum, and
+   what was left out -- and reflowed into a paragraph it would be unreadable arithmetic. */
+.work { cursor: help; position: relative; border-bottom: 1px dotted var(--line); }
+.work::after { content: attr(data-work); max-width: 460px; white-space: pre-line; }
+.work:hover::after, .work:focus-visible::after { opacity: 1; visibility: visible; }
 
 /* The latest deep-dive's executive summary, at the top of a subject's page.
    Set apart from the summary figures above it because it is a *judgement about the business*
