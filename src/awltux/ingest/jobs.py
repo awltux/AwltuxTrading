@@ -2067,7 +2067,7 @@ def apply_retention() -> JobResult:
 
     from sqlalchemy import delete
 
-    from awltux.db import LLMCall, Quote
+    from awltux.db import LLMCall, ProviderBalanceReading, Quote
 
     settings = get_settings()
     retention = settings.retention
@@ -2082,5 +2082,16 @@ def apply_retention() -> JobResult:
         llm_cutoff = now - dt.timedelta(days=retention.llm_call_days)
         result = session.execute(delete(LLMCall).where(LLMCall.created_at < llm_cutoff))
         removed["llm_calls"] = result.rowcount or 0
+
+        # A balance reading is small and irreplaceable -- nothing can re-ask what the
+        # account held last March -- so this window is measured in years where the two
+        # above are measured in months.
+        balance_cutoff = now - dt.timedelta(days=retention.balance_days)
+        result = session.execute(
+            delete(ProviderBalanceReading).where(
+                ProviderBalanceReading.read_at < balance_cutoff
+            )
+        )
+        removed["balance_readings"] = result.rowcount or 0
 
     return JobResult(items_written=sum(removed.values()), detail={"removed": removed})

@@ -86,6 +86,98 @@ class TestWhatItReports:
         assert "unnamed" not in body
         assert "None" not in body
 
+    def test_fal_gets_an_estimate_from_its_own_balance_going_down(self, client, session, settings):
+        """The route suggested for fal, whose spend no ledger records.
+
+        `llm_call` is written by `llm/deepseek.py` alone, so fal has no logged spend at all
+        -- and its billing endpoint refuses a model key. The provider's own balance is the
+        only evidence there is, so two readings are differenced and the result is labelled
+        as the floor it is.
+        """
+        for amount, hours in ((11.10, 20), (9.60, 10), (8.10, 1)):
+            _store(
+                session,
+                balances.Balance(
+                    "fal",
+                    amount=amount,
+                    currency="USD",
+                    read_at=utcnow() - dt.timedelta(hours=hours),
+                ),
+            )
+
+        status = queries.provider_status(session, settings=settings)
+
+        fal = next(row for row in status["balances"] if row["provider"] == "fal")
+        assert fal["spent"] == 3.0
+        assert fal["spent_source"] == "balance_delta"
+        assert "floor" in fal["note"], "the tooltip says why the figure is a minimum"
+
+        body = " ".join(client.get("/dashboard").text.split())
+        assert "~3.00 USD spent / 30d" in body, "and the strip marks it approximate"
+
+    def test_a_logged_provider_does_not_use_the_estimate(self, session, settings):
+        """The ledger is a count of what happened; a balance difference is an inference.
+
+        Both are available for DeepSeek here, and showing the estimate would replace a
+        measured figure with a weaker one.
+        """
+        _store(
+            session,
+            balances.Balance("deepseek", amount=20.0, currency="USD", read_at=utcnow()),
+        )
+        session.add(
+            LLMCall(
+                provider="deepseek",
+                purpose="test",
+                ok=True,
+                cost_usd=2.5,
+                created_at=utcnow(),
+            )
+        )
+        session.commit()
+
+        status = queries.provider_status(session, settings=settings)
+
+        deepseek = next(row for row in status["balances"] if row["provider"] == "deepseek")
+        assert deepseek["spent"] == 2.5
+        assert deepseek["spent_source"] == "ledger"
+
+    def test_one_reading_is_not_an_estimate(self, session, settings):
+        _store(session, balances.Balance("fal", amount=11.10, currency="USD", read_at=utcnow()))
+
+        status = queries.provider_status(session, settings=settings)
+
+        fal = next(row for row in status["balances"] if row["provider"] == "fal")
+        assert fal["spent"] is None
+        assert fal["spent_source"] is None
+
+    def test_readings_too_close_together_do_not_produce_a_figure(self, session, settings):
+        """A one-minute estimate would be printed under a "/ 30d" label it has not earned."""
+        for amount, minutes in ((11.10, 2), (10.10, 1)):
+            _store(
+                session,
+                balances.Balance(
+                    "fal",
+                    amount=amount,
+                    currency="USD",
+                    read_at=utcnow() - dt.timedelta(minutes=minutes),
+                ),
+            )
+
+        status = queries.provider_status(session, settings=settings)
+
+        fal = next(row for row in status["balances"] if row["provider"] == "fal")
+        assert fal["spent"] is None
+        assert fal["spent_source"] is None
+
+    def test_a_stored_reading_from_a_future_build_still_reads(self, session, settings):
+        """The series is append-only across releases; an old row must not break the page."""
+        _store(session, balances.Balance("fal", amount=11.10, currency="USD"))
+
+        status = queries.provider_status(session, settings=settings)
+
+        assert status["readable"] is True
+
     def test_an_unreadable_provider_is_not_a_warning(self, session, settings):
         """fal without an Admin key answers 403 -- which is the state this project was in
         for its whole life. A warning here would have been permanently on."""

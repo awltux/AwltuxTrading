@@ -44,7 +44,13 @@
             <span class="muted" title="{{ row.note }}">not readable</span>
           {% endif %}
           {% if row.spent is not none %}
-            <span class="muted small">&middot; {{ row.spent | money('USD') }} spent / 30d</span>
+            {# A `~` and a tooltip when the figure came from differencing the provider's own
+               balance rather than from a ledger of our calls: it is a floor, and the reason
+               it is a floor is in `row.note`. #}
+            <span class="muted small"
+                  {% if row.spent_source == 'balance_delta' %}title="{{ row.note }}"{% endif %}>
+              &middot; {% if row.spent_source == 'balance_delta' %}~{% endif %}{{ row.spent | money('USD') }} spent / {{ status.window_days }}d
+            </span>
           {% endif %}
           {% if row.read_at %}<span class="muted small">&middot; read {{ row.read_at | ago }}</span>{% endif %}
         </span>

@@ -833,11 +833,25 @@ itself — which is now readable (`FAL_ADMIN_KEY` + `GET /account/billing?expand
 and stood at **$1.10** when this was written. A balance with no burn rate beside it cannot
 say *how long* is left, which is the question a near-empty account actually raises.
 
-The add: record an `llm_call` row per embeddings *request* (not per story) with
-`provider="fal"`, `purpose="embeddings"`, the token count fal returns in its usage block,
-and `cost_usd` from the model's published per-million rate. It needs the rates in
-`config.yaml` beside `news.embeddings`, because they are per model and the parser already
-knows which model answered.
+**A rough burn rate now exists, and it is still not this.** Suggested 2026-10-09: *"the fal
+costs could be roughly calculated by storing the balance each time it's updated and
+comparing it to the next balance update."* Built: `provider_balance_reading` keeps every
+readable reading (36/hour x 24 = ~48 rows a day, pruned at `retention.balance_days`), and
+`providers/balances.py::burn` sums the falls between consecutive readings. The strip shows
+it for fal as `~X USD spent / 30d` with the caveat in the tooltip.
+
+It is a **floor, not a measurement**, for a structural reason worth remembering: an interval
+in which the balance *rose* hides whatever was spent in it. Measured shape on a two-point
+example: 10.00 -> 50.00 with 50.00 added means 10.00 was spent and is invisible. So the
+figure under-reports, always, and by an unknown amount.
+
+The add this entry is about is therefore still owed and is the *better* answer: record an
+`llm_call` row per embeddings *request* (not per story) with `provider="fal"`,
+`purpose="embeddings"`, the token count fal returns in its usage block, and `cost_usd` from
+the model's published per-million rate. It needs the rates in `config.yaml` beside
+`news.embeddings`, because they are per model and the parser already knows which model
+answered. That would give an exact figure, per request, that no top-up can hide — and the
+balance difference would remain useful as a cross-check against it.
 
 ### One worker means a 39-minute job delays every other job
 

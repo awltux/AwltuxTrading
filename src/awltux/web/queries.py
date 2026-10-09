@@ -596,29 +596,20 @@ def provider_status(session: Session, *, settings: Any = None) -> dict[str, Any]
 
     spend, calls = _credit_spend(session)
     failures = _payment_failures(session)
+    burns = _balance_burns(session, days=CREDIT_WINDOW_DAYS)
 
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
     for balance in balances:
-        read_at = as_utc(balance.read_at) if balance.read_at else None
         failure = failures.get(balance.provider)
         rows.append(
-            {
-                "provider": balance.provider,
-                "amount": balance.amount,
-                "currency": balance.currency,
-                "available": balance.available,
-                "note": balance.note,
-                # The key the reading was taken with, where the reader has named it. A
-                # label, not a filter: DeepSeek's endpoint reports the whole account. See
-                # `providers/balances.DEEPSEEK_BALANCE_SCOPE`.
-                "key_name": balance.key_name,
-                "read_at": read_at,
-                "stale": read_at is None or (utcnow() - read_at) > dt.timedelta(hours=3),
-                "spent": spend.get(balance.provider),
-                "calls": calls.get(balance.provider, 0),
-                "payment_failure": failure,
-            }
+            _credit_row(
+                balance,
+                ledger_spend=spend.get(balance.provider),
+                calls=calls.get(balance.provider, 0),
+                derived=burns.get(balance.provider),
+                failure=failure,
+            )
         )
         warnings.extend(_credit_warnings(balance, failure=failure, floor=floor))
 
@@ -629,6 +620,84 @@ def provider_status(session: Session, *, settings: Any = None) -> dict[str, Any]
         # is how a reader tells "everything is fine" from "we cannot see anything".
         "readable": any(row["amount"] is not None for row in rows),
         "floor": floor,
+        # The window every spend figure on the strip covers, so the template prints the
+        # same span it counted rather than hard-coding one.
+        "window_days": CREDIT_WINDOW_DAYS,
+    }
+
+
+#: How far back the credit strip's spend figures look. One constant because three things
+#: now depend on it: the ledger total, the balance-difference estimate, and the `/ 30d` the
+#: reader sees. They were two and one of them was typed into the template.
+CREDIT_WINDOW_DAYS = 30
+
+
+def _balance_burns(session: Session, *, days: int) -> dict[str, Any]:
+    """A spend estimate per provider, from the balance series rather than a ledger.
+
+    Only used for providers whose calls we do not log -- which is fal, and only fal. See
+    `providers/balances.burn` for the arithmetic and for why the answer is a floor.
+    """
+    from awltux.providers import balances as balance_readings
+
+    since = utcnow() - dt.timedelta(days=days)
+    out: dict[str, Any] = {}
+    for provider in balance_readings.READERS:
+        readings = balance_readings.stored_readings(session, provider=provider, since=since)
+        if len(readings) > 1:
+            out[provider] = balance_readings.burn(readings)
+    return out
+
+
+def _credit_row(
+    balance: Any,
+    *,
+    ledger_spend: float | None,
+    calls: int,
+    derived: Any,
+    failure: str | None,
+) -> dict[str, Any]:
+    """One provider's line on the strip, with the spend figure and where it came from.
+
+    **The ledger wins where there is one.** ``llm_call`` is a count of what actually
+    happened; a balance difference is a lower bound inferred from two observations. So a
+    provider we log shows the logged figure, and only a provider we do not log falls back
+    to the estimate -- which is why fal, and not DeepSeek, is the one that needs it.
+
+    ``spent_source`` is carried rather than left to the template to infer from the numbers,
+    because "0.00 spent" and "no spend figure at all" are different claims and a zero from
+    one source must not hide the other.
+    """
+    read_at = as_utc(balance.read_at) if balance.read_at else None
+    note = balance.note
+
+    if ledger_spend is not None:
+        source: str | None = "ledger"
+        spent: float | None = ledger_spend
+    elif derived is not None and derived.usable:
+        source = "balance_delta"
+        spent = derived.spent_at_least
+        note = " ".join(part for part in (note, derived.sentence()) if part)
+    else:
+        source = None
+        spent = None
+
+    return {
+        "provider": balance.provider,
+        "amount": balance.amount,
+        "currency": balance.currency,
+        "available": balance.available,
+        "note": note,
+        # The key the reading was taken with, where the reader has named it. A label, not a
+        # filter: DeepSeek's endpoint reports the whole account. See
+        # `providers/balances.DEEPSEEK_BALANCE_SCOPE`.
+        "key_name": balance.key_name,
+        "read_at": read_at,
+        "stale": read_at is None or (utcnow() - read_at) > dt.timedelta(hours=3),
+        "spent": spent,
+        "spent_source": source,
+        "calls": calls,
+        "payment_failure": failure,
     }
 
 

@@ -20,11 +20,13 @@ mostly about the thing that would make it *lie*:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
 import pytest
 
+from awltux.db import utcnow
 from awltux.providers import balances
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -280,6 +282,216 @@ class TestProbingDeepSeek:
 
         assert restored.key_name is None
         assert restored.amount == 3.0
+
+
+class TestEstimatingSpendFromTheBalance:
+    """The fal spend estimate: derived from the provider's own balance going down.
+
+    Suggested directly on 2026-10-09: *"the fal costs could be roughly calculated by storing
+    the balance each time it's updated and comparing it to the next balance update. It's not
+    key specific, but it's useful."* It is the only figure that exists for fal -- its billing
+    endpoint refuses a model key and no ledger records an embeddings request's cost -- so the
+    tests here are mostly about the ways it must **refuse to guess**:
+
+    * a balance that went *up* hides the spending in that interval, so those intervals
+      contribute nothing rather than a negative;
+    * readings in different currencies, or taken with differently-named keys, are not
+      comparable and must not be differenced at all;
+    * one reading is not an estimate.
+    """
+
+    @staticmethod
+    def _reading(amount, *, minutes, currency="USD", key_name=None):
+        return balances.Balance(
+            "fal",
+            amount=amount,
+            currency=currency,
+            key_name=key_name,
+            read_at=dt.datetime(2026, 10, 9, 12, tzinfo=dt.UTC) + dt.timedelta(minutes=minutes),
+        )
+
+    def test_a_falling_balance_is_what_was_spent(self):
+        readings = [self._reading(10.0, minutes=0), self._reading(7.5, minutes=60)]
+
+        result = balances.burn(readings)
+
+        assert result.spent_at_least == 2.5
+        assert result.intervals == 1
+        assert result.known
+
+    def test_a_rising_balance_hides_that_intervals_spending(self):
+        """The structural reason this is a floor rather than a total, stated as a test.
+
+        10.00 -> 50.00 with 50.00 added means 10.00 was spent and is invisible. Counting the
+        increase as negative spend would be worse than useless -- it would subtract real
+        spending from the estimate -- so the interval is recorded and contributes nothing.
+        """
+        readings = [
+            self._reading(10.0, minutes=0),
+            self._reading(50.0, minutes=60),
+            self._reading(45.0, minutes=120),
+        ]
+
+        result = balances.burn(readings)
+
+        assert result.spent_at_least == 5.0, "only the fall after the top-up is measurable"
+        assert result.topped_up == 40.0
+        assert result.intervals == 2, "both intervals are counted, one just proves nothing"
+        assert "floor" in result.sentence()
+
+    def test_a_currency_change_is_not_differenced(self):
+        """Different units, possibly a different account: the delta would be meaningless."""
+        readings = [
+            self._reading(10.0, minutes=0, currency="USD"),
+            self._reading(4.0, minutes=60, currency="EUR"),
+        ]
+
+        result = balances.burn(readings)
+
+        assert result.spent_at_least == 0.0
+        assert result.breaks == 1
+        assert result.intervals == 0
+        assert not result.known, "nothing was comparable, so there is no estimate"
+
+    def test_a_change_of_key_is_not_differenced(self):
+        readings = [
+            self._reading(10.0, minutes=0, key_name="awltux"),
+            self._reading(4.0, minutes=60, key_name="something-else"),
+        ]
+
+        assert balances.burn(readings).breaks == 1
+
+    def test_one_reading_is_not_an_estimate(self):
+        assert not balances.burn([self._reading(10.0, minutes=0)]).known
+
+    def test_readings_that_span_too_little_time_are_not_usable(self):
+        """The strip labels the figure "/ 30d", so two readings a minute apart is a lie.
+
+        The arithmetic is fine: one interval, and a real fall of a penny. What is not fine
+        is printing it under a 30-day heading, so `usable` gates it and the caller shows
+        nothing until the readings cover enough time to mean something.
+        """
+        too_short = balances.burn(
+            [self._reading(10.0, minutes=0), self._reading(9.99, minutes=1)]
+        )
+        long_enough = balances.burn(
+            [self._reading(10.0, minutes=0), self._reading(9.99, minutes=60 * 7)]
+        )
+
+        assert too_short.spent_at_least == 0.01
+        assert not too_short.usable, "one minute is not a 30-day estimate"
+        assert long_enough.usable
+
+    def test_the_tooltip_says_how_long_the_readings_cover(self):
+        """Otherwise "estimated from 1 change" reads the same for a minute and for a month."""
+        result = balances.burn(
+            [self._reading(10.0, minutes=0), self._reading(9.0, minutes=60 * 30)]
+        )
+
+        assert "30 hours" in result.sentence()
+
+    def test_no_readings_at_all_is_not_a_crash(self):
+        result = balances.burn([])
+
+        assert not result.known
+        assert result.spent_at_least == 0.0
+
+    def test_an_unreadable_reading_is_skipped_rather_than_counted_as_zero(self):
+        """A `None` amount is "we could not see it", and differencing it would invent a
+        drop of the whole balance."""
+        readings = [
+            self._reading(10.0, minutes=0),
+            balances.Balance("fal", amount=None, currency="USD", note="403"),
+            self._reading(9.0, minutes=120),
+        ]
+
+        result = balances.burn(readings)
+
+        assert result.spent_at_least == 1.0
+        assert result.intervals == 1
+
+    def test_flat_readings_are_counted_and_cost_nothing(self):
+        """"Eleven readings, no movement" is information; the counters have to say it."""
+        readings = [self._reading(10.0, minutes=index * 60) for index in range(11)]
+
+        result = balances.burn(readings)
+
+        assert result.intervals == 10
+        assert result.spent_at_least == 0.0
+        assert result.known
+
+
+class TestTheReadingSeries:
+    def test_storing_a_readable_reading_appends_to_the_series(self, session):
+        balances.store(session, [balances.Balance("fal", amount=11.1, currency="USD")])
+
+        stored = balances.stored_readings(
+            session, provider="fal", since=utcnow() - dt.timedelta(days=1)
+        )
+
+        assert [row.amount for row in stored] == [11.1]
+
+    def test_an_unreadable_reading_is_not_appended(self, session):
+        """It has no amount to difference, and the merged entry already carries its state."""
+        balances.store(session, [balances.Balance("fal", note="the key is not permitted")])
+
+        assert balances.stored_readings(
+            session, provider="fal", since=utcnow() - dt.timedelta(days=1)
+        ) == []
+
+    def test_storing_the_same_reading_twice_does_not_make_two_rows(self, session):
+        """A phantom zero-length interval, otherwise -- and the job re-stores on every run.
+
+        The same *object*, which is the real shape: a probe carries its own ``read_at`` and
+        the job hands the same list over. Two readings built without a timestamp are two
+        different instants and are two rows, which is why this asserts on one object.
+        """
+        reading = balances.Balance(
+            "fal", amount=11.1, currency="USD", read_at=utcnow()
+        )
+
+        balances.store(session, [reading])
+        balances.store(session, [reading])
+
+        stored = balances.stored_readings(
+            session, provider="fal", since=utcnow() - dt.timedelta(days=1)
+        )
+        assert len(stored) == 1
+
+    def test_the_reading_before_the_window_is_included(self, session):
+        """Without it the first in-window drop is lost -- and that drop is in the window.
+
+        The balance fell from 10.00 to 7.00 between the last reading before the window and
+        the first one inside it. Excluding the boundary reading would report 0.00 spent.
+        """
+        balances.store(
+            session,
+            [
+                balances.Balance(
+                    "fal",
+                    amount=10.0,
+                    currency="USD",
+                    read_at=utcnow() - dt.timedelta(days=10),
+                )
+            ],
+        )
+        balances.store(
+            session, [balances.Balance("fal", amount=7.0, currency="USD", read_at=utcnow())]
+        )
+
+        readings = balances.stored_readings(
+            session, provider="fal", since=utcnow() - dt.timedelta(days=2)
+        )
+
+        assert [row.amount for row in readings] == [10.0, 7.0]
+        assert balances.burn(readings).spent_at_least == 3.0
+
+    def test_a_reading_for_another_provider_is_not_returned(self, session):
+        balances.store(session, [balances.Balance("deepseek", amount=20.0, currency="USD")])
+
+        assert balances.stored_readings(
+            session, provider="fal", since=utcnow() - dt.timedelta(days=1)
+        ) == []
 
 
 class TestWhatCountsAsAWarning:

@@ -668,6 +668,12 @@ class RetentionConfig(BaseModel):
     news_days: int = 730
     raw_payload_days: int = 180
     llm_call_days: int = 365
+    #: How long a provider balance reading is kept. The spend estimate differences a
+    #: 30-day window, so this is far longer than anything reads -- deliberately: the series
+    #: is the only record of what an account held on a given day, it costs about 48 rows a
+    #: day, and a year of it is a chart nobody has asked for yet. Shortening this would
+    #: delete history that cannot be re-fetched, which is not true of the quote table.
+    balance_days: int = 400
 
 
 class YamlConfig(BaseModel):

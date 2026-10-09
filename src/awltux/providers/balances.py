@@ -32,8 +32,11 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
+
+from sqlalchemy import desc, select
 
 from awltux.config import Settings, get_settings
 from awltux.db import AppSetting, utcnow
@@ -74,6 +77,16 @@ DEEPSEEK_BALANCE_SCOPE = (
     "The whole DeepSeek account, shared by every key on it -- DeepSeek publishes no "
     "per-key balance. The spend beside it is this app's own calls, from llm_call."
 )
+
+#: How much of the window the balance readings must cover before a difference is shown.
+#:
+#: The strip labels every spend figure "/ 30d", so an estimate drawn from two readings taken
+#: a second apart would be printed as a monthly total -- which is the "unreadable is not
+#: zero" mistake in a new costume. Six hours is a quarter of a day: long enough that the
+#: number means something, short enough that a fresh install shows one the same working day,
+#: and well inside the hourly `provider_balance` cadence so a normal run of the job clears
+#: it on the second reading.
+MIN_ESTIMATE_SPAN = dt.timedelta(hours=6)
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +364,11 @@ def store(session, balances: list[Balance]) -> None:
     cached observation: a run that could read DeepSeek and not fal must not delete fal's
     last known figure. Each entry carries its own ``read_at``, so a stale one is visible
     as stale rather than being presented as current.
+
+    Readable readings are also **appended** to `provider_balance_reading`, which is what
+    makes a spend estimate possible for a provider whose own spend we do not log -- see
+    :func:`burn`. Unreadable ones are not: they have no amount to difference, and the
+    merged entry above already carries their state and their reason.
     """
     row = session.get(AppSetting, SETTING_KEY)
     if row is None:
@@ -360,6 +378,7 @@ def store(session, balances: list[Balance]) -> None:
     entries = dict(row.value) if isinstance(row.value, dict) else {}
     for balance in balances:
         entries[balance.provider] = balance.as_dict()
+        _append_reading(session, balance)
     row.value = entries
     row.note = "; ".join(
         f"{name}: "
@@ -367,6 +386,96 @@ def store(session, balances: list[Balance]) -> None:
         for name, entry in sorted(entries.items())
     )
     session.flush()
+
+
+def _append_reading(session, balance: Balance) -> None:
+    """Add one reading to the series, unless it is the one already at the end of it.
+
+    The guard is on ``read_at`` rather than on the value: a balance that has not moved is
+    still a reading, and it is the *same* reading being stored twice -- which happens
+    whenever a caller re-stores what it just read -- that must not become two rows and a
+    phantom zero-length interval.
+
+    A reading with no ``read_at`` is stamped with now, which is the same thing
+    :meth:`Balance.as_dict` already does with the merged entry. Both a probe and a
+    hand-built reading mean "as of this moment"; a series entry has to have a time, and
+    dropping the row instead would make a stored reading silently missing.
+    """
+    from awltux.db import ProviderBalanceReading
+
+    if balance.amount is None:
+        return
+    read_at = balance.read_at or utcnow()
+    latest = session.execute(
+        select(ProviderBalanceReading)
+        .where(ProviderBalanceReading.provider == balance.provider)
+        .order_by(desc(ProviderBalanceReading.read_at))
+        .limit(1)
+    ).scalar_one_or_none()
+    if latest is not None and _as_utc(latest.read_at) == _as_utc(read_at):
+        return
+    session.add(
+        ProviderBalanceReading(
+            provider=balance.provider,
+            amount=float(balance.amount),
+            currency=balance.currency,
+            key_name=balance.key_name,
+            read_at=read_at,
+        )
+    )
+
+
+def _as_utc(moment: dt.datetime | None) -> dt.datetime | None:
+    """A stored timestamp as UTC, so two of them can be compared across a round trip.
+
+    SQLite hands back a naive datetime for a column that was written with one, and
+    ``==`` against an aware one is then False for the same instant -- which would let the
+    same reading be appended twice on every run.
+    """
+    if moment is None:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=dt.UTC)
+
+
+def stored_readings(
+    session, *, provider: str, since: dt.datetime
+) -> list[Balance]:
+    """One provider's readings inside a window, oldest first, plus the one before it.
+
+    The boundary reading is included on purpose. Without it the first interval inside the
+    window is lost -- the drop between the last reading before the window and the first one
+    after it happened *during* the window, and leaving it out would under-count by exactly
+    the spend the estimate exists to catch.
+    """
+    from awltux.db import ProviderBalanceReading
+
+    inside = list(
+        session.execute(
+            select(ProviderBalanceReading)
+            .where(ProviderBalanceReading.provider == provider)
+            .where(ProviderBalanceReading.read_at >= since)
+            .order_by(ProviderBalanceReading.read_at)
+        ).scalars().all()
+    )
+    before = session.execute(
+        select(ProviderBalanceReading)
+        .where(ProviderBalanceReading.provider == provider)
+        .where(ProviderBalanceReading.read_at < since)
+        .order_by(desc(ProviderBalanceReading.read_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    rows = ([before] if before is not None else []) + inside
+    return [
+        Balance(
+            provider=row.provider,
+            amount=row.amount,
+            currency=row.currency,
+            key_name=row.key_name,
+            read_at=row.read_at,
+        )
+        for row in rows
+    ]
 
 
 def read_stored(session) -> list[Balance]:
@@ -421,6 +530,139 @@ def warned(balance: Balance, *, below: float) -> bool:
     return balance.amount is not None and balance.amount < below
 
 
+@dataclass(frozen=True, slots=True)
+class Burn:
+    """What a series of balance readings says about spending, and where it stops saying it.
+
+    ``spent_at_least`` is a floor, never a total -- :func:`burn` explains why every interval
+    containing a top-up is unmeasurable. The counters exist so a reader can tell an estimate
+    drawn from eleven hours of readings apart from one drawn from a month.
+    """
+
+    provider: str
+    currency: str | None = None
+    spent_at_least: float = 0.0
+    #: Money that went *in*, which is what makes the intervals around it unmeasurable.
+    topped_up: float = 0.0
+    #: Consecutive pairs actually differenced. Zero means no estimate at all.
+    intervals: int = 0
+    #: Pairs skipped because the currency or the key changed between them.
+    breaks: int = 0
+    first_at: dt.datetime | None = None
+    last_at: dt.datetime | None = None
+
+    @property
+    def known(self) -> bool:
+        return self.intervals > 0
+
+    @property
+    def span(self) -> dt.timedelta:
+        """How much time the readings actually cover."""
+        if self.first_at is None or self.last_at is None:
+            return dt.timedelta()
+        return _as_utc(self.last_at) - _as_utc(self.first_at)
+
+    @property
+    def usable(self) -> bool:
+        """Whether this is worth putting in front of a reader at all.
+
+        The window is not the series' own length: two readings taken a second apart have an
+        interval, and a figure derived from it would be printed under a ``/ 30d`` label it
+        does not deserve. See :data:`MIN_ESTIMATE_SPAN`.
+        """
+        return self.known and self.span >= MIN_ESTIMATE_SPAN
+
+    def sentence(self) -> str:
+        """Why the figure is "at least", in one line, for a tooltip.
+
+        The "floor" half is unconditional. A window in which nothing was topped up still
+        gives a floor rather than a total, because the arithmetic can only see net movement
+        -- saying so only when an increase happened would make the caveat look like a
+        footnote about this month rather than the nature of the estimate.
+        """
+        parts = [
+            f"Estimated from {self.intervals} change(s) in the provider's own balance "
+            f"over {_span_words(self.span)}, because no ledger records this provider's "
+            "calls. It is a floor and not a total: spending in an interval where the "
+            "balance rose is invisible."
+        ]
+        if self.topped_up:
+            parts.append(f"{self.topped_up:,.2f} was added to the account during the window.")
+        if self.breaks:
+            parts.append(f"{self.breaks} change(s) could not be compared at all.")
+        parts.append("Account-wide: it counts anything else using the same account.")
+        return " ".join(parts)
+
+
+def _span_words(span: dt.timedelta) -> str:
+    """A length of time as a reader would say it, for the estimate's tooltip."""
+    hours = span.total_seconds() / 3600
+    if hours < 1:
+        return f"{int(span.total_seconds() // 60)} minutes"
+    if hours < 48:
+        return f"{hours:.0f} hours"
+    return f"{hours / 24:.0f} days"
+
+
+def burn(readings: Sequence[Balance]) -> Burn:
+    """Derive a provider's spend from its balance going down between readings.
+
+    Asked for on 2026-10-09: *"The fal costs could be roughly calculated by storing the
+    balance each time it's updated and comparing it to the next balance update. It's not key
+    specific, but it's useful."* Both halves of that are right, and this is the arithmetic.
+
+    **It is a lower bound, and the reason is structural rather than a missing input.** Three
+    cases, and each is handled by refusing to guess:
+
+    * A reading lower than the last is spending: nothing else takes money out.
+    * A reading *higher* than the last is a top-up -- and it hides whatever was spent in
+      that interval. If the balance went 10.00 to 50.00 and 50.00 was added, 10.00 was
+      spent and is unobservable; if 41.00 was added, 1.00 was. Those intervals contribute
+      nothing and are counted, so the caller can say so rather than presenting the sum as
+      a total.
+    * Two readings that disagree on currency, or that were taken with differently-named
+      keys, may not even be the same account, so they are not differenced at all.
+
+    Readings must be in time order and carry an amount; the caller does that filtering
+    because it is the one holding the query.
+    """
+    usable = [row for row in readings if row.amount is not None and row.read_at is not None]
+    if not usable:
+        return Burn(provider=readings[0].provider if readings else "")
+
+    out = Burn(
+        provider=usable[0].provider,
+        currency=usable[0].currency,
+        first_at=usable[0].read_at,
+        last_at=usable[-1].read_at,
+    )
+    spent = 0.0
+    topped_up = 0.0
+    intervals = 0
+    breaks = 0
+
+    for previous, current in zip(usable, usable[1:], strict=False):
+        if previous.currency != current.currency or previous.key_name != current.key_name:
+            breaks += 1
+            continue
+        delta = float(current.amount) - float(previous.amount)
+        if delta < 0:
+            spent += -delta
+        elif delta > 0:
+            topped_up += delta
+        # A delta of exactly zero is an interval that proves nothing and costs nothing to
+        # count, so it is counted -- "eleven readings, no movement" is information.
+        intervals += 1
+
+    return replace(
+        out,
+        spent_at_least=round(spent, 4),
+        topped_up=round(topped_up, 4),
+        intervals=intervals,
+        breaks=breaks,
+    )
+
+
 __all__ = [
     "FAL_BILLING_PATH",
     "FAL_PLATFORM_BASE",
@@ -428,6 +670,8 @@ __all__ = [
     "READERS",
     "SETTING_KEY",
     "Balance",
+    "Burn",
+    "burn",
     "looks_like_payment_failure",
     "parse_deepseek",
     "parse_fal",

@@ -1165,6 +1165,44 @@ class SectorPriceIndex(Base):
     )
 
 
+class ProviderBalanceReading(Base):
+    """One dated reading of one provider's balance, kept as a series.
+
+    ``app_setting['provider_balance']`` holds the *latest* reading per provider, merged, and
+    that is what the banner needs to say whether an account can still pay. It cannot answer
+    "how fast is this draining", because every run overwrites the last one -- so the
+    readings are appended here as well.
+
+    Asked for on 2026-10-09, for fal: *"the fal costs could be roughly calculated by storing
+    the balance each time it's updated and comparing it to the next balance update."* It is
+    the only route for that provider -- its billing endpoint refuses a model key with a 403,
+    and no ledger records what an embeddings request cost -- and it is a lower bound rather
+    than a measurement. See ``providers/balances.py::burn`` for the arithmetic and exactly
+    what it cannot see.
+
+    **Only readings that produced a number are stored.** An unreadable provider is a *state*
+    rather than a measurement: it has no amount to subtract from the next reading, and a row
+    of NULLs in a series that is only ever differenced is a hole, not a datum. The latest
+    state, notes included, stays in `app_setting` where it already is.
+
+    ``key_name`` travels with the reading because the same field does on ``Balance``, and a
+    delta taken across a change of key is not comparable -- the account behind it may differ.
+    """
+
+    __tablename__ = "provider_balance_reading"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str | None] = mapped_column(String(8))
+    key_name: Mapped[str | None] = mapped_column(String(64))
+    read_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_provider_balance_provider_read", "provider", "read_at"),
+    )
+
+
 class IngestRun(Base):
     """One execution of a scheduled job: observability for the background loop."""
 
