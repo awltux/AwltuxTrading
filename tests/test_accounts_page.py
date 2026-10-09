@@ -381,6 +381,24 @@ class TestOneYearOnThePage:
         assert "chip warn" in listing, "the year list labels it as interim too"
         assert "interim" in listing
 
+    def test_a_price_per_share_keeps_its_pence(self, client, session):
+        """The page printed Microsoft's diluted EPS -- 17.95, from the filer's own accounts --
+        as **18**, because every ledger amount was formatted with no decimal places. A
+        per-share figure is a price, and the memo lines are where they appear."""
+        row = _source_period(
+            "TEST_US_EQ",
+            source="xbrl_companyfacts",
+            metrics={**BALANCED, "eps_diluted": 17.95, "dividend_per_share": 3.64},
+        )
+        _store(session, "TEST_US_EQ", row)
+        session.commit()
+
+        body = client.get(f"/accounts/{row.id}").text
+
+        assert "17.95" in body
+        assert "3.64" in body
+        assert ">18<" not in body, "the EPS was rounded to the pound"
+
     def test_a_rolling_snapshot_opens_and_says_what_it_is(self, client, session):
         """29 live instruments carry a `ttm` row, and the Accounts tab linked to them before
         this work: a link that now 404s or silently showed a fiscal year would be worse."""

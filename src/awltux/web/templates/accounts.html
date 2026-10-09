@@ -158,21 +158,21 @@
             {% else %}{{ line.label }}{% endif %}
           </td>
           <td class="num">
-            {% if line.amount is not none %}{{ line.amount | number(0) }}{% else %}<span class="muted">—</span>{% endif %}
+            {% if line.amount is not none %}{{ line.amount | number(line.decimals) }}{% else %}<span class="muted">—</span>{% endif %}
           </td>
           {# Stated and computed are columns of their own rather than a footnote: the
              residual between them is the size of the lines this project does not
              extract, and a reader who cannot see it cannot tell an extraction gap from
              a business with unusual economics. #}
           <td class="num small muted">
-            {% if line.stated is not none %}{{ line.stated | number(0) }}{% else %}—{% endif %}
+            {% if line.stated is not none %}{{ line.stated | number(line.decimals) }}{% else %}—{% endif %}
           </td>
           <td class="num small">
             {% if line.computed is none %}<span class="muted">—</span>
             {% elif line.agrees is false %}
-              <span class="warn">{{ line.computed | number(0) }}</span>
-              <span class="muted small">out by {{ line.residual | number(0) }}</span>
-            {% else %}<span class="muted">{{ line.computed | number(0) }}</span>{% endif %}
+              <span class="warn">{{ line.computed | number(line.decimals) }}</span>
+              <span class="muted small">out by {{ line.residual | number(line.decimals) }}</span>
+            {% else %}<span class="muted">{{ line.computed | number(line.decimals) }}</span>{% endif %}
           </td>
         </tr>
       {% endfor %}

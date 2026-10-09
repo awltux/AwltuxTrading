@@ -304,6 +304,53 @@ ticker. That is the difference between scepticism and censorship.
 
 ---
 
+## One set of accounts per year
+
+A company has one set of accounts for a financial year, and every source describes a view
+of it. This system stores a row per source — the SEC's own tagged submission
+(`xbrl_companyfacts`), a Yahoo statement, our model's reading of the filed 10-K
+(`llm_extraction`) — so one year can arrive three times over. Measured 2026-10-09: 394
+stored rows formed 333 accounting years, and **12 of those years held more than one
+source**.
+
+`analysis/collate.py` chooses the one row that stands for each year and reports the ones
+it displaced. **Chosen, not merged**: filling a figure the filer's row does not state
+from whichever other source does produces a set of accounts no filer ever published —
+across those 12 years Yahoo's `total_debt` runs about 10% above the filer's on four of
+them because it includes lease liabilities, `net_ppe` differs by 2.5x on two and
+`receivables` by 3.6x.
+
+- **Basis first, then source.** The full year's accounts stand for the year; an interim
+  populates the slot until they arrive, and says so. Within that, the filer's own tagged
+  accounts outrank our reading of the document, which outranks a synthesis, which
+  outranks a scraped provider. Then the later period end, then the row id, so the choice
+  is total rather than query-ordered.
+- **The accounting year comes from the filings, not a calendar.** A fixed month and day
+  cannot work: Apple's year ends drift (2024-09-28, then 2025-09-27) and a `(9, 27)` rule
+  files the first under the following year. The boundaries are the annual period ends
+  actually held, and a period after all of them belongs to the year the next annual will
+  cover.
+- **A rolling twelve months is never a year.** `ttm` is dated when it was read rather than
+  at a period end, so it never occupies a slot.
+- **Disagreements are qualified at 1%.** Of 99 live figure collisions, 8 agree within 1%
+  — the same figure rounded, or converted at a slightly different rate — and calling
+  those a disagreement would train the reader to ignore the panel.
+
+The Accounts tab lists one row per financial year; a year's page lays out the chosen
+accounts and a "where these figures came from" panel naming each displaced source, why it
+was not used, the figures only it stated, and every disagreement with both values. The
+analysis reads the same collated set, so the page and the verdict cannot disagree about
+what a year's figures are. Nothing is stored: the collated set is derived on read, and
+the rows stay exactly as the writers left them, because they are the record of what each
+source said.
+
+A price per share and a share count are not magnitudes of a statement's currency, so a
+10-K presented "in millions" does not multiply them — see `metrics.NON_MONETARY_METRICS`.
+`awltux repair-scaled` corrects rows written before that rule existed, reading each
+correction out of the span the figure was quoted from rather than re-extracting.
+
+---
+
 ## Deep-dive research
 
 The **Research** button on an instrument or sector page asks the deep model to judge
@@ -425,7 +472,7 @@ zone so that failure is visible rather than silent.
 | Page | What it shows |
 |---|---|
 | **Recommendations** | Sortable table with **both verdicts side by side**, plus a `Suits` column showing which horizon the evidence actually supports. Filters follow a selected horizon. Views for *actionable only*, *my holdings*, and *suits long/short term* |
-| **Instrument** | Decision receipt with **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, accounts, news. **Refresh now** runs the pipeline stages for this company alone — prices, filings, statements, the annual reports and what they disclose, news, sentiment, valuation, and a fresh decision — so a call can be checked against data the sweeps have not reached yet. **Research** runs a one-off deep-dive of the business and keeps the report, with the latest executive summary above the tabs |
+| **Instrument** | Decision receipt with **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, **one set of accounts per financial year**, news. **Refresh now** runs the pipeline stages for this company alone — prices, filings, statements, the annual reports and what they disclose, news, sentiment, valuation, and a fresh decision — so a call can be checked against data the sweeps have not reached yet. **Research** runs a one-off deep-dive of the business and keeps the report, with the latest executive summary above the tabs |
 | **Sectors** | A sector's own **equal-weighted price index** (each instrument rebased to 100, so a 3,000p share and a £30 one contribute the same), its sentiment heatmap, drill-down to constituents, and the same **Research** block |
 | **Calibration** | Per-horizon tabs; realised hit rate and return by confidence and by engine; high-confidence misses |
 | **Operations** | Job status and history, provider health, LLM spend, ledger verification; run any job by hand |

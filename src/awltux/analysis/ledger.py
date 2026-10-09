@@ -54,6 +54,10 @@ from awltux.metrics import value_of
 TOLERANCE_FRACTION = 0.005
 TOLERANCE_FLOOR = 1.0
 
+#: Figures quoted per share rather than as a magnitude of the statement's currency, and so
+#: printed with their pence. See `Line.decimals`, and `metrics.NON_MONETARY_METRICS` for the
+#: wider rule these belong to -- a share *count* is not here, because a count has no pence.
+PER_SHARE_METRICS: tuple[str, ...] = ("eps_diluted", "eps_basic", "dividend_per_share")
 DEBIT = "debit"
 CREDIT = "credit"
 
@@ -363,6 +367,17 @@ class Line:
         if self.stated is None or self.computed is None:
             return None
         return self.stated - self.computed
+
+    @property
+    def decimals(self) -> int:
+        """How many decimal places this line prints with.
+
+        A per-share figure is a price, and rounding one to the nearest pound is wrong about a
+        number a reader may act on: the page printed Microsoft's diluted EPS -- 17.95, from the
+        filer's own accounts -- as **18**. The monetary lines keep whole units, which is what a
+        balance sheet of hundreds of millions reads as.
+        """
+        return 2 if self.key in PER_SHARE_METRICS else 0
 
 
 @dataclass(frozen=True, slots=True)

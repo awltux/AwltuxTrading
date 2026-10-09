@@ -122,33 +122,7 @@ The two bugs before the above — a cache key that ignored the query string, and
 `uk_companies` walk that attempted the same eleven instruments on every run — were found
 together in 2026-10-07 and are in the commit log.
 
-### `SOURCE_PREFERENCE` ranks a source nothing writes, so Yahoo beats the filer's own tags
-
-Found 2026-10-16 while wiring `llm_extraction`. `analysis/fundamental.py:36` ranks
-`llm_extraction` 5, `edgar_xbrl` 4, `companies_house_ixbrl` 3, `yahoo_statements` 2,
-`yahoo_info` 1, and `_dedupe_by_period` compares `SOURCE_PREFERENCE.get(period.source, 0)`.
-No writer in the repo ever writes `source="edgar_xbrl"`; `ingest/xbrl.py` writes
-**`xbrl_companyfacts`**, which is absent from the map and therefore scores **0** — below
-both Yahoo sources. Measured 2026-10-08: **295 periods, 226 `xbrl_companyfacts`, 53
-`yahoo_statements`, 14 `yahoo_info`, 2 `llm_extraction`** (the entry read "277 periods, 226
-and 41" when written; the picture it describes is unchanged). **How much it actually costs
-today, re-counted 2026-10-08: 4 `(instrument, period_end, period_type)` groups carry two or
-more sources.** In the two `RLX_US_EQ` annual groups (2024-12-31, 2025-12-31) the scraped
-snapshot outranks the filer's tags and wins, which is the inverse of the comment above the
-map ("A figure extracted from the filed document with a citation beats a scraped
-snapshot"); the two `MSFT_US_EQ` groups go to `llm_extraction` (5) instead, so they are not
-an XBRL loss. Small, then, but silent and systematic — every future collision resolves the
-wrong way until the map names the source that is actually written.
-
-The fix is one line, but which value is a decision: `xbrl_companyfacts` is the SEC's
-aggregate of the filer's tags rather than our reading of the document, so it is arguably
-`edgar_xbrl` (4) or a name of its own. It changes which figures every marker and
-accounting check is computed from, so measure those before and after rather than assuming
-they improve.
-
-This replaces a section that read "none open". The two bugs before it — a cache key that
-ignored the query string, and a `uk_companies` walk that attempted the same eleven
-instruments on every run — were found together in 2026-10-07 and are in the commit log.
+### Two direction classes in the stylesheet match no value the column holds
 
 The nine before those — `serve` not migrating, silent DeepSeek truncation, the
 `universe_refresh` startup race, CLI/server write-lock contention, the unhelpful blank
@@ -260,14 +234,18 @@ Answered for a reader asking whether the tags in the Form 10-K are used. They ar
 and the distinction costs three things.
 
 Every stored period comes from `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json`
-(`providers/edgar.py:373`) or from a Yahoo statement, never from the document: 277 periods
-on 2026-10-16 split 226 `xbrl_companyfacts`, 41 `yahoo_statements`, 10 `yahoo_info`. The
+(`providers/edgar.py:373`) or from a Yahoo statement, never from the document: **394 periods
+on 2026-10-09 split 228 `xbrl_companyfacts`, 123 `yahoo_statements`, 33 `yahoo_info`, 10
+`llm_extraction`** (the entry read "277 periods, 226, 41 and 10" when written). The
 `companyfacts` route **is** the filer's own tagging — the SEC's aggregate of what they
 submitted — reached through a different artefact, mapped to canonical names by a
 hand-maintained `TAG_MAP` (`ingest/xbrl.py:82`) and filtered to annual forms, with the
 **earliest filed** fact winning per period so a later restatement cannot leak hindsight
-backwards. `llm_extraction` is a fourth source since the extraction began writing periods,
-and it outranks all three.
+backwards. `llm_extraction` is a fourth source since the extraction began writing periods.
+**Corrected 2026-10-09:** this entry used to end "and it outranks all three", which is no
+longer true and was the wrong rule — the filer's own tagged accounts now outrank our reading
+of the document (`analysis/collate.py::SOURCE_RANK`), which is what the accounts page is
+built on.
 
 What is unused:
 
@@ -304,7 +282,7 @@ composition check itself reads the declaration.
 ### The attention filter still cannot see a filer whose declared lines hold and do not sum
 
 The linkbase work is now wired: ingest/linkbase.py fetches and parses the calculation,
-presentation and label linkbases, nalysis/linkbase.py reconciles a stored period
+presentation and label linkbases, analysis/linkbase.py reconciles a stored period
 against the filer's declaration, and the accounts page shows the declared subtotals with
 the lines we do not hold named, valued and labelled in the filer's own words. A caption the
 declaration *proves* belongs on a line (the absent leaves account for the whole residual)
@@ -313,13 +291,13 @@ DAC_US_EQ FY2025-12-31, all four composition checks went from out by 484,596,000
 39,243,000 / 2,093,000 / 36,625,000 to **agrees, out by 0**, with the provenance naming
 every tag summed in.
 
-What is still owed is the reader: nalysis/attention.py raises a level for exactly one
+What is still owed is the reader: analysis/attention.py raises a level for exactly one
 accounting reason, ledger.equation_check (line 237). 
 econciliation.contradictions --
 a subtotal where **every** declared line is held and it still does not sum -- is the
 genuine discrepancy the ledger's own composition checks cannot express, and it belongs
 beside the equation at level 1. The measurement that makes it worth doing is in that
-module's docstring: 36 of the 43 instruments holding accounts fail ssets_composition,
+module's docstring: 36 of the 43 instruments holding accounts fail assets_composition,
 and most of those failures are our missing lines rather than the filer's arithmetic --
 which is exactly the confusion the declaration separates.
 ### Four of GWW's annual reports would be stored as index pages, not reports
@@ -1402,6 +1380,43 @@ Three ways to close it, and the choice needs a decision rather than a fix:
 
 Whichever is chosen, the *reports list* should say whether the newest decision saw it, because
 that is the question a reader has when two judgements about one company sit on one page.
+
+### The rolling twelve months is now visible nowhere
+
+Found 2026-10-09 while keying the accounts by financial year. `yahoo_info` writes a `ttm`
+row per instrument -- **33 rows across 29 instruments**, and `FundamentalPeriod.period_type`
+has carried `ttm` since the schema was written -- dated at the moment it was read rather than
+at a period end (MSFT's is 2026-10-07, mid-quarter). It is not an account of a year, so
+`analysis/collate.py` excludes it from the financial-year slots and the Accounts tab no longer
+lists it; a direct link to one still opens, and the page says what it is.
+
+Nothing is lost from the database, and the analysis is unaffected -- `build_snapshot` uses
+`ttm` only when a company has fewer than two annual periods, and no instrument has only a
+`ttm` row. What is lost is *visibility*: the freshest figures held for 29 instruments are no
+longer on any page, so a reader cannot see that a rolling snapshot exists or what it says.
+
+Two honest answers, and the choice depends on what the row is for: show it as a labelled
+footnote on the year list ("rolling twelve months to 2026-10-07, not a financial year"), or
+stop writing it and retire the `period_type` value. The second is defensible -- a trailing
+twelve months is derivable from the quarters -- but it would remove the only figure held for
+a company that has filed nothing yet, which is exactly when a reader wants one.
+
+### The accounts page mixes the filer's declaration with another source's figures
+
+Found 2026-10-09, visible on Microsoft's FY2026 page: the ledger lays out the filer's own
+tagged accounts while the Computed column and the composition checks come from the *filing's*
+declaration, read from the row our model extracted (`accounts_detail` returns `filing_period`
+for `_filer_arithmetic`). And the figures those checks add up are the chosen row's. So
+"Operating income 155,237,000,000, out by -26,710,000,000" is partly a difference between two
+sources rather than a contradiction inside the filer's own arithmetic -- in that case the
+extracted SG&A line differs from the filer's by 70%.
+
+The residual is not wrong to *show*; it is wrong to attribute to the filer's arithmetic. Two
+ways out: run the checks against the row the declaration came from and label the panel with
+which source it describes, or reconcile the declaration against the chosen row's own tag index
+so the comparison is inside one source. The first is smaller and keeps the declaration's
+figures adjacent to the lines they add up. Either way the panel has to say which source it is
+measuring, because a reader cannot currently tell.
 
 ---
 

@@ -146,6 +146,46 @@ def test_no_source_file_carries_mojibake() -> None:
     )
 
 
+def test_no_committed_text_carries_a_control_character() -> None:
+    """The other half of the same failure, and the half nothing was checking.
+
+    Found 2026-10-09 in `TODO.md`, committed and deployed: three literal `0x07` bytes where
+    a replacement string's `\\a` escape had been interpreted instead of written, so
+    `\\analysis` became BEL + "nalysis" and `\\reconciliation` became BEL + "econciliation" --
+    the first letter of the word, silently gone. The mojibake guard above did not catch it
+    because nothing was mis-decoded; the text was *shortened*, which no marker list can see.
+
+    Tabs, newlines and carriage returns are excluded because they are ordinary in a
+    repository that has CRLF files on a Windows checkout; every other C0 control, and DEL, is
+    a sign that something interpreted an escape rather than copying the bytes.
+    """
+    allowed = {0x09, 0x0A, 0x0D}
+    suffixes = {".py", ".html", ".css", ".js", ".md", ".yaml", ".yml", ".toml", ".json"}
+
+    offenders: list[str] = []
+    for name in _git("ls-files").stdout.split():
+        path = REPO / name
+        if path.suffix not in suffixes or not path.is_file():
+            continue
+        data = path.read_bytes()
+        found = sorted(
+            {
+                byte
+                for byte in data
+                if (byte < 0x20 and byte not in allowed) or byte == 0x7F
+            }
+        )
+        if found:
+            offenders.append(
+                f"{name}: " + ", ".join(f"0x{byte:02x}" for byte in found)
+            )
+
+    assert not offenders, (
+        "these committed files carry control characters, which usually means an escape "
+        "was interpreted by whatever wrote them:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_the_dockerfile_copies_the_line_ending_attributes() -> None:
     """The attribute only helps if it reaches the place the check runs.
 
