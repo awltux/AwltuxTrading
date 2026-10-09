@@ -444,6 +444,16 @@ class FundamentalPeriod(Base, TimestampMixin):
     metric_sources: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
 
+    #: What a reader changed by hand: ``{"added": {...}, "removed": {...}}``, per metric.
+    #:
+    #: **Beside the figures, not instead of them.** The corrected values are written into
+    #: ``metrics`` so every consumer sees them, and this is the record of *what was changed
+    #: and why* -- the extractor's figure for a removed line, the tag a clicked value came
+    #: from, the filing it was read out of. `ingest/fundamentals.py::_upsert_period` re-applies
+    #: it after rewriting ``metrics``, so a companyfacts re-derive cannot quietly undo a
+    #: correction. See `analysis/corrections.py`.
+    corrections: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
     filing: Mapped[Filing | None] = relationship(back_populates="periods")
 
     __table_args__ = (

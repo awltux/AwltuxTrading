@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import desc, select
 
 from awltux import __version__, version
+from awltux import metrics as metrics_module
 from awltux.analysis import adopted as adopted_map
+from awltux.analysis import corrections as corrections_rules
 from awltux.analysis import ledger
 from awltux.analysis import sectors as sector_map
 from awltux.analysis.fundamental import build_snapshot
@@ -464,9 +467,7 @@ def accounts_page(
         raise HTTPException(status_code=404, detail=f"no statement {statement!r}")
 
     with session_scope() as session:
-        detail = queries.accounts_detail(session, period_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        detail = _accounts_detail(session, period_id)
 
     period = detail["period"]
     previous = detail["previous"]
@@ -483,6 +484,11 @@ def accounts_page(
         session, detail["instrument"], detail.get("filing_period") or period, request
     )
     declared = arithmetic.pop("declared")
+    # What a reader has changed by hand, and whether there is a filer to change it for.
+    instrument = detail["instrument"]
+    corrections_context = _corrected_accounts(
+        session, period, instrument, request.query_params.get("corrections")
+    )
 
     return templates.TemplateResponse(
         request,
@@ -491,7 +497,7 @@ def accounts_page(
             "period": period,
             "previous": previous,
             "year": detail["year"],
-            "instrument": detail["instrument"],
+            "instrument": instrument,
             "statement": statement,
             "tabs": [
                 {
@@ -515,8 +521,29 @@ def accounts_page(
             "period_type": period.period_type,
             "source": period.source,
             "metric_sources": (period.metric_sources or {}),
+            **corrections_context,
         },
     )
+
+
+def _corrected_accounts(
+    session: Any, period: Any, instrument: Any, outcome: str | None
+) -> dict[str, Any]:
+    """What a reader has changed about this period, ready for the page's context.
+
+    A named step rather than lines in the route, because it is the one part of the accounts page
+    that is about *this project* rather than about the filing: everything above it is the filer's
+    own arithmetic, and this is the record of where a person disagreed with it.
+    """
+    cik = instrument.sec_cik if instrument is not None else None
+    rules = corrections_rules.load_filer(session, cik)
+    return {
+        "corrections": corrections_rules.corrections_for(period, rules),
+        "correction_note": CORRECTION_NOTES.get(outcome or ""),
+        # Offered only where there is a filer to offer it for: a removal recorded against a CIK
+        # that this period does not have would have nothing to apply to.
+        "cik": cik,
+    }
 
 
 def _filer_arithmetic(
@@ -651,9 +678,7 @@ def read_filing_linkbase(period_id: int) -> RedirectResponse:
     # period ends we hold this filing reported. The session is closed before the first
     # request goes out, so no database lock is held across it.
     with session_scope() as session:
-        detail = queries.accounts_detail(session, period_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
         accession = reconciliation.accession(period)
         cik = instrument.sec_cik if instrument is not None else None
@@ -717,9 +742,7 @@ def adopt_declared_lines(period_id: int) -> RedirectResponse:
 
     outcome = "no-filing"
     with session_scope() as session:
-        detail = queries.accounts_detail(session, period_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
         cik = instrument.sec_cik if instrument is not None else None
         stored = linkbases.stored(session, reconciliation.accession(period))
@@ -756,9 +779,7 @@ def forget_adopted_lines(period_id: int) -> RedirectResponse:
     from awltux.ingest.xbrl import sync_xbrl_fundamentals
 
     with session_scope() as session:
-        detail = queries.accounts_detail(session, period_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        detail = _accounts_detail(session, period_id)
         instrument = detail["instrument"]
         if instrument is None or not instrument.sec_cik:
             raise HTTPException(status_code=404, detail="no filer for this period")
@@ -778,9 +799,7 @@ def forget_filing_linkbase(period_id: int) -> RedirectResponse:
     from awltux.ingest import linkbase as linkbases
 
     with session_scope() as session:
-        detail = queries.accounts_detail(session, period_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+        detail = _accounts_detail(session, period_id)
         accession = reconciliation.accession(detail["period"])
         linkbases.forget(session, accession)
 
@@ -788,6 +807,303 @@ def forget_filing_linkbase(period_id: int) -> RedirectResponse:
         url=f"/accounts/{period_id}/health?linkbase=forgotten#filer-arithmetic",
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Correcting the accounts by hand
+# --------------------------------------------------------------------------- #
+# The stored figures are what a writer put there -- an XBRL tag, a Yahoo statement, a model's
+# reading of a 10-K -- and automated extraction is wrong often enough that a reader who can
+# see the mistake has to be able to fix it. What a correction changes is the *stored* figures,
+# not the display of them: see `analysis/corrections.py` for why, and for what is recorded so
+# that the fix does not destroy the record it contradicts.
+
+#: What each correction outcome says on the page it returns to. The code travels in the URL
+#: and the sentence is chosen here, so nothing a reader typed is ever echoed back as page text.
+CORRECTION_NOTES: dict[str, str] = {
+    "removed": "The line was taken out of these accounts.",
+    "removed-filer": "The line was taken out of every period this filer has.",
+    "added": "The line was written into these accounts.",
+    "forgotten": "The correction was undone; the line is as the filing had it.",
+    "rule-forgotten": "The filer-wide removal was undone for every period this filer has.",
+    "already-removed": "That line had already been taken out, so nothing changed.",
+    "nothing-to-undo": "There was no correction on that line to undo.",
+    "no-rule": "There was no filer-wide removal on that line to undo.",
+    "no-line": "That is not one of the accounts on this statement, so nothing was changed.",
+    "bad-value": "That is not a figure, so nothing was changed.",
+}
+
+#: The origins an added figure may carry. Anything else is recorded as typed, because the
+#: distinction is "a person read this out of a filing" against "a person entered it", and a
+#: value that came from anywhere else has no filing to point at.
+CORRECTION_ORIGINS = ("typed", "filing")
+
+
+def _accounts_detail(session: Any, period_id: int) -> dict[str, Any]:
+    """One period's accounts, or a 404. The lookup every accounts route begins with."""
+    detail = queries.accounts_detail(session, period_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
+    return detail
+
+
+def _correction_tab(statement: str | None) -> str:
+    """The tab a correction returns to: the one it was made from, or the first."""
+    return statement if statement in ledger.TAB_NAMES else ledger.DEFAULT_STATEMENT
+
+
+def _correction_redirect(
+    period_id: int, statement: str | None, outcome: str
+) -> RedirectResponse:
+    """Back to the accounts with what happened in the URL, next to the panel it concerns."""
+    return RedirectResponse(
+        url=f"/accounts/{period_id}/{_correction_tab(statement)}?corrections={outcome}#corrections",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _parse_figure(raw: str) -> float | None:
+    """A figure a reader typed, or ``None`` when it is not one.
+
+    Thousands separators and a currency symbol are accepted, because a reader copying a number
+    out of a filing brings them along. A number in parentheses is **negative**: that is how a
+    filing prints a credit, and reading ``(1,234)`` as a positive figure would put a wrong
+    number on the balance sheet with nothing to complain about.
+    """
+    text = re.sub(r"^[$£€¥]", "", (raw or "").strip())
+    negative = text.startswith("(") and text.endswith(")")
+    if negative:
+        text = text[1:-1]
+    text = text.replace(",", "").replace("\u00a0", "").replace(" ", "")
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return -number if negative else number
+
+
+def _line_choices(which: str) -> list[dict[str, Any]]:
+    """The chart's lines for one statement, grouped by the section that prints them.
+
+    This is the picker a reader gets when adding a line. The headings are the statement's own,
+    so the question the form asks is "which heading does this figure belong under" rather than
+    one that needs the project's metric vocabulary to answer.
+    """
+    groups: dict[str, list[ledger.Account]] = {}
+    for account in ledger.CHART:
+        if account.statement == which:
+            groups.setdefault(account.section, []).append(account)
+    return [{"section": title, "lines": lines} for title, lines in groups.items()]
+
+
+@router.get(
+    "/accounts/{period_id}/corrections/new",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def corrections_form(
+    request: Request,
+    period_id: int,
+    remove: str | None = None,
+    section: str | None = None,
+    metric: str | None = None,
+    value: str = "",
+    tag: str = "",
+    url: str = "",
+    statement: str = ledger.DEFAULT_STATEMENT,
+) -> HTMLResponse:
+    """The page that confirms a correction before it is made.
+
+    A page of its own rather than a form posted straight from the ledger, because each
+    correction has to decide something the line itself cannot say: a removal needs to know
+    whether it applies to this period or to every period the filer has, and an addition needs
+    a figure and a side. Keeping it out of the ledger also keeps that table a statement of the
+    accounts rather than a form.
+
+    It is not a dialog *inside* the filing, either: the filing is served sandboxed, so a form
+    rendered in it could not post back here at all.
+
+    ``metric``, ``value``, ``tag`` and ``url`` prefill the form, which is how a figure read out
+    of the filing arrives here: the picker on the filing page cannot make the correction itself,
+    because it runs on an opaque origin with nothing but its own document -- so it hands the
+    reader to this page with what they clicked, and the decision is still made here.
+    """
+    tab = _correction_tab(statement)
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        record = corrections_rules.load_period(period)
+        rules = corrections_rules.load_filer(session, cik)
+        metrics = period.metrics or {}
+        if remove is not None and remove not in ledger.BY_KEY:
+            raise HTTPException(status_code=404, detail=f"no line {remove!r}")
+        target = None
+        if remove is not None:
+            entry = (period.metric_sources or {}).get(remove) or {}
+            target = {
+                "account": ledger.BY_KEY[remove],
+                "value": metrics_module.value_of(metrics, remove),
+                "tag": entry.get("span") or "",
+                "accession": entry.get("accession") or "",
+                # A line a filer-wide rule already removes is not something this period's own
+                # page can put back: its undo is the rule's, and the form says so.
+                "filer_rule": remove in rules.removed,
+                "removed": remove in record.removed or remove in rules.removed,
+            }
+        context = {
+            "period": period,
+            "instrument": instrument,
+            "cik": cik,
+            "statement": tab,
+            "mode": "remove" if target else "add",
+            "target": target,
+            "section": section or "",
+            "groups": _line_choices(tab),
+            "held": set(metrics),
+            "sides": corrections_rules.SIDES,
+            # A line named by the picker is chosen outright; otherwise the section the reader
+            # pressed "add a line" beside decides which line the form opens on.
+            "chosen": metric if metric in ledger.BY_KEY else "",
+            "value": value,
+            "tag": tag,
+            "url": url,
+        }
+    return templates.TemplateResponse(request, "corrections.html", context)
+
+
+@router.post("/accounts/{period_id}/corrections/remove", include_in_schema=False)
+def remove_corrected_line(
+    period_id: int,
+    metric: str = Form(...),
+    statement: str = Form(ledger.DEFAULT_STATEMENT),
+    reason: str = Form(""),
+    scope: str = Form("period"),
+) -> RedirectResponse:
+    """Take a line out of the accounts, for this period or for every period the filer has.
+
+    A removal is written through into the stored figures, so every reader of them sees the
+    corrected accounts and not only this page -- the modules from the ledger upwards.
+    """
+    if metric not in ledger.BY_KEY:
+        return _correction_redirect(period_id, statement, "no-line")
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        rules = corrections_rules.load_filer(session, cik)
+        record = corrections_rules.load_period(period)
+        # A filer-wide scope needs a filer to record it against; without one the correction is
+        # still made, for this period only, rather than dropped on the floor.
+        filer_wide = scope == "filer" and bool(cik)
+        if metric in record.removed or metric in rules.removed:
+            outcome = "already-removed"
+        else:
+            corrections_rules.remove(
+                period,
+                metric,
+                reason=reason,
+                scope="filer" if filer_wide else "period",
+                rules=rules,
+            )
+            if filer_wide:
+                corrections_rules.save_filer(session, cik, rules)
+                # The other periods of this filer read their own rows, so the rule has to reach
+                # them now rather than at each one's next sync -- otherwise two periods of the
+                # same company would disagree on screen about the same line.
+                corrections_rules.reapply_filer(session, cik, rules)
+            outcome = "removed-filer" if filer_wide else "removed"
+    return _correction_redirect(period_id, statement, outcome)
+
+
+@router.post("/accounts/{period_id}/corrections/add", include_in_schema=False)
+def add_corrected_line(
+    period_id: int,
+    metric: str = Form(...),
+    value: str = Form(""),
+    side: str = Form(corrections_rules.CREDIT),
+    statement: str = Form(ledger.DEFAULT_STATEMENT),
+    tag: str = Form(""),
+    url: str = Form(""),
+    note: str = Form(""),
+    origin: str = Form("typed"),
+) -> RedirectResponse:
+    """Put a figure on a line by hand, on this period's row and no other.
+
+    A figure belongs to the period it was stated for, so unlike a removal this cannot be
+    carried to the filer's other periods; see the module docstring of `analysis/corrections.py`.
+    """
+    figure = _parse_figure(value)
+    if metric not in ledger.BY_KEY:
+        return _correction_redirect(period_id, statement, "no-line")
+    if figure is None:
+        return _correction_redirect(period_id, statement, "bad-value")
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        rules = corrections_rules.load_filer(session, cik)
+        corrections_rules.add(
+            period,
+            metric,
+            value=figure,
+            side=side,
+            tag=tag.strip(),
+            url=url.strip(),
+            note=note.strip(),
+            origin=origin if origin in CORRECTION_ORIGINS else "typed",
+            rules=rules,
+        )
+    return _correction_redirect(period_id, statement, "added")
+
+
+@router.post("/accounts/{period_id}/filer-rules/forget", include_in_schema=False)
+def forget_correction_rule(
+    period_id: int,
+    metric: str = Form(...),
+    statement: str = Form(ledger.DEFAULT_STATEMENT),
+) -> RedirectResponse:
+    """Undo a removal that was made for every period the filer has.
+
+    Its own route rather than a flag on the line's undo, because it is a different act: the
+    line comes back in every period this filer filed, not only the one on screen. The figure
+    is restored from each row's own evidence -- the rule took a *different* figure out of each
+    period, so only that period can say what it was.
+    """
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        filer = detail["instrument"]
+        cik = filer.sec_cik if filer is not None else None
+        if not cik:
+            return _correction_redirect(period_id, statement, "no-rule")
+        rules = corrections_rules.load_filer(session, cik)
+        if not corrections_rules.forget_rule(rules, metric):
+            return _correction_redirect(period_id, statement, "no-rule")
+        corrections_rules.save_filer(session, cik, rules)
+        corrections_rules.reapply_filer(session, cik, rules, restoring=metric)
+    return _correction_redirect(period_id, statement, "rule-forgotten")
+
+
+@router.post(
+    "/accounts/{period_id}/corrections/{metric}/forget", include_in_schema=False
+)
+def forget_corrected_line(
+    period_id: int,
+    metric: str,
+    statement: str = Form(ledger.DEFAULT_STATEMENT),
+) -> RedirectResponse:
+    """Undo this period's own correction to a line, and put back what it displaced."""
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        rules = corrections_rules.load_filer(session, cik)
+        outcome = (
+            "forgotten"
+            if corrections_rules.forget(period, metric, rules=rules)
+            else "nothing-to-undo"
+        )
+    return _correction_redirect(period_id, statement, outcome)
 
 
 @router.get("/decisions", response_class=HTMLResponse, include_in_schema=False)

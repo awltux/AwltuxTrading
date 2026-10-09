@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Remove a line' if mode == 'remove' else 'Add a line' }} — {{ app_name }}{% endblock %}
+
+{#
+  Confirming one correction to one set of accounts.
+
+  A page of its own rather than a form on the ledger, and for a reason that is not layout: a
+  removal has to be told whether it applies to this period alone or to every period the filer
+  has, and an addition has to be told a figure and a side. Both are decisions about the
+  correction rather than about the accounts, so they are asked here and the ledger stays a
+  statement of the accounts.
+
+  Nothing here is a verdict either. What the line currently says is shown beside the form,
+  with the tag it came from, because the reader's whole reason for being on this page is that
+  they think the extracted figure is wrong -- and they should be able to see it before they
+  remove it.
+#}
+
+{% block content %}
+<p class="muted small">
+  <a href="/accounts/{{ period.id }}/{{ statement }}">&larr; {{ instrument.name if instrument else period.instrument_t212_ticker }}
+    accounts to {{ period.period_end }}</a>
+</p>
+
+{% if mode == 'remove' %}
+  <h1>Take out “{{ target.account.label }}”</h1>
+  <p class="muted small">
+    This changes the stored accounts, not just this page: the ledger, the checks, the markers
+    and every decision taken from these figures read the corrected set. What the extractor had
+    said is kept as the record of what was removed, so the change can be undone.
+  </p>
+
+  <section class="kv">
+    <div><dt>Section</dt><dd>{{ target.account.section }}</dd></div>
+    <div><dt>Normal side</dt><dd>{{ target.account.side }}</dd></div>
+    <div>
+      <dt>These accounts say</dt>
+      <dd>
+        {% if target.value is not none %}{{ target.value | number(0) }}
+        {% else %}<span class="muted">nothing was extracted for this line</span>{% endif %}
+      </dd>
+    </div>
+    {% if target.tag %}
+      <div>
+        <dt>Extracted from</dt>
+        <dd><code>{{ target.tag }}</code>
+          {%- if target.accession %} <span class="muted small">accession {{ target.accession }}</span>{% endif %}
+        </dd>
+      </div>
+    {% endif %}
+  </section>
+
+  {% if target.removed %}
+    <p class="notice">
+      This line has already been taken out
+      {%- if target.filer_rule %}, by a removal recorded against this filer so that it applies
+        to every period it has. That rule has its own undo, on the accounts page — this page
+        can only speak for the period it is showing{% endif %}.
+    </p>
+    <p><a href="/accounts/{{ period.id }}/{{ statement }}#corrections">Back to the accounts</a></p>
+  {% else %}
+    <form method="post" action="/accounts/{{ period.id }}/corrections/remove">
+      <input type="hidden" name="metric" value="{{ target.account.key }}">
+      <input type="hidden" name="statement" value="{{ statement }}">
+      <p>
+        <label for="reason">Why it is wrong <span class="muted small">(optional, kept with the record)</span></label><br>
+        <textarea id="reason" name="reason" rows="2" cols="60"
+                  placeholder="e.g. the extractor read the lease liability as other liabilities"></textarea>
+      </p>
+      {% if cik %}
+        <p>
+          <label>
+            <input type="checkbox" name="scope" value="filer">
+            Take it out of every period this filer has, not only this one
+          </label>
+        </p>
+        <p class="muted small">
+          A line that is not one of this company's accounts is usually not one of its accounts
+          in any year, so the wider scope is offered. It is recorded against the filer's CIK
+          <code>{{ cik }}</code> and can be undone from any of its periods.
+        </p>
+      {% endif %}
+      <button type="submit">Take the line out</button>
+    </form>
+  {% endif %}
+
+{% else %}
+  <h1>Add a line to these accounts</h1>
+  <p class="muted small">
+    A figure put in by hand is a fact about <em>this period</em> only: it is stored on this set
+    of accounts, not carried to the company's other years. If it is one the extractor missed,
+    it is also worth copying to the other periods it applies to.
+  </p>
+
+  <form method="post" action="/accounts/{{ period.id }}/corrections/add">
+    <input type="hidden" name="statement" value="{{ statement }}">
+
+    <p>
+      <label for="metric">Which line of the {{ statement | replace('_', ' ') | capitalize }}</label><br>
+      <select id="metric" name="metric">
+        {% for group in groups %}
+          <optgroup label="{{ group.section }}">
+            {% for line in group.lines %}
+              <option value="{{ line.key }}"
+                      {% if line.key == chosen or (not chosen and section and group.section == section and loop.first) %}selected{% endif %}>
+                {{ line.label }}{% if line.key in held %} — already has a figure{% endif %}
+              </option>
+            {% endfor %}
+          </optgroup>
+        {% endfor %}
+      </select>
+    </p>
+
+    <p>
+      <label for="value">Figure</label><br>
+      <input id="value" name="value" inputmode="decimal" required value="{{ value }}"
+             placeholder="1234.5, or (1234.5) for a credit">
+      <span class="muted small">
+        Thousands separators, a currency symbol and a figure in parentheses — a filing's way of
+        printing a negative — are all understood.
+      </span>
+    </p>
+
+    <p>
+      Side:
+      {% for side in sides %}
+        <label><input type="radio" name="side" value="{{ side }}"
+                      {% if loop.first %}checked{% endif %}> {{ side }}</label>
+      {% endfor %}
+      <span class="muted small">
+        The side the figure is posted on, which is what the trial balance uses. The line's own
+        normal side is a good default; it is asked rather than assumed because a credit posted
+        as a debit changes the accounting equation.
+      </span>
+    </p>
+
+    <p>
+      <label for="tag">Tag <span class="muted small">(optional)</span></label><br>
+      <input id="tag" name="tag" size="40" value="{{ tag }}"
+             placeholder="us-gaap:OperatingLeaseLiabilityNoncurrent">
+      <span class="muted small">The taxonomy tag the figure was read from, when it came from a filing.</span>
+    </p>
+
+    <p>
+      <label for="url">Filing <span class="muted small">(optional)</span></label><br>
+      <input id="url" name="url" size="60" value="{{ url }}"
+             placeholder="https://www.sec.gov/Archives/...">
+      <span class="muted small">So the next reader can go back to the line you read it from.</span>
+    </p>
+
+    <p>
+      <label for="note">Note <span class="muted small">(optional)</span></label><br>
+      <input id="note" name="note" size="60" placeholder="e.g. taken from the consolidated balance sheet">
+    </p>
+
+    <button type="submit">Write it in</button>
+  </form>
+{% endif %}
+{% endblock %}

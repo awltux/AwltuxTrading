@@ -222,6 +222,16 @@ FIELDS: tuple[Field, ...] = (
         "and only a row where every declared line is held and the sum still disagrees is "
         "a contradiction between the filing's arithmetic and the figures we read.",
     ),
+    Field(
+        "corrected",
+        "Corrections",
+        "Lines a person has taken out of these accounts, or figures they have put in, "
+        "because the automated extraction got them wrong.",
+        "Each one changes the stored figures rather than only this page, so the ledger, "
+        "the checks and every decision taken from these accounts see the corrected set. "
+        "What the extractor had said is kept beside the change, which is what makes it "
+        "undoable -- and what says how much of the automation needed a person.",
+    ),
     # ------------------------------------------------------------ the counters
     Field(
         "universe_size",

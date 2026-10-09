@@ -504,6 +504,23 @@ footer {
 .ledger tfoot td { border-top: 1px solid var(--line); font-weight: 600; padding-top: 6px; }
 .ledger td code, .ledger th { white-space: nowrap; }
 
+/* The per-line action column: "remove", and the empty cell that keeps the table's columns
+   aligned for the rows that have nothing to offer. Quiet by default -- it is an escape hatch
+   for a wrong figure, not something to read on the way past. */
+.ledger td.act { text-align: right; white-space: nowrap; }
+.ledger td.act a { text-decoration: none; }
+.ledger td.act a:hover { color: var(--warn); text-decoration: underline; }
+
+/* What a person has changed about these accounts, above the figures it changes. Set apart
+   from the statements because it is a statement *about* them: every row below it is a line
+   that is not what the filing said, and a reader who cannot see this will read the difference
+   as an extraction fault. */
+.accounts-corrections {
+  margin: 18px 0 22px; padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--line);
+}
+.accounts-corrections h2 { margin-top: 4px; }
+
 /* What a field is, on hover or on keyboard focus.
    See `partials/_help.html`: the text rides in `data-help`, so this needs no script.
    `cursor: help` and the dotted underline are the affordance -- a bare "?" would be

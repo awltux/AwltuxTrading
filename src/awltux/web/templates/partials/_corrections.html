@@ -1,0 +1,95 @@
+{# What a person has changed about this period's accounts.
+
+   Rendered on every accounts tab, above the figures, because the whole point of recording a
+   correction is that the figure below it is *not* what the filing said — and a reader who
+   cannot see that will read the difference as an extraction fault and go looking for it.
+
+   One panel for additions and removals together. To the reader they are the same kind of
+   thing, a line that is not what the source said, and two panels would make them hunt for
+   which one a mistake is in.
+
+   The filer-wide entries carry their own undo, and it is a different undo: the line comes
+   back in every period the company filed, not only this one. #}
+
+{% from "partials/_help.html" import help %}
+{% set note = correction_note %}
+{% if note or corrections %}
+  <section class="accounts-corrections" id="corrections">
+    <h2>Corrections to these accounts{{ help('corrected') }}</h2>
+    {% if note %}<p class="notice">{{ note }}</p>{% endif %}
+    {% if corrections %}
+      <p class="muted small">
+        Each row below changed the <strong>stored</strong> figures, so the ledger, the checks
+        and everything decided from these accounts read the corrected set. Undoing one puts
+        back what the extractor had said.
+      </p>
+      <table class="grid compact">
+        <thead>
+          <tr><th>Line</th><th>What was done</th><th class="num">Figure</th>
+              <th>Scope</th><th>When</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for change in corrections %}
+          <tr>
+            <td>
+              <code>{{ change.metric }}</code>
+              {% if change.tag %}<br><span class="muted small">{{ change.tag }}</span>{% endif %}
+            </td>
+            <td>
+              {% if change.action == 'added' %}
+                <span class="good">added</span>
+                {% if change.origin == 'filing' %}<span class="muted small">from the filing</span>{% endif %}
+                {% if change.overrides_rule %}
+                  <br><span class="muted small">
+                    overriding the removal recorded for every period this filer has: a figure
+                    put in by hand is applied after the rules
+                  </span>
+                {% endif %}
+              {% else %}
+                <span class="warn">removed</span>
+              {% endif %}
+              {% if change.note %}<br><span class="muted small">{{ change.note }}</span>{% endif %}
+              {% if change.url %}<br><a class="small" href="{{ change.url }}" rel="noreferrer noopener">the filing</a>{% endif %}
+            </td>
+            <td class="num">
+              {% if change.value is not none %}{{ change.value | number(0) }}{% else %}<span class="muted">—</span>{% endif %}
+              {% if change.side %}<br><span class="muted small">{{ change.side }}</span>{% endif %}
+            </td>
+            <td class="small">
+              {% if change.scope == 'filer' %}
+                every period this filer has
+              {% else %}
+                this period
+              {% endif %}
+            </td>
+            <td class="small muted">{{ change.at }}</td>
+            <td>
+              {% if change.scope == 'filer' %}
+                <form method="post" action="/accounts/{{ period.id }}/filer-rules/forget" class="inline">
+                  <input type="hidden" name="metric" value="{{ change.metric }}">
+                  <input type="hidden" name="statement" value="{{ statement }}">
+                  <button type="submit" class="small">Put it back everywhere</button>
+                </form>
+              {% else %}
+                <form method="post" action="/accounts/{{ period.id }}/corrections/{{ change.metric }}/forget" class="inline">
+                  <input type="hidden" name="statement" value="{{ statement }}">
+                  <button type="submit" class="small">Undo</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+    <p class="muted small">
+      Something in the extracted accounts is wrong?
+      {% if built %}
+        <a href="/accounts/{{ period.id }}/corrections/new?statement={{ built.which }}">Add a line</a>
+        that the extractor missed, or press <em>remove</em> beside a line it got wrong.
+      {% else %}
+        Add a line from any of the statements.
+      {% endif %}
+    </p>
+  </section>
+{% endif %}

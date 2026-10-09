@@ -565,6 +565,23 @@ def _upsert_period(
     row.as_of = utcnow()
     if metric_sources is not None:
         row.metric_sources = metric_sources
+
+    # **And a correction outlives the re-derive that reproduces the row.** The write above
+    # replaces every figure with what the payload says, which is what this function is for --
+    # but a line a reader removed, or a value they put back by hand, is a statement about the
+    # filing that the payload does not contain. Re-applied here rather than in each caller so
+    # every writer gets it: the four `_upsert_period` call sites are the only way a period's
+    # figures are ever rewritten.
+    #
+    # Only when there is something to apply: a row nobody has corrected is left exactly as its
+    # writer made it, derived ratios included, because a provider's own margins are not ours to
+    # overwrite. The filer rules are read whatever happens, so a rule recorded after a period
+    # was last written still reaches it the next time that period is.
+    from awltux.analysis import corrections as corrections_module
+
+    rules = corrections_module.load_filer(session, instrument.sec_cik)
+    if row.corrections or rules:
+        corrections_module.apply_to_row(row, rules)
     return row
 
 
