@@ -12,6 +12,7 @@ import datetime as dt
 
 import pytest
 
+from awltux.db import FundamentalPeriod
 from tests.helpers import make_instrument, make_period
 
 BALANCED = {
@@ -259,3 +260,140 @@ class TestTheHealthTab:
         body = client.get(f"/accounts/{period.id}/health").text
 
         assert "not computable" in body
+
+
+def _source_period(
+    ticker: str,
+    *,
+    source: str,
+    period_end: dt.date = dt.date(2024, 12, 31),
+    metrics: dict | None = None,
+    period_type: str = "annual",
+) -> FundamentalPeriod:
+    """One source's row for a year, with no derived ratios to confuse the counts."""
+    return FundamentalPeriod(
+        instrument_t212_ticker=ticker,
+        source=source,
+        period_end=period_end,
+        period_type=period_type,
+        currency="GBP",
+        metrics=metrics if metrics is not None else dict(BALANCED),
+        confidence=0.7,
+    )
+
+
+class TestOneYearOnThePage:
+    """Measured 2026-10-09: 12 of 333 accounting years held more than one source, ten of them
+    carrying the filer's own tags, a Yahoo statement and our reading of the same 10-K. They are
+    one set of accounts seen three times -- and the page used to print them as three years."""
+
+    def _three_sources(self, session, client):
+        rows = [
+            _source_period(
+                "TEST_US_EQ",
+                source="yahoo_statements",
+                # `ebitda` is stated only here, and the filer's own row does not carry it.
+                metrics={**BALANCED, "revenue": 1_050.0, "ebitda": 340.0},
+            ),
+            _source_period("TEST_US_EQ", source="llm_extraction", metrics={**BALANCED, "revenue": 1_000.0}),
+            _source_period("TEST_US_EQ", source="xbrl_companyfacts", metrics={**BALANCED, "revenue": 1_000.0}),
+        ]
+        _store(session, "TEST_US_EQ", *rows)
+        session.commit()
+        return rows
+
+    def test_the_accounts_tab_lists_one_row_per_year(self, client, session):
+        rows = self._three_sources(session, client)
+
+        body = client.get("/instrument/TEST_US_EQ?tab=accounts").text
+
+        assert body.count('/accounts/') == 1, "one year, one row"
+        assert "xbrl_companyfacts" in body
+        assert rows[2].id, "the link is the chosen row's id"
+
+    def test_the_year_page_lays_out_the_filers_own_accounts(self, client, session):
+        self._three_sources(session, client)
+
+        # The year's link is the *chosen* row's id, which is how a reader gets there.
+        xbrl_id = client.get("/instrument/TEST_US_EQ?tab=accounts").text.split("/accounts/")[1].split('"')[0]
+
+        body = client.get(f"/accounts/{xbrl_id}").text
+
+        assert "the filer's own accounts" in body
+        assert "1,000" in body, "the filer's revenue, not Yahoo's 1,050"
+
+    def test_the_sources_it_displaced_are_named_with_what_they_said(self, client, session):
+        self._three_sources(session, client)
+        link = client.get("/instrument/TEST_US_EQ?tab=accounts").text.split('/accounts/')[1]
+        xbrl_id = link.split('"')[0]
+
+        body = client.get(f"/accounts/{xbrl_id}").text
+
+        assert "2 other sources" in body
+        assert "yahoo_statements" in body and "llm_extraction" in body
+        assert "1,050" in body, "the figure Yahoo stated is shown, beside the one in force"
+        assert "disagrees" in body
+        assert "ebitda" in body and "not in these accounts" in body, (
+            "a figure only another source states is reported as unused, not merged in"
+        )
+
+    def test_a_link_to_a_row_that_lost_still_opens_its_year(self, client, session):
+        rows = self._three_sources(session, client)
+        yahoo_id = rows[0].id
+
+        response = client.get(f"/accounts/{yahoo_id}")
+
+        assert response.status_code == 200
+        assert "the filer's own accounts" in response.text, "the year, not the superseded row"
+
+    def test_the_comparable_is_the_previous_year_and_not_the_previous_source(
+        self, client, session
+    ):
+        """It used to be matched on source, which now compares a year whose accounts come from
+        the filer with one whose accounts come from Yahoo."""
+        older = _source_period(
+            "TEST_US_EQ", source="yahoo_statements", period_end=dt.date(2023, 12, 31)
+        )
+        newer = _source_period("TEST_US_EQ", source="xbrl_companyfacts")
+        _store(session, "TEST_US_EQ", older, newer)
+        session.commit()
+
+        body = client.get(f"/accounts/{newer.id}").text
+
+        assert "2023-12-31" in body
+        assert "Comparable" in body
+
+    def test_an_interim_year_says_the_annual_has_not_been_filed(self, client, session):
+        interim = _source_period(
+            "TEST_US_EQ",
+            source="yahoo_statements",
+            period_end=dt.date(2024, 6, 30),
+            period_type="interim",
+        )
+        _store(session, "TEST_US_EQ", interim)
+        session.commit()
+
+        body = client.get(f"/accounts/{interim.id}").text
+        listing = client.get("/instrument/TEST_US_EQ?tab=accounts").text
+
+        assert "interim accounts" in body
+        assert "full year's have not been filed" in body
+        assert "chip warn" in listing, "the year list labels it as interim too"
+        assert "interim" in listing
+
+    def test_a_rolling_snapshot_opens_and_says_what_it_is(self, client, session):
+        """29 live instruments carry a `ttm` row, and the Accounts tab linked to them before
+        this work: a link that now 404s or silently showed a fiscal year would be worse."""
+        rolling = _source_period(
+            "TEST_US_EQ",
+            source="yahoo_info",
+            period_end=dt.date(2024, 12, 31),
+            period_type="ttm",
+        )
+        _store(session, "TEST_US_EQ", rolling)
+        session.commit()
+
+        response = client.get(f"/accounts/{rolling.id}")
+
+        assert response.status_code == 200
+        assert "rolling twelve months" in response.text

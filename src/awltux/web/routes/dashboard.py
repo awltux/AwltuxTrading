@@ -295,6 +295,7 @@ def _instrument_context(
         "waiting_note": chart["waiting_note"],
         "filings": detail["filings"],
         "fundamentals": detail["fundamentals"],
+        "account_years": detail["account_years"],
         "news": detail["news"],
         "news_events": detail["news_events"],
         "news_clustering": detail["news_clustering"],
@@ -471,11 +472,16 @@ def accounts_page(
     previous = detail["previous"]
     metrics = period.metrics or {}
     # The same snapshot the instrument page reads, over the periods up to this one, so
-    # the markers and red flags here cannot disagree with the ones shown there.
+    # the markers and red flags here cannot disagree with the ones shown there. The series is
+    # the collated years, so the snapshot is computed from the same figures the ledger lays out.
     snapshot = build_snapshot(detail["series"])
     # Read once, because the filer's declared arithmetic drives both: the statement's
-    # Computed column and the composition checks. See `_filer_arithmetic`.
-    arithmetic = _filer_arithmetic(session, detail["instrument"], period, request)
+    # Computed column and the composition checks. See `_filer_arithmetic`. The row is the one
+    # read from a filed document when there is one, because the linkbase belongs to a filing
+    # and the chosen row may be the SEC's own aggregate.
+    arithmetic = _filer_arithmetic(
+        session, detail["instrument"], detail.get("filing_period") or period, request
+    )
     declared = arithmetic.pop("declared")
 
     return templates.TemplateResponse(
@@ -484,6 +490,7 @@ def accounts_page(
         {
             "period": period,
             "previous": previous,
+            "year": detail["year"],
             "instrument": detail["instrument"],
             "statement": statement,
             "tabs": [

@@ -750,28 +750,61 @@
 {% elif tab == 'accounts' %}
 {# ------------------------------------------------------------- fundamentals #}
 <h2>Accounts</h2>
-{% if fundamentals %}
+{#
+  One row per *financial year*, not one per stored row.
+
+  Every writer stores its own row, so a single year arrives up to three times over -- the SEC's
+  own tags, a Yahoo statement, our model's reading of the filed 10-K -- and this table used to
+  print them as three separate years of figures. They are three views of one set of accounts.
+  `analysis/collate.py` chooses which row stands for each year (the filer's own accounts first,
+  then the full year over an interim) and the rows it displaced are reported on the year's page
+  rather than mixed in.
+#}
+{% if account_years %}
   <p class="muted small">
-    Open a period to see it as a set of accounts — profit &amp; loss, balance sheet and
-    cash flow, laid out as a double-entry ledger, with the checks that say whether the
-    figures add up.
+    One set of accounts per financial year. A year's figures come from a single source &mdash;
+    the filer's own tagged accounts where they exist, otherwise our reading of the filed
+    document, otherwise a provider's copy &mdash; and any other source that described the same
+    year is listed on the year's page rather than averaged into it.
+    Open a year for the statements, the checks and what the other sources said.
   </p>
   <table class="grid compact">
-    <thead><tr><th>Period end</th><th>Type</th><th>Source</th><th class="num">Revenue</th><th class="num">Net income</th><th class="num">ROE</th><th class="num">Net margin</th><th class="num">Confidence</th></tr></thead>
-    <tbody>
-    {% for period in fundamentals %}
+    <thead>
       <tr>
-        {# The date is the way in. It carries the period's id rather than its date
-           because the unique key is (instrument, period end, type, source), so a date
-           alone can name more than one stored period. #}
-        <td><a href="/accounts/{{ period.id }}">{{ period.period_end }}</a></td>
-        <td>{{ period.period_type }}</td>
-        <td>{{ period.source }}</td>
-        <td class="num">{{ period.metrics.get('revenue') | number(0) }}</td>
-        <td class="num">{{ period.metrics.get('net_income') | number(0) }}</td>
-        <td class="num">{{ period.metrics.get('roe') | pct(1, false) }}</td>
-        <td class="num">{{ period.metrics.get('net_margin') | pct(1, false) }}</td>
-        <td class="num">{{ period.confidence | pct0 }}</td>
+        <th>Financial year</th><th>Basis</th><th>Source</th>
+        <th class="num">Revenue</th><th class="num">Net income</th><th class="num">ROE</th>
+        <th class="num">Net margin</th><th>Other sources</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for year in account_years %}
+      {% set row = year.chosen %}
+      <tr>
+        {# The year is the way in, and it carries the *chosen* row's id: a link to a source
+           row that lost still opens its year, and the page names which source it came from. #}
+        <td>
+          <a href="/accounts/{{ row.id }}">{{ year.label }}</a>
+          <span class="muted small">FY{{ year.fiscal_year }}</span>
+        </td>
+        <td>
+          {{ year.basis }}
+          {% if year.provisional %}<span class="chip warn" title="The full year's accounts have not been filed yet">interim</span>{% endif %}
+        </td>
+        <td class="small">{{ year.source }}</td>
+        <td class="num">{{ row.metrics.get('revenue') | number(0) }}</td>
+        <td class="num">{{ row.metrics.get('net_income') | number(0) }}</td>
+        <td class="num">{{ row.metrics.get('roe') | pct(1, false) }}</td>
+        <td class="num">{{ row.metrics.get('net_margin') | pct(1, false) }}</td>
+        <td class="small">
+          {% if year.superseded %}
+            {{ year.superseded | length }} replaced
+            {%- if year.discrepancies %},
+              <span class="warn">{{ year.discrepancies | length }} figure{{ '' if year.discrepancies | length == 1 else 's' }} disagree</span>
+            {%- endif %}
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
       </tr>
     {% endfor %}
     </tbody>

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from awltux.analysis import attention as attention_rules
 from awltux.analysis import macro, sectors
 from awltux.analysis.attention import Reason
+from awltux.analysis.collate import collate
 from awltux.analysis.embeddings import group_events
 from awltux.analysis.relevance import MATERIALITY_ORDER, MATERIALITY_WEIGHT
 from awltux.analysis.sentiment import UNASSESSED_WEIGHT
@@ -1070,6 +1071,12 @@ def instrument_detail(
     # indexed reads rather than the pages, appraisals and embeddings the news block costs.
     deep_dives = research_reports(session, subject_type="instrument", subject_id=ticker)
 
+    # One row per accounting year, whatever the sources behind it. The `fundamentals` list
+    # stays as it is -- it is the evidence, one row per source -- and this is the view a reader
+    # is shown: `analysis/collate.py` decides which row stands for each year and reports the
+    # ones it displaced.
+    account_years = list(reversed(collate(list(fundamentals)))) if fundamentals else []
+
     trades, trades_truncated = (
         _trades_for(session, ticker) if "trades" in wanted else ([], False)
     )
@@ -1080,6 +1087,7 @@ def instrument_detail(
         "valuation": valuation,
         "filings": filings,
         "fundamentals": fundamentals,
+        "account_years": account_years,
         "outcomes": _decision_outcomes(decision),
         "trades": trades,
         "trades_truncated": trades_truncated,
@@ -1214,51 +1222,127 @@ def research_reports(
 
 
 def accounts_detail(session: Session, period_id: int) -> dict[str, Any] | None:
-    """One stored period, the comparable one before it, and its instrument.
+    """One *accounting year's* accounts, the comparable year before it, and the instrument.
 
-    **The predecessor is matched on period type and source, not on date alone.** The
-    articulation checks compare closing figures against opening ones, and comparing an
-    annual XBRL period with the interim snapshot an extractor produced three months
-    later would produce a retained-earnings roll-forward that measures the gap between
-    two taxonomies rather than the movement in the business. Same type, same source, so
-    the two periods are the same kind of statement.
+    **A link to any source's row resolves to the year it belongs to.** The rows are the
+    evidence -- one per source, each saying what that source stated -- and what a reader wants
+    when they click a year is the one set of accounts for it, chosen by
+    `analysis/collate.py`. So ``period`` here is the *chosen* row, ``year`` carries the rows it
+    superseded and the figures they disagreed on, and a link to a row that lost still opens the
+    year it described rather than 404ing or showing a figure no longer in force.
 
-    ``None`` for a period that does not exist, which the route turns into a 404 rather
-    than an empty page: an accounts page with no accounts is not a useful answer.
+    **The predecessor is the year before, matched on basis.** The articulation checks compare
+    closing figures against opening ones, so the comparison must be the same kind of statement:
+    an annual against an annual, an interim against the interim that preceded it. Matching on
+    the *source* as it used to would now compare a year whose accounts come from the filer with
+    one whose accounts come from Yahoo.
     """
     period = session.get(FundamentalPeriod, period_id)
     if period is None:
         return None
 
+    rows = list(
+        session.execute(
+            select(FundamentalPeriod)
+            .where(FundamentalPeriod.instrument_t212_ticker == period.instrument_t212_ticker)
+            .order_by(FundamentalPeriod.period_end)
+        ).scalars().all()
+    )
+    years = collate(rows)
+    year = _year_holding(years, period)
+
+    if year is None:
+        return _rolling_snapshot(session, period)
+
+    chosen = year.chosen
+    return {
+        "period": chosen,
+        "year": year,
+        "previous": _previous_year(years, year),
+        "instrument": session.get(Instrument, period.instrument_t212_ticker),
+        # Everything up to and including this year, oldest first, one row per year: the health
+        # tab runs the same analysis the instrument page does, and truncating the series is
+        # what stops it reporting on a later year than the accounts being read.
+        "series": [
+            candidate.chosen
+            for candidate in years
+            if (candidate.chosen.period_end or dt.date.min)
+            <= (chosen.period_end or dt.date.max)
+        ],
+        # The row the *filing's* arithmetic is read from: the linkbase belongs to an accession,
+        # and the chosen row may be the SEC's aggregate with no document behind it while the row
+        # it superseded was read from the 10-K.
+        "filing_period": _filing_period(year),
+    }
+
+
+def _year_holding(years: list[Any], period: FundamentalPeriod) -> Any:
+    """The accounting year a row belongs to, whether it won that year or lost it.
+
+    A link to a row that lost still opens the year it described, rather than showing figures
+    that are no longer in force or 404ing on a period the database holds.
+    """
+    return next(
+        (
+            candidate
+            for candidate in years
+            if candidate.chosen is period
+            or any(loser.period is period for loser in candidate.superseded)
+        ),
+        None,
+    )
+
+
+def _previous_year(years: list[Any], year: Any) -> Any:
+    """The chosen accounts of the year before, on the same basis.
+
+    The articulation checks compare closing figures against opening ones, so the comparison
+    must be the same kind of statement. Matching on the *source*, as this used to, would now
+    compare a year whose accounts come from the filer with one whose accounts come from Yahoo.
+    """
+    index = years.index(year)
+    return next(
+        (
+            candidate.chosen
+            for candidate in reversed(years[:index])
+            if candidate.chosen.period_type == year.chosen.period_type
+        ),
+        None,
+    )
+
+
+def _rolling_snapshot(session: Session, period: FundamentalPeriod) -> dict[str, Any]:
+    """A `ttm` row's page: it has no year, and the page says so rather than inventing one.
+
+    A rolling twelve months is dated when it was read rather than at a period end, so it never
+    occupies a fiscal-year slot. It is still a stored row that links point at -- 29 live
+    instruments carry one -- so it opens as itself.
+    """
     previous = session.execute(
         select(FundamentalPeriod)
         .where(FundamentalPeriod.instrument_t212_ticker == period.instrument_t212_ticker)
         .where(FundamentalPeriod.period_type == period.period_type)
-        .where(FundamentalPeriod.source == period.source)
         .where(FundamentalPeriod.period_end < period.period_end)
         .order_by(desc(FundamentalPeriod.period_end))
         .limit(1)
     ).scalar_one_or_none()
-
-    # Everything up to and including the period on screen, oldest first. The health
-    # tab runs the same analysis the instrument page does, and truncating the series
-    # is what stops it reporting on a later year than the accounts being read -- a
-    # page showing 2022 figures next to 2024 verdicts is worse than no verdicts.
-    series = list(
-        session.execute(
-            select(FundamentalPeriod)
-            .where(FundamentalPeriod.instrument_t212_ticker == period.instrument_t212_ticker)
-            .where(FundamentalPeriod.period_end <= period.period_end)
-            .order_by(FundamentalPeriod.period_end)
-        ).scalars().all()
-    )
-
     return {
         "period": period,
+        "year": None,
         "previous": previous,
         "instrument": session.get(Instrument, period.instrument_t212_ticker),
-        "series": series,
+        "series": [period],
+        "filing_period": period,
     }
+
+
+def _filing_period(year: Any) -> Any:
+    """Which row of a year can be reconciled against a published linkbase."""
+    candidates = [year.chosen, *(loser.period for loser in year.superseded)]
+    for candidate in candidates:
+        if candidate.source == "llm_extraction":
+            return candidate
+    return year.chosen
 
 
 def recent_news(

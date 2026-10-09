@@ -23,19 +23,106 @@
 
 <h1>
   {{ instrument.name if instrument else period.instrument_t212_ticker }}
-  <span class="muted small">accounts to {{ period.period_end }}</span>
+  <span class="muted small">
+    {% if year %}financial year {{ year.fiscal_year }}{% else %}rolling twelve months{% endif %}
+    to {{ period.period_end }}
+  </span>
 </h1>
+
+{% if year and year.provisional %}
+  {# The year's own annual accounts have not been filed or fetched, so the slot is standing on
+     an interim. The reader is told rather than left to notice the basis line. #}
+  <p class="notice">
+    These are interim accounts: the full year's have not been filed yet, so this year is
+    represented by the most recent account of it held. It will be replaced when the annual
+    accounts arrive.
+  </p>
+{% elif year is none %}
+  <p class="notice">
+    A rolling twelve months is a snapshot dated when it was read, not a set of accounts for a
+    financial year — so it is shown on its own rather than as a year's figures.
+  </p>
+{% endif %}
 
 <section class="kv">
   <div><dt>Period end</dt><dd>{{ period.period_end }}</dd></div>
   <div><dt>Basis</dt><dd>{{ period_type }}{% if currency %} · {{ currency }}{% endif %}</dd></div>
-  <div><dt>Source</dt><dd>{{ source }}</dd></div>
+  <div><dt>Source</dt><dd>{{ source }}{% if year and year.government %} <span class="chip">the filer's own accounts</span>{% endif %}</dd></div>
   {% if previous %}
     <div><dt>Comparable</dt><dd>{{ previous.period_end }} ({{ previous.period_type }}, {{ previous.source }})</dd></div>
   {% else %}
     <div><dt>Comparable</dt><dd class="muted">none stored on the same basis</dd></div>
   {% endif %}
 </section>
+
+{# -------------------------------------------------------------- the sources #}
+{#
+  One set of accounts, and the record of what it displaced.
+
+  Every writer stores its own row, so one financial year can arrive three times over: the
+  SEC's own tags, a Yahoo statement and our model's reading of the filed 10-K. They are three
+  views of one set of accounts, not three years, and the page shows the chosen one. What the
+  others said is not deleted and not merged in: a figure taken from another source's definition
+  is not part of these accounts, so it is listed here instead -- with the figures that
+  disagreed, because a disagreement between the filer and a copy of the filer is the reader's
+  business.
+#}
+{% if year and year.superseded %}
+  <details class="accounts-sources">
+    <summary class="muted small">
+      {{ year.superseded | length }} other source{{ '' if year.superseded | length == 1 else 's' }}
+      described this year
+      {%- if year.discrepancies %} · {{ year.discrepancies | length }} figure{{ '' if year.discrepancies | length == 1 else 's' }} disagree{% endif %}
+      {%- if year.excluded_figures %} · {{ year.excluded_figures }} figure{{ '' if year.excluded_figures == 1 else 's' }} not used{% endif %}
+    </summary>
+    <p class="muted small">
+      These accounts are the {{ source }} ones. The sources below describe the same financial
+      year; nothing from them is mixed in, because a set of accounts assembled from two
+      sources is a statement no filer ever published.
+    </p>
+    <table class="grid compact">
+      <thead>
+        <tr>
+          <th>Source</th><th>Basis</th><th>Period end</th>
+          <th class="num">Figures</th><th>Why it was not used</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in year.superseded %}
+        <tr>
+          <td>{{ row.source }}</td>
+          <td class="small">{{ row.period.period_type }}</td>
+          <td class="small">{{ row.period.period_end }}</td>
+          <td class="num small">{{ (row.period.metrics or {}) | length }}</td>
+          <td class="small muted">{{ row.reason }}</td>
+        </tr>
+        {% if row.only_here %}
+          <tr>
+            <td></td>
+            <td colspan="4" class="small muted">
+              states {% for name in row.only_here %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+              — not in these accounts, because {{ row.source }} is not where this year's
+              figures come from
+            </td>
+          </tr>
+        {% endif %}
+        {% for difference in row.discrepancies %}
+          <tr>
+            <td></td>
+            <td colspan="4" class="small">
+              <span class="bad">disagrees</span>
+              on <code>{{ difference.metric | replace('_', ' ') }}</code>:
+              {{ difference.chosen_value | number }} here against
+              {{ difference.other_value | number }} in {{ difference.other_source }}
+              <span class="muted">({{ difference.relative | pct(1, false) }} apart)</span>
+            </td>
+          </tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+{% endif %}
 
 {% if empty %}
   <p class="notice warn">
