@@ -320,6 +320,19 @@ class TestTheHealthTab:
         assert "Cash and equivalents" in check.work
         assert "out by 50 (stated \u2212 computed)" in check.work
 
+    def test_the_profit_articulation_check_shows_the_cascade(self, session):
+        """The health row and the statement line audit the same subtraction, so hovering one
+        and then the other must not give two accounts of it."""
+        period = make_period("TEST_US_EQ", dt.date(2024, 12, 31), dict(BALANCED))
+
+        check = next(
+            item for item in ledger.checks(period) if item.key == "profit_articulation"
+        )
+
+        assert "added up" in check.work
+        assert "Profit before tax" in check.work
+        assert "Tax" in check.work
+
     def test_a_line_with_no_arithmetic_has_no_working(self):
         """A figure with nothing behind it has nothing to investigate, and a tooltip that said
         so would be noise on every row."""

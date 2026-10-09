@@ -1343,12 +1343,17 @@ def profit_articulation(period: FundamentalPeriod) -> Check:
     audit pass a statement that is visibly wrong.
     """
     metrics = period.metrics or {}
+    # The cascade's own working travels with the figure, so the health row explains itself the
+    # same way the statement line it audits does -- a reader hovering one and then the other
+    # must not get two different accounts of the same subtraction.
+    work = _profit_cascade(metrics)["net_income"]
     return _agree(
         "profit_articulation",
         "Lines we hold reconcile to reported profit",
         _stated(metrics, "net_income"),
-        _profit_cascade(metrics)["net_income"].total,
+        work.total,
         "income and expense lines against reported profit",
+        work=work,
     )
 
 
