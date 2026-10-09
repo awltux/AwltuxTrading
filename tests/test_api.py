@@ -1837,6 +1837,42 @@ class TestNewsScepticismSurface:
         assert "badge" in body
         assert "unconfirmed" in body or "framing" in body
 
+    @staticmethod
+    def _hover_hint(body: str) -> str:
+        """The ticker link's `title`, which is what the browser shows on hover."""
+        return body.split('class="ticker-link"', 1)[1].split('title="', 1)[1].split('">', 1)[0]
+
+    def test_the_flash_ticker_hover_shows_the_relevance_string(self, client, session, appraised):
+        """Asked for after looking deeper: the string exists, the hover just did not use it.
+
+        "When I click a ticker news item it does have a Relevance string, but the ticker
+        hover doesnt currently use it, it currently re-displays the heading."
+        """
+        appraised.relevance_reason = "One unknown blog, and no figure behind the claim."
+        session.commit()
+
+        hint = self._hover_hint(client.get("/partials/news-ticker").text)
+
+        assert hint.startswith(
+            "Relevance: One unknown blog, and no figure behind the claim."
+        ), hint
+        assert "wipes out investors" not in hint, (
+            "the headline is on the bar already; the hint is for what it cannot show"
+        )
+        # The metadata that is not on the bar is untouched.
+        assert "TEST_US_EQ" in hint and "priority" in hint
+
+    def test_the_flash_ticker_hover_falls_back_to_the_heading(self, client, appraised):
+        """With no relevance string stored, the hint is what it was, character for character.
+
+        The fallback is the *current* attribute -- headline, then the same metadata -- so a
+        story the classifier has not judged reads exactly as it did before this change.
+        """
+        hint = self._hover_hint(client.get("/partials/news-ticker").text)
+
+        assert hint.startswith("SHOCKING: test company meltdown wipes out investors"), hint
+        assert "Relevance:" not in hint
+
     def test_the_instrument_page_explains_what_the_story_rests_on(self, client, appraised):
         body = client.get("/instrument/TEST_US_EQ").text
         assert "What this story rests on" in body

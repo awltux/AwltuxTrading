@@ -21,7 +21,14 @@
   <span class="ticker-item mat-{{ entry.materiality | materiality_class }}">
     <a class="ticker-link"
        href="{{ entry.local_url }}"
-       title="{{ entry.title }}{% if entry.tickers %} — {{ entry.tickers | join(', ') }}{% endif %} · priority {{ entry.priority }}{% if entry.event and entry.event.size > 1 %} · {{ entry.event.size }} stories covering this{% endif %}{% if entry.scepticism %} · {{ entry.scepticism.grade }} evidence, weight {{ entry.scepticism.credibility | pct0 }}{% if entry.scepticism.source %} · {{ entry.scepticism.source }}{% endif %}{% endif %}">
+       {# The hover hint leads with the *relevance* string, not the headline: the headline
+          is already on the bar in front of the reader, so repeating it in a tooltip spends
+          the one line of hover text on the only thing they can already see. When no
+          relevance string was stored the hint falls back to the headline, which is exactly
+          what it was before -- the same attribute, character for character. The metadata
+          that is *not* on the bar (which instruments, priority, what covers it, the
+          appraisal) follows either way and is unchanged. #}
+       title="{% if entry.relevance_reason %}Relevance: {{ entry.relevance_reason }}{% else %}{{ entry.title }}{% endif %}{% if entry.tickers %} — {{ entry.tickers | join(', ') }}{% endif %} · priority {{ entry.priority }}{% if entry.event and entry.event.size > 1 %} · {{ entry.event.size }} stories covering this{% endif %}{% if entry.scepticism %} · {{ entry.scepticism.grade }} evidence, weight {{ entry.scepticism.credibility | pct0 }}{% if entry.scepticism.source %} · {{ entry.scepticism.source }}{% endif %}{% endif %}">
       {% if entry.tickers %}<span class="chip">{{ entry.tickers | join(', ') }}</span>{% endif %}
       <span class="ticker-title">{{ entry.title }}</span>
       {% if entry.direction %}<span class="dir dir-{{ entry.direction }}">{{ entry.direction }}</span>{% endif %}
