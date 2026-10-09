@@ -244,6 +244,21 @@ recorded with the basis for each judgement, because a judgement with no stated
 basis is indistinguishable from a prejudice. The table is dated; unknown publishers
 are *unrated*, which is not the same as disreputable.
 
+Resolving that publisher is not the same as reading `news_item.source`, which is the
+*feed*. Google News supplies the great majority of the corpus and hands over a redirect
+URL, so the URL names Google rather than the writer; the publisher is read from the
+masthead the headline carries ("… - Simply Wall Street") instead, and from the URL where
+the feed stores the publisher's own address. Measured on 2026-10-09: 26,591 of the 27,895
+stories then held carried a Google News URL, and **6,700 of the 6,974 appraisals recorded
+their source as "Google News"** — the scepticism layer was grading claims against the pipe
+for 96% of the corpus. Re-rating them (`awltux news-publishers`, no model calls) named
+1,175 distinct publishers across 28,174 stories and left 2,423 appraisals on a genuinely
+aggregator source.
+
+The registry is smaller than the corpus: of those 1,175 named publishers it can rate 54,
+so most appraisals now say "unrated — no assessment on file", which is the honest state
+and not a failure of the resolution.
+
 Self-interest does not push credibility one way. A company announcing good news
 about itself is discounted hard; the same company announcing a profit warning is
 not, because nobody says that against their own interest casually.

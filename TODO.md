@@ -968,6 +968,42 @@ makes it eligible for catch-up. The loop also needs the `progress.note` above it
 either can be observed.
 
 
+### The source registry rates 54 of the 1,175 publishers the corpus actually names
+
+Measured 2026-10-09, after `awltux news-publishers` resolved every stored story to its
+writer (`analysis/sources.identify`): **28,174 stories name 1,175 distinct publishers**,
+and `analysis/sources._REGISTRY` holds **54**. So 4,205 of the 6,974 stored appraisals now
+carry `source_assessed = False` and the grade's "unrated source" caveat — named honestly
+and rated not at all, which is the correct state and also a large blind spot.
+
+The head is small and would be cheap to cover. Stories, not appraisals:
+
+    Yahoo Finance        7,642   (rated: aggregator)
+    Stock Titan          1,760   unrated
+    Investing.com        1,432   (rated)
+    TradingView          1,362   unrated
+    Simply Wall St       1,318   (rated via the `simplywall.st` domain, not by name)
+    MarketBeat           1,118   unrated
+    AD HOC NEWS            937   unrated
+    Seeking Alpha          937   (rated: opinion)
+    The Motley Fool        513   unrated
+    dars.gov.et            512   unrated
+
+**Two things to weigh before adding entries.** The registry is editorial judgement with a
+stated basis and a `REVIEWED_ON` date, so 20 entries is 20 judgements someone has to stand
+behind -- and several of the unrated names are aggregators that republish rather than
+report, which is a `kind` decision and not just a name. Second, the tail is not all
+publishers, and `dars.gov.et` at 512 rows shows why: sampled 2026-10-09, those headlines
+carry *two* suffixes -- "… Shares Test Key Support Levels - Zero Gamma Level -
+dars.gov.et" -- with the middle one varying per row (Zero Gamma Level, ETF Flow, Elliott
+Wave Entry, Dividend ETF) over a handful of tickers. That reads as machine-generated
+content wearing a masthead rather than an outlet, and it is the clearest case of the ~12%
+of suffixes that are a bare domain. `identify` cannot tell the two apart on shape, because
+a great many real mastheads *are* domains (`finance.yahoo.com`, `kalkine.ca`) and those
+resolve correctly through `lookup`. Sample the tail before believing the head.
+
+`tests/test_news_publisher.py` pins the parse; nothing pins the registry's coverage.
+
 ### Four pagers still reload the whole page
 
 The recommendations table on `/dashboard` swaps in place (`partials/recommendations.html`,
