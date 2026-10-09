@@ -489,6 +489,9 @@ def accounts_page(
     corrections_context = _corrected_accounts(
         session, period, instrument, request.query_params.get("corrections")
     )
+    # The filing behind these figures, when they are the government's own XBRL and we hold the
+    # document: that is what lets the page open it at the line that does not reconcile.
+    filing = _filing_target(session, period, statement)
 
     return templates.TemplateResponse(
         request,
@@ -499,15 +502,7 @@ def accounts_page(
             "year": detail["year"],
             "instrument": instrument,
             "statement": statement,
-            "tabs": [
-                {
-                    "name": name,
-                    "label": label,
-                    "url": f"/accounts/{period_id}/{name}",
-                    "active": name == statement,
-                }
-                for name, label in ledger.TABS
-            ],
+            "tabs": _account_tabs(period_id, statement),
             "built": (
                 ledger.statement(period, statement, declared=declared)
                 if statement in ledger.STATEMENT_KINDS
@@ -521,9 +516,78 @@ def accounts_page(
             "period_type": period.period_type,
             "source": period.source,
             "metric_sources": (period.metric_sources or {}),
+            "filing": filing,
             **corrections_context,
         },
     )
+
+
+def _filing_target(session: Any, period: Any, statement: str) -> dict[str, Any] | None:
+    """The stored filing behind a period the *government's own* XBRL describes.
+
+    Asked for directly: *"if the accounts for a period are based on government xbrl, convert the
+    'out by Y' field into links that open the relevant government report in a separate tab e.g.
+    10-K for USA"*. Two conditions, and both matter:
+
+    * **The accounts have to come from the filer's own submission.** A residual against a
+      Yahoo statement or a model's reading of a document is a residual against a copy, and
+      opening the real 10-K beside it would invite the reader to correct our figures from a
+      source the page has already decided not to use.
+    * **We have to hold the document.** ``raw_path`` is the stored copy; the accession alone
+      would mean an EDGAR fetch on the reader's click, which is a provider call this page does
+      not make.
+
+    The accession is matched against the Filing row's URL rather than against a column of its
+    own, because that is where it is: ``0001193125-26-323660`` is in the path. Matched on the
+    dashes-stripped form, since EDGAR's file names carry it as one token.
+    """
+    from awltux.analysis import collate
+    from awltux.analysis import linkbase as reconciliation
+
+    if period.source not in collate.GOVERNMENT_SOURCES:
+        return None
+    accession = reconciliation.accession(period)
+    if not accession:
+        return None
+    row = session.execute(
+        select(Filing)
+        .where(Filing.instrument_t212_ticker == period.instrument_t212_ticker)
+        .where(Filing.raw_path.is_not(None))
+        .where(Filing.url.like(f"%{accession.replace('-', '')}%"))
+        .order_by(desc(Filing.filed_at))
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "type": row.filing_type or "filing",
+        "url": row.url or "",
+        # The coordinates travel in the picker's own query string, so its script has nothing to
+        # decide: which period and which line are fixed by the link the reader pressed. The
+        # period *end* goes with them because a filing prints the current year and the prior year
+        # in one row under one caption, both tagged, and the script marks a figure clicked out of
+        # the wrong column rather than letting it be written in.
+        "pick": (
+            f"/filing/{row.id}/pick"
+            f"?awltux_period={period.id}&awltux_statement={quote(statement)}"
+            f"&awltux_period_end={period.period_end.isoformat()}"
+        ),
+        "document": f"/filing/{row.id}/document",
+    }
+
+
+def _account_tabs(period_id: int, statement: str) -> list[dict[str, Any]]:
+    """The tab strip: one real URL per statement, so each can be linked to and bookmarked."""
+    return [
+        {
+            "name": name,
+            "label": label,
+            "url": f"/accounts/{period_id}/{name}",
+            "active": name == statement,
+        }
+        for name, label in ledger.TABS
+    ]
 
 
 def _corrected_accounts(
@@ -910,6 +974,8 @@ def corrections_form(
     value: str = "",
     tag: str = "",
     url: str = "",
+    note: str = "",
+    origin: str = "typed",
     statement: str = ledger.DEFAULT_STATEMENT,
 ) -> HTMLResponse:
     """The page that confirms a correction before it is made.
@@ -936,21 +1002,7 @@ def corrections_form(
         record = corrections_rules.load_period(period)
         rules = corrections_rules.load_filer(session, cik)
         metrics = period.metrics or {}
-        if remove is not None and remove not in ledger.BY_KEY:
-            raise HTTPException(status_code=404, detail=f"no line {remove!r}")
-        target = None
-        if remove is not None:
-            entry = (period.metric_sources or {}).get(remove) or {}
-            target = {
-                "account": ledger.BY_KEY[remove],
-                "value": metrics_module.value_of(metrics, remove),
-                "tag": entry.get("span") or "",
-                "accession": entry.get("accession") or "",
-                # A line a filer-wide rule already removes is not something this period's own
-                # page can put back: its undo is the rule's, and the form says so.
-                "filer_rule": remove in rules.removed,
-                "removed": remove in record.removed or remove in rules.removed,
-            }
+        target = _removal_target(period, remove, record, rules)
         context = {
             "period": period,
             "instrument": instrument,
@@ -968,8 +1020,39 @@ def corrections_form(
             "value": value,
             "tag": tag,
             "url": url,
+            # The picker fills this with the filing's own caption for the line -- "filed as:
+            # Property and equipment, net" -- so the record says where the figure was read from
+            # in the filer's words rather than in a taxonomy's.
+            "note": note,
+            "origin": origin if origin in CORRECTION_ORIGINS else "typed",
         }
     return templates.TemplateResponse(request, "corrections.html", context)
+
+
+def _removal_target(
+    period: Any, remove: str | None, record: Any, rules: Any
+) -> dict[str, Any] | None:
+    """What the form shows about the line being taken out, or nothing when it is an addition.
+
+    A named step because the confirmation page has two modes and this is what decides which:
+    the presence of a target *is* the mode, rather than a second flag that could disagree with
+    it. What a reader wants before agreeing is the figure and where it was extracted from.
+    """
+    if remove is None:
+        return None
+    if remove not in ledger.BY_KEY:
+        raise HTTPException(status_code=404, detail=f"no line {remove!r}")
+    entry = (period.metric_sources or {}).get(remove) or {}
+    return {
+        "account": ledger.BY_KEY[remove],
+        "value": metrics_module.value_of(period.metrics or {}, remove),
+        "tag": entry.get("span") or "",
+        "accession": entry.get("accession") or "",
+        # A line a filer-wide rule already removes is not something this period's own page can
+        # put back: its undo is the rule's, and the form says so.
+        "filer_rule": remove in rules.removed,
+        "removed": remove in record.removed or remove in rules.removed,
+    }
 
 
 @router.post("/accounts/{period_id}/corrections/remove", include_in_schema=False)
@@ -1620,6 +1703,34 @@ def _header_safe(value: str) -> str:
     return value.encode("ascii", "replace").decode("ascii")
 
 
+def _stored_document(filing_id: int) -> tuple[Any, str, str]:
+    """Where a filing's bytes are, its media type, and its title -- or a 404.
+
+    The path is re-resolved against the data directory before it is opened. It comes from our
+    own database, but a stored path is still a path, and a route that joins one to a root
+    without checking is how a traversal arrives. Shared by the two routes that serve a filing,
+    so the check cannot be tightened on one and forgotten on the other.
+    """
+    settings = get_settings()
+    with session_scope() as session:
+        filing = session.get(Filing, filing_id)
+        if filing is None or not filing.raw_path:
+            raise HTTPException(
+                status_code=404, detail=f"no stored document for filing {filing_id}"
+            )
+        raw_path = filing.raw_path
+        document_type = filing.content_type or "text/html"
+        title = filing.title or filing.filing_type or "filing"
+
+    data_dir = settings.data_dir.resolve()
+    path = (data_dir / raw_path).resolve()
+    if not path.is_relative_to(data_dir) or not path.is_file():
+        raise HTTPException(
+            status_code=404, detail=f"stored document for filing {filing_id} is missing"
+        )
+    return path, document_type, title
+
+
 @router.get("/filing/{filing_id}/document", include_in_schema=False)
 def filing_document(filing_id: int) -> Response:
     """Serve a downloaded shareholders' report so it can be read.
@@ -1632,28 +1743,12 @@ def filing_document(filing_id: int) -> Response:
     10-K and refuse to let it do anything else. Deliberately not `allow-same-origin`,
     which would hand back exactly the access the policy exists to remove.
 
-    The path is re-resolved against the data directory before it is opened. It comes
-    from our own database, but a stored path is still a path, and a route that joins
-    one to a root without checking is how a traversal arrives.
+    Bare ``sandbox``, with nothing allowed: this is the route a reader opens to *read* a
+    filing, and it needs no script to do that. The picker at ``/filing/{id}/pick`` is the one
+    that runs a script, and it is a separate URL with a separate policy so that relaxing
+    anything is a visible, testable decision rather than a property of every filing view.
     """
-    settings = get_settings()
-    with session_scope() as session:
-        filing = session.get(Filing, filing_id)
-        if filing is None or not filing.raw_path:
-            raise HTTPException(
-                status_code=404,
-                detail=f"no stored document for filing {filing_id}",
-            )
-        raw_path = filing.raw_path
-        document_type = filing.content_type or "text/html"
-        title = filing.title or filing.filing_type or "filing"
-
-    data_dir = settings.data_dir.resolve()
-    path = (data_dir / raw_path).resolve()
-    if not path.is_relative_to(data_dir) or not path.is_file():
-        raise HTTPException(
-            status_code=404, detail=f"stored document for filing {filing_id} is missing"
-        )
+    path, document_type, title = _stored_document(filing_id)
 
     return Response(
         content=path.read_bytes(),
@@ -1668,6 +1763,81 @@ def filing_document(filing_id: int) -> Response:
             "Cache-Control": "private, max-age=86400",
             "X-Document": _header_safe(title[:120]),
         },
+    )
+
+
+#: What the picker's own script is allowed to be, and why nothing else is.
+#:
+#: The filing is third-party HTML and it arrives with whatever the filer's filing agent wrote,
+#: including inline ``on*`` handlers -- which a ``sandbox`` directive does **not** disable,
+#: because event handlers are governed by ``script-src``, not by the sandbox. So the policy
+#: names the one script the page may run. It cannot be ``'self'``: the sandbox puts the document
+#: in an *opaque* origin, and an opaque origin matches no source expression, so the origin is
+#: spelled out from the request the browser actually made.
+_PICKER_SCRIPT = "/static/filing-picker.js"
+
+
+def _picker_origin(request: Request) -> str:
+    """The origin this request was served from, as the browser sees it."""
+    url = request.url
+    return f"{url.scheme}://{url.netloc}"
+
+
+def _strip_scripts(document: str) -> str:
+    """Remove every script the filing brought with it.
+
+    Both halves are needed. The policy above stops the *inline* handlers from running at all,
+    but a document carrying a ``<script src>`` from somewhere else would still be a network
+    request the filer chose, and the reader's picker is not the place for it. A parser would be
+    the thorough answer; a filing's scripts are exactly the tags and the regex is bounded by
+    the document being static HTML.
+    """
+    without_paired = re.sub(r"<script\b[^>]*>.*?</script\s*>", "", document, flags=re.I | re.S)
+    return re.sub(r"<script\b[^>]*/\s*>", "", without_paired, flags=re.I)
+
+
+def _with_picker(document: str) -> str:
+    """The filing with the picker's script appended, before the end of the body."""
+    tag = f'<script src="{_PICKER_SCRIPT}" defer></script>'
+    at = document.lower().rfind("</body>")
+    if at == -1:
+        return document + tag
+    return document[:at] + tag + document[at:]
+
+
+@router.get("/filing/{filing_id}/pick", include_in_schema=False)
+def filing_picker(filing_id: int, request: Request) -> Response:
+    """Serve a filing with the script that lets a reader click its tagged figures.
+
+    Asked for directly: *"Allow the user to click xbrl values in the government report which
+    adds them to Account section indicated by the url property."* The coordinates of what the
+    reader is correcting -- which period, which line of the accounts -- travel in this page's
+    own query string, so the script has only to read them; nothing is decided by the filing.
+
+    **A separate URL from the plain document, and this is the whole reason.** This page needs
+    ``allow-scripts`` to run the picker at all, and the policy to run a script is not one to
+    give every filing view. It is also not ``allow-forms``: the picker does not post anything.
+    It hands the reader to a page of ours in a new tab, which needs ``allow-popups`` and
+    ``allow-popups-to-escape-sandbox`` -- without the second, our own page would *inherit* the
+    sandbox and load in an opaque origin, where it could neither keep a session nor run its own
+    script. Opening a popup the reader cannot trust is the failure this arrangement avoids, so
+    the new tab is one of ours rather than anything the filing asked for.
+    """
+    path, document_type, _ = _stored_document(filing_id)
+    text = path.read_bytes().decode("utf-8", errors="replace")
+    headers = {
+        "Content-Security-Policy": (
+            "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; "
+            f"script-src {_picker_origin(request)}"
+        ),
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": f'inline; filename="{filing_id}.htm"',
+        "Cache-Control": "private, max-age=86400",
+    }
+    return Response(
+        content=_with_picker(_strip_scripts(text)),
+        media_type=document_type,
+        headers=headers,
     )
 
 

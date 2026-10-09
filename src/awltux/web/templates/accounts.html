@@ -141,6 +141,17 @@
 {# The record of what a person has changed, on every tab: a reader looking at a figure that is
    not what the filing said needs to know that before they read anything above it, and the
    checks on the health tab are the ones a correction moves. #}
+{% if filing %}
+  {# Said once rather than on every residual: a table of underlined figures with no explanation
+     reads as decoration, and the point of the link is the one thing a reader cannot guess. #}
+  <p class="muted small">
+    These figures are the filer's own tagged accounts, and we hold the
+    <a href="{{ filing.document }}" target="_blank" rel="noopener">{{ filing.type }}</a>
+    they were filed in. Where a subtotal is
+    <em>out by</em> something, that figure opens the same filing with this period and this line
+    attached — click the number the filer actually tagged and it can be put on this line.
+  </p>
+{% endif %}
 {% include "partials/_corrections.html" %}
 
 {% if built %}
@@ -181,11 +192,22 @@
             {# The "out by" figure is the one a reader cannot act on without knowing what
                produced it, so the working hangs off it on hover: the stated total, every
                component with its sign, the sum, and the lines left out. Built by
-               `ledger.Line.show_work`, which is the only place that arithmetic exists. #}
+               `ledger.Line.show_work`, which is the only place that arithmetic exists.
+
+               Where the figures are the government's own XBRL and we hold the document, the
+               same text is also the way into the filing: it opens the 10-K in a new tab, with
+               the period and the line in the URL, so a reader can click the figure the filer
+               actually tagged and put it on this line. See `filing_picker`. #}
             {% if line.computed is none %}<span class="muted">—</span>
             {% elif line.agrees is false %}
               <span class="warn">{{ line.computed | number(line.decimals) }}</span>
-              <span class="muted small work" data-work="{{ line.show_work() }}">out by {{ line.residual | number(line.decimals) }}</span>
+              {% if filing %}
+                <a class="muted small work" data-work="{{ line.show_work() }}"
+                   href="{{ filing.pick }}&amp;awltux_line={{ line.key }}&amp;awltux_label={{ line.label | urlencode }}"
+                   target="_blank" rel="noopener">out by {{ line.residual | number(line.decimals) }}</a>
+              {% else %}
+                <span class="muted small work" data-work="{{ line.show_work() }}">out by {{ line.residual | number(line.decimals) }}</span>
+              {% endif %}
             {% else %}<span class="muted work" data-work="{{ line.show_work() }}">{{ line.computed | number(line.decimals) }}</span>{% endif %}
           </td>
           {# Taking a line out is offered only where there is a line: a figure that was never
@@ -279,8 +301,17 @@
              subtractions, and `ledger._work_text` builds both so the two cannot describe
              the arithmetic differently. A check with no arithmetic to show is left plain
              rather than given an empty tooltip -- a dotted underline that promises an
-             explanation and delivers nothing is worse than no affordance. #}
+             explanation and delivers nothing is worse than no affordance.
+
+             A check that measures one line becomes a link into the filing for that line, the
+             same way the statement's residual does. The equation, the roll-forward and the
+             cash movement measure the accounts rather than auditing one caption, so they have
+             no single line to open and stay plain. #}
           {% if check.residual is none %}<span class="muted">—</span>
+          {% elif check.work and filing and check.about %}
+            <a class="work" data-work="{{ check.work }}"
+               href="{{ filing.pick }}&amp;awltux_line={{ check.about }}&amp;awltux_label={{ check.label | urlencode }}"
+               target="_blank" rel="noopener">{{ check.residual | number(0) }}</a>
           {% elif check.work %}<span class="work" data-work="{{ check.work }}">{{ check.residual | number(0) }}</span>
           {% else %}{{ check.residual | number(0) }}{% endif %}
         </td>

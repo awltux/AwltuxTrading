@@ -62,6 +62,24 @@ def key(cik: str) -> str:
     return f"{SETTING_PREFIX}{str(cik).strip()}"
 
 
+def link_target(value: str) -> str:
+    """A URL a correction may carry: an ``http(s)`` one, or a path on this application.
+
+    **Because this field becomes a link, and it can arrive from a query string.** The picker on
+    a filing's page hands the reader to our confirmation form with what they clicked, and that
+    form's parameters are therefore writer-controlled -- a filing could build a link with
+    ``url=javascript:...`` in it. So ``javascript:`` and ``data:`` are refused rather than
+    stored, and a protocol-relative ``//host`` with them: it would be a link off this
+    application wearing one of our own paths' clothes.
+    """
+    text = (value or "").strip()
+    if text.lower().startswith(("http://", "https://")):
+        return text
+    if text.startswith("/") and not text.startswith("//"):
+        return text
+    return ""
+
+
 @dataclass(slots=True)
 class Correction:
     """A figure put on a line by hand, with the filing it was read from."""
@@ -88,7 +106,7 @@ class Correction:
             "value": self.value,
             "side": self.side if self.side in SIDES else CREDIT,
             "tag": self.tag,
-            "url": self.url,
+            "url": link_target(self.url),
             "at": self.at or stamp(),
             "note": self.note,
             "origin": self.origin,
@@ -615,6 +633,7 @@ __all__ = [
     "forget",
     "forget_rule",
     "key",
+    "link_target",
     "load_filer",
     "load_period",
     "reapply_filer",

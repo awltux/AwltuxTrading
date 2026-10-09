@@ -86,6 +86,14 @@
 
 {% else %}
   <h1>Add a line to these accounts</h1>
+  {% if origin == 'filing' %}
+    <p class="notice">
+      This figure was clicked in the filing rather than typed, so the tag it was read from and a
+      link back to the line are filled in below. Check the figure and choose the side before
+      writing it in — the report tags thousands of numbers and not all of them belong on this
+      statement.
+    </p>
+  {% endif %}
   <p class="muted small">
     A figure put in by hand is a fact about <em>this period</em> only: it is stored on this set
     of accounts, not carried to the company's other years. If it is one the extractor missed,
@@ -94,6 +102,10 @@
 
   <form method="post" action="/accounts/{{ period.id }}/corrections/add">
     <input type="hidden" name="statement" value="{{ statement }}">
+    {# Where the figure came from. A value clicked out of the filing arrives with `origin=filing`
+       so the record says a person read it rather than typed it -- and the panel can then offer
+       the link back to the line they read. #}
+    <input type="hidden" name="origin" value="{{ origin }}">
 
     <p>
       <label for="metric">Which line of the {{ statement | replace('_', ' ') | capitalize }}</label><br>
@@ -150,7 +162,12 @@
 
     <p>
       <label for="note">Note <span class="muted small">(optional)</span></label><br>
-      <input id="note" name="note" size="60" placeholder="e.g. taken from the consolidated balance sheet">
+      <input id="note" name="note" size="60" value="{{ note }}"
+             placeholder="e.g. taken from the consolidated balance sheet">
+      <span class="muted small">
+        A figure clicked in the filing arrives with the caption it sat under there, which is how
+        the next reader finds the line again.
+      </span>
     </p>
 
     <button type="submit">Write it in</button>

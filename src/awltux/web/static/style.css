@@ -567,6 +567,13 @@ footer {
 .work::after { content: attr(data-work); max-width: 460px; white-space: pre-line; }
 .work:hover::after, .work:focus-visible::after { opacity: 1; visibility: visible; }
 
+/* A residual that is also a way into the filing it came from. The working on hover stays --
+   the link adds an action rather than replacing the explanation -- but it is a link, so it
+   points and underlines like one. `cursor: help` on something clickable is the kind of small
+   lie that teaches a reader to stop trying. */
+a.work { cursor: pointer; text-decoration: underline dotted; }
+a.work:hover { color: var(--link); }
+
 /* The latest deep-dive's executive summary, at the top of a subject's page.
    Set apart from the summary figures above it because it is a *judgement about the business*
    rather than a measurement, and the paragraph is long enough that it would otherwise read as

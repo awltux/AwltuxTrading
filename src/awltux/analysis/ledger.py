@@ -1070,6 +1070,12 @@ class Check:
     #: that have one. Built by :func:`_work_text` -- the same function `Line.show_work` uses,
     #: so a figure and the check that audits it cannot explain themselves differently.
     work: str = ""
+    #: The one line of the accounts this check measures, when it measures one. Set so the page
+    #: can open the filing *at that line* for a reader who wants to see what the filer tagged
+    #: against what we hold. Empty for a check that spans the accounts rather than auditing one
+    #: line -- the accounting equation, the roll-forward and the cash movement have no single
+    #: caption to open, and a link to the whole 10-K would be an offer to go and look for it.
+    about: str = ""
 
     @property
     def failed(self) -> bool:
@@ -1113,6 +1119,18 @@ class Declared:
         return not self.missing
 
 
+def _check(
+    key: str, label: str, status: str, detail: str, **rest: Any
+) -> Check:
+    """One finding, named. A constructor rather than the field list written out at each exit.
+
+    Every check carries the same ten fields, and the two that arrived last -- ``work`` and
+    ``about`` -- are exactly the kind that gets added to three exits and forgotten in the
+    fourth. Named once here, they cannot be.
+    """
+    return Check(key=key, label=label, status=status, detail=detail, **rest)
+
+
 def _agree(
     key: str,
     label: str,
@@ -1123,6 +1141,7 @@ def _agree(
     missing: tuple[str, ...] = (),
     missing_total: float | None = None,
     work: _Work | None = None,
+    about: str = "",
 ) -> Check:
     """A stated total against the parts we hold. Unknown when either side is missing.
 
@@ -1136,7 +1155,7 @@ def _agree(
     fully explained by named lines rather than being an unexplained disagreement.
     """
     if stated is None or computed is None:
-        return Check(key=key, label=label, status=UNKNOWN, detail=f"{detail} -- not enough stated")
+        return _check(key, label, UNKNOWN, f"{detail} -- not enough stated", about=about)
     work_text = _work_text(
         stated=stated,
         computed=computed,
@@ -1145,19 +1164,19 @@ def _agree(
         missing=missing,
         missing_total=missing_total,
     )
+    residual = stated - computed
     if missing:
-        residual = stated - computed
         explained = missing_total is not None and abs(residual - missing_total) <= tolerance(
             stated
         )
         sentence = f"{detail}; missing {', '.join(missing)}"
         if explained:
             sentence += " -- which is exactly those lines, so nothing else is unexplained"
-        return Check(
-            key=key,
-            label=label,
-            status=UNKNOWN,
-            detail=sentence,
+        return _check(
+            key,
+            label,
+            UNKNOWN,
+            sentence,
             residual=residual,
             inputs={
                 "stated": stated,
@@ -1166,17 +1185,17 @@ def _agree(
                 "explained": explained,
             },
             work=work_text,
+            about=about,
         )
-    residual = stated - computed
-    status = OK if abs(residual) <= tolerance(stated) else IMBALANCE
-    return Check(
-        key=key,
-        label=label,
-        status=status,
-        detail=detail,
+    return _check(
+        key,
+        label,
+        OK if abs(residual) <= tolerance(stated) else IMBALANCE,
+        detail,
         residual=residual,
         inputs={"stated": stated, "computed": computed},
         work=work_text,
+        about=about,
     )
 
 
@@ -1257,6 +1276,7 @@ def _agree_computed(
         missing=missing,
         missing_total=missing_total,
         work=work,
+        about=metric,
     )
 
 
@@ -1354,6 +1374,7 @@ def profit_articulation(period: FundamentalPeriod) -> Check:
         work.total,
         "income and expense lines against reported profit",
         work=work,
+        about="net_income",
     )
 
 
