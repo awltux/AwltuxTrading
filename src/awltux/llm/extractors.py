@@ -345,7 +345,7 @@ def extract_filing(
     if not client.configured or not document.strip():
         return None
 
-    trimmed, was_truncated = _truncate_middle(document, max_document_chars)
+    trimmed, was_truncated = truncate_middle(document, max_document_chars)
     header = f"Company: {company_name}\n"
     if was_truncated:
         header += (
@@ -398,7 +398,7 @@ def summarise_filing(
     if not client.configured or not document.strip():
         return None
 
-    trimmed, _ = _truncate_middle(document, max_document_chars)
+    trimmed, _ = truncate_middle(document, max_document_chars)
     messages = build_messages(
         system=FILING_SUMMARY_SYSTEM,
         document=f"Company: {company_name}\n\n{trimmed}",
@@ -425,8 +425,14 @@ def summarise_filing(
     return payload
 
 
-def _truncate_middle(text: str, limit: int) -> tuple[str, bool]:
-    """Keep the head and tail, drop the middle. Returns ``(text, was_truncated)``."""
+def truncate_middle(text: str, limit: int) -> tuple[str, bool]:
+    """Keep the head and tail, drop the middle. Returns ``(text, was_truncated)``.
+
+    Public because a second reader budgets documents now: a research run is given several
+    documents under a total character cap, and it has to spend that cap the same way this
+    module spends its own -- head first, because the primary statements sit at the front,
+    and the tail, because the notes and the going-concern language sit at the back.
+    """
     if len(text) <= limit:
         return text, False
     head = int(limit * 0.6)

@@ -79,6 +79,25 @@ def document_text(path: Path) -> str | None:
     # The markup is stripped because the extractor reads prose, and an inline-XBRL
     # document is mostly tags: leaving them in spends the model's context on attribute
     # names and, worse, on numbers that appear only as attribute values.
+    soup = BeautifulSoup(decoded, "html.parser")
+    # Inline XBRL keeps all of its taxonomy plumbing in one `ix:header`: the context, unit
+    # and hidden-fact definitions. BeautifulSoup returns them as *text* because they are
+    # elements rather than attributes, and they sit at the very *front* of the document --
+    # which is the part `llm.extractors.truncate_middle` keeps first, so the waste is spent
+    # before any prose is reached. Measured on Microsoft's FY2026 10-K: 34,137 of 357,714
+    # characters, 9.5% of the whole document and 100% of its first 34,142; with the header
+    # dropped the first prose is 5 characters in.
+    for header in soup.find_all("ix:header"):
+        header.decompose()
+    text = soup.get_text(" ", strip=True)
+    if text:
+        return text
+    # An unclosed `<ix:header>` swallows everything after it, and this parser is tolerant
+    # because EDGAR serves documents that are not well-formed XML. Returning `""` there would
+    # read as a company that disclosed nothing -- `_read_one` records exactly that as "the
+    # stored document could not be read as text" -- so the fallback is the un-stripped text,
+    # which is worse to read and better than a filing that looks empty.
+    logger.warning("no text outside the ix:header in %s; keeping the header", path)
     return BeautifulSoup(decoded, "html.parser").get_text(" ", strip=True)
 
 

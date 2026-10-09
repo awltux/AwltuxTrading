@@ -41,7 +41,13 @@ from awltux.db import (
     ValuationRun,
     utcnow,
 )
-from awltux.db.news import appraisals_for, mentions_ticker, news_for_ticker, primary_credibility
+from awltux.db.news import (
+    appraisals_for,
+    mentions_ticker,
+    news_for_sector,
+    news_for_ticker,
+    primary_credibility,
+)
 from awltux.db.session import RECENCY_FUNCTION
 from awltux.timezones import as_utc, format_moment, utc_today
 
@@ -1454,21 +1460,21 @@ def sector_news(session: Session, name: str, *, limit: int = 25) -> list[tuple[A
     Scoped to the subject, which is the whole point of the per-subject appraisal: a
     story that also names a company has a different verdict for the company, and the
     sector page must show the sector's.
+
+    Filtered and limited in SQL. The first version took the newest 400 stories *across the
+    whole universe* and kept the ones naming the sector in Python, so the sector page showed
+    whatever happened to fall inside a fixed global slice -- the same bug `db/news.py`
+    documents for the instrument page and the decision engine. On the live corpus the
+    busiest sector has more stories in a 30-day window than that slice held, so the page was
+    showing the oldest part of it and calling it the sector's news.
+
+    ``relevant_only`` stays on, which is this page's existing behaviour: the sector page is a
+    reading list of directional claims, and the classifier's "not about this" verdict is what
+    keeps a passing mention out of it.
     """
-    tickers: list[tuple[NewsItem, Any]] = []
-    rows = list(
-        session.execute(
-            select(NewsItem)
-            .where(NewsItem.relevant.is_(True))
-            .order_by(desc(NewsItem.published_at))
-            .limit(400)
-        ).scalars().all()
-    )
-    tagged = [row for row in rows if name in (row.sectors or [])]
-    appraisals = appraisals_for(session, tagged, subject=("sector", name))
-    for row in tagged[:limit]:
-        tickers.append((row, appraisals.get(row.id)))
-    return tickers
+    rows, _ = news_for_sector(session, name, relevant_only=True, limit=limit)
+    appraisals = appraisals_for(session, rows, subject=("sector", name))
+    return [(row, appraisals.get(row.id)) for row in rows]
 
 
 def sector_sentiment_series(session: Session, name: str, *, days: int = 60) -> list[dict[str, Any]]:

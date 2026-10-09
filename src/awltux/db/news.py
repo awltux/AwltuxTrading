@@ -41,6 +41,21 @@ from sqlalchemy.orm import Session
 from awltux.db.models import NewsAnalysis, NewsItem
 
 
+def _mentions(column: Any, value: str):
+    """SQL predicate: this news item's JSON array ``column`` contains ``value``.
+
+    One expression for both join keys, because the instrument page and the sector page
+    were two copies of the same wrong window and would have become two copies of this.
+    """
+    tagged = func.json_each(column).table_valued("value")
+    return (
+        select(literal(1))
+        .select_from(tagged)
+        .where(tagged.c.value == value)
+        .exists()
+    )
+
+
 def mentions_ticker(ticker: str):
     """SQL predicate: this news item names the given instrument.
 
@@ -48,13 +63,56 @@ def mentions_ticker(ticker: str):
     extra filter -- and duplicating the subquery is how the three wrong copies
     started.
     """
-    tagged = func.json_each(NewsItem.tickers).table_valued("value")
-    return (
-        select(literal(1))
-        .select_from(tagged)
-        .where(tagged.c.value == ticker)
-        .exists()
+    return _mentions(NewsItem.tickers, ticker)
+
+
+def mentions_sector(sector: str):
+    """SQL predicate: this news item concerns the given sector directly.
+
+    *Directly* is the whole of it: ``NewsItem.sectors`` is set by the feed grouping
+    (``ingest.news.gather_for_sector``) and never derived from the tickers, so this is the
+    same predicate ``analysis.news_analysis.subjects_of`` uses when it decides a story has
+    a sector appraisal. A sector page that matched on its constituents' tickers instead
+    would show stories that carry no sector verdict, and its appraisals would be missing.
+    """
+    return _mentions(NewsItem.sectors, sector)
+
+
+def news_for_sector(
+    session: Session,
+    sector: str,
+    *,
+    since: dt.datetime | None = None,
+    relevant_only: bool = False,
+    limit: int = 25,
+    offset: int = 0,
+) -> tuple[list[NewsItem], int]:
+    """One page of a sector's news, newest first, and how many there are.
+
+    The same window bug as :func:`news_for_ticker`, measured on the same corpus: the sector
+    page took the newest 400 stories *globally* and kept the ones naming the sector in
+    Python, so a sector with thousands of relevant stories showed whatever fell inside the
+    global slice. Counting here rather than in the caller keeps the total and the page on
+    one predicate, and ``relevant_only`` behaves as it does above.
+    """
+    conditions: list[Any] = [mentions_sector(sector)]
+    if relevant_only:
+        conditions.append(NewsItem.relevant.is_(True))
+    if since is not None:
+        conditions.append(NewsItem.published_at >= since)
+
+    total = session.execute(
+        select(func.count()).select_from(NewsItem).where(*conditions)
+    ).scalar_one()
+
+    statement: Select = (
+        select(NewsItem)
+        .where(*conditions)
+        .order_by(NewsItem.published_at.desc(), NewsItem.id.desc())
+        .limit(limit)
+        .offset(offset)
     )
+    return list(session.execute(statement).scalars().all()), int(total)
 
 
 def primary_credibility():
@@ -97,6 +155,7 @@ def news_for_ticker(
     *,
     since: dt.datetime | None = None,
     materiality: str | None = None,
+    relevant_only: bool = False,
     limit: int = 25,
     offset: int = 0,
 ) -> tuple[list[NewsItem], int]:
@@ -109,8 +168,17 @@ def news_for_ticker(
     ``offset`` is safe here in a way it was not before: the row set is now defined
     entirely in SQL, so page two starts where page one stopped. Offsetting the old
     query would have paged through a different slice each time.
+
+    ``relevant_only`` is off by default and is the caller's decision rather than this
+    function's. A research digest wants every story with a direct concern entry,
+    because "the classifier read this as a mention rather than a connection" is itself
+    something the reader of a deep-dive should be told; the news page wants the
+    relevant ones. Defaulting to the wider set is deliberate: a caller that has not
+    thought about it cannot then lose rows without saying so.
     """
     conditions: list[Any] = [mentions_ticker(ticker)]
+    if relevant_only:
+        conditions.append(NewsItem.relevant.is_(True))
     if since is not None:
         conditions.append(NewsItem.published_at >= since)
     if materiality:

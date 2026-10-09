@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, Field, SecretStr
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # --------------------------------------------------------------------------- #
@@ -699,10 +699,23 @@ class ResearchConfig(BaseModel):
     #: The per-document cap is larger than `llm.extractors`' 400,000 because a research
     #: read wants the whole report and truncation keeps the head and the tail -- which is
     #: where the primary statements are. The total is what bounds the bill: 400,000
-    #: characters is about 118,000 input tokens, roughly $0.16 on the deep model.
+    #: characters is about 118,000 input tokens.
     max_documents: int = 3
     max_document_chars: int = 200_000
     max_total_document_chars: int = 400_000
+
+    #: The deep model's context window, and the tokens held back from it for the answer and
+    #: the message wrapper.
+    #:
+    #: Nothing else in this application has to know a window size, because every other
+    #: request is orders of magnitude smaller. A deep-dive is not: measured 2026-10-09, the
+    #: evidence for MSFT -- two 10-Ks, the digest, the stored figures and the last decision
+    #: -- came to 410,826 characters, about **120,800 tokens**, against a 128,000-token
+    #: window and a 16,000-token answer. So the totals above are not the whole bound: the
+    #: evidence is trimmed to fit this window and the report says what was dropped, rather
+    #: than the request being refused *after* the refresh has been paid for.
+    context_tokens: int = 128_000
+    reserve_tokens: int = 2_000
 
     #: Output budget for one report. Above `llm.max_output_tokens` because a research
     #: report is longer than any classification or extraction this system asks for.
@@ -716,6 +729,26 @@ class ResearchConfig(BaseModel):
     #: The model to use. ``None`` means `llm.model_deep`, which is the point of the
     #: feature: this is the one task that asks for the deep model deliberately.
     model: str | None = None
+
+    @model_validator(mode="after")
+    def _window_has_room_for_an_answer(self) -> ResearchConfig:
+        """A window with no room for the answer is a config error, not a small prompt.
+
+        The evidence is trimmed to ``context_tokens - max_output_tokens - reserve_tokens``, so
+        an output budget larger than the window leaves a negative one -- and the trimmer, asked
+        to fit nothing, would drop every input and send the model an empty question. That is a
+        mistake in the YAML and it is refused where it is made rather than producing a report
+        that says nothing for the price of a full run.
+        """
+        room = self.context_tokens - self.max_output_tokens - self.reserve_tokens
+        if room <= 0:
+            raise ValueError(
+                f"research.context_tokens ({self.context_tokens}) must exceed "
+                f"max_output_tokens ({self.max_output_tokens}) + reserve_tokens "
+                f"({self.reserve_tokens}); the evidence would otherwise be trimmed to "
+                f"{room} tokens"
+            )
+        return self
 
 
 class RetentionConfig(BaseModel):

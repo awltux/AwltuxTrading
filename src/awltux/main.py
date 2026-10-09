@@ -58,6 +58,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     close_orphaned_runs()
 
+    # The same reasoning for deep-dives, whose `running` row is a *subject*-level guard:
+    # left behind, it would refuse every later run about that company until the staleness
+    # window passed, so a restart would silently make one company un-researchable.
+    from awltux.research.service import close_orphaned_research
+
+    close_orphaned_research()
+
     if settings.env.scheduler_enabled:
         try:
             scheduler.start()

@@ -784,6 +784,25 @@ Found in `docs/research/FINDINGS.md` section 3 and filed here because it was que
 instrument; it becomes wrong-by-default the moment a non-USD listing is added, which is a
 data change nobody would connect to this map.
 
+### The characters-per-token ratio is written twice, and now it decides two things
+
+`analysis/state.py:38` owns `CHARS_PER_TOKEN = 3.4` and `estimate_tokens`, and
+`llm/deepseek.py:301` writes the same number inline as `int(prompt_chars / 3.4)` for the
+pre-flight budget check. Both read 3.4 today, so nothing is wrong yet.
+
+What changed on 2026-10-09 is that the ratio acquired a second consumer that acts on it:
+`research/evidence.py::_fit_to_context` trims the deep-dive's evidence to
+`context_tokens - max_output_tokens - reserve_tokens` using `estimate_tokens`, while the
+request's size check uses the inline copy. A change to one and not the other would make the
+trimmer fit a prompt the client then refuses, or the reverse — and the failure lands after a
+refresh has been paid for, which is the whole reason the trimmer exists.
+
+**The fix is a move, not an edit:** the constant belongs to the `llm` layer (it is a fact about
+the provider's tokeniser), so `analysis/state.py` should import it from there rather than
+`llm` importing it from `analysis` — importing upward into `analysis` from `llm` would invert
+the layering the whole tree keeps. Its own commit, because it touches the decision state's
+sizing on a deployed path.
+
 
 ## Operations
 
@@ -942,6 +961,16 @@ in the schema, and the decision engine calls this per instrument per run.
 column, with an index on `(ticker, published_at)`. The column stays — it is what the
 extractor returns and what the paid feeds are matched against — but reads move to the
 join. Do it when a page crosses ~100ms or the table crosses ~100k rows, not before.
+
+**Measured 2026-10-09, and the join table now has a second caller and a second shape.**
+`research/evidence.py::news_digest` ranks a subject's news by priority, which needs the
+appraisal *and* the age decay, so it reads a bounded window and sorts in Python: **210–290ms**
+for an instrument with ~150 in-window stories, of which the ranking itself is most of it. Its
+`_coverage` count is the worse shape — a correlated `json_each` over `NewsAnalysis.flags` per
+appraisal row, inside a `COUNT`, to answer "how many of these are single-source" — and it is
+the reason a `news_item_ticker` join table wants a `news_analysis.subject_id` index beside it.
+It fires once per deep-dive rather than once per page, so it is inside the same budget as the
+8-second document read above and is not worth fixing on its own.
 
 ### `run_on_start` jobs redo their whole work on every restart
 
@@ -1307,6 +1336,31 @@ instrument page say "this is 4% of your Tech pie", which is context rather than 
 Both `get_dividends` and the pie endpoints need provider methods; `get_dividends` already
 exists (`providers/t212.py:240`) and has no callers, the same way `get_order_history` had none
 before this work.
+
+### Reading a deep-dive's documents costs 8 seconds, and it pays it on every run
+
+Measured 2026-10-09 while building the evidence builder, against the live corpus: building the
+whole evidence set for MSFT takes **8.4–10.9 seconds**, and `research/evidence.py` itself is
+not the cost -- the two `news_digest` queries together are 0.45s. The rest is
+`ingest.parsing.document_text` running BeautifulSoup over two 8.5MB inline-XBRL 10-Ks
+(357,714 and 322,000 characters of text out).
+
+That is acceptable *where it is*: a deep-dive is a once-per-subject, button-pressed run that
+then spends minutes on a model call, so eight seconds is noise inside it. It is recorded
+because the same helper is on the filing-extraction path (`ingest/parsing.py::_read_one`),
+which reads up to `PARSE_LIMIT = 4` documents per instrument per refresh, and because the
+answer is already on disk: `Filing.doc_hash` identifies the bytes, so the extracted text could
+be cached beside the raw file and re-read instead of re-parsed. Do it when a refresh's parsing
+phase shows up in a job's duration, not before -- the parse is not currently anyone's
+bottleneck, and a cache keyed on a hash that a re-issued document changes is a cache that can
+serve the wrong filing's text.
+
+The other number from the same measurement: the evidence for MSFT came to **410,826
+characters, about 120,800 tokens**, against a 128,000-token window and a 16,000-token answer.
+That is now bounded by `research.context_tokens` -- the trimmer cut it to 91,434 tokens by
+halving the older 10-K -- and the trim is recorded in the report's footer and in
+`Evidence.dropped`. Raising `research.max_total_document_chars` above 400,000 therefore does
+*not* raise what the model is sent; it only changes which end of the documents gets cut.
 
 ---
 

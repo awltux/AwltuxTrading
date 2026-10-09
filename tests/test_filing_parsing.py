@@ -77,6 +77,56 @@ class TestTurningADocumentIntoText:
 
         assert parsing.document_text(settings.data_dir / raw) == "Auditor resigned."
 
+    def test_the_inline_xbrl_header_is_dropped(self, settings):
+        """The header is taxonomy plumbing, and it sits at the front of the document.
+
+        Measured on Microsoft's FY2026 10-K (2026-10-09): the `ix:header` block is 34,137
+        of 357,714 characters -- 9.5% of the document and 100% of its first 34,142 -- and
+        `llm.extractors.truncate_middle` keeps the front first, so the waste came out of
+        the budget before any prose was reached. BeautifulSoup returns the context, unit
+        and hidden-fact definitions as text because they are elements, not attributes.
+        """
+        body = (
+            "<html><body><ix:header><ix:hidden>"
+            '<ix:nonNumeric name="dei:DocumentType">10-K</ix:nonNumeric>'
+            '<xbrli:context id="c1"><xbrli:entity>'
+            "<xbrli:identifier scheme=\"http://www.sec.gov/CIK\">0000789019</xbrli:identifier>"
+            "</xbrli:entity><xbrli:period><xbrli:instant>2026-06-30</xbrli:instant>"
+            "</xbrli:period></xbrli:context>"
+            "<xbrli:unit id=\"usd\"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>"
+            "</ix:hidden></ix:header>"
+            "<h1>UNITED STATES SECURITIES AND EXCHANGE COMMISSION</h1>"
+            "<p>Revenue for the year was 331,839</p></body></html>"
+        )
+        raw = _document(settings, "inline.htm", body)
+
+        text = parsing.document_text(settings.data_dir / raw)
+
+        assert text.startswith("UNITED STATES")
+        assert "Revenue for the year was 331,839" in text
+        # The plumbing is gone: a CIK and a unit URI are not things the extractor can use,
+        # and the dates in a context are not dates the document states in prose.
+        assert "0000789019" not in text
+        assert "iso4217:USD" not in text
+        assert "xbrli" not in text
+
+    def test_a_header_is_not_assumed_to_be_well_formed(self, settings):
+        """An unclosed header must not swallow the document.
+
+        EDGAR serves documents that are not valid XML, and the parser that reads them is
+        tolerant; a rule that reads to the end of an unclosed element would return a filing
+        with no text at all, which reads as a company that disclosed nothing.
+        """
+        body = (
+            "<html><body><ix:header><xbrli:context>2026-06-30"
+            "<h1>Revenue rose</h1></body></html>"
+        )
+        raw = _document(settings, "broken.htm", body)
+
+        text = parsing.document_text(settings.data_dir / raw)
+
+        assert "Revenue rose" in text
+
     def test_a_format_with_no_extractor_is_none_rather_than_empty(self, settings):
         """`None` and `""` are different findings: one is a gap in this codebase, the
         other is a company with nothing to say."""

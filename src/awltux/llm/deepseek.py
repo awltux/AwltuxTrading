@@ -482,8 +482,13 @@ def model_for_purpose(settings: Settings, purpose: str) -> str:
     Full-document filing extraction is the only task that justifies the expensive
     model: everything else is classification or summarisation where the cheap
     model performs comparably for a fraction of the cost.
+
+    A deep-dive is the second: it is asked to *judge* a business from several documents at
+    once and to show its reasoning, which is the work the cheap model does worst. It is also
+    the only call in this application a person explicitly asks for and waits on, so its
+    routing is the one where "cheaper" is the wrong default.
     """
-    deep_purposes = {"filing_extraction", "account_analysis"}
+    deep_purposes = {"filing_extraction", "account_analysis", "research"}
     return settings.llm.model_deep if purpose in deep_purposes else settings.llm.model_bulk
 
 

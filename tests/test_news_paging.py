@@ -27,7 +27,7 @@ import datetime as dt
 import pytest
 
 from awltux.db import NewsItem, utcnow
-from awltux.db.news import appraisals_for, news_for_ticker
+from awltux.db.news import appraisals_for, news_for_sector, news_for_ticker
 from tests.helpers import make_instrument
 
 
@@ -36,9 +36,11 @@ def make(
     title: str,
     *,
     tickers,
+    sectors=(),
     hours_ago: float = 1.0,
     materiality="material",
     relevance_reason: str | None = None,
+    relevant: bool | None = None,
 ):
     row = NewsItem(
         source="test",
@@ -48,10 +50,12 @@ def make(
         summary="",
         published_at=utcnow() - dt.timedelta(hours=hours_ago),
         tickers=list(tickers),
+        sectors=list(sectors),
         materiality=materiality,
         direction="neutral",
         relevance=0.5,
         relevance_reason=relevance_reason,
+        relevant=relevant,
     )
     session.add(row)
     session.flush()
@@ -264,3 +268,56 @@ class TestThePageItself:
         # The link is followed rather than assumed: a heading pointing at a 404 would
         # satisfy the assertion above and be worse than the external link it replaced.
         assert client.get(f"/news/{row.id}").status_code == 200
+
+
+class TestTheSectorWindow:
+    """The same bug, in the sector page's own copy of it.
+
+    `web/queries.sector_news` took the newest 400 stories *across the whole universe* and kept
+    the ones naming the sector in Python -- so the limit was applied before the filter, exactly
+    as it was for the instrument page and the decision engine. The busiest sector has more
+    in-window stories than that slice held, measured 2026-10-09, so the page was showing the
+    oldest part of a truncated window and calling it the sector's news.
+    """
+
+    def test_a_sector_story_outside_the_newest_global_rows_is_still_found(self, session):
+        for index in range(120):
+            make(session, f"other {index}", tickers=["OTHER_US_EQ"], hours_ago=index + 1)
+        make(session, "the sector story", tickers=[], sectors=["Energy"], hours_ago=300)
+
+        rows, total = news_for_sector(session, "Energy", limit=25)
+
+        assert total == 1
+        assert rows[0].title == "the sector story"
+
+    def test_the_total_counts_only_this_sector(self, session):
+        for index in range(10):
+            make(session, f"energy {index}", tickers=[], sectors=["Energy"], hours_ago=index + 1)
+        for index in range(30):
+            make(session, f"health {index}", tickers=[], sectors=["Health Care"], hours_ago=index + 1)
+
+        _, total = news_for_sector(session, "Energy")
+
+        assert total == 10
+
+    def test_naming_a_constituent_is_not_being_about_the_sector(self, session):
+        """`sectors` is set by the sector feed and never derived from the tickers, so a
+        company story is not a sector story -- and the sector page must not show it as one."""
+        make(session, "a company story", tickers=["ACME_US_EQ"], sectors=[])
+
+        rows, total = news_for_sector(session, "Energy")
+
+        assert total == 0 and rows == []
+
+    def test_relevant_only_is_the_callers_choice(self, session):
+        """The page wants directional claims; a research digest wants every story that
+        concerns the subject, including the ones the classifier read as a mention."""
+        make(session, "directional", tickers=[], sectors=["Energy"], relevant=True)
+        make(session, "a passing mention", tickers=[], sectors=["Energy"], relevant=False)
+
+        page_rows, page_total = news_for_sector(session, "Energy", relevant_only=True)
+        all_rows, all_total = news_for_sector(session, "Energy")
+
+        assert (page_total, [row.title for row in page_rows]) == (1, ["directional"])
+        assert all_total == 2
+        assert {row.title for row in all_rows} == {"directional", "a passing mention"}
