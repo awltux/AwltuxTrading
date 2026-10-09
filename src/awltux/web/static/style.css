@@ -399,6 +399,17 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 .badge.bad { color: var(--bad); border-color: rgba(255,123,114,.5); }
 .badge.unknown { color: var(--muted); }
 
+/* Materiality as a badge, for the news table. The ticker and the per-instrument lists
+   colour a *left border* by materiality (`.mat-*` above); a table row cannot carry that
+   without making every row look like a warning, so here the level is a word in a cell
+   and the tint belongs on the word. `.mat-none` is deliberately muted rather than
+   coloured: "none" is a stated judgement that nothing much happened, which is the one
+   level that should not draw the eye. */
+.badge.mat-critical { color: var(--bad); border-color: rgba(255,123,114,.5); }
+.badge.mat-material { color: var(--warn); border-color: rgba(227,179,65,.5); }
+.badge.mat-moderate { color: var(--link); border-color: rgba(140,200,255,.5); }
+.badge.mat-mild, .badge.mat-none { color: var(--muted); }
+
 .sceptic-warnings { margin: 4px 0 2px; padding-left: 18px; }
 .sceptic-warnings li { border: none; padding: 0; color: var(--warn); font-size: 0.9rem; }
 

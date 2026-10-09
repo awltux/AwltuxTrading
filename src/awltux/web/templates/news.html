@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}News — {{ app_name }}{% endblock %}
+
+{% block content %}
+{#
+  The whole news corpus, as a table.
+
+  The flash ticker is curated -- floored by materiality and collapsed to one entry per
+  event -- so it can only ever show a small, ranked slice. This page is the other end:
+  everything stored, in the order the reader chooses, including the stories the
+  classifier judged not relevant. "We looked at this and said no" is an answer worth
+  being able to check, and there was nowhere else to check it.
+
+  Nothing is fetched by JavaScript. Every view is a URL: the filters are a GET form and
+  the sort is a link, so a table can be bookmarked, sent to another machine, or reloaded
+  after a restart and still be the same table.
+#}
+{% set list_base = '/news' %}
+{% from "partials/_sort.html" import sort_link with context %}
+{% from "partials/_help.html" import help %}
+
+<h1>News</h1>
+
+<p class="muted small">
+  Every story the system has stored — {{ total }} match{{ 'es' if total == 1 else '' }}
+  the filters below. The <a href="/dashboard">ticker</a> shows a ranked, materiality-floored
+  selection; this shows the corpus, including what was judged unimportant and what was
+  judged not to be about a share price at all.
+</p>
+
+{# ------------------------------------------------------------------- filters #}
+{# The controls are rendered from the filter set's own declarations, so a filter cannot
+   exist in the URL and be missing here. `filters.hidden` carries the state the reader
+   set elsewhere (the sort order) so submitting does not silently reset it. #}
+<form method="get" action="{{ list_base }}" class="filters">
+  {% for spec in filters.hidden %}
+    <input type="hidden" name="{{ spec.name }}" value="{{ filters.value(spec.name) }}">
+  {% endfor %}
+  {% for spec in filters.controls %}
+    <label {% if spec.help %}title="{{ spec.help }}"{% endif %}>
+      {{ spec.label }}
+      {% if spec.kind == 'choice' %}
+        <select name="{{ spec.name }}" aria-label="{{ spec.label }}">
+          <option value="">Any</option>
+          {% for option in spec.options %}
+            <option value="{{ option.value }}"
+                    {% if filters.value(spec.name) == option.value %}selected{% endif %}>
+              {{ option.label }}{% if option.note %} · {{ option.note }}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      {% else %}
+        <input type="search" name="{{ spec.name }}" value="{{ filters.value(spec.name) }}"
+               placeholder="{{ spec.placeholder }}" aria-label="{{ spec.label }}">
+      {% endif %}
+    </label>
+  {% endfor %}
+  <button type="submit">Apply</button>
+  {% if filters.active() %}
+    <a class="clear-all" href="{{ filters.clear_href(list_base) }}">Clear all</a>
+  {% endif %}
+</form>
+
+{# A value the URL asked for that this page cannot honour. Reported rather than ignored:
+   the table below is then not the one the address bar describes. #}
+{% if filters.ignored %}
+  <p class="notice warn">
+    <strong>Ignored {{ filters.ignored | length }} filter
+      value{{ '' if filters.ignored | length == 1 else 's' }}</strong>
+    the link did not recognise:
+    {% for bad in filters.ignored %}
+      <code>{{ bad.name }}={{ bad.value }}</code>{% if not loop.last %}, {% endif %}
+    {% endfor %}.
+    Showing the unfiltered table for {{ filters.ignored | map(attribute='label') | join(' and ') }}
+    rather than an empty one.
+  </p>
+{% endif %}
+
+{# What is currently applied, each removable on its own. #}
+{% set applied = filters.active() %}
+{% if applied %}
+  <div class="applied">
+    <span class="muted small">Filtered by</span>
+    {% for f in applied %}
+      <span class="chip">
+        <span class="muted">{{ f.label }}:</span> {{ f.shown }}
+        <a href="{{ list_base ~ f.clear_query }}" title="Remove this filter" aria-label="Remove {{ f.label }} filter">×</a>
+      </span>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{# --------------------------------------------------------------------- table #}
+<div class="table-wrap">
+<table class="grid compact">
+  <thead>
+    <tr>
+      <th>{{ sort_link('published_at', 'Published', explain_key='news_published') }}</th>
+      <th>{{ sort_link('title', 'Headline', explain_key='news_headline') }}</th>
+      <th>{{ sort_link('source', 'Source', explain_key='news_source') }}</th>
+      <th>{{ sort_link('materiality', 'Materiality', explain_key='news_materiality') }}</th>
+      <th>Direction</th>
+      <th>{{ sort_link('relevance', 'Relevance', explain_key='news_relevance') }}</th>
+      <th>Concerns</th>
+      <th class="num">Priority{{ help('news_priority') }}</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for entry in entries %}
+    <tr>
+      <td class="small" title="{{ entry.published_at | datetime }}">
+        {% if entry.published_at %}{{ entry.published_at | ago }}{% else %}<span class="muted">—</span>{% endif %}
+      </td>
+
+      {# The hover carries the classifier's own sentence, exactly as the instrument and
+         sector lists do: the headline is already in front of the reader, and the reason
+         is the part they cannot see. A story nobody has judged says nothing rather than
+         popping up an empty tooltip. #}
+      <td>
+        <a href="{{ entry.local_url }}"
+           {% if entry.relevance_reason %}title="Relevance: {{ entry.relevance_reason }}"{% endif %}>{{ entry.title }}</a>
+      </td>
+
+      <td class="small muted">{{ entry.source }}</td>
+
+      <td>
+        {% if entry.materiality %}
+          <span class="badge mat-{{ entry.materiality | materiality_class }}">{{ entry.materiality }}</span>
+        {% else %}
+          {# An em dash, not "none": the column's own word for a stated judgement of
+             "unimportant" is `none`, and printing it for an unclassified row would
+             claim a judgement nobody made. #}
+          <span class="muted" title="Nothing has classified this story yet">—</span>
+        {% endif %}
+      </td>
+
+      <td class="small">
+        {% if entry.direction %}
+          <span class="dir dir-{{ entry.direction }}">{{ entry.direction }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+
+      <td>
+        {% if entry.relevant is none %}
+          <span class="badge warn" title="No classifier has judged this story yet">unassessed</span>
+        {% elif entry.relevant %}
+          <span class="badge ok" title="{{ entry.relevance.reason }}">relevant</span>
+        {% else %}
+          <span class="badge unknown" title="{{ entry.relevance.reason }}">not relevant</span>
+        {% endif %}
+        {% if entry.scepticism %}
+          <span class="badge {{ entry.scepticism.grade | grade_class }}"
+                title="{{ entry.scepticism.grade or 'unrated' }} evidence, weight {{ entry.scepticism.credibility | pct0 }}{% if entry.scepticism.source %} · {{ entry.scepticism.source }}{% endif %}">
+            {{ entry.scepticism.grade or 'unrated' }}
+          </span>
+        {% endif %}
+      </td>
+
+      {# Tickers first, because they are the actionable attachment; sectors are the roll-up
+         and are what a story about a whole industry carries instead. A story with neither
+         is exactly the story relevance says has nothing to attach to, and says so. #}
+      <td class="small">
+        {% for ticker in entry.tickers %}
+          <a class="chip small" href="/instrument/{{ ticker }}">{{ ticker }}</a>
+        {% endfor %}
+        {% for sector in entry.sectors %}
+          <a class="chip small" href="/sectors/{{ sector | urlencode }}">{{ sector }}</a>
+        {% endfor %}
+        {% if not entry.tickers and not entry.sectors %}
+          <span class="muted" title="Names no instrument and no sector, so there is nothing to attach it to">—</span>
+        {% endif %}
+      </td>
+
+      {# Shown, not sortable -- the ordering would have to compute the score for every
+         row, and this database cannot do the exponential in SQL. Hovering gives the
+         three inputs, because a priority that cannot be argued with is not worth
+         trusting. #}
+      <td class="num small"
+          title="{{ entry.priority_inputs.formula }}: materiality {{ entry.priority_inputs.materiality_weight }} × credibility {{ entry.priority_inputs.credibility | pct0 }}{% if not entry.priority_inputs.credibility_assessed %} (unassessed, default weight){% endif %} × recency {{ entry.priority_inputs.recency_weight }}">
+        {{ entry.priority | number(4) }}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="empty">
+      {% if page > pages %}
+        This listing has {{ pages }} page{{ '' if pages == 1 else 's' }}; page {{ page }} is past
+        the end. <a href="{{ filters.href(list_base, page=None) }}">Go to the first page</a>.
+      {% elif applied %}
+        No stories match this filter.
+      {% else %}
+        No news has been ingested yet. The <code>news_rss</code> job fills this table;
+        run it from <a href="/jobs">Operations</a>.
+      {% endif %}
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if pages > 1 %}
+<nav class="pager">
+  {% if page > 1 %}
+    <a href="{{ filters.href(list_base, page=page - 1) }}">← Newer</a>
+  {% endif %}
+  <span>Page {{ page }} of {{ pages }} ({{ total }} storie{{ 's' if total != 1 else '' }})</span>
+  {% if page < pages %}
+    <a href="{{ filters.href(list_base, page=page + 1) }}">Older →</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

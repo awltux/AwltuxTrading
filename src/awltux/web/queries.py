@@ -12,13 +12,14 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sqlalchemy import Select, desc, func, select
+from sqlalchemy import Select, case, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from awltux.analysis import attention as attention_rules
 from awltux.analysis import macro, sectors
 from awltux.analysis.attention import Reason
 from awltux.analysis.embeddings import group_events
+from awltux.analysis.relevance import MATERIALITY_ORDER
 from awltux.config import get_settings
 from awltux.db import (
     DecisionOutcome,
@@ -38,7 +39,7 @@ from awltux.db import (
     ValuationRun,
     utcnow,
 )
-from awltux.db.news import appraisals_for, news_for_ticker
+from awltux.db.news import appraisals_for, mentions_ticker, news_for_ticker
 from awltux.timezones import as_utc, format_moment, utc_today
 
 SortKey = Literal[
@@ -1044,6 +1045,155 @@ def recent_news(
     if min_materiality:
         statement = statement.where(NewsItem.materiality == min_materiality)
     return list(session.execute(statement.limit(limit)).scalars().all())
+
+
+#: The columns the news listing can be ordered by.
+#:
+#: **Columns, not the ticker's priority score.** Priority is
+#: ``materiality x credibility x recency`` and is computed in Python over a bounded
+#: recent window (see ``routes/news.py::_ranked``), so ordering the whole corpus by it
+#: would mean loading every row to sort it in memory -- and the recency term needs a
+#: fractional power SQLite does not provide without the optional math extension
+#: (measured: ``select exp(1)`` on this database raises "no such function"). The stored
+#: inputs are what a table can sort, and ``materiality`` is the one that dominates the
+#: score. The score itself is on each story's own page, and "best first" is the ticker's
+#: job.
+NewsSortKey = Literal["published_at", "materiality", "source", "title", "relevance"]
+
+SortDirection = Literal["asc", "desc"]
+
+#: Materiality as the sortable integer its severity order implies.
+#:
+#: Derived from the analysis layer's own ``MATERIALITY_ORDER`` rather than restated, so a
+#: level added there cannot silently sort as the lowest one. ``-1`` is "not assessed",
+#: which the ordering places below ``none``: a story nobody has judged is less usable
+#: than one judged unimportant, and both are below "mild".
+_MATERIALITY_RANK = case(
+    {level: rank for rank, level in enumerate(MATERIALITY_ORDER)},
+    value=NewsItem.materiality,
+    else_=-1,
+)
+
+
+def _news_order(sort: NewsSortKey, direction: SortDirection) -> tuple[Any, ...]:
+    """The ORDER BY for the news listing, always ending in a deterministic tie-break.
+
+    **The tie-break is what makes offset paging correct.** ``published_at`` is not
+    unique -- a feed's batch shares a timestamp to the second, and Google News alone
+    contributes 26,580 of the 27,884 stored stories -- so ordering by it alone leaves the
+    rows inside a tie in whatever order SQLite happens to return them. That order is free
+    to differ between the count and the page, and between page one and page two, and the
+    failure is silent: one story appears twice while another never appears at all.
+    ``id`` is unique and monotonic with arrival, so it settles it in the same direction
+    the reader asked for.
+    """
+    key = {
+        "published_at": NewsItem.published_at,
+        "materiality": _MATERIALITY_RANK,
+        "source": NewsItem.source,
+        "title": NewsItem.title,
+        "relevance": NewsItem.relevant,
+    }[sort]
+    ordered = key.asc() if direction == "asc" else key.desc()
+    tie_break = NewsItem.id.asc() if direction == "asc" else NewsItem.id.desc()
+    return (ordered, tie_break)
+
+
+def news_listing(
+    session: Session,
+    *,
+    search: str | None = None,
+    source: str | None = None,
+    materiality: str | None = None,
+    relevant: bool | None = None,
+    unassessed: bool = False,
+    ticker: str | None = None,
+    since: dt.datetime | None = None,
+    sort: NewsSortKey = "published_at",
+    direction: SortDirection = "desc",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[NewsItem], int]:
+    """One page of *every* stored story, and how many match the same predicate.
+
+    The news page's read model. It is deliberately not :func:`recent_news`: that one
+    answers "the newest N", so it cannot page, and its filters are the two the JSON API
+    happens to expose (a ticker, a materiality floor). This one filters, counts and
+    slices in SQL, so the total the pager prints is the whole matching set rather than
+    the page -- the defect `tests/test_news_paging.py` records for the instrument page.
+
+    ``unassessed`` is a separate argument from ``relevant`` because "no classifier has
+    judged this" is not "judged not relevant". ``relevant is None`` is a state the model
+    keeps distinct on purpose, and one that a URL cannot express through a boolean.
+
+    The rows come back as :class:`~awltux.db.NewsItem` objects, not as the ticker's
+    serialised dicts: the page needs the appraisals too, and it attaches those itself so
+    that exactly one place decides which appraisal a story's row shows.
+    """
+    conditions: list[Any] = []
+    if search:
+        pattern = f"%{search}%"
+        conditions.append(
+            or_(NewsItem.title.ilike(pattern), NewsItem.source.ilike(pattern))
+        )
+    if source:
+        conditions.append(NewsItem.source == source)
+    if materiality:
+        conditions.append(NewsItem.materiality == materiality)
+    if unassessed:
+        conditions.append(NewsItem.relevant.is_(None))
+    elif relevant is not None:
+        conditions.append(NewsItem.relevant.is_(relevant))
+    if ticker:
+        conditions.append(mentions_ticker(ticker))
+    if since is not None:
+        conditions.append(NewsItem.published_at >= since)
+
+    total = session.execute(
+        select(func.count()).select_from(NewsItem).where(*conditions)
+    ).scalar_one()
+
+    statement: Select = (
+        select(NewsItem)
+        .where(*conditions)
+        .order_by(*_news_order(sort, direction))
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(session.execute(statement).scalars().all()), int(total)
+
+
+def news_source_counts(session: Session) -> list[tuple[str, int]]:
+    """How many stories each feed contributed, busiest first.
+
+    Unbounded rather than capped at the busiest N: the source filter's options are also
+    what validates the URL, and a value missing from them is *ignored* rather than
+    applied (`filters.FilterSet.parse`). A cap would therefore make a long-tail source
+    unaddressable -- quietly, and only for the reader who went looking for it.
+
+    Measured 2026-10-09 on the live database there are five: google_news (26,580),
+    yahoo_rss (1,202), marketaux (88), edgar (13) and finnhub (1). If the feeds ever
+    multiply past a dropdown, the answer is a search box rather than a cap.
+    """
+    rows = session.execute(
+        select(NewsItem.source, func.count())
+        .group_by(NewsItem.source)
+        .order_by(func.count().desc(), NewsItem.source)
+    ).all()
+    return [(name, int(count)) for name, count in rows]
+
+
+def news_materiality_counts(session: Session) -> list[tuple[str | None, int]]:
+    """How many stories sit at each materiality level, unassessed included.
+
+    Raw ``(level, count)`` pairs in no particular order, because the order the control
+    shows is a severity question and that belongs in the presentation layer
+    (``filters.materiality_options``), not here.
+    """
+    rows = session.execute(
+        select(NewsItem.materiality, func.count()).group_by(NewsItem.materiality)
+    ).all()
+    return [(level, int(count)) for level, count in rows]
 
 
 def sector_group_counts(session: Session) -> list[tuple[str | None, int]]:

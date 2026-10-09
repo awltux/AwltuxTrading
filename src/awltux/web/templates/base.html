@@ -30,6 +30,10 @@
     <nav>
       <a href="/dashboard" {% if request.url.path == '/dashboard' %}class="active"{% endif %}>Recommendations</a>
       <a href="/sectors" {% if request.url.path == '/sectors' %}class="active"{% endif %}>Sectors</a>
+      {# The whole news corpus. Also marked active on a story's own page (`/news/123`),
+         because the reader got there from this section and the nav should say so; the
+         prefix test keeps a path like `/newsletter` from matching. #}
+      <a href="/news" {% if request.url.path == '/news' or request.url.path.startswith('/news/') %}class="active"{% endif %}>News</a>
       <a href="/decisions" {% if request.url.path == '/decisions' %}class="active"{% endif %}>Predictions</a>
       <a href="/calibration" {% if request.url.path == '/calibration' %}class="active"{% endif %}>Calibration</a>
       <a href="/jobs" {% if request.url.path == '/jobs' %}class="active"{% endif %}>Operations</a>

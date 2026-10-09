@@ -34,6 +34,8 @@ from awltux.analysis.relevance import (
 from awltux.config import Settings, get_settings
 from awltux.db import NewsAnalysis, NewsItem, session_scope, utcnow
 from awltux.timezones import format_moment
+from awltux.web import filters, queries
+from awltux.web.templating import templates
 
 router = APIRouter(tags=["news"])
 
@@ -368,8 +370,6 @@ def recent_news(
     ticker: str | None = None,
     materiality: str | None = None,
 ) -> dict[str, object]:
-    from awltux.web import queries
-
     with session_scope() as session:
         if ticker is None and materiality is None:
             # The default feed is the flash banner: one entry per event, best first.
@@ -392,8 +392,6 @@ def recent_news(
 @router.get("/partials/news-ticker", response_class=HTMLResponse, include_in_schema=False)
 def news_ticker_partial(request: Request, limit: int = Query(15, ge=1, le=50)) -> HTMLResponse:
     """HTMX-friendly fragment, used as the no-JS fallback for the ticker."""
-    from awltux.web.templating import templates
-
     with session_scope() as session:
         entries, clustering = _events(session, window=RANKING_WINDOW, limit=limit)
     return templates.TemplateResponse(
@@ -458,6 +456,104 @@ def appraise_news_item(item_id: int) -> RedirectResponse:
     )
 
 
+def _news_filter_specs(session) -> tuple[filters.FilterSpec, ...]:
+    """The news page's filter vocabulary, with the option lists the stored data can fill.
+
+    Read from the database for the same reason the sector control is: a dropdown entry
+    for a source or a materiality level the corpus does not hold is a choice that matches
+    nothing, and the reader cannot tell that from a filter that is broken.
+    """
+    return filters.news_specs(
+        sources=filters.source_options(queries.news_source_counts(session)),
+        materiality=filters.materiality_options(queries.news_materiality_counts(session)),
+    )
+
+
+def _news_region(
+    spec: filters.FilterSet, *, page: int, per_page: int
+) -> dict[str, object]:
+    """The rows and the pager state -- everything the table needs, and nothing else.
+
+    Split from the page for the reason ``_recommendations_region`` is: when this table
+    becomes a swapped fragment (queued in ``TODO.md``), a page click must not re-read the
+    filter vocabulary or recompute anything that sits above the table.
+    """
+    # ``relevance`` is one control over three states, and the third -- "nothing has judged
+    # this" -- is a NULL column rather than a boolean, so it cannot be read off the choice
+    # as a truth value. See ``queries.news_listing``.
+    choice = spec.value("relevance")
+    relevant = {"relevant": True, "not_relevant": False}.get(choice)
+    unassessed = choice == filters.UNASSESSED
+
+    age = filters.news_window(spec.value("window"))
+
+    with session_scope() as session:
+        rows, total = queries.news_listing(
+            session,
+            search=spec.opt("q"),
+            source=spec.opt("source"),
+            materiality=spec.opt("materiality"),
+            relevant=relevant,
+            unassessed=unassessed,
+            ticker=spec.opt("ticker"),
+            since=utcnow() - age if age else None,
+            # Both are narrowed above by the specs' own option lists; a checker cannot
+            # follow a runtime lookup back to a Literal, and the alternative is
+            # restating the vocabulary here, which is what the specs removed.
+            sort=spec.value("sort"),  # type: ignore[arg-type]
+            direction=spec.value("direction"),  # type: ignore[arg-type]
+            limit=per_page,
+            offset=(page - 1) * per_page,
+        )
+        # One appraisal per story -- its primary subject's, the same one the ticker shows
+        # -- so a row here and the same story on the banner cannot disagree.
+        analyses = _analyses_in(session, list(rows))
+
+    return {
+        # `_serialise` is the API's and the ticker's definition of "a story as the UI reads
+        # it". Reusing it keeps this table from becoming a third answer to which fields a
+        # story has, and it brings the scepticism badges along unchanged.
+        "entries": [_serialise(row, analyses.get(row.id)) for row in rows],
+        "total": total,
+        "page": page,
+        "pages": max((total + per_page - 1) // per_page, 1),
+        "per_page": per_page,
+        "filters": spec,
+    }
+
+
+@router.get("/news", response_class=HTMLResponse, include_in_schema=False)
+def news_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=200),
+) -> HTMLResponse:
+    """Every story the system has stored, as a table a reader can rearrange.
+
+    **Every story, not the ticker's.** The banner is curated twice over -- floored by
+    ``news.ticker_min_materiality`` and collapsed to one entry per event -- so most of
+    what has been ingested is unreachable from it. Measured 2026-10-09 on the live
+    database: 27,884 stories stored, of which 13,976 are classified ``none`` and so can
+    never clear a floor that starts at ``mild``. This page is where the rest of the
+    corpus is legible, including the 16,142 stories assessed as *not* relevant:
+    "the classifier looked at this and said no" is an answer worth being able to check,
+    and it is not visible anywhere else.
+
+    ``page`` and ``per_page`` come from the route signature rather than the filter set
+    (which declares them only so a link carries them), so FastAPI rejects a hand-edited
+    ``?page=banana`` with a 422 instead of the page having to guess what it meant.
+    """
+    with session_scope() as session:
+        specs = _news_filter_specs(session)
+
+    spec = filters.FilterSet.parse(specs, request.query_params)
+    return templates.TemplateResponse(
+        request,
+        "news.html",
+        _news_region(spec, page=page, per_page=per_page),
+    )
+
+
 @router.get("/news/{item_id}", response_class=HTMLResponse, include_in_schema=False)
 def news_item_page(request: Request, item_id: int) -> HTMLResponse:
     """One story, on a page of our own.
@@ -468,8 +564,6 @@ def news_item_page(request: Request, item_id: int) -> HTMLResponse:
     concerns, which way it points, what the scepticism layer made of the source,
     and where the original is.
     """
-    from awltux.web.templating import templates
-
     with session_scope() as session:
         item = session.get(NewsItem, item_id)
         if item is None:

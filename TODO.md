@@ -176,6 +176,27 @@ pattern (`research/`) also matched `docs/research/`, so nine research reports we
 invisible to git while `git status` reported a clean tree.
 `tests/test_repo_hygiene.py` now asserts the invariant that broke.
 
+### Two direction classes in the stylesheet match no value the column holds
+
+Found 2026-10-09 while building the news corpus page, which renders the same cell.
+
+`static/style.css:166-167` defines `.dir-up` and `.dir-down`. Every template that
+prints a direction writes `class="dir dir-{{ item.direction }}"`
+(`partials/news_ticker.html:34`, `news_item.html:73`, `instrument.html:719`), and
+`news_item.direction` holds **neutral, positive or negative** — measured 2026-10-09 on
+27,884 rows: 16,079 neutral, 7,263 positive, 4,496 negative, 57 null. So the class
+emitted is `dir-positive` / `dir-negative` / `dir-neutral`, none of which the sheet
+styles, and `.dir-up` / `.dir-down` are dead rules nothing applies.
+
+The visible effect is small — the direction word renders unstyled rather than coloured —
+which is why it has survived. The fix is two renamed selectors, or the three real values
+coloured; the reason to be careful is that the `.dir-*` class is shared by the ticker,
+the instrument list, the sector list and the story page, so correction changes four
+surfaces at once rather than one.
+
+`analysis/relevance.py:111` is the source of truth for the vocabulary
+(`DIRECTIONAL = ("positive", "negative")`), so the stylesheet should name those.
+
 ---
 
 ## Correctness questions still open
@@ -947,17 +968,18 @@ makes it eligible for catch-up. The loop also needs the `progress.note` above it
 either can be observed.
 
 
-### Three pagers still reload the whole page
+### Four pagers still reload the whole page
 
 The recommendations table on `/dashboard` swaps in place (`partials/recommendations.html`,
-`/partials/recommendations`, and `wirePartialPaging` in `static/app.js`). The other three
+`/partials/recommendations`, and `wirePartialPaging` in `static/app.js`). The other four
 still navigate, so a page change puts the reader back at the head of the document.
 
 Each needs the same two steps the dashboard needed, and no new mechanism:
 
-1. `src/awltux/web/templates/decisions.html` lines 86-169, `jobs.html` lines 215-287 and
-   `instrument.html` lines 613-627 (the news list) extracted into `partials/*.html`
-   wrapped in `<div id="..." data-partial="/partials/...">`.
+1. `src/awltux/web/templates/decisions.html` lines 86-169, `jobs.html` lines 215-287,
+   `instrument.html` lines 613-627 (the news list) and `news.html` (the whole table, added
+   with the corpus page on 2026-10-09) extracted into `partials/*.html` wrapped in
+   `<div id="..." data-partial="/partials/...">`.
 2. A fragment route beside the page route, rendering that partial.
 
 The one thing to get right is **what the region context includes**, because the fragment
@@ -976,6 +998,14 @@ means:
   click must not re-run all of that; extract the news block into
   `queries.instrument_news(session, ticker, page, per_page)` and have `instrument_detail`
   call it, so there is one definition.
+- **`/news`** -- the region needs `entries`, `total`, `page`, `pages`, `per_page`,
+  `filters`. The *filter form* is page-level only because it sits above the table in the
+  markup; moving it inside the region would be wrong, since the swappable part is the
+  table and its pager. `news_page` currently reads the source and materiality option
+  lists from the database to build the filter set, and the region must not repeat that
+  read -- `filters.news_specs` needs no options to *parse* a URL (an unrecognised value is
+  recorded as ignored), so the fragment can parse with the empty option lists and the page
+  keeps the authoritative ones.
 
 `tests/test_partial_paging.py` carries the contract for the dashboard; adding a tuple to
 `REGIONS` extends it to each one as it lands.

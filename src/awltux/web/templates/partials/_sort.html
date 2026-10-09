@@ -1,0 +1,30 @@
+{# The column-header sort link, shared by every sortable table.
+
+   It lives on its own rather than inside the table that first needed it, because the
+   news page needs exactly this and nothing else from `partials/recommendations.html`.
+   Importing that file instead would execute the whole recommendations table to throw
+   its output away, and it would break the moment that table assumed a context the
+   importer did not have.
+
+   Import it **with context**: the macro reads `filters` (the FilterSet the route
+   parsed) and `list_base` (where the header links point) from the importing template,
+   because those are per-page facts and passing both as macro arguments would be two
+   more things a caller can get wrong. #}
+{% from "partials/_help.html" import help %}
+
+{# `explain_key` is separate from `key` because the two vocabularies differ: the sort
+   key for the long-term verdict is `action`, while the glossary calls it
+   `long_term_action`. Defaulting to `key` keeps the common case -- a column whose name
+   is the same in both -- to one argument.
+
+   The direction a click produces is "the one that shows the interesting end first":
+   clicking a column that is not the current sort starts descending, and clicking the
+   one that is already descending flips to ascending. Without that rule the first click
+   on "materiality" would put the ``none`` stories on top. #}
+{% macro sort_link(key, label, title=None, explain_key=None) %}
+  {% set next_dir = 'asc' if (filters.value('sort') == key and filters.value('direction') == 'desc') else 'desc' %}
+  <a class="sort {% if filters.value('sort') == key %}active{% endif %}" {% if title %}title="{{ title }}"{% endif %}
+     href="{{ filters.href(list_base, sort=key, direction=next_dir) }}">
+    {{ label }}{% if filters.value('sort') == key %}<span class="arrow">{{ '▲' if filters.value('direction') == 'asc' else '▼' }}</span>{% endif %}
+  </a>{{ help(explain_key or key) }}
+{% endmacro %}

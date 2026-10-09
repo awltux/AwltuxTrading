@@ -29,12 +29,14 @@ unknown must be reported, never inferred.
 
 from __future__ import annotations
 
+import datetime as dt
 import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-from awltux.web.queries import SortKey
+from awltux.analysis.relevance import MATERIALITY_ORDER
+from awltux.web.queries import NewsSortKey, SortKey
 
 #: How a filter is presented to the reader.
 #:
@@ -462,4 +464,181 @@ def recommendation_specs(
         ),
         FilterSpec("page", "Page", default="1", kind="none", chip=False),
         FilterSpec("per_page", "Per page", default="100", kind="none", chip=False),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the news page
+# --------------------------------------------------------------------------- #
+
+#: The URL value standing for "no classifier has judged this story".
+#:
+#: ``relevant`` is nullable on purpose -- ``None`` is "not assessed", a different and
+#: more actionable state than "assessed as not relevant" -- so a control offering the
+#: two judged answers needs a third name for the unjudged one. It cannot be an empty
+#: string: an absent parameter already means "do not filter on this", so the state needs
+#: a name of its own, exactly as :data:`UNCLASSIFIED` does for the sector column.
+UNASSESSED = "__unassessed__"
+
+NEWS_RELEVANCE_OPTIONS = (
+    FilterOption("relevant", "Assessed relevant"),
+    FilterOption("not_relevant", "Assessed not relevant"),
+    FilterOption(UNASSESSED, "Not yet assessed"),
+)
+
+#: How far back the listing looks, and the age each choice means.
+#:
+#: One dict so the control's options and the query's cutoff cannot disagree about what
+#: "7d" is. A window rather than two date boxes: the reader arrives with "what has
+#: happened lately", not with a date range, and the corpus reaches back years.
+NEWS_WINDOW_AGES: dict[str, dt.timedelta] = {
+    "24h": dt.timedelta(hours=24),
+    "7d": dt.timedelta(days=7),
+    "30d": dt.timedelta(days=30),
+    "90d": dt.timedelta(days=90),
+    "365d": dt.timedelta(days=365),
+}
+
+_NEWS_WINDOW_LABELS = {
+    "24h": "Last 24 hours",
+    "7d": "Last 7 days",
+    "30d": "Last 30 days",
+    "90d": "Last 90 days",
+    "365d": "Last year",
+}
+
+NEWS_WINDOW_OPTIONS = tuple(
+    FilterOption(value, _NEWS_WINDOW_LABELS[value]) for value in NEWS_WINDOW_AGES
+)
+
+#: Taken from the query layer's own ``NewsSortKey``: the keys a column header can link
+#: to and the keys the ordering understands are the same fact, and stating it twice is
+#: how a table ends up linking to a sort that silently does nothing.
+NEWS_SORT_OPTIONS = tuple(
+    FilterOption(key, key.replace("_", " ")) for key in get_args(NewsSortKey)
+)
+
+
+def news_window(value: str) -> dt.timedelta | None:
+    """The chosen window as an age, or ``None`` for "any time"."""
+    return NEWS_WINDOW_AGES.get(value)
+
+
+def source_options(rows: Sequence[tuple[str, int]]) -> tuple[FilterOption, ...]:
+    """Turn ``(source, count)`` rows into dropdown entries, busiest first.
+
+    No "unclassified" bucket, unlike :func:`sector_options`: ``source`` is not nullable
+    and is set by the feed adapter that fetched the story, so there is no empty case to
+    name. The count is shown for a different reason than the sector control's -- the
+    corpus is dominated by one feed (26,580 of 27,884 rows are google_news), and the
+    reader is better off knowing that before they filter to a source of eleven.
+    """
+    return tuple(
+        FilterOption(name, name, str(count))
+        for name, count in sorted(rows, key=lambda item: (-item[1], item[0]))
+    )
+
+
+def materiality_options(
+    rows: Sequence[tuple[str | None, int]],
+) -> tuple[FilterOption, ...]:
+    """Turn ``(materiality, count)`` rows into dropdown entries, most severe first.
+
+    Ordered by severity rather than by population. A reader opening this control is
+    looking for the profit warnings, and the live database has 13,976 stories at
+    ``none`` against 242 at ``critical`` -- sorted by count, the one level that matters
+    would be last.
+
+    ``None`` is left out. An unassessed story is offered by the *relevance* control,
+    which is where that state belongs, and offering it twice would be two ways to ask
+    one question.
+    """
+    counts = {level: count for level, count in rows if level}
+    return tuple(
+        FilterOption(level, level, str(counts[level]))
+        for level in reversed(MATERIALITY_ORDER)
+        if level in counts
+    )
+
+
+def news_specs(
+    *,
+    sources: Sequence[FilterOption] = (),
+    materiality: Sequence[FilterOption] = (),
+) -> tuple[FilterSpec, ...]:
+    """Every query parameter the news page understands, declared once.
+
+    The option lists are passed in for the same reason the sector list is: this module
+    decides how a filter is presented and linked, and :mod:`awltux.web.queries` decides
+    what is in the database. Keeping the SQL out of the presentation layer is what lets
+    these URL rules be tested without a database.
+
+    Long, and flat on purpose. The declarations are independent -- each names one
+    parameter, its control and the sentence that explains it -- so splitting them across
+    helpers would scatter one page's URL vocabulary over several functions and hide the
+    whole of it from the reader who has to check that a control and a query agree. The
+    length is the *help* text, which is the part a reader actually sees.
+    """
+    return (
+        FilterSpec(
+            "q",
+            "Search",
+            kind="text",
+            placeholder="Headline or source…",
+            help=(
+                "Matches any part of the headline, or of the source's own name. Not the "
+                "summary or the article body, which are not both stored."
+            ),
+        ),
+        FilterSpec(
+            "ticker",
+            "Instrument",
+            kind="text",
+            placeholder="T212 ticker…",
+            help=(
+                "The ticker exactly as the feeds tag it, e.g. DAC_US_EQ. Matched against "
+                "the instruments the story was judged to concern, which is not the same "
+                "as the story mentioning the company in passing."
+            ),
+        ),
+        FilterSpec("source", "Source", options=tuple(sources)),
+        FilterSpec(
+            "materiality",
+            "Materiality",
+            options=tuple(materiality),
+            help=(
+                "How much the classifier judged the story matters, if it is true. "
+                "'none' is a stated judgement, not a missing one."
+            ),
+        ),
+        FilterSpec(
+            "relevance",
+            "Relevance",
+            options=NEWS_RELEVANCE_OPTIONS,
+            help=(
+                "Whether the story is a claim about a share price: it names an "
+                "instrument or a sector, and carries a direction. A story nobody has "
+                "classified yet is a third state, not a 'no'."
+            ),
+        ),
+        FilterSpec(
+            "window",
+            "Window",
+            options=NEWS_WINDOW_OPTIONS,
+            help="How far back to look, by publication time.",
+        ),
+        FilterSpec(
+            "sort",
+            "Sort",
+            options=NEWS_SORT_OPTIONS,
+            default="published_at",
+            kind="none",
+            chip=False,
+        ),
+        FilterSpec(
+            "direction", "Direction", options=DIRECTION_OPTIONS, default="desc",
+            kind="none", chip=False,
+        ),
+        FilterSpec("page", "Page", default="1", kind="none", chip=False),
+        FilterSpec("per_page", "Per page", default="50", kind="none", chip=False),
     )

@@ -290,6 +290,66 @@ FIELDS: tuple[Field, ...] = (
         "it could not tell the options apart, and a blank means the question is numeric or "
         "yes/no rather than a choice between named options.",
     ),
+    # -------------------------------------------------------------- the news list
+    Field(
+        "news_published",
+        "Published",
+        "When the publisher says the story went out, not when we fetched it.",
+        "The two can differ by hours or days -- a feed hands over its backlog on the "
+        "first run -- which is why the sort is on this and not on the row's id. A blank "
+        "means the feed gave no timestamp at all; such a story sits at the bottom of "
+        "every ordering rather than pretending to be from now.",
+    ),
+    Field(
+        "news_headline",
+        "Headline",
+        "The title the publisher used, stored verbatim and never rewritten.",
+        "It is also the doorway: the link opens this app's own page for the story, not "
+        "the publisher's, because the article is the *input* to an assessment and may be "
+        "paywalled, syndicated or gone by the time anyone clicks. Hover it for the "
+        "classifier's reason when there is one.",
+    ),
+    Field(
+        "news_source",
+        "Source",
+        "Which feed the story arrived through, not the news organisation that wrote it.",
+        "These are two different things and only the feed is stored. Most rows come from "
+        "google_news, which is a search across many publishers, so a source of "
+        "'google_news' says where we found it rather than who stands behind it -- the "
+        "publisher itself is named on the story's page, from the appraisal.",
+    ),
+    Field(
+        "news_materiality",
+        "Materiality",
+        "How much the classifier judged the story matters *if it is true*: none, mild, "
+        "moderate, material or critical.",
+        "It is a judgement about significance, not about truth -- whether the claim is "
+        "sound is the credibility weight's job, and the two multiply into priority. "
+        "'none' is a stated answer and not a missing one: it is the largest single group "
+        "in the corpus. A dash means nothing has classified the story yet.",
+    ),
+    Field(
+        "news_relevance",
+        "Relevance",
+        "Whether there is a claim about a share price here at all: the story names an "
+        "instrument or a sector, and carries a direction.",
+        "Deliberately conjunctive, and deliberately not a judgement about quality. A "
+        "story that names a company but says nothing about which way it points is not "
+        "relevant at any priority, and neither is a market-wide move with nothing to "
+        "attach it to. 'Unassessed' is a third state rather than a 'no', and one worth "
+        "being able to filter for.",
+    ),
+    Field(
+        "news_priority",
+        "Priority",
+        "Materiality x credibility x recency, the same score the flash ticker ranks by.",
+        "Shown but not sortable here, and that is a limit of the table rather than a "
+        "choice: the recency term is exponential decay, and this database has no maths "
+        "extension to compute it in SQL, so ordering the whole corpus by priority would "
+        "mean loading every row to sort it in memory. Sort by materiality instead, which "
+        "is the input that dominates the product. Hover the figure for its three "
+        "components.",
+    ),
 )
 
 BY_KEY: dict[str, Field] = {field.key: field for field in FIELDS}
