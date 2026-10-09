@@ -103,6 +103,75 @@ class TestCanonicalState:
         assert state.dropped
         assert state.token_estimate <= 5000  # truncated down from far more
 
+    def test_a_deep_dive_rides_along_as_evidence(self):
+        """A decision made as though the deep-dive had not happened would be arguing with
+        work the reader paid for, so the newest report goes into the state -- named as a
+        judgement rather than as a measurement."""
+        state = build_state(
+            instrument=make_instrument(),
+            valuation=None,
+            technical=None,
+            fundamentals=None,
+            sentiment_score=None,
+            news=[],
+            deep_research={
+                "verdict": "attractive",
+                "confidence": 0.6,
+                "executive_summary": "Cheap, cash-generative, and dull.",
+                "reported_at": "2026-10-09",
+            },
+        )
+
+        assert state.payload["deep_research"]["verdict"] == "attractive"
+        assert state.payload["deep_research"]["executive_summary"].startswith("Cheap")
+
+    def test_no_report_leaves_no_key_and_no_hash_change(self):
+        """Most instruments have never been researched, and adding the field must not
+        change the state hash of a decision that never had one -- nulls are pruned, which
+        is the same rule `test_adding_an_absent_field_does_not_change_the_hash` records."""
+        without = build_state(
+            instrument=make_instrument(),
+            valuation=None,
+            technical=None,
+            fundamentals=None,
+            sentiment_score=None,
+            news=[],
+        )
+        explicit_none = build_state(
+            instrument=make_instrument(),
+            valuation=None,
+            technical=None,
+            fundamentals=None,
+            sentiment_score=None,
+            news=[],
+            deep_research=None,
+        )
+
+        assert "deep_research" not in without.payload
+        assert without.sha256 == explicit_none.sha256
+
+    def test_the_deep_dive_is_dropped_after_the_filing_summary(self):
+        """Progressive truncation, cheapest information first: the prose a reader paid for
+        is worth less to a *decision* than the figures and the headlines, so it goes second
+        -- but not first, because it is a better summary of three annual reports than the
+        filing summariser's one-document read."""
+        state = build_state(
+            instrument=make_instrument(),
+            valuation=None,
+            technical=None,
+            fundamentals=None,
+            sentiment_score=None,
+            news=[],
+            filing_summary="y" * 40_000,
+            deep_research={"verdict": "watch", "executive_summary": "z" * 40_000},
+            max_tokens=11_000,
+        )
+
+        assert state.truncated is True
+        assert "filing summary" in state.dropped
+        assert state.dropped.index("filing summary") < state.dropped.index("deep-dive research")
+        assert "deep_research" not in state.payload
+
 
 # --------------------------------------------------------------------------- #
 # engines

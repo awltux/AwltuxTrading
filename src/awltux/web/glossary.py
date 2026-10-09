@@ -155,6 +155,19 @@ FIELDS: tuple[Field, ...] = (
         "A stale verdict is not wrong, it is old: prices move and accounts are "
         "restated. Sort by it to find the rows nothing has looked at recently.",
     ),
+    # -------------------------------------------------------------- deep-dive
+    Field(
+        "verdict",
+        "Deep-dive verdict",
+        "What a deep-dive concluded about the business: attractive, watch, "
+        "unattractive, or insufficient evidence.",
+        "'Insufficient evidence' is a stated answer rather than a failure -- it is the "
+        "common and correct conclusion for a company nobody has filed much about, and it "
+        "is not a judgement on the company. The report behind it reads the annual reports "
+        "this system holds, the appraised news and the figures with their quotations, and "
+        "it is a judgement: unlike the deterministic valuation beside it, it cannot be "
+        "reproduced from the same inputs.",
+    ),
     # --------------------------------------------------------------- valuation
     Field(
         "fair_value_base",

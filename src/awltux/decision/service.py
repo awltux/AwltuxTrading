@@ -40,6 +40,7 @@ from awltux.db import (
     Instrument,
     NewsItem,
     PriceBar,
+    ResearchReport,
     SentimentSeries,
     ValuationRun,
     utcnow,
@@ -56,6 +57,7 @@ from awltux.decision.engine import (
 from awltux.decision.gate import build_context, evaluate
 from awltux.decision.questions import build_questions, question_metadata
 from awltux.scheduler import progress
+from awltux.timezones import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +214,44 @@ def _recent_news(session: Session, ticker: str, limit: int = 12) -> list[NewsIte
     return rows
 
 
+def _deep_research(session: Session, ticker: str) -> dict[str, Any] | None:
+    """The newest finished deep-dive, as the decision state reads it.
+
+    **Why the decision should see it.** A deep-dive is the most considered judgement this
+    system makes about a business -- several annual reports, the appraised news, the figures
+    with their quotations -- and a decision made as though it had not happened would be
+    arguing with work the reader paid for. It is passed as *evidence*, named as a judgement,
+    so the engine can weigh it or disagree with it; the verdict and the summary are the two
+    fields a decision can act on, and the sections behind them belong to the report.
+
+    ``None`` for an instrument nobody has researched, which is most of them, and the state
+    then has no key at all -- so adding this does not change the state hash of a decision
+    that never had a report.
+    """
+    row = session.execute(
+        select(ResearchReport)
+        .where(ResearchReport.subject_type == "instrument")
+        .where(ResearchReport.subject_id == ticker)
+        .where(ResearchReport.status == "done")
+        .order_by(desc(ResearchReport.created_at), desc(ResearchReport.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None or not (row.exec_summary or row.verdict):
+        return None
+    return {
+        "verdict": row.verdict,
+        "confidence": row.confidence,
+        "executive_summary": row.exec_summary,
+        "reported_at": as_utc(row.created_at).date().isoformat()
+        if as_utc(row.created_at)
+        else None,
+        "note": (
+            "a deep-dive run on request, not a measurement: it may disagree with the "
+            "deterministic valuation above, and saying which one you followed matters"
+        ),
+    }
+
+
 def _last_filing(session: Session, ticker: str) -> Filing | None:
     return session.execute(
         select(Filing)
@@ -341,6 +381,7 @@ def decide_instrument(
     )
     news = _recent_news(session, instrument.t212_ticker)
     filing = _last_filing(session, instrument.t212_ticker)
+    deep_research = _deep_research(session, instrument.t212_ticker)
 
     valuation = None
     if valuation_run is not None:
@@ -356,6 +397,7 @@ def decide_instrument(
         news=news,
         extracted_facts=_extracted_facts(filing),
         filing_summary=_filing_summary(filing),
+        deep_research=deep_research,
         max_tokens=settings.decision.jev_max_state_tokens,
     )
 

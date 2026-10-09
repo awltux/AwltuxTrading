@@ -33,8 +33,16 @@ PERIOD_TYPE_ORDER = {"annual": 3, "ttm": 2, "interim": 1, "quarterly": 0}
 
 #: Preference when two sources describe the same period. A figure extracted from
 #: the filed document with a citation beats a scraped snapshot of the same figure.
+#:
+#: ``deep_research`` sits **below** ``llm_extraction`` deliberately. Both read a document and
+#: both quote what they read, but the filing extractor's whole job is one document and its
+#: figures, while a deep-dive is a synthesis across several documents and a news digest: when
+#: the two disagree about the same period, the focused read is the one to trust. Distinct
+#: values rather than a tie, because `_dedupe_by_period` compares with a strict `>` and a tie
+#: would be resolved by whichever row the query happened to return first.
 SOURCE_PREFERENCE = {
-    "llm_extraction": 5,
+    "llm_extraction": 6,
+    "deep_research": 5,
     "edgar_xbrl": 4,
     "companies_house_ixbrl": 3,
     "yahoo_statements": 2,

@@ -162,15 +162,21 @@ def build_state(
     sector_sentiment: float | None = None,
     extracted_facts: dict[str, Any] | None = None,
     filing_summary: str | None = None,
+    deep_research: dict[str, Any] | None = None,
     max_tokens: int = 28_000,
     as_of: dt.datetime | None = None,
 ) -> DecisionState:
     """Assemble, prune, hash and size-check the decision state.
 
-    Truncation is progressive and recorded: narrative context goes first, then
-    headlines, then extracted filing facts. Quantities and the valuation itself
-    are never dropped, because a decision made without them is not a decision
-    this app should be making.
+    Truncation is progressive and recorded: narrative context goes first, then the deep-dive,
+    then headlines, then extracted filing facts. Quantities and the valuation itself are never
+    dropped, because a decision made without them is not a decision this app should be making.
+
+    **The deep-dive is dropped second, after the filing summary.** Both are narrative, and the
+    prose a reader paid for is worth less to a *decision* than the figures and the headlines --
+    which is why they outlive it. It is not dropped first either: a deep-dive that read the
+    three annual reports is a better summary of them than the filing summariser's one-document
+    read, and it is the newest evidence on the page.
     """
     as_of = as_of or dt.datetime.now(dt.UTC)
     dropped: list[str] = []
@@ -191,6 +197,7 @@ def build_state(
         "recent_news": _news_payload(news),
         "filed_facts": extracted_facts,
         "filing_summary": filing_summary,
+        "deep_research": deep_research,
     }
 
     pruned = _prune(payload)
@@ -205,6 +212,7 @@ def build_state(
     # Progressive degradation, cheapest information first.
     for key, label in (
         ("filing_summary", "filing summary"),
+        ("deep_research", "deep-dive research"),
         ("recent_news", "older headlines"),
         ("filed_facts", "extracted filing detail"),
     ):

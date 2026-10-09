@@ -240,7 +240,23 @@ def _read_one(
 def _store_period(
     session: Session, filing: Filing, result: Any, report: dict[str, Any]
 ) -> None:
-    """Write the extracted figures as a `FundamentalPeriod` the analysis can read.
+    """Write one filing's extracted figures as a period. See :func:`store_cited_period`."""
+    store_cited_period(session, filing.instrument_t212_ticker, result, report)
+
+
+def store_cited_period(
+    session: Session,
+    ticker: str,
+    result: Any,
+    report: dict[str, Any] | None = None,
+    *,
+    source: str = "llm_extraction",
+) -> str:
+    """Write cited figures as a `FundamentalPeriod` the analysis can read.
+
+    Returns ``stored``, ``unusable`` or ``unscaled`` so the caller can record which of the
+    three happened; the counters in ``report`` are the same three outcomes for a job that
+    reports in numbers.
 
     **The extraction went nowhere before this.** `filing.parsed` held 38-41 cited metrics
     per filing and no period source was `llm_extraction`, so the whole 10-K pipeline was a
@@ -248,6 +264,12 @@ def _store_period(
     to learn from. `analysis/fundamental.py::SOURCE_PREFERENCE` already ranks
     `llm_extraction` **first** among sources, so the consumer was built and only the
     writer was missing.
+
+    **Two callers now.** The filing pipeline reads one document and stores `llm_extraction`;
+    a deep-dive reads several and stores `deep_research`, ranked below it so a filing's own
+    extraction still wins a tie. The rules are the same for both, which is the point of the
+    shared function: the scaling, the unit refusal and the derived ratios must not differ
+    between a figure read from one document and a figure read from three.
 
     **Scaled to actual units, and refused when the document did not say.** The figures
     arrive in whatever the filing used -- MSFT's income statement is in millions, so its
@@ -258,32 +280,14 @@ def _store_period(
     it were wrong. An unrecognised or absent `units` therefore loses the period and is
     counted, rather than being stored on the assumption that it is probably actual.
     """
+    report = report if report is not None else {}
     # `fundamentals` owns the period key and the period-end parser; the import is local
     # because that module reaches for providers, exactly as `ingest/xbrl.py` does it.
-    from awltux.ingest.fundamentals import _parse_period_end, _upsert_period, derive_metrics
-    from awltux.metrics import unit_scale
+    from awltux.ingest.fundamentals import _upsert_period, derive_metrics
 
-    instrument = session.get(Instrument, filing.instrument_t212_ticker)
-    period_end = _parse_period_end(result.period_end)
-    if instrument is None or period_end is None or not result.metric_values:
-        # Nothing to attach a period to, nothing to date it, or no figures at all. One
-        # counter, because none of the three is a reading of the document's units.
-        report["unusable_period"] = report.get("unusable_period", 0) + 1
-        return
-
-    scale = unit_scale(result.units)
-    if scale is None:
-        # `source="llm_extraction"` outranks every provider, so an unscaled period would
-        # win every comparison it took part in. Refusing is the only safe answer when the
-        # document does not say what its figures are in.
-        logger.info(
-            "filing extraction for %s states units %r, which is not usable; the period "
-            "is not stored",
-            filing.instrument_t212_ticker,
-            result.units,
-        )
-        report["unscaled_period"] = report.get("unscaled_period", 0) + 1
-        return
+    outcome, instrument, period_end, scale = _prepare_period(session, ticker, result, report, source)
+    if outcome != "stored":
+        return outcome
 
     metrics = {name: value * scale for name, value in result.metric_values.items()}
     # The derived ratios are ours, not the company's, so they are computed from the
@@ -298,15 +302,63 @@ def _store_period(
         period_end=period_end,
         period_type=result.period_type or "annual",
         metrics=metrics,
-        source="llm_extraction",
+        source=source,
         confidence=result.confidence,
-        metric_sources=result.metrics_for_storage,
+        # Stamped with the pipeline that produced them. `ExtractedMetric.as_dict` writes
+        # `llm_extraction` because that was the only writer; a deep-dive's spans come from
+        # a different call, and a provenance map that named the filing extractor for them
+        # would be a lie in the one column whose job is to say where a figure came from.
+        metric_sources={
+            name: {**entry, "source": source}
+            for name, entry in result.metrics_for_storage.items()
+        },
     )
     # Flushed where the other two `_upsert_period` call sites flush. A pending row is
     # invisible to a query on the same session, and the next filing's flush is what made
     # the second of MSFT's two periods disappear from a probe that read them back.
     session.flush()
     report["periods_stored"] = report.get("periods_stored", 0) + 1
+    return "stored"
+
+
+def _prepare_period(
+    session: Session, ticker: str, result: Any, report: dict[str, Any], source: str
+) -> tuple[str, Any, Any, float]:
+    """``(outcome, instrument, period_end, scale)`` -- everything the caller needs to store.
+
+    The two ways a result set cannot become a period, both of which are *counted rather than
+    raised* because neither is an error: nothing to attach the figures to or date them by,
+    and material that never says what units its figures are in. ``outcome`` is ``stored``,
+    ``unusable`` or ``unscaled``; the other three values are meaningless unless it is
+    ``stored``, and the caller returns the outcome unchanged when it is not.
+    """
+    from awltux.ingest.fundamentals import _parse_period_end
+    from awltux.metrics import unit_scale
+
+    instrument = session.get(Instrument, ticker)
+    period_end = _parse_period_end(result.period_end)
+    if instrument is None or period_end is None or not result.metric_values:
+        # Nothing to attach a period to, nothing to date it, or no figures at all. One
+        # counter, because none of the three is a reading of the document's units.
+        report["unusable_period"] = report.get("unusable_period", 0) + 1
+        return "unusable", instrument, period_end, 1.0
+
+    scale = unit_scale(result.units)
+    if scale is None:
+        # The citations arrive in whatever the source stated -- millions, usually -- and a
+        # mis-scaled period from a source that outranks the providers would win every
+        # comparison it took part in. Refusing is the only safe answer when the material
+        # does not say what its figures are in.
+        logger.info(
+            "%s for %s states units %r, which is not usable; the period is not stored",
+            source,
+            ticker,
+            result.units,
+        )
+        report["unscaled_period"] = report.get("unscaled_period", 0) + 1
+        return "unscaled", instrument, period_end, 1.0
+
+    return "stored", instrument, period_end, scale
 
 
 def _note_discoveries(session: Session, ticker: str, result: Any, report: dict[str, Any]) -> None:
@@ -392,4 +444,5 @@ __all__ = [
     "TEXT_SUFFIXES",
     "document_text",
     "extract_held_filings",
+    "store_cited_period",
 ]

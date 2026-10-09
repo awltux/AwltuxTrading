@@ -423,6 +423,120 @@ class TestTheHigherLevels:
         assert "unparsed_documents" not in codes
 
 
+class TestTheDeepDiveConflict:
+    """The one place two *judgements* about a company disagree in public.
+
+    The deep-dive read the annual reports and the appraised news; the engine read the
+    deterministic valuation and the figures. Neither is a measurement, so neither wins --
+    what the reader gets is the disagreement, at level 3, which is the rung for a reason
+    that is rare and worth a look rather than common and worth a filter.
+    """
+
+    def _decision(self, session, ticker: str, action: str | None) -> None:
+        from awltux.db import DecisionRun
+
+        session.add(
+            DecisionRun(
+                instrument_t212_ticker=ticker,
+                created_at=utcnow(),
+                state={},
+                state_sha256="x",
+                engine="offline",
+                answers={},
+                long_term_action=action,
+                gate_allowed=False,
+            )
+        )
+        session.flush()
+
+    def _report(self, session, ticker: str, verdict: str | None, *, status: str = "done") -> None:
+        from awltux.db import ResearchReport
+
+        session.add(
+            ResearchReport(
+                subject_type="instrument",
+                subject_id=ticker,
+                status=status,
+                title=ticker,
+                prompt="x",
+                prompt_sha256="x",
+                verdict=verdict,
+                created_at=utcnow(),
+            )
+        )
+        session.flush()
+
+    def test_a_directional_disagreement_is_reported(self, session):
+        _seed(session, "CLASH_US_EQ")
+        _add_period(session, "CLASH_US_EQ")
+        self._decision(session, "CLASH_US_EQ", "avoid")
+        self._report(session, "CLASH_US_EQ", "attractive")
+        session.commit()
+
+        reason = next(
+            r for r in reasons_for(_facts(session, "CLASH_US_EQ"), today=dt.date(2026, 1, 5))
+            if r.code == "research_conflict"
+        )
+
+        assert reason.level == 3
+        assert "attractive" in reason.detail and "avoid" in reason.detail
+        assert "neither is a measurement" in reason.detail
+
+    def test_each_direction_of_disagreement_fires(self, session):
+        _seed(session, "CLASH2_US_EQ")
+        _add_period(session, "CLASH2_US_EQ")
+        self._decision(session, "CLASH2_US_EQ", "buy")
+        self._report(session, "CLASH2_US_EQ", "unattractive")
+        session.commit()
+
+        assert "research_conflict" in _codes(session, "CLASH2_US_EQ")
+
+    def test_watching_is_not_a_conflict(self, session):
+        """`watch` and `insufficient_evidence` contradict nothing: "this needs watching"
+        agrees with a hold and with a reduce, and treating "no conclusion" as a conflict
+        with every action would put most of the table into the level-3 filter."""
+        for index, verdict in enumerate(("watch", "insufficient_evidence")):
+            ticker = f"WATCH{index}_US_EQ"
+            _seed(session, ticker)
+            _add_period(session, ticker)
+            self._decision(session, ticker, "hold")
+            self._report(session, ticker, verdict)
+        session.commit()
+
+        assert "research_conflict" not in _codes(session, "WATCH0_US_EQ")
+        assert "research_conflict" not in _codes(session, "WATCH1_US_EQ")
+
+    def test_agreement_is_not_a_conflict(self, session):
+        _seed(session, "AGREE_US_EQ")
+        _add_period(session, "AGREE_US_EQ")
+        self._decision(session, "AGREE_US_EQ", "buy")
+        self._report(session, "AGREE_US_EQ", "attractive")
+        session.commit()
+
+        assert "research_conflict" not in _codes(session, "AGREE_US_EQ")
+
+    def test_one_side_alone_is_not_a_conflict(self, session):
+        """Nothing here says which is right, so a verdict with no decision to disagree with
+        is not a finding."""
+        _seed(session, "ONLY_US_EQ")
+        _add_period(session, "ONLY_US_EQ")
+        self._report(session, "ONLY_US_EQ", "attractive")
+        session.commit()
+
+        assert "research_conflict" not in _codes(session, "ONLY_US_EQ")
+
+    def test_a_failed_or_running_report_is_not_a_verdict(self, session):
+        """Only a finished report is an answer. A run that failed left its verdict null
+        anyway, and one still going has none to read."""
+        _seed(session, "RUNNING_US_EQ")
+        _add_period(session, "RUNNING_US_EQ")
+        self._decision(session, "RUNNING_US_EQ", "avoid")
+        self._report(session, "RUNNING_US_EQ", "attractive", status="running")
+        session.commit()
+
+        assert "research_conflict" not in _codes(session, "RUNNING_US_EQ")
+
+
 class TestTheReasonsAreUsableText:
     def test_every_reason_has_a_label_and_names_what_it_measured(self, session):
         """A reason without a detail is a verdict, and a verdict is not a finding."""

@@ -340,8 +340,21 @@ arguable. With JavaScript off, the form starts the run with the template unchang
 **The result set is not a separate island.** The cited figures go through the same
 `validate_extraction` gate as every filing extraction — canonical names, a quoted span
 of at least twelve characters, a location, and a refusal when the document did not say
-what units it used — so the figures a report cites carry the same provenance, in the
-same shape `FundamentalPeriod` stores, as the ones already in the database.
+what units it used — and then through the *same writer*: a deep-dive's figures become a
+stored `FundamentalPeriod` under `deep_research`, which the valuation, the markers and
+every accounting check read. It ranks just below `llm_extraction`: both read a document
+and both quote what they read, but the filing extractor's whole job is one document and
+its figures while a deep-dive is a synthesis, so when the two disagree about the same
+period the focused read wins.
+
+**And the decision can see it.** The newest finished report goes into the decision state
+as `deep_research` — the verdict, the confidence and the executive summary, named as a
+judgement rather than as a measurement — so the engine can weigh it or disagree with it.
+An instrument nobody has researched has no such key, and its state hash is unchanged.
+When the two *do* disagree directionally — an `attractive` deep-dive against an action of
+`reduce` or worse, or the reverse — the row carries a `research_conflict` reason at
+attention level 3, which says both are judgements and neither is a measurement. `watch`
+and `insufficient_evidence` contradict nothing and never raise it.
 
 **What it will not do.** It never predicts a price, a target or a return; every figure
 it states must be one it was given and quoted, and an empty `metrics` object is an

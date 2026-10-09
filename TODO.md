@@ -1376,6 +1376,33 @@ because a subject reaching 25 deep-dives means 25 deliberate button presses, and
 fix at that point is a filter (by verdict, by date) rather than a second page of identical
 rows. Measure how the reports are actually distributed before choosing.
 
+### A finished deep-dive does not make the decision re-run, so it is not in the state yet
+
+`decision/service.py::_deep_research` puts the newest finished report into the decision state,
+and `analysis/state.py` drops it second under progressive truncation -- but only for a
+decision that *runs after* the report lands. Nothing triggers one: `research.service` writes
+the report and returns, the `decision` job is on its own daily-ish schedule, and `held_refresh`
+re-runs the pipeline hourly for held names without re-deciding.
+
+So on the morning after a deep-dive, the instrument's Decision tab still shows the state from
+before it -- and because the state hash changes when `deep_research` appears, a reader
+comparing the receipt with the report beside it can see a decision that never saw it. Measured
+2026-10-09: there are no reports in the live database yet, so this is a design gap rather than
+an observed one.
+
+Three ways to close it, and the choice needs a decision rather than a fix:
+
+1. **Queue a decision for that instrument** when a report finishes, the way the refresh button
+   queues one refresh. Cheapest, and it spends a model call per report -- roughly the price of
+   the report itself.
+2. **Let the decision job see the report on its next pass** and re-decide then. Free, and the
+   reader waits a day for the loop to close.
+3. **Do not wire it at all**, and leave the report as something the reader brings to the
+   decision. Defensible, but then the "contributes to the analysis" claim is only half true.
+
+Whichever is chosen, the *reports list* should say whether the newest decision saw it, because
+that is the question a reader has when two judgements about one company sit on one page.
+
 ---
 
 ## Deliberately not doing

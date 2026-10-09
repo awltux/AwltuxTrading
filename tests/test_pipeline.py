@@ -15,7 +15,14 @@ from sqlalchemy import select
 
 from awltux.analysis.valuation import run_valuations
 from awltux.audit.ledger import decision_chain, verify_decision, verify_ledger
-from awltux.db import DecisionRun, NewsItem, SentimentSeries, ValuationRun
+from awltux.db import (
+    DecisionRun,
+    NewsItem,
+    ResearchReport,
+    SentimentSeries,
+    ValuationRun,
+    utcnow,
+)
 from awltux.decision.replay import compare_answers, replay_decision
 from awltux.decision.service import decide_universe
 from tests.helpers import healthy_metrics, make_bars, make_instrument, make_period
@@ -149,6 +156,56 @@ class TestDecisionRun:
 
         # A narrative exists so the "why" is never empty
         assert decision.narrative
+
+    def test_a_deep_dive_reaches_the_decision_state(self, session, seeded):
+        """The end of the loop the feature exists for: a report a reader paid for is part of
+        what the decision engine was given, named as a judgement rather than as a
+        measurement, so the engine can weigh it or disagree with it.
+
+        Asserted through the *stored state* rather than through `build_state`, because the
+        stored state is what the receipt reproduces and what an auditor reads.
+        """
+        run_valuations(session, tickers=["TEST_US_EQ"])
+        session.add(
+            ResearchReport(
+                subject_type="instrument",
+                subject_id="TEST_US_EQ",
+                status="done",
+                title="Test Industries (TEST_US_EQ)",
+                prompt="Research it",
+                prompt_sha256="x",
+                verdict="attractive",
+                confidence=0.6,
+                exec_summary="Cheap, cash-generative and dull, with one caveat: the pension.",
+                model="deepseek-v4-pro",
+                created_at=utcnow(),
+                finished_at=utcnow(),
+            )
+        )
+        session.commit()
+
+        decide_universe(session, tickers=["TEST_US_EQ"])
+
+        decision = session.execute(
+            select(DecisionRun).where(DecisionRun.instrument_t212_ticker == "TEST_US_EQ")
+        ).scalar_one()
+
+        carried = decision.state["deep_research"]
+        assert carried["verdict"] == "attractive"
+        assert carried["executive_summary"].startswith("Cheap, cash-generative")
+        assert "not a measurement" in carried["note"]
+
+    def test_no_report_leaves_the_state_without_the_key(self, session, seeded):
+        """Most instruments have never been researched, and the state hash of their
+        decisions must not move because the feature exists."""
+        run_valuations(session, tickers=["TEST_US_EQ"])
+        decide_universe(session, tickers=["TEST_US_EQ"])
+
+        decision = session.execute(
+            select(DecisionRun).where(DecisionRun.instrument_t212_ticker == "TEST_US_EQ")
+        ).scalar_one()
+
+        assert "deep_research" not in decision.state
 
     def test_state_hash_matches_the_stored_state(self, session, seeded):
         run_valuations(session, tickers=["TEST_US_EQ"])

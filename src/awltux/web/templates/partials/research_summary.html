@@ -8,13 +8,14 @@
    Rendered from the stored text, not from the model's markup: the document the model wrote is
    validated and escaped by `research/report.py`, and this is a plain field of the row. #}
 {% if latest_report and latest_report.exec_summary %}
+{% from "partials/_help.html" import help %}
 <section class="research-summary">
   <div class="receipt-head">
     <h2>
       Deep-dive
       <span class="badge {{ latest_report.verdict | verdict_class }}">
         {{ (latest_report.verdict or 'no verdict') | replace('_', ' ') }}
-      </span>
+      </span>{{ help('verdict') }}
     </h2>
     <span class="muted small">
       {{ latest_report.created_at | datetime('%Y-%m-%d %H:%M') }}

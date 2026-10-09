@@ -28,7 +28,14 @@ import xml.etree.ElementTree as ElementTree
 
 import pytest
 
-from awltux.db import InstrumentRefresh, NewsAnalysis, NewsItem, ResearchReport, utcnow
+from awltux.db import (
+    FundamentalPeriod,
+    InstrumentRefresh,
+    NewsAnalysis,
+    NewsItem,
+    ResearchReport,
+    utcnow,
+)
 from awltux.llm.deepseek import Completion
 from awltux.research import service
 from tests.helpers import make_instrument
@@ -653,6 +660,109 @@ class TestHousekeeping:
 
         assert service.close_orphaned_research() == 0
         assert _reports(session)[0].status == "done"
+
+
+class TestTheFiguresReachTheAnalysis:
+    """A deep-dive *contributes* rather than sitting beside the analysis database.
+
+    The result set's figures go through the same writer as a filing extraction -- the same
+    scaling, the same refusal when the material did not say what units it was in, the same
+    derived ratios -- and land as a `FundamentalPeriod` the valuation and every marker read.
+    """
+
+    def _periods(self, session, ticker: str = TICKER) -> list[FundamentalPeriod]:
+        from sqlalchemy import select
+
+        return list(
+            session.execute(
+                select(FundamentalPeriod).where(
+                    FundamentalPeriod.instrument_t212_ticker == ticker
+                )
+            ).scalars().all()
+        )
+
+    def test_the_cited_figures_become_a_stored_period(self, session, settings, inline):
+        _instrument(session)
+        session.commit()
+
+        _run(session)
+
+        rows = self._periods(session)
+        assert len(rows) == 1
+        period = rows[0]
+        assert period.source == "deep_research"
+        assert period.period_end == dt.date(2025, 12, 31)
+        assert period.period_type == "annual"
+        # `units: actual` in the payload, so the scale is 1 and the figure is as quoted.
+        assert period.metrics["revenue"] == 1_000_000.0
+        assert _reports(session)[0].inventory["periods"]["outcome"] == "stored"
+
+    def test_the_span_is_stamped_with_the_pipeline_that_read_it(self, session, settings, inline):
+        """`ExtractedMetric.as_dict` writes `llm_extraction` because that was the only
+        writer. A deep-dive's spans come from a different call, and a provenance map that
+        named the filing extractor would be a lie in the column whose job is to say where a
+        figure came from."""
+        _instrument(session)
+        session.commit()
+
+        _run(session)
+
+        stored = self._periods(session)[0].metric_sources["revenue"]
+        assert stored["source"] == "deep_research"
+        assert stored["span"] == "Total revenue 1,000,000"
+
+    def test_units_the_material_never_stated_lose_the_period(self, session, settings, inline):
+        """Storing an unscaled period from a source that outranks the providers would put a
+        figure a million times too small at the top of the preference order, and no marker
+        would notice: the ratios are scale-invariant."""
+        _instrument(session)
+        session.commit()
+
+        _run(session, client=StubClient(payload=_payload(units="bananas")))
+
+        assert self._periods(session) == []
+        row = _reports(session)[0]
+        assert row.status == "done", "the report is still worth keeping"
+        assert row.inventory["periods"]["outcome"] == "unscaled"
+
+    def test_a_report_with_no_figures_stores_no_period(self, session, settings, inline):
+        """An empty `metrics` object is an acceptable answer, and it must not become a
+        period full of nothing."""
+        _instrument(session)
+        session.commit()
+
+        _run(session, client=StubClient(payload=_payload(metrics={})))
+
+        assert self._periods(session) == []
+        assert _reports(session)[0].inventory["periods"]["outcome"] == "unusable"
+
+    def test_a_sector_run_stores_no_period(self, session, settings, inline):
+        """There is no sector instrument to attach figures to, and inventing one would put
+        a company's numbers under an industry."""
+        from awltux.analysis.sectors import SECTOR_NAMES
+
+        _instrument(session)
+        session.commit()
+
+        service.start(
+            subject_type="sector",
+            subject_id=SECTOR_NAMES[0],
+            prompt="the sector",
+            client=StubClient(),
+        )
+
+        assert self._periods(session) == []
+        assert _reports(session)[0].inventory["periods"] == {}
+
+    def test_the_report_ranks_below_a_filing_extraction(self):
+        """Both read a document and both quote what they read, but the filing extractor's
+        whole job is one document and its figures, while a deep-dive is a synthesis. When
+        they disagree about the same period, the focused read is the one to trust."""
+        from awltux.analysis.fundamental import SOURCE_PREFERENCE
+
+        assert SOURCE_PREFERENCE["deep_research"] < SOURCE_PREFERENCE["llm_extraction"]
+        # And above the scraped snapshots, because it quotes the document.
+        assert SOURCE_PREFERENCE["deep_research"] > SOURCE_PREFERENCE["yahoo_statements"]
 
 
 class TestTheDraftPrompt:

@@ -52,7 +52,14 @@ from sqlalchemy.orm import Session
 
 from awltux.analysis import ledger
 from awltux.config import Settings, get_settings
-from awltux.db import Filing, FundamentalPeriod, Instrument, InstrumentBlocker
+from awltux.db import (
+    DecisionRun,
+    Filing,
+    FundamentalPeriod,
+    Instrument,
+    InstrumentBlocker,
+    ResearchReport,
+)
 from awltux.ingest.symbols import is_uk_listing
 from awltux.metrics import value_of
 
@@ -122,7 +129,16 @@ class _Facts:
     five queries per row for 500 rows.
     """
 
-    __slots__ = ("blockers", "filings", "instrument", "parsed", "period", "periods")
+    __slots__ = (
+        "blockers",
+        "decision_action",
+        "filings",
+        "instrument",
+        "parsed",
+        "period",
+        "periods",
+        "research_verdict",
+    )
 
     def __init__(self, instrument: Instrument) -> None:
         self.instrument = instrument
@@ -133,6 +149,11 @@ class _Facts:
         self.blockers: list[InstrumentBlocker] = []
         self.filings = 0
         self.parsed = 0
+        #: The newest finished deep-dive's verdict, and the newest decision's long-term
+        #: action. Kept as the two strings the conflict rule compares rather than as rows:
+        #: nothing else on the page reads them, and a row would hold the whole report.
+        self.research_verdict: str | None = None
+        self.decision_action: str | None = None
 
 
 def _gather(session: Session, instruments: Sequence[Instrument]) -> dict[str, _Facts]:
@@ -183,6 +204,25 @@ def _gather(session: Session, instruments: Sequence[Instrument]) -> dict[str, _F
         entry.filings += count
         if status != UNPARSED_STATUS:
             entry.parsed += count
+
+    # The two newest rows per instrument, for the conflict rule. Ordered and reduced in
+    # Python rather than with a window function: the same shape `periods` above uses, and
+    # SQLite has only supported `ROW_NUMBER` since 3.25 while this schema's floor is older.
+    for ticker, action in session.execute(
+        select(DecisionRun.instrument_t212_ticker, DecisionRun.long_term_action)
+        .where(DecisionRun.instrument_t212_ticker.in_(tickers))
+        .order_by(DecisionRun.created_at)
+    ).all():
+        facts[ticker].decision_action = action
+
+    for ticker, verdict in session.execute(
+        select(ResearchReport.subject_id, ResearchReport.verdict)
+        .where(ResearchReport.subject_type == "instrument")
+        .where(ResearchReport.subject_id.in_(tickers))
+        .where(ResearchReport.status == "done")
+        .order_by(ResearchReport.created_at)
+    ).all():
+        facts[ticker].research_verdict = verdict
 
     return facts
 
@@ -365,6 +405,48 @@ def _unparsed(facts: _Facts) -> Reason | None:
     )
 
 
+#: What each deep-dive verdict says about the business, and which long-term actions that
+#: contradicts. Read as: a verdict of ``attractive`` is at odds with the engine wanting out.
+#:
+#: ``watch`` and ``insufficient_evidence`` contradict nothing. A deep-dive that says "this
+#: needs watching" agrees with a hold and with a reduce -- the disagreement worth a reader's
+#: attention is a *directional* one, and treating "no conclusion" as a conflict with every
+#: action would put most of the table into the filter at level 3.
+RESEARCH_CONFLICTS = {
+    "attractive": ("sell", "reduce", "avoid"),
+    "unattractive": ("buy", "strong_buy"),
+}
+
+
+def _research_conflict(facts: _Facts) -> Reason | None:
+    """A paid deep-dive and the engine pointing in opposite directions.
+
+    Level 3, which is the rung a reason belongs on when it is rare and worth a look rather
+    than common and worth a filter -- the module docstring's distinction between a level and
+    a severity. It is the one place in this application where two *judgements* about the same
+    company disagree in public: the deep-dive read the annual reports and the appraised news,
+    the engine read the deterministic valuation and the figures, and neither is a measurement.
+
+    Fires only when both exist. Nothing here says which is right, and the detail says so.
+    """
+    verdict = facts.research_verdict
+    action = facts.decision_action
+    if not verdict or not action:
+        return None
+    if action not in RESEARCH_CONFLICTS.get(verdict, ()):
+        return None
+    return Reason(
+        code="research_conflict",
+        label="The deep-dive and the decision disagree",
+        level=3,
+        detail=(
+            f"the deep-dive says {verdict.replace('_', ' ')} while the newest decision's "
+            f"long-term action is {action.replace('_', ' ')}; both are judgements, and "
+            "neither is a measurement"
+        ),
+    )
+
+
 def reasons_for(facts: _Facts, *, today: dt.date) -> tuple[Reason, ...]:
     """Every reason this instrument qualifies for, in declaration order.
 
@@ -383,6 +465,7 @@ def reasons_for(facts: _Facts, *, today: dt.date) -> tuple[Reason, ...]:
         # problems -- see `_structural`.
         None if structural is not None else _coverage(facts),
         _unparsed(facts),
+        _research_conflict(facts),
     ]
     return tuple(reason for reason in found if reason is not None)
 

@@ -35,6 +35,7 @@ import datetime as dt
 import hashlib
 import logging
 import threading
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -519,7 +520,7 @@ def _finish(
     document: str,
     evidence: Evidence,
 ) -> None:
-    """Write the document to disk and close the row out."""
+    """Write the document to disk, contribute the figures, and close the row out."""
     row = session.get(ResearchReport, report_id)
     if row is None:
         return
@@ -530,6 +531,20 @@ def _finish(
         report_id=row.id,
     )
     size = report_module.write_report(path, document)
+
+    # The result set's other half: the cited figures become a stored period, so a deep-dive
+    # *contributes* to the analysis rather than sitting beside it. Same writer, same scaling
+    # and same unit refusal as a filing extraction -- see `ingest.parsing.store_cited_period`
+    # -- and ranked below it in `SOURCE_PREFERENCE`, because the filing extractor's whole job
+    # is one document while this is a synthesis across several.
+    periods: dict[str, Any] = {}
+    if row.subject_type == "instrument":
+        from awltux.ingest.parsing import store_cited_period
+
+        outcome = store_cited_period(
+            session, row.subject_id, result.extraction, periods, source="deep_research"
+        )
+        periods["outcome"] = outcome
 
     row.status = "done"
     row.result = result.as_dict()
@@ -542,7 +557,7 @@ def _finish(
     row.bytes = size
     row.error = None
     row.finished_at = utcnow()
-    row.inventory = _inventory(evidence, completion)
+    row.inventory = _inventory(evidence, completion) | {"periods": periods}
     session.commit()
 
 
