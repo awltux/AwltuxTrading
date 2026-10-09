@@ -17,6 +17,7 @@
 {# Imported *after* the line above, so the macro's shared context already carries
    `list_base` when the headers are rendered. #}
 {% from "partials/_sort.html" import sort_link with context %}
+{% from "partials/_pager.html" import pager_top %}
 
 <div id="recommendations" data-partial="/partials/recommendations">
 {% if filters.given('sector') %}
@@ -27,6 +28,15 @@
       {{ 'in the analysed universe' if total else 'in the analysed universe — none matched' }}
     </span>
   </h2>
+{% endif %}
+
+{# The compact pager, above the table and aligned right. Only when there is somewhere to
+   go: two dead arrows over a single page of results is noise, not an affordance. #}
+{% if pages > 1 %}
+  {{ pager_top(
+       filters.href(list_base, page=page - 1) if page > 1 else None,
+       filters.href(list_base, page=page + 1) if page < pages else None,
+       'Recommendation pages') }}
 {% endif %}
 
 <div class="table-wrap">

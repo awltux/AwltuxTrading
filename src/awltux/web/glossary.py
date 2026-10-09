@@ -343,12 +343,12 @@ FIELDS: tuple[Field, ...] = (
         "news_priority",
         "Priority",
         "Materiality x credibility x recency, the same score the flash ticker ranks by.",
-        "Shown but not sortable here, and that is a limit of the table rather than a "
-        "choice: the recency term is exponential decay, and this database has no maths "
-        "extension to compute it in SQL, so ordering the whole corpus by priority would "
-        "mean loading every row to sort it in memory. Sort by materiality instead, which "
-        "is the input that dominates the product. Hover the figure for its three "
-        "components.",
+        "Click the header to order by it: the whole corpus is ranked, not a recent window, "
+        "so the top of this sort is genuinely the most important current story the system "
+        "holds. Recency is an exponential decay with a three-day half-life, so it falls "
+        "away fast and a month-old story cannot outrank today's however severe it was. "
+        "Hover a figure for its three components, because a score that cannot be argued "
+        "with is not worth trusting.",
     ),
 )
 

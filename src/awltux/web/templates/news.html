@@ -18,6 +18,7 @@
 {% set list_base = '/news' %}
 {% from "partials/_sort.html" import sort_link with context %}
 {% from "partials/_help.html" import help %}
+{% from "partials/_pager.html" import pager_top %}
 
 <h1>News</h1>
 
@@ -91,6 +92,12 @@
 {% endif %}
 
 {# --------------------------------------------------------------------- table #}
+{% if pages > 1 %}
+  {{ pager_top(
+       filters.href(list_base, page=page - 1) if page > 1 else None,
+       filters.href(list_base, page=page + 1) if page < pages else None,
+       'News pages') }}
+{% endif %}
 <div class="table-wrap">
 <table class="grid compact">
   <thead>
@@ -102,7 +109,7 @@
       <th>Direction</th>
       <th>{{ sort_link('relevance', 'Relevance', explain_key='news_relevance') }}</th>
       <th>Concerns</th>
-      <th class="num">Priority{{ help('news_priority') }}</th>
+      <th class="num">{{ sort_link('priority', 'Priority', explain_key='news_priority') }}</th>
     </tr>
   </thead>
   <tbody>

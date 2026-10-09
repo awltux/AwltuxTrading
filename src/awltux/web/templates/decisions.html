@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/_pager.html" import pager_top %}
 {% block title %}Predictions — {{ app_name }}{% endblock %}
 
 {% block content %}
@@ -82,6 +83,20 @@
 
 <p class="muted small">{{ total }} prediction{{ '' if total == 1 else 's' }} matched; page {{ page }} of {{ pages }}.</p>
 
+{# The paging state, built once: the compact pager above the table and the full one
+   below it are the same links, and a second copy of this expression is how the two
+   come to disagree about which page the reader is on. #}
+{# The paging state, built once: the compact pager above the table and the full one
+   below it are the same links, and a second copy of this expression is how the two
+   come to disagree about which page the reader is on. #}
+{% set query = 'ticker=' ~ (filters.ticker | urlencode) ~ '&engine=' ~ (filters.engine | urlencode) ~ '&only=' ~ filters.only ~ '&per_page=' ~ per_page %}
+{% if pages > 1 %}
+  {{ pager_top(
+       ('/decisions?' ~ query ~ '&page=' ~ (page - 1)) if page > 1 else None,
+       ('/decisions?' ~ query ~ '&page=' ~ (page + 1)) if page < pages else None,
+       'Prediction pages') }}
+{% endif %}
+
 {# ------------------------------------------------------------------- ledger #}
 <table class="grid compact">
   <thead>
@@ -157,7 +172,6 @@
 </table>
 
 {% if pages > 1 %}
-  {% set query = 'ticker=' ~ (filters.ticker | urlencode) ~ '&engine=' ~ (filters.engine | urlencode) ~ '&only=' ~ filters.only ~ '&per_page=' ~ per_page %}
   <nav class="pager">
     {% if page > 1 %}
       <a href="/decisions?{{ query }}&page={{ page - 1 }}">&larr; newer</a>

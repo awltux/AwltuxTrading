@@ -3,6 +3,7 @@
 
 {% block content %}
 {% from "partials/_help.html" import help %}
+{% from "partials/_pager.html" import pager_top %}
 <h1>
   {{ ticker }}
   <span class="muted">{{ instrument.name }}</span>
@@ -684,6 +685,12 @@
      join has to be visible rather than asserted. #}
   {% if news_clustering %}
     <p class="notice small">{{ news_clustering | capitalize }} &mdash; one entry per story.</p>
+  {% endif %}
+  {% if news_pages > 1 %}
+    {{ pager_top(
+         ('/instrument/' ~ ticker ~ '?news_page=' ~ (news_page - 1)) if news_page > 1 else None,
+         ('/instrument/' ~ ticker ~ '?news_page=' ~ (news_page + 1)) if news_page < news_pages else None,
+         'News pages') }}
   {% endif %}
   <ul class="news-list sceptic">
     {% for event in news_events %}

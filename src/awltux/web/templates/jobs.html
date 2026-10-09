@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/_pager.html" import pager_top %}
 {% block title %}Operations — {{ app_name }}{% endblock %}
 
 {# The job name is the way into its progress log, in every table that lists jobs.
@@ -212,6 +213,15 @@
   {{ run_total }} run{{ '' if run_total == 1 else 's' }} matched; page {{ run_page }} of {{ run_pages }}.
 </p>
 
+{# The paging state, built once and used by both pagers -- above the table and below it. #}
+{% set run_query = 'run_job=' ~ (filters.job | urlencode) ~ '&run_since=' ~ filters.since ~ '&run_until=' ~ filters.until ~ '&run_min_seconds=' ~ filters.min_seconds ~ '&run_per_page=' ~ run_per_page %}
+{% if run_pages > 1 %}
+  {{ pager_top(
+       ('/jobs?' ~ run_query ~ '&run_page=' ~ (run_page - 1)) if run_page > 1 else None,
+       ('/jobs?' ~ run_query ~ '&run_page=' ~ (run_page + 1)) if run_page < run_pages else None,
+       'Run history pages') }}
+{% endif %}
+
 <table class="grid compact">
   <thead>
     <tr>
@@ -284,7 +294,6 @@
 </table>
 
 {% if run_pages > 1 %}
-  {% set query = 'run_job=' ~ (filters.job | urlencode) ~ '&run_since=' ~ filters.since ~ '&run_until=' ~ filters.until ~ '&run_min_seconds=' ~ filters.min_seconds ~ '&run_per_page=' ~ run_per_page %}
   <nav class="pager">
     {% if run_page > 1 %}
       <a href="/jobs?{{ query }}&run_page={{ run_page - 1 }}">&larr; newer</a>

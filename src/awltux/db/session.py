@@ -10,6 +10,9 @@ fits comfortably. It is configured properly rather than casually:
 * **check_same_thread=False** because the scheduler runs in worker threads.
 * **A re-entrant ``session_scope``** so a nested call joins the open transaction
   rather than opening a competing connection. See :func:`session_scope`.
+* **One Python function registered on every connection** --
+  :func:`_register_recency_weight` -- so an ordering that depends on the news recency
+  decay is computed by the same code in SQL as it is in Python.
 * **No ``BEGIN IMMEDIATE``.** It was tried and removed: taking the write lock at
   the start of *every* transaction means a job that holds one across a rate-limit
   wait blocks reads as well as writes, and the dashboard 500s with "database is
@@ -38,6 +41,47 @@ _state = threading.local()
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
 
+#: The name the recency decay is registered under. A constant so the registration below
+#: and the ordering in ``web/queries.py`` cannot disagree about the spelling.
+RECENCY_FUNCTION = "awltux_recency"
+
+
+def _register_recency_weight(dbapi_connection) -> None:
+    """Expose ``analysis.relevance.recency_weight`` to SQL as a function.
+
+    The news page orders the whole corpus by priority -- ``materiality x credibility x
+    recency`` -- and the recency term is an exponential decay. SQLite only grew ``exp``
+    and ``pow`` when compiled with its optional math extension, and that is not something
+    to rely on: measured 2026-10-09, this project's container answers ``select exp(1)``
+    with 2.718..., and the interpreter the test suite runs on raises ``no such function:
+    exp``. Deriving the decay in SQL would therefore work in production and fail in the
+    tests, which is the wrong way round for a rule this load-bearing.
+
+    Registering the Python function instead has a second benefit that matters more: there
+    is then **one** definition of the decay. The number the news table prints beside a
+    story and the expression it sorts by are literally the same call.
+
+    The argument arrives as SQLite stores it -- an ISO string, because SQLAlchemy's
+    ``DateTime`` is TEXT there -- so it is parsed back to a datetime. A value that will
+    not parse is treated as a missing timestamp, which is exactly what the Python caller
+    does with ``None``: both fall back to the mid weight rather than raising inside a
+    query.
+    """
+    import datetime as dt
+
+    from awltux.analysis.relevance import recency_weight
+
+    def recency(value: object) -> float:
+        moment = value
+        if isinstance(moment, str):
+            try:
+                moment = dt.datetime.fromisoformat(moment)
+            except ValueError:
+                moment = None
+        return recency_weight(moment if isinstance(moment, dt.datetime) else None)
+
+    dbapi_connection.create_function(RECENCY_FUNCTION, 1, recency, deterministic=True)
+
 
 def _configure_sqlite(dbapi_connection, _connection_record) -> None:
     """Apply the pragmas SQLite needs to behave like a server database."""
@@ -51,6 +95,7 @@ def _configure_sqlite(dbapi_connection, _connection_record) -> None:
         cursor.execute("PRAGMA temp_store=MEMORY")
     finally:
         cursor.close()
+    _register_recency_weight(dbapi_connection)
 
 
 def create_db_engine(settings: Settings | None = None, *, echo: bool = False) -> Engine:

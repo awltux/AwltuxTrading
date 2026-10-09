@@ -426,6 +426,36 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 
 .pager { display: flex; gap: 14px; align-items: center; justify-content: center; margin: 18px 0; }
 
+/* The compact pager that sits at the top right of a table: two arrows and nothing else.
+   `partials/_pager.html` says why it carries no sentence; this is how it looks. The
+   inert arrow is drawn rather than omitted so the pair does not shift sideways as the
+   reader moves between the first page and the rest. */
+.pager.top { justify-content: flex-end; margin: 4px 0 8px; gap: 6px; }
+.pager.top a, .pager.top .off {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 30px; height: 26px; padding: 0 9px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--fg); text-decoration: none; font-size: 0.95rem; line-height: 1;
+}
+.pager.top a:hover { border-color: var(--muted); background: var(--panel); }
+.pager.top .off { color: var(--line); background: transparent; }
+
+/* A tooltip inside a scrolling table was invisible, and this is why. `.table-wrap` is
+   `overflow-x: auto`, and CSS computes `overflow-y` to `auto` as well whenever the other
+   axis is not `visible` -- so the wrapper clips, and the bubble was drawn *above* the
+   trigger. For a column heading the trigger sits at the top of the scroll box, so the
+   bubble was outside it and nothing showed, on every table in the app.
+
+   Headings now open downwards instead, inside the box, over the first rows. The first
+   and last columns pin an edge rather than centring, because a 380px bubble centred on
+   the leftmost or rightmost `?` runs past the side of the wrapper. Body-cell tooltips
+   are deliberately left opening upwards: a cell is far enough below the top of the box
+   for that to be inside it, and opening down from the last row would fall out of the
+   bottom instead. */
+.table-wrap thead .help::after { top: calc(100% + 6px); bottom: auto; }
+.table-wrap thead th:first-child .help::after { left: 0; transform: none; }
+.table-wrap thead th:last-child .help::after { left: auto; right: 0; transform: none; }
+
 footer {
   border-top: 1px solid var(--line); padding: 16px 20px 40px;
   max-width: 1600px; margin: 0 auto;

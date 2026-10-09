@@ -25,7 +25,9 @@ import datetime as dt
 import pytest
 from sqlalchemy import select
 
-from awltux.db import NewsItem, utcnow
+from awltux.analysis.relevance import priority
+from awltux.db import NewsAnalysis, NewsItem, utcnow
+from awltux.db.news import appraisals_for
 from awltux.web import filters, queries
 
 
@@ -122,7 +124,7 @@ class TestTheOrderingHasAUniqueTieBreak:
     @pytest.mark.parametrize("direction", ["asc", "desc"])
     @pytest.mark.parametrize(
         "sort",
-        ["published_at", "materiality", "source", "title", "relevance"],
+        ["priority", "published_at", "materiality", "source", "title", "relevance"],
     )
     def test_every_sort_ends_in_the_id_in_the_same_direction(self, sort, direction):
         sql = str(
@@ -149,6 +151,232 @@ class TestTheOrderingHasAUniqueTieBreak:
         assert total == 60
         assert len(seen) == 60
         assert len(set(seen)) == 60, "a tied row was served on two pages"
+
+
+class TestTheGroupingIsNewestFirst:
+    """Sorting a column must not put the oldest story in a group at the top.
+
+    Found on the deployed page rather than in a test: `?sort=materiality&direction=desc`
+    returned a critical story dated **2026-05-05** as its first row, above stories from
+    October, because the tie-break ran on the row id and a backfilled story gets a high
+    one. The ordering answered "which is most severe" and then interleaved the answer by
+    arrival, which reads as a broken sort.
+    """
+
+    def test_within_one_materiality_the_newest_story_comes_first(self, session):
+        make(session, "an old critical", materiality="critical", hours_ago=24 * 120)
+        make(session, "a recent critical", materiality="critical", hours_ago=2)
+        make(session, "an ordinary story", materiality="mild", hours_ago=1)
+
+        rows, _ = queries.news_listing(session, sort="materiality", direction="desc")
+
+        assert [row.title for row in rows] == [
+            "a recent critical",
+            "an old critical",
+            "an ordinary story",
+        ]
+
+    def test_an_old_backfilled_story_does_not_lead_its_group(self, session):
+        """The exact live shape: the *older* story is the one with the higher id."""
+        recent = make(session, "recent", materiality="critical", hours_ago=2)
+        old = make(session, "old", materiality="critical", hours_ago=24 * 150)
+        assert old.id > recent.id, "the fixture must reproduce the live ordering of ids"
+
+        rows, _ = queries.news_listing(session, sort="materiality", direction="desc")
+
+        assert [row.title for row in rows] == ["recent", "old"]
+
+    def test_the_freshest_group_member_leads_however_the_primary_ran(self, session):
+        """Ascending materiality runs the other way, and the groups still lead fresh."""
+        make(session, "an old mild", materiality="mild", hours_ago=24 * 90)
+        make(session, "a recent mild", materiality="mild", hours_ago=3)
+        make(session, "a critical one", materiality="critical", hours_ago=1)
+
+        rows, _ = queries.news_listing(session, sort="materiality", direction="asc")
+
+        assert [row.title for row in rows] == [
+            "a recent mild",
+            "an old mild",
+            "a critical one",
+        ], "mild is the milder level, so ascending puts it first"
+
+
+class TestThePriorityOrdering:
+    """Sorting by priority, and the two implementations of it that must agree.
+
+    ``web/queries.py`` computes ``materiality x credibility x recency`` in SQL because
+    there is no other way to order 27,895 rows by it -- measured 2026-10-09, hydrating
+    them takes 2.0s on its own -- and ``analysis.relevance.priority`` computes the same
+    formula in Python for the number the column prints. Two implementations of one rule
+    is precisely the shape of bug this codebase keeps recording, so they are compared
+    here on data built to separate them. The tests also pin the portability decision: the
+    decay is a registered Python function rather than SQLite's ``exp``, which the
+    interpreter running this suite does not have.
+    """
+
+    @staticmethod
+    def _appraise(session, item, subject_type, subject_id, credibility):
+        session.add(
+            NewsAnalysis(
+                news_item_id=item.id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                credibility=credibility,
+            )
+        )
+        session.flush()
+
+    def test_the_sql_ranking_is_the_python_ranking(self, session):
+        """The order the table is sorted by is the score it prints beside each row."""
+        for index, (materiality, credibility, hours) in enumerate(
+            [
+                ("critical", 0.9, 1.0),
+                ("critical", 0.05, 1.0),
+                ("material", 0.9, 4.0),
+                ("moderate", 0.5, 20.0),
+                ("none", 1.0, 0.5),
+                ("critical", 0.9, 200.0),
+                ("mild", 0.2, 60.0),
+            ]
+        ):
+            item = make(
+                session,
+                f"story {index}",
+                tickers=["ACME_US_EQ"],
+                materiality=materiality,
+                hours_ago=hours,
+            )
+            self._appraise(session, item, "instrument", "ACME_US_EQ", credibility)
+        session.flush()
+
+        rows, _ = queries.news_listing(session, sort="priority", direction="desc")
+
+        # The Python side of the same rule, using the appraisal the table shows: the
+        # primary subject's, which is what `_serialise` reads too.
+        appraisals = appraisals_for(session, list(rows))
+        expected = sorted(
+            rows,
+            key=lambda row: (
+                priority(
+                    materiality=row.materiality,
+                    credibility=(
+                        appraisals[row.id].credibility if row.id in appraisals else None
+                    ),
+                    published_at=row.published_at,
+                )[0],
+                row.id,
+            ),
+            reverse=True,
+        )
+
+        assert [row.id for row in rows] == [row.id for row in expected]
+
+    def test_the_ranking_actually_separates_the_stories(self, session):
+        """A guard on the test above: if every score were equal it would pass vacuously."""
+        for index, (materiality, credibility, hours) in enumerate(
+            [("critical", 0.9, 1.0), ("none", 0.05, 200.0), ("mild", 0.5, 30.0)]
+        ):
+            item = make(
+                session,
+                f"story {index}",
+                tickers=["ACME_US_EQ"],
+                materiality=materiality,
+                hours_ago=hours,
+            )
+            self._appraise(session, item, "instrument", "ACME_US_EQ", credibility)
+
+        rows, _ = queries.news_listing(session, sort="priority", direction="desc")
+        appraisals = appraisals_for(session, list(rows))
+        scores = [
+            priority(
+                materiality=row.materiality,
+                credibility=appraisals[row.id].credibility,
+                published_at=row.published_at,
+            )[0]
+            for row in rows
+        ]
+
+        assert len(set(scores)) == len(scores), "the fixture cannot detect a wrong order"
+        assert rows[0].materiality == "critical", "the fresh critical should lead"
+
+    def test_an_instrument_appraisal_outranks_the_sector_one(self, session):
+        """``primary_subject`` is instruments-first, and the SQL ordering must match.
+
+        A story naming both a sector and a company has two appraisals, and the table
+        shows the company's. If the ordering picked the sector's instead, the rank beside
+        a row would not be the number the row's own appraisal produced.
+        """
+        both = make(session, "company and sector", tickers=["AAA_US_EQ"], sectors=["Energy"])
+        self._appraise(session, both, "sector", "Energy", 0.05)
+        self._appraise(session, both, "instrument", "AAA_US_EQ", 0.95)
+
+        plain = make(session, "company only", tickers=["BBB_US_EQ"])
+        self._appraise(session, plain, "instrument", "BBB_US_EQ", 0.5)
+
+        rows, _ = queries.news_listing(session, sort="priority", direction="desc")
+
+        assert [row.title for row in rows] == ["company and sector", "company only"]
+
+    def test_the_first_instrument_alphabetically_is_the_primary_one(self, session):
+        """The other half of the rule: instruments are then taken in id order."""
+        two = make(session, "two tickers", tickers=["AAA_US_EQ", "ZZZ_US_EQ"])
+        self._appraise(session, two, "instrument", "ZZZ_US_EQ", 0.95)
+        self._appraise(session, two, "instrument", "AAA_US_EQ", 0.05)
+
+        plain = make(session, "one ticker", tickers=["MMM_US_EQ"])
+        self._appraise(session, plain, "instrument", "MMM_US_EQ", 0.5)
+
+        rows, _ = queries.news_listing(session, sort="priority", direction="desc")
+
+        assert [row.title for row in rows] == ["one ticker", "two tickers"]
+
+    def test_an_appraised_story_outranks_an_unappraised_twin(self, session):
+        """No appraisal is not "zero credibility": it is the mid default weight.
+
+        ``priority`` uses ``UNASSESSED_WEIGHT`` where nothing has judged the source, so a
+        story with no appraisal can still outrank one whose source was assessed as weak.
+        Getting this backwards would bury every story the scepticism pass has not reached.
+        """
+        judged = make(session, "assessed weak", tickers=["AAA_US_EQ"])
+        self._appraise(session, judged, "instrument", "AAA_US_EQ", 0.02)
+        make(session, "not assessed", tickers=["BBB_US_EQ"])
+
+        rows, _ = queries.news_listing(session, sort="priority", direction="desc")
+
+        assert [row.title for row in rows] == ["not assessed", "assessed weak"]
+
+    def test_a_story_with_no_appraisal_is_not_dropped(self, session):
+        """An outer join that failed would silently lose rows rather than rank them low."""
+        make(session, "no appraisal at all", tickers=["AAA_US_EQ"])
+        appraised = make(session, "appraised", tickers=["BBB_US_EQ"])
+        self._appraise(session, appraised, "instrument", "BBB_US_EQ", 0.5)
+
+        rows, total = queries.news_listing(session, sort="priority")
+
+        assert total == 2
+        assert len(rows) == 2
+
+    def test_priority_is_sorted_through_the_url(self, client, session):
+        old_but_severe = make(
+            session, "an old critical", materiality="critical", hours_ago=24 * 90
+        )
+        fresh = make(session, "a fresh mild", materiality="mild", hours_ago=1)
+        session.commit()
+
+        body = client.get("/news?sort=priority&direction=desc").text
+
+        assert body.index("a fresh mild") < body.index("an old critical"), (
+            "the three-day half-life should sink a month-old story below this morning's"
+        )
+        assert old_but_severe.id != fresh.id
+
+    def test_the_priority_header_is_a_sort_link(self, client, session):
+        make(session, "a story", materiality="critical")
+        session.commit()
+
+        body = client.get("/news").text
+
+        assert 'href="/news?sort=priority"' in body
 
 
 class TestTheFilters:

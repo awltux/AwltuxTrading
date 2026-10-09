@@ -19,7 +19,8 @@ from awltux.analysis import attention as attention_rules
 from awltux.analysis import macro, sectors
 from awltux.analysis.attention import Reason
 from awltux.analysis.embeddings import group_events
-from awltux.analysis.relevance import MATERIALITY_ORDER
+from awltux.analysis.relevance import MATERIALITY_ORDER, MATERIALITY_WEIGHT
+from awltux.analysis.sentiment import UNASSESSED_WEIGHT
 from awltux.config import get_settings
 from awltux.db import (
     DecisionOutcome,
@@ -39,7 +40,8 @@ from awltux.db import (
     ValuationRun,
     utcnow,
 )
-from awltux.db.news import appraisals_for, mentions_ticker, news_for_ticker
+from awltux.db.news import appraisals_for, mentions_ticker, news_for_ticker, primary_credibility
+from awltux.db.session import RECENCY_FUNCTION
 from awltux.timezones import as_utc, format_moment, utc_today
 
 SortKey = Literal[
@@ -1049,16 +1051,17 @@ def recent_news(
 
 #: The columns the news listing can be ordered by.
 #:
-#: **Columns, not the ticker's priority score.** Priority is
-#: ``materiality x credibility x recency`` and is computed in Python over a bounded
-#: recent window (see ``routes/news.py::_ranked``), so ordering the whole corpus by it
-#: would mean loading every row to sort it in memory -- and the recency term needs a
-#: fractional power SQLite does not provide without the optional math extension
-#: (measured: ``select exp(1)`` on this database raises "no such function"). The stored
-#: inputs are what a table can sort, and ``materiality`` is the one that dominates the
-#: score. The score itself is on each story's own page, and "best first" is the ticker's
-#: job.
-NewsSortKey = Literal["published_at", "materiality", "source", "title", "relevance"]
+#: ``priority`` is the one entry that is not a column: it is
+#: ``materiality x credibility x recency``, the score the flash ticker ranks by, and the
+#: news table shows it -- so it has to be sortable or the number is decoration. It is
+#: computed in SQL here rather than by loading the rows to score them in Python: measured
+#: 2026-10-09, hydrating the 27,895 stored stories takes 2.0 seconds and their appraisals
+#: another 0.8, per page click, against **0.32s** for the whole ordering in SQL. See
+#: :func:`_priority_expression` for how it is built without becoming a second definition
+#: of the formula.
+NewsSortKey = Literal[
+    "priority", "published_at", "materiality", "source", "title", "relevance"
+]
 
 SortDirection = Literal["asc", "desc"]
 
@@ -1074,11 +1077,48 @@ _MATERIALITY_RANK = case(
     else_=-1,
 )
 
+#: The materiality factor of priority, as SQL.
+#:
+#: Built from ``MATERIALITY_WEIGHT`` so a re-tune of the weights moves the ordering with
+#: the number; the ``else_`` is that map's own value for "none", which is what
+#: ``analysis.relevance.priority`` falls back to for a NULL or unrecognised level.
+_MATERIALITY_FACTOR = case(
+    dict(MATERIALITY_WEIGHT),
+    value=func.lower(NewsItem.materiality),
+    else_=MATERIALITY_WEIGHT["none"],
+)
+
+
+def _priority_expression():
+    """``materiality x credibility x recency`` as a SQL expression.
+
+    Every factor comes from the module that owns it rather than being restated here:
+    the weights from ``analysis.relevance.MATERIALITY_WEIGHT``, the unassessed fallback
+    from ``analysis.sentiment.UNASSESSED_WEIGHT``, the credibility from
+    :func:`awltux.db.news.primary_credibility` (the appraisal the news list displays),
+    and the decay from ``analysis.relevance.recency_weight``, registered on the
+    connection as a function so SQL runs the same code Python does. A change to the
+    formula therefore cannot make the ordering disagree with the number printed beside
+    it -- which is the failure worth designing against, because it would be invisible.
+
+    The clamp is the one in ``priority()``: a credibility outside 0-1 is a bug upstream,
+    and letting it through would let one row dominate the table.
+    """
+    credibility = func.min(
+        func.max(func.coalesce(primary_credibility(), UNASSESSED_WEIGHT), 0.0),
+        1.0,
+    )
+    recency = getattr(func, RECENCY_FUNCTION)(NewsItem.published_at)
+    return _MATERIALITY_FACTOR * credibility * recency
+
+
+_NEWS_PRIORITY = _priority_expression()
+
 
 def _news_order(sort: NewsSortKey, direction: SortDirection) -> tuple[Any, ...]:
-    """The ORDER BY for the news listing, always ending in a deterministic tie-break.
+    """The ORDER BY for the news listing: the chosen column, then freshness, then id.
 
-    **The tie-break is what makes offset paging correct.** ``published_at`` is not
+    **The id tie-break is what makes offset paging correct.** ``published_at`` is not
     unique -- a feed's batch shares a timestamp to the second, and Google News alone
     contributes 26,580 of the 27,884 stored stories -- so ordering by it alone leaves the
     rows inside a tie in whatever order SQLite happens to return them. That order is free
@@ -1086,8 +1126,19 @@ def _news_order(sort: NewsSortKey, direction: SortDirection) -> tuple[Any, ...]:
     failure is silent: one story appears twice while another never appears at all.
     ``id`` is unique and monotonic with arrival, so it settles it in the same direction
     the reader asked for.
+
+    **Newest first *within* a group, whichever way the group is ordered.** Ordering on
+    the chosen column alone makes the table look broken: sorting by materiality put a
+    critical story from five months ago above the week's, because ``id`` runs with
+    ingestion and a backfilled story gets a high one -- measured on the live page
+    2026-10-09, the first row of `?sort=materiality&direction=desc` was dated 2026-05-05
+    among stories from October. The tie-break was doing what it said; what it did not do
+    was answer the reader's second question, which for a news list is always "which of
+    these is current". So the secondary key is the publication time, descending, and it
+    is inert when the primary already is that column.
     """
     key = {
+        "priority": _NEWS_PRIORITY,
         "published_at": NewsItem.published_at,
         "materiality": _MATERIALITY_RANK,
         "source": NewsItem.source,
@@ -1096,7 +1147,11 @@ def _news_order(sort: NewsSortKey, direction: SortDirection) -> tuple[Any, ...]:
     }[sort]
     ordered = key.asc() if direction == "asc" else key.desc()
     tie_break = NewsItem.id.asc() if direction == "asc" else NewsItem.id.desc()
-    return (ordered, tie_break)
+    if sort in ("published_at", "priority"):
+        # Priority already decays with age, so a freshness tie-break under it would say
+        # the same thing twice and cost a second sort key for nothing.
+        return (ordered, tie_break)
+    return (ordered, NewsItem.published_at.desc(), tie_break)
 
 
 def news_listing(

@@ -38,7 +38,7 @@ from typing import Any
 from sqlalchemy import Select, func, literal, select
 from sqlalchemy.orm import Session
 
-from awltux.db.models import NewsItem
+from awltux.db.models import NewsAnalysis, NewsItem
 
 
 def mentions_ticker(ticker: str):
@@ -54,6 +54,40 @@ def mentions_ticker(ticker: str):
         .select_from(tagged)
         .where(tagged.c.value == ticker)
         .exists()
+    )
+
+
+def primary_credibility():
+    """Scalar subquery: the credibility of the appraisal :func:`primary_subject` names.
+
+    ``analysis.news_analysis.subjects_of`` orders a story's subjects instruments-first and
+    then by id, and ``primary_subject`` takes the first; ``analysis/sentiment.py`` reduces
+    the same way in Python when it weights a story. This is that rule as SQL, and it exists
+    because the news page has to *order* by the resulting priority across the whole corpus,
+    which it cannot do by loading the rows: measured 2026-10-09, hydrating all 27,895
+    stories takes 2.0 seconds and their 6,974 appraisals another 0.8 -- per page click.
+
+    **A third expression of one rule is a real cost**, so it is written once, here, beside
+    the other composable news predicate, and it is tested against ``primary_subject``
+    directly rather than assumed to agree
+    (``tests/test_news_listing.py::TestThePriorityOrdering``). ``news_item_id`` is indexed,
+    so the correlated lookup is a seek per row rather than a scan -- measured 2026-10-09,
+    the ordering it serves runs over all 27,895 stored stories in 0.32s.
+
+    ``DISTINCT ON`` would say this in one line and SQLite does not have it, which is the
+    same portability limit `mentions_ticker` records above.
+    """
+    from awltux.analysis.news_analysis import INSTRUMENT
+
+    return (
+        select(NewsAnalysis.credibility)
+        .where(NewsAnalysis.news_item_id == NewsItem.id)
+        .order_by(
+            (NewsAnalysis.subject_type != INSTRUMENT),
+            NewsAnalysis.subject_id,
+        )
+        .limit(1)
+        .scalar_subquery()
     )
 
 

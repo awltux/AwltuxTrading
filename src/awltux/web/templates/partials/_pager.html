@@ -1,0 +1,28 @@
+{# The compact pager that sits at the top right of a paged table.
+
+   **Only the arrows.** The pager under the table already says "page 2 of 9 (1,204
+   stories)", and repeating that sentence above the table would put a line the reader is
+   about to read anyway in front of the thing they came for. What the top one answers is
+   "is there more, and which way" *before* they scroll to the bottom -- which on the news
+   page, at 558 pages, is the question worth asking early.
+
+   The two links are passed in rather than built here, because every page derives them
+   from different state: a FilterSet for the dashboard and the news table, a hand-built
+   querystring for the prediction ledger and the run history, `?news_page=` for an
+   instrument's news. A macro that built them itself would have to know all four, which
+   is a fifth place to get paging wrong. ``None`` means "there is no such page" and
+   renders an inert arrow rather than a link that goes nowhere. #}
+{% macro pager_top(prev_href, next_href, label="Table pages") %}
+  <nav class="pager top" aria-label="{{ label }}">
+    {% if prev_href %}
+      <a href="{{ prev_href }}" rel="prev" title="Previous page">&larr;</a>
+    {% else %}
+      <span class="off" aria-hidden="true">&larr;</span>
+    {% endif %}
+    {% if next_href %}
+      <a href="{{ next_href }}" rel="next" title="Next page">&rarr;</a>
+    {% else %}
+      <span class="off" aria-hidden="true">&rarr;</span>
+    {% endif %}
+  </nav>
+{% endmacro %}
