@@ -333,6 +333,22 @@ class TestTheHealthTab:
         assert "Profit before tax" in check.work
         assert "Tax" in check.work
 
+    def test_a_check_with_no_arithmetic_gets_no_empty_tooltip(self, client, session):
+        """A dotted underline that promises an explanation and delivers nothing is worse than
+        no affordance, so a check with no working is printed plain."""
+        period = _store(
+            session,
+            "TEST_US_EQ",
+            make_period("TEST_US_EQ", dt.date(2024, 12, 31), dict(BALANCED)),
+        )
+        session.commit()
+
+        soup = BeautifulSoup(client.get(f"/accounts/{period.id}/health").text, "lxml")
+
+        assert soup.select(".work[data-work]"), "the composition rows have a working"
+        for span in soup.select("[data-work]"):
+            assert span["data-work"].strip(), f"an empty tooltip on {span}"
+
     def test_a_line_with_no_arithmetic_has_no_working(self):
         """A figure with nothing behind it has nothing to investigate, and a tooltip that said
         so would be noise on every row."""

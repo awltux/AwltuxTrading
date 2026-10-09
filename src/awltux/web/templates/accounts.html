@@ -257,10 +257,12 @@
         <td class="num">
           {# The same working the statement line shows: these checks measure the same
              subtractions, and `ledger._work_text` builds both so the two cannot describe
-             the arithmetic differently. #}
-          {% if check.residual is not none %}
-            <span class="{{ 'work' if check.work else '' }}" data-work="{{ check.work }}">{{ check.residual | number(0) }}</span>
-          {% else %}<span class="muted">—</span>{% endif %}
+             the arithmetic differently. A check with no arithmetic to show is left plain
+             rather than given an empty tooltip -- a dotted underline that promises an
+             explanation and delivers nothing is worse than no affordance. #}
+          {% if check.residual is none %}<span class="muted">—</span>
+          {% elif check.work %}<span class="work" data-work="{{ check.work }}">{{ check.residual | number(0) }}</span>
+          {% else %}{{ check.residual | number(0) }}{% endif %}
         </td>
         <td class="small muted">{{ check.detail }}</td>
       </tr>
