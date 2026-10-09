@@ -195,7 +195,7 @@ class TestTemplatesRenderWithData:
         """The risk-free rate is the only input the model takes from the market
         rather than from the filings, so the value it produced has to say where the
         rate came from -- and how much of the value depends on it."""
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=valuation").text
         # Collapse the template's indentation so the assertion is about the words
         # rather than about how they happen to be wrapped.
         text = " ".join(body.split())
@@ -301,7 +301,7 @@ class TestTemplatesRenderWithData:
 
     def test_the_position_panel_states_the_return_as_well_as_the_money(self, client, held):
         """44 on a cost of 280 is 15.7%, and a figure without its basis is not a return."""
-        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+        text = " ".join(client.get("/instrument/TEST_US_EQ?tab=position").text.split())
 
         assert "Your position" in text
         assert "44.00 GBP" in text
@@ -312,7 +312,7 @@ class TestTemplatesRenderWithData:
 
         The page read "Opened: 2025-01-31 17:29 GMT · 2025-01-31" (reported 2026-10-08).
         """
-        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+        text = " ".join(client.get("/instrument/TEST_US_EQ?tab=position").text.split())
         opened = text[text.index("Opened") : text.index("Opened") + 140]
 
         assert "2025-01-31 17:29" in opened, "the timestamp must still be there"
@@ -326,13 +326,13 @@ class TestTemplatesRenderWithData:
         was false for every instrument and "Your trades" never appeared. The same trap is
         documented above `news_events` in the same route, one commit earlier.
         """
-        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+        text = " ".join(client.get("/instrument/TEST_US_EQ?tab=position").text.split())
 
         assert "Your trades" in text
         assert "0.9585" in text, "the stored execution is not on the page"
 
     def test_the_chart_carries_the_price_that_was_paid(self, client, held):
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=price").text
 
         assert "data-markers='" in body, "the canvas has no marker attribute"
         assert "347.6" in body.split("data-markers='")[1].split("'")[0]
@@ -342,7 +342,7 @@ class TestTemplatesRenderWithData:
         under a plain header sits against the wrong edge (reported 2026-10-08)."""
         from bs4 import BeautifulSoup
 
-        soup = BeautifulSoup(client.get("/instrument/TEST_US_EQ").text, "lxml")
+        soup = BeautifulSoup(client.get("/instrument/TEST_US_EQ?tab=position").text, "lxml")
         table = soup.find("h3", string="Your trades").find_next("table")
         headers = table.thead.find_all("th")
 
@@ -361,7 +361,7 @@ class TestTemplatesRenderWithData:
         """
         from bs4 import BeautifulSoup
 
-        soup = BeautifulSoup(client.get("/instrument/TEST_US_EQ").text, "lxml")
+        soup = BeautifulSoup(client.get("/instrument/TEST_US_EQ?tab=position").text, "lxml")
         table = soup.find("h3", string="Your trades").find_next("table")
         headers = [th.get_text(" ", strip=True) for th in table.thead.find_all("th")]
         cells = table.tbody.find("tr").find_all("td")
@@ -380,6 +380,10 @@ class TestTemplatesRenderWithData:
         A marker older than the first bar is not drawn, and a count of *drawn markers* read
         as a claim about the account: on GWW the legend's "0 sold" sat directly above a sell
         in the same page's table (reported 2026-10-08).
+
+        Two requests now, because the legend and the table it counts are on different tabs
+        and the claim is that the two do not contradict each other -- which is exactly what
+        splitting the page could have broken.
         """
         import datetime as dt
 
@@ -402,7 +406,9 @@ class TestTemplatesRenderWithData:
         )
         session.commit()
 
-        text = " ".join(client.get("/instrument/TEST_US_EQ").text.split())
+        legend = client.get("/instrument/TEST_US_EQ?tab=price").text
+        table = client.get("/instrument/TEST_US_EQ?tab=position").text
+        text = " ".join((legend + " " + table).split())
 
         assert "0 sold" not in text
         assert "1 of the 2 trades in the table above are marked" in text
@@ -1874,7 +1880,7 @@ class TestNewsScepticismSurface:
         assert "Relevance:" not in hint
 
     def test_the_instrument_page_explains_what_the_story_rests_on(self, client, appraised):
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=news").text
         assert "What this story rests on" in body
         assert "independent source" in body
         assert "not yet appraised" not in body

@@ -624,7 +624,7 @@ class TestTheButton:
         _seed(session)
         session.commit()
 
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=refresh").text
 
         assert 'action="/instrument/TEST_US_EQ/refresh"' in body
         assert "Refresh now" in body
@@ -650,7 +650,9 @@ class TestTheButton:
         response = client.post("/instrument/TEST_US_EQ/refresh", follow_redirects=False)
 
         assert response.status_code == 303
-        assert response.headers["location"].startswith("/instrument/TEST_US_EQ?refresh=started")
+        assert response.headers["location"].startswith(
+            "/instrument/TEST_US_EQ?tab=refresh&refresh=started"
+        )
 
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -744,7 +746,7 @@ class TestTheButton:
         second = client.post("/instrument/TEST_US_EQ/refresh", follow_redirects=False)
 
         assert first.status_code == 303
-        assert second.headers["location"].endswith("?refresh=refused#refresh")
+        assert second.headers["location"].endswith("?tab=refresh&refresh=refused")
 
         # The first refresh is on another thread, so wait for it to reach the step rather
         # than assuming it got there before the second press.
@@ -776,7 +778,7 @@ class TestTheButton:
         lease.release(session, "TEST_US_EQ", token=row.token, state="done", note="1 of 2 steps")
         session.commit()
 
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=refresh").text
 
         assert "price_eod" in body
         assert "40 bars" in body

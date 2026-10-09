@@ -189,7 +189,7 @@ class TestTheInstrumentPage:
         _bars(session, [100.0, 101.0, 102.0, 103.0])
         session.commit()
 
-        body = client.get(f"/instrument/{TICKER}").text
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
         series = _attribute(body, "data-series")
         dates = _attribute(body, "data-dates")
         assert json.loads(series) == [100.0, 101.0, 102.0, 103.0]
@@ -199,7 +199,7 @@ class TestTheInstrumentPage:
         _instrument(session, in_universe=False)
         session.commit()
 
-        body = client.get(f"/instrument/{TICKER}").text
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
         assert 'id="price-chart"' in body, "the frame must be drawn even when empty"
         assert "Waiting for data" in body
         assert "no instrument is in the analysed universe yet" in body
@@ -210,7 +210,7 @@ class TestTheInstrumentPage:
         _instrument(session, in_universe=False)
         session.commit()
 
-        body = client.get(f"/instrument/{TICKER}").text
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
         assert json.loads(_attribute(body, "data-series")) == []
         assert 'title="Waiting for data' in body
 
@@ -219,7 +219,7 @@ class TestTheInstrumentPage:
         _bars(session, [100.0, 101.0, 102.0, 103.0])
         session.commit()
 
-        body = client.get(f"/instrument/{TICKER}").text
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
         assert "Waiting for data" not in body
         assert "4 daily bars" in body
 
@@ -228,6 +228,6 @@ class TestTheInstrumentPage:
         _bars(session, [100.0])
         session.commit()
 
-        body = client.get(f"/instrument/{TICKER}").text
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
         assert "Waiting for data" in body
         assert "needs two" in body

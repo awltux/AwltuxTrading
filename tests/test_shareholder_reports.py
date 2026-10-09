@@ -537,7 +537,7 @@ class TestTheInstrumentPage:
             documents.refresh_report_flags(session)
             session.commit()
 
-        text = " ".join(client.get(f"/instrument/{TICKER}").text.split())
+        text = " ".join(client.get(f"/instrument/{TICKER}?tab=reports").text.split())
         assert "Annual reports held:" in text
 
     def test_a_held_document_offers_a_read_link(self, client, settings):
@@ -552,7 +552,7 @@ class TestTheInstrumentPage:
             filing_id = row.id
             session.commit()
 
-        body = client.get(f"/instrument/{TICKER}").text
+        body = client.get(f"/instrument/{TICKER}?tab=reports").text
         assert f"/filing/{filing_id}/document" in body
         assert ">read<" in body
 
@@ -563,7 +563,7 @@ class TestTheInstrumentPage:
             filing_id = row.id
             scope.commit()
 
-        body = client.get(f"/instrument/{TICKER}").text
+        body = client.get(f"/instrument/{TICKER}?tab=reports").text
         assert f"/filing/{filing_id}/document" not in body
         # The original is still reachable, which is the honest thing to offer.
         assert ">source<" in body

@@ -177,15 +177,21 @@ class TestTheOtherFilters:
 
 
 class TestThePageItself:
+    """Through the real request, because the bug was in the wiring as much as the query.
+
+    The news list is its own tab on the instrument page now (`?tab=news`), which is why
+    every request here names it: the page renders one topic at a time, so a URL without
+    `tab=news` is the Decision tab and holds no headlines at all.
+    """
+
     def test_the_instrument_page_pages_its_news(self, client, session, universe_instrument):
-        """Through the real request, because the bug was in the wiring as much as the
-        query: the route has to pass the page through to the query."""
+        """The route has to pass the page through to the query."""
         for index in range(30):
             make(session, f"story {index:02d}", tickers=["TEST_US_EQ"], hours_ago=index + 1)
         session.commit()
 
-        first = client.get("/instrument/TEST_US_EQ")
-        second = client.get("/instrument/TEST_US_EQ?news_page=2")
+        first = client.get("/instrument/TEST_US_EQ?tab=news")
+        second = client.get("/instrument/TEST_US_EQ?tab=news&news_page=2")
 
         assert first.status_code == second.status_code == 200
         assert "story 00" in first.text
@@ -196,7 +202,7 @@ class TestThePageItself:
         session.add(make_instrument("TEST_US_EQ", name="Test Industries", sector="Industrials"))
         session.commit()
 
-        response = client.get("/instrument/TEST_US_EQ?news_page=99")
+        response = client.get("/instrument/TEST_US_EQ?tab=news&news_page=99")
 
         assert response.status_code == 200
         assert "No headlines naming this instrument" in response.text
@@ -218,7 +224,7 @@ class TestThePageItself:
         unjudged = make(session, "an unjudged story", tickers=["TEST_US_EQ"])
         session.commit()
 
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=news").text
 
         assert (
             'title="Relevance: Names the instrument and states a direction."' in body
@@ -234,7 +240,7 @@ class TestThePageItself:
             make(session, f"story {index:02d}", tickers=["TEST_US_EQ"], hours_ago=index + 1)
         session.commit()
 
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=news").text
 
         assert "30 stories" in body
 
@@ -251,7 +257,7 @@ class TestThePageItself:
         row = make(session, "a story worth appraising", tickers=["TEST_US_EQ"])
         session.commit()
 
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=news").text
 
         assert f'href="/news/{row.id}"' in body, "the headline links to this app's page"
         assert f'href="{row.url}"' not in body, "and no longer to the publisher"

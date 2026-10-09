@@ -192,10 +192,10 @@ class TestEveryPagedTableHasOne:
             row.tickers = ["TEST_US_EQ"]
         session.commit()
 
-        nav = _top_nav(client.get("/instrument/TEST_US_EQ").text)
+        nav = _top_nav(client.get("/instrument/TEST_US_EQ?tab=news").text)
 
         assert 'rel="next"' in nav
-        assert "news_page=2" in nav
+        assert "tab=news&amp;news_page=2" in nav
 
 
 class TestItSaysNothing:

@@ -167,71 +167,206 @@ def _price_chart(session, ticker: str, detail: dict[str, Any]) -> dict[str, Any]
     }
 
 
+#: The instrument page's topics, in the order a reader wants them.
+#:
+#: **One topic per URL, and one rendered at a time.** The page had grown to nine topics on a
+#: single scroll -- a decision, its history, a valuation, a chart, filings, accounts, news,
+#: a position and a refresh control -- so "send me the news for this company" had no address
+#: that meant it, and a reader arriving from the recommendations table landed at the top of
+#: a document they then had to search. `accounts_page` already does this with its
+#: statements, for the same reason, and the shape is copied from there rather than invented
+#: again: real links, so the strip works with JavaScript off.
+INSTRUMENT_TABS: tuple[tuple[str, str], ...] = (
+    ("decision", "Decision"),
+    ("valuation", "Valuation"),
+    ("price", "Price history"),
+    ("reports", "Published reports"),
+    ("accounts", "Accounts"),
+    ("news", "News"),
+    ("position", "Position"),
+    ("refresh", "Refresh"),
+)
+
+INSTRUMENT_TAB_NAMES: tuple[str, ...] = tuple(name for name, _ in INSTRUMENT_TABS)
+
+#: What `/instrument/{ticker}` shows with no `?tab=`. The verdict, because "what do you
+#: think" is the question the page exists to answer, and it is where a link from the
+#: recommendations table should land.
+INSTRUMENT_DEFAULT_TAB = "decision"
+
+#: Which query sections each tab needs. Anything not listed is still fetched, because the
+#: summary strip at the top of every tab needs it -- the instrument, the decision, the
+#: valuation and the price bars. The news block is the expensive one: it pages, it appraises
+#: and it clusters events through the embeddings, and running all of that for the Refresh
+#: tab would be work nobody asked for.
+INSTRUMENT_TAB_SECTIONS: dict[str, tuple[str, ...]] = {
+    "news": ("news",),
+    "reports": ("filings",),
+    "accounts": ("fundamentals",),
+    "position": ("trades",),
+    "price": ("trades",),
+}
+
+
+def _instrument_tab(
+    ticker: str, requested: str | None
+) -> tuple[str, list[dict[str, object]], str | None]:
+    """Resolve the requested tab, the strip, and any value that had to be ignored.
+
+    An unusable value renders the page and says so rather than 404ing, which is the rule
+    `web/filters.py` states for a query parameter: this is a view selector, not the address,
+    and a bookmark to a tab that has been renamed should not cost the reader the page. It is
+    the one place this deliberately differs from `accounts_page`, where the statement *is* a
+    path segment and an unknown one is a 404.
+    """
+    ignored = None
+    if requested and requested not in INSTRUMENT_TAB_NAMES:
+        ignored, requested = requested, None
+    active = requested or INSTRUMENT_DEFAULT_TAB
+
+    base = f"/instrument/{quote(ticker, safe='')}"
+    strip = [
+        {"name": name, "label": label, "url": f"{base}?tab={name}", "active": name == active}
+        for name, label in INSTRUMENT_TABS
+    ]
+    return active, strip, ignored
+
+
+def _instrument_summary(
+    detail: dict[str, Any], history: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The handful of figures the top of the page shows on every tab.
+
+    **Deliberately small.** The detail is one click away and repeating it here would rebuild
+    the long page this replaced. What belongs at the top is what a reader needs in order to
+    decide *which* tab to open: what it is, what it costs and which way it moved, what the
+    engine says on each horizon, and how stale any of that is.
+
+    The price comes from the same `history` the chart draws, so the number in the summary
+    and the last point of the line cannot disagree -- they are one query.
+    """
+    close = history[-1]["close"] if history else None
+    previous = history[-2]["close"] if len(history) > 1 else None
+    change = None
+    if close is not None and previous:
+        change = (close - previous) / previous
+    return {
+        "close": close,
+        "close_date": history[-1]["date"] if history else None,
+        "change": change,
+        "bars": len(history),
+    }
+
+
+def _instrument_context(
+    request: Request,
+    *,
+    ticker: str,
+    detail: dict[str, Any],
+    chart: dict[str, Any],
+    predictions: list[Any],
+    prediction_count: int,
+    refresh_state: dict[str, Any] | None,
+    active: str,
+    strip: list[dict[str, object]],
+    tab_ignored: str | None,
+) -> dict[str, Any]:
+    """Everything `instrument.html` reads, assembled in one place.
+
+    Split from the route because the route's job is to decide *what* to fetch -- which is now
+    a question about the current tab -- and the template's is to render it. Every name here
+    has to be present even when its tab is not being rendered: Jinja's default undefined is
+    falsy rather than an error, so a key the route forgets renders as nothing at all, which
+    is how the trades table and the event grouping were both lost for a commit each.
+    """
+    return {
+        "ticker": ticker,
+        "instrument": detail["instrument"],
+        "summary": _instrument_summary(detail, chart["history"]),
+        "tabs": strip,
+        "tab": active,
+        "tab_ignored": tab_ignored,
+        "decision": detail["decision"],
+        "valuation": detail["valuation"],
+        "history": chart["history"],
+        "markers": chart["markers"],
+        "waiting_note": chart["waiting_note"],
+        "filings": detail["filings"],
+        "fundamentals": detail["fundamentals"],
+        "news": detail["news"],
+        "news_events": detail["news_events"],
+        "news_clustering": detail["news_clustering"],
+        "news_analysis": detail["news_analysis"],
+        "news_total": detail["news_total"],
+        "news_page": detail["news_page"],
+        "news_pages": detail["news_pages"],
+        "outcomes": detail["outcomes"],
+        "trades": detail["trades"],
+        "trades_truncated": detail["trades_truncated"],
+        "predictions": predictions,
+        "prediction_count": prediction_count,
+        "horizon_windows": HORIZON_WINDOWS,
+        "refresh": refresh_state,
+        "refresh_job": scoped.REFRESH_JOB,
+        "refresh_message": request.query_params.get("refresh"),
+        "horizons": {
+            "long_term": get_settings().horizons.long_term,
+            "short_term": get_settings().horizons.short_term,
+        },
+    }
+
+
 @router.get("/instrument/{ticker}", response_class=HTMLResponse, include_in_schema=False)
 def instrument_page(
     request: Request,
     ticker: str,
+    tab: str | None = None,
     news_page: int = Query(1, ge=1),
 ) -> HTMLResponse:
+    """One instrument, summarised at the top and split into tabs below.
+
+    Only the current tab is rendered, and only its sections are read -- see
+    ``INSTRUMENT_TAB_SECTIONS``. ``news_page`` is parsed on every request and read on one of
+    them: FastAPI validates it before this runs, and a tab that ignored a malformed page
+    number silently would be worse than one that refuses it.
+    """
+    active, strip, tab_ignored = _instrument_tab(ticker, tab)
+    sections = INSTRUMENT_TAB_SECTIONS.get(active, ())
+
     with session_scope() as session:
-        detail = queries.instrument_detail(session, ticker, news_page=news_page)
+        detail = queries.instrument_detail(
+            session, ticker, news_page=news_page, sections=sections
+        )
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown instrument {ticker}")
         chart = _price_chart(session, ticker, detail)
         # The page used to show only the latest decision, so "what did it say last
         # week, and was it right" had no answer anywhere.
-        predictions, prediction_count = queries.decision_history(
-            session, ticker=ticker, limit=25
+        predictions, prediction_count = (
+            queries.decision_history(session, ticker=ticker, limit=25)
+            if active == "decision"
+            else ([], 0)
         )
         # The lease doubles as the refresh's progress: the same row that stops a sweep
         # touching this instrument says which step is running.
-        refresh_row = lease.current(session, ticker)
+        refresh_row = lease.current(session, ticker) if active == "refresh" else None
         refresh_state = queries.refresh_state(refresh_row)
 
     return templates.TemplateResponse(
         request,
         "instrument.html",
-        {
-            "ticker": ticker,
-            "instrument": detail["instrument"],
-            "decision": detail["decision"],
-            "valuation": detail["valuation"],
-            "history": chart["history"],
-            "markers": chart["markers"],
-            "waiting_note": chart["waiting_note"],
-            "filings": detail["filings"],
-            "fundamentals": detail["fundamentals"],
-            "news": detail["news"],
-            # The news list renders **events**, not stories, and the grouping happens in
-            # `queries.instrument_detail`. Both keys have to be named here: Jinja's
-            # default undefined iterates as empty, so a key the query returns and the
-            # route forgets does not raise -- it renders an empty list, which is exactly
-            # how this was found.
-            "news_events": detail["news_events"],
-            "news_clustering": detail["news_clustering"],
-            "news_analysis": detail["news_analysis"],
-            "news_total": detail["news_total"],
-            "news_page": detail["news_page"],
-            "news_pages": detail["news_pages"],
-            "outcomes": detail["outcomes"],
-            # The reader's own executions. `instrument_detail` has always returned these
-            # and the route never named them, which Jinja does not complain about: an
-            # undefined name is falsy, so "Your trades" -- and the position panel's whole
-            # reason for existing -- rendered as nothing at all. Same trap as `news_events`
-            # below it, one commit later.
-            "trades": detail["trades"],
-            "trades_truncated": detail["trades_truncated"],
-            "predictions": predictions,
-            "prediction_count": prediction_count,
-            "horizon_windows": HORIZON_WINDOWS,
-            "refresh": refresh_state,
-            "refresh_job": scoped.REFRESH_JOB,
-            "refresh_message": request.query_params.get("refresh"),
-            "horizons": {
-                "long_term": get_settings().horizons.long_term,
-                "short_term": get_settings().horizons.short_term,
-            },
-        },
+        _instrument_context(
+            request,
+            ticker=ticker,
+            detail=detail,
+            chart=chart,
+            predictions=predictions,
+            prediction_count=prediction_count,
+            refresh_state=refresh_state,
+            active=active,
+            strip=strip,
+            tab_ignored=tab_ignored,
+        ),
     )
 
 
@@ -247,7 +382,9 @@ def instrument_refresh(ticker: str) -> RedirectResponse:
     outcome = scoped.start(ticker)
     reason = "started" if outcome.ok else "refused"
     return RedirectResponse(
-        url=f"/instrument/{ticker}?refresh={reason}#refresh",
+        # Back to the tab the button is on, so the outcome it prints is the outcome the
+        # reader sees rather than a decision tab they then have to navigate away from.
+        url=f"/instrument/{quote(ticker, safe='')}?tab=refresh&refresh={reason}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

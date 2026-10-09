@@ -4,30 +4,138 @@
 {% block content %}
 {% from "partials/_help.html" import help %}
 {% from "partials/_pager.html" import pager_top %}
+
+{# ----------------------------------------------------------------- summary #}
+{# The page is split into tabs below, so this has to answer "which tab do I want" and
+   nothing more. Everything it shows is already fetched for every tab (see
+   `INSTRUMENT_TAB_SECTIONS`), and the price comes from the same bars the chart draws, so
+   the figure here and the last point of the line cannot disagree.
+
+   Identity, then the numbers, then the two verdicts -- the order a reader asks the
+   questions in. The reference detail (ISIN, symbols, CIK) is a disclosure rather than a
+   strip: it is looked at once in a while and would otherwise be nine cells of noise at
+   the top of every visit. #}
 <h1>
   {{ ticker }}
   <span class="muted">{{ instrument.name }}</span>
   {% if instrument.is_held %}<span class="chip held">held</span>{% endif %}
 </h1>
 
-<section class="kv">
-  <div><dt>Exchange</dt><dd>{{ instrument.exchange_name or '—' }}</dd></div>
-  <div><dt>ISIN</dt><dd>{{ instrument.isin or '—' }}</dd></div>
-  <div><dt>Currency</dt><dd>{{ instrument.currency_code or '—' }}</dd></div>
-  <div><dt>Yahoo symbol</dt><dd>{{ instrument.yahoo_symbol or 'unresolved' }}</dd></div>
-  <div><dt>Mapping confidence</dt><dd>{{ instrument.mapping_confidence | pct0 }}</dd></div>
-  <div><dt>Sector</dt><dd>{{ instrument.sector or '—' }}
-    {% if instrument.sector_source %}<span class="muted small">via {{ instrument.sector_source }}</span>{% endif %}
-    {# The coarse eleven, derived from the SIC code. Shown beside the SIC industry string
-       because that string is what the register said and this is what the sector page
-       groups by, and a reader looking at one needs to be able to see the other. #}
-    {% if instrument.sector_group %}<span class="muted small">· grouped as {{ instrument.sector_group }}</span>{% endif %}
-  </dd></div>
-  <div><dt>SIC</dt><dd>{{ instrument.sic_code or '—' }}</dd></div>
-  <div><dt>Companies House</dt><dd>{{ instrument.ch_company_number or '—' }}</dd></div>
-  <div><dt>SEC CIK</dt><dd>{{ instrument.sec_cik or '—' }}</dd></div>
+<section class="instrument-summary">
+  <div class="summary-figures">
+    <div class="stat">
+      <span class="stat-value">
+        {{ summary.close | number(2) if summary.close is not none else '—' }}
+        <span class="muted small">{{ instrument.currency_code or '' }}</span>
+      </span>
+      <span class="stat-label">
+        {% if summary.close_date %}last close, {{ summary.close_date }}{% else %}no price stored{% endif %}
+        {% if summary.change is not none %}
+          <br><span class="{% if summary.change >= 0 %}good{% else %}bad{% endif %}">
+            {{ summary.change | pct(1, false) }}
+          </span>
+          <span class="muted small">on the day</span>
+        {% endif %}
+      </span>
+    </div>
+
+    {% if instrument.is_held and instrument.position_synced_at %}
+      <div class="stat">
+        <span class="stat-value {% if (instrument.position_unrealised_gbp or 0) >= 0 %}good{% else %}bad{% endif %}">
+          {{ instrument.position_unrealised_gbp | number }}
+          <span class="muted small">{{ instrument.position_currency or '' }}</span>
+        </span>
+        <span class="stat-label">
+          unrealised on {{ instrument.position_value_gbp | number }} held
+          <br><span class="muted small">
+            {{ instrument.position_quantity | number(4) }} at
+            {{ instrument.position_average_price | number(4) }}
+          </span>
+        </span>
+      </div>
+    {% endif %}
+
+    {# Both horizons, because "the engine likes it" and "on which horizon" are one answer:
+       a long-term buy with a short-term sell is a real and common state, and showing one
+       of them would hide it. #}
+    {% if decision %}
+      {% for key, label, action, confidence in [
+        ('long_term', 'Long term', decision.long_term_action, decision.confidence),
+        ('short_term', 'Short term', decision.short_term_action, decision.short_term_confidence)
+      ] %}
+        <div class="stat">
+          <span class="stat-value">
+            <span class="badge {{ action | action_class }}">{{ (action or 'no call') | replace('_', ' ') }}</span>
+          </span>
+          <span class="stat-label">
+            {{ label }} · confidence {{ confidence | pct0 }}
+            <br><span class="muted small">
+              {{ engine_label(decision.engine, decision.uncalibrated) }},
+              {{ decision.created_at | ago }}
+            </span>
+          </span>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+
+  <p class="muted small">
+    {% if instrument.sector_group %}
+      <a href="/sectors/{{ instrument.sector_group | urlencode }}">{{ instrument.sector_group }}</a>
+    {% endif %}
+    {% if instrument.sector %}· {{ instrument.sector }}{% endif %}
+    {% if instrument.exchange_name %}· {{ instrument.exchange_name }}{% endif %}
+    {% if decision and decision.horizon_fit %}
+      · evidence suits {{ decision.horizon_fit | replace('_', ' ') }}
+    {% endif %}
+    {% if valuation and valuation.margin_of_safety is not none %}
+      · margin of safety {{ valuation.margin_of_safety | pct(1, false) }}
+    {% endif %}
+  </p>
+
+  <details class="instrument-details">
+    <summary class="muted small">Instrument details</summary>
+    <section class="kv">
+      <div><dt>Exchange</dt><dd>{{ instrument.exchange_name or '—' }}</dd></div>
+      <div><dt>ISIN</dt><dd>{{ instrument.isin or '—' }}</dd></div>
+      <div><dt>Currency</dt><dd>{{ instrument.currency_code or '—' }}</dd></div>
+      <div><dt>Yahoo symbol</dt><dd>{{ instrument.yahoo_symbol or 'unresolved' }}</dd></div>
+      <div><dt>Mapping confidence</dt><dd>{{ instrument.mapping_confidence | pct0 }}</dd></div>
+      <div><dt>Sector</dt><dd>{{ instrument.sector or '—' }}
+        {% if instrument.sector_source %}<span class="muted small">via {{ instrument.sector_source }}</span>{% endif %}
+        {# The coarse eleven, derived from the SIC code. Shown beside the SIC industry string
+           because that string is what the register said and this is what the sector page
+           groups by, and a reader looking at one needs to be able to see the other. #}
+        {% if instrument.sector_group %}<span class="muted small">· grouped as {{ instrument.sector_group }}</span>{% endif %}
+      </dd></div>
+      <div><dt>SIC</dt><dd>{{ instrument.sic_code or '—' }}</dd></div>
+      <div><dt>Companies House</dt><dd>{{ instrument.ch_company_number or '—' }}</dd></div>
+      <div><dt>SEC CIK</dt><dd>{{ instrument.sec_cik or '—' }}</dd></div>
+      <div><dt>Price bars</dt><dd>{{ summary.bars }}</dd></div>
+    </section>
+  </details>
 </section>
 
+{# -------------------------------------------------------------------- tabs #}
+{# Real links, one topic each, exactly as `accounts.html` does its statements. A strip that
+   only moved a highlight would need JavaScript and would leave "send me the news for this
+   company" unanswerable. #}
+<nav class="tabs">
+  {% for item in tabs %}
+    <a href="{{ item.url }}"{% if item.active %} class="active" aria-current="page"{% endif %}>{{ item.label }}</a>
+  {% endfor %}
+</nav>
+
+{# A `?tab=` this page does not know is reported rather than obeyed. It is a view selector
+   and not the address, so a renamed tab should not cost the reader the page -- the rule
+   `web/filters.py` states for query parameters. #}
+{% if tab_ignored %}
+  <p class="notice warn">
+    No tab called <code>{{ tab_ignored }}</code>, so the {{ tab }} tab is shown instead.
+  </p>
+{% endif %}
+
+{% if tab == 'position' %}
 {# --------------------------------------------------------------- position #}
 {# What the account actually holds, as the broker reports it. It sits above the refresh
    panel and the decision because "what do I own" is the first question a reader has, and
@@ -134,6 +242,7 @@
   {% endif %}
 </section>
 
+{% elif tab == 'refresh' %}
 {# ----------------------------------------------------------------- refresh #}
 {# The pipeline stages for this one company, on demand. It exists because a call can be
    shown here while most of what it rests on has never been fetched -- the scheduled
@@ -202,6 +311,7 @@
   </form>
 </section>
 
+{% elif tab == 'decision' %}
 {# ------------------------------------------------------------------ decision #}
 <h2>Decision</h2>
 {% if decision %}
@@ -394,6 +504,9 @@
 {% endif %}
 
 {# ------------------------------------------------------- prediction history #}
+{# Part of the Decision tab, not a tab of its own: "what do you think" and "what did you
+   think before, and were you right" are one subject, and a reader checking the second has
+   just read the first. #}
 <h2>Past predictions</h2>
 {% if predictions %}
   <p class="muted small">
@@ -451,6 +564,7 @@
   <p class="muted">No predictions recorded for this instrument yet.</p>
 {% endif %}
 
+{% elif tab == 'valuation' %}
 {# ----------------------------------------------------------------- valuation #}
 <h2>Valuation</h2>
 {% if valuation %}
@@ -514,6 +628,7 @@
   <p class="muted">Not valued yet.</p>
 {% endif %}
 
+{% elif tab == 'price' %}
 {# -------------------------------------------------------------- price chart #}
 <h2>Price history</h2>
 {#
@@ -575,6 +690,7 @@
   <p class="muted small">{{ waiting_note }}</p>
 {% endif %}
 
+{% elif tab == 'reports' %}
 {# ------------------------------------------------------------------ filings #}
 <h2>Published reports</h2>
 {#
@@ -625,6 +741,7 @@
   <p class="muted">No filings linked yet. UK accounts come from Companies House, US filings from SEC EDGAR.</p>
 {% endif %}
 
+{% elif tab == 'accounts' %}
 {# ------------------------------------------------------------- fundamentals #}
 <h2>Accounts</h2>
 {% if fundamentals %}
@@ -657,6 +774,7 @@
   <p class="muted">No accounts stored yet.</p>
 {% endif %}
 
+{% elif tab == 'news' %}
 {# ---------------------------------------------------------------------- news #}
 {# Paged, because news accumulates without bound and an instrument page is read
    often. The count comes from the same filtered query as the page it labels, so the
@@ -688,8 +806,8 @@
   {% endif %}
   {% if news_pages > 1 %}
     {{ pager_top(
-         ('/instrument/' ~ ticker ~ '?news_page=' ~ (news_page - 1)) if news_page > 1 else None,
-         ('/instrument/' ~ ticker ~ '?news_page=' ~ (news_page + 1)) if news_page < news_pages else None,
+         ('/instrument/' ~ ticker ~ '?tab=news&news_page=' ~ (news_page - 1)) if news_page > 1 else None,
+         ('/instrument/' ~ ticker ~ '?tab=news&news_page=' ~ (news_page + 1)) if news_page < news_pages else None,
          'News pages') }}
   {% endif %}
   <ul class="news-list sceptic">
@@ -901,13 +1019,13 @@
   {% if news_pages > 1 %}
     <nav class="pager">
       {% if news_page > 1 %}
-        <a href="/instrument/{{ ticker }}?news_page={{ news_page - 1 }}">&larr; newer</a>
+        <a href="/instrument/{{ ticker }}?tab=news&news_page={{ news_page - 1 }}">&larr; newer</a>
       {% else %}<span class="muted">&larr; newer</span>{% endif %}
       <span class="muted small">
         page {{ news_page }} of {{ news_pages }} ({{ news_total }} stor{{ 'y' if news_total == 1 else 'ies' }})
       </span>
       {% if news_page < news_pages %}
-        <a href="/instrument/{{ ticker }}?news_page={{ news_page + 1 }}">older &rarr;</a>
+        <a href="/instrument/{{ ticker }}?tab=news&news_page={{ news_page + 1 }}">older &rarr;</a>
       {% else %}<span class="muted">older &rarr;</span>{% endif %}
     </nav>
   {% endif %}
@@ -916,8 +1034,9 @@
     No headlines naming this instrument are stored.
     {% if news_page > 1 %}
       That is page {{ news_page }} of a list with fewer pages —
-      <a href="/instrument/{{ ticker }}">start again from the newest</a>.
+      <a href="/instrument/{{ ticker }}?tab=news">start again from the newest</a>.
     {% endif %}
   </p>
+{% endif %}
 {% endif %}
 {% endblock %}

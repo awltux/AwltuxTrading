@@ -81,12 +81,16 @@ def stored_period(session):
 
 
 class TestTheWayIn:
-    """The date stamp is the entry point. A page nobody can reach is not a feature."""
+    """The date stamp is the entry point. A page nobody can reach is not a feature.
+
+    It lives on the instrument page's Accounts tab: the page renders one topic at a time,
+    so the period links are only in the document when that tab is the one being shown.
+    """
 
     def test_the_period_date_on_the_instrument_page_links_to_its_accounts(
         self, client, session, stored_period
     ):
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=accounts").text
 
         assert f'href="/accounts/{stored_period.id}"' in body, (
             "the date stamp must open the accounts"
@@ -95,7 +99,7 @@ class TestTheWayIn:
     def test_every_stored_period_is_reachable(self, client, session, stored_period):
         """Both periods, not only the newest -- the older one is what the articulation
         checks compare against, and a reader may want to open it directly."""
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=accounts").text
 
         assert body.count('href="/accounts/') == 2
 

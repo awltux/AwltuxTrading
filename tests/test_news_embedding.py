@@ -372,7 +372,7 @@ class TestThePageFacingGrouping:
             session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0], [0.0, 1.0, 0.0]]
         )
 
-        body = client.get("/instrument/TEST_US_EQ").text
+        body = client.get("/instrument/TEST_US_EQ?tab=news").text
 
         assert "1 similar report" in body
         assert "Acme cuts its outlook" in body, "the member is shown, not hidden"
@@ -407,7 +407,7 @@ class TestThePageFacingGrouping:
         )
         _store(session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0]])
 
-        body = client.get("/instrument/KEY_US_EQ").text
+        body = client.get("/instrument/KEY_US_EQ?tab=news").text
 
         for shown in ("earnings", "revenue", "positive", "FY26", "3.1%"):
             assert shown in body, f"{shown} is a key the grouping compared and must be visible"

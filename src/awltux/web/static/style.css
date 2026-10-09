@@ -462,8 +462,8 @@ footer {
 }
 .disclaimer { color: var(--muted); font-size: 0.88rem; margin: 0 0 6px; }
 
-/* The statement tabs on an accounts page. Links, not buttons: each tab is its own
-   URL so a statement can be linked to and the page works with JavaScript off. */
+/* The tabs on an accounts page and an instrument page. Links, not buttons: each tab is
+   its own URL so a topic can be linked to and the page works with JavaScript off. */
 .tabs {
   display: flex; flex-wrap: wrap; gap: 2px; margin: 18px 0 4px;
   border-bottom: 1px solid var(--line);
@@ -478,6 +478,25 @@ footer {
   color: inherit; background: var(--panel);
   border-color: var(--line); border-bottom: 1px solid var(--panel);
 }
+
+/* The instrument page's summary: identity above, figures in a row, reference detail folded
+   away. It replaced a page that opened with nine cells of ISIN and CIK before saying
+   anything about the company, so the figures come first and the metadata is a disclosure --
+   present, one click, and not in the way of the answer. */
+.instrument-summary { margin: 10px 0 0; }
+.summary-figures {
+  display: flex; flex-wrap: wrap; gap: 10px 32px; align-items: flex-start;
+  margin: 12px 0 10px;
+}
+.summary-figures .stat { min-width: 150px; }
+.summary-figures .stat-value {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.summary-figures .stat-label { font-size: 0.85rem; color: var(--muted); line-height: 1.45; }
+.instrument-details { margin: 6px 0 0; }
+.instrument-details > summary { cursor: pointer; }
+.instrument-details .kv { margin-top: 10px; }
 
 /* A ledger: stated and computed side by side, so the residual is visible rather than
    folded into the printed figure. The subtotal row is the one a reader scans for. */

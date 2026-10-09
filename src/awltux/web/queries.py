@@ -9,6 +9,7 @@ because a number without its origin is not usable for a decision.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -921,13 +922,92 @@ def _trade_kind(order: T212Order) -> str:
     return "trade"
 
 
+def _ticker_news(
+    session: Session, ticker: str, *, news_page: int, news_per_page: int
+) -> dict[str, Any]:
+    """One instrument's news: a page of stories, their appraisals, and their events.
+
+    Extracted because it is the expensive half of :func:`instrument_detail` and the only part
+    of it that is not always needed. It pages, it loads an appraisal per story and it groups
+    them into events through the embeddings -- so the tabs that show no news must be able to
+    say so without paying for it.
+
+    Every key the caller's template reads is returned here, including the paging arithmetic,
+    so the "not wanted" branch below cannot drift from this one.
+    """
+    # Paged, and filtered in SQL. The first version took the newest 40 items across
+    # the whole universe and filtered them by ticker afterwards, so the window was
+    # global: measured on 6,555 stored items, 131 of the 153 instruments that had
+    # news showed none. See `awltux/db/news.py`.
+    related_news, news_total = news_for_ticker(
+        session, ticker, limit=news_per_page, offset=(news_page - 1) * news_per_page
+    )
+    # Scoped to *this* instrument: `related_news` can name several companies, and the
+    # appraisal the page must show is the one built for the page it is on.
+    appraisals = appraisals_for(session, related_news, subject=("instrument", ticker))
+
+    # One entry per *event*, the same grouping the flash banner uses. A profit warning
+    # reaches this system five or six times, and this list used to show all of them --
+    # so the reader's own company page was the one place the duplicates were certain to
+    # appear. Grouping happens inside the page rather than in SQL because the page is
+    # already the unit: `news_total` still counts stories, so paging is unchanged and a
+    # page of twenty shows however many events those twenty describe.
+    news_events, news_clustering = group_events(list(related_news))
+
+    return {
+        "news": related_news,
+        "news_events": news_events,
+        "news_clustering": news_clustering,
+        "news_analysis": appraisals,
+        "news_total": news_total,
+        "news_page": news_page,
+        "news_per_page": news_per_page,
+        "news_pages": max(1, -(-news_total // news_per_page)),
+    }
+
+
+def _no_news(*, news_page: int, news_per_page: int) -> dict[str, Any]:
+    """The same keys as :func:`_ticker_news` with nothing in them.
+
+    Empty lists rather than absent keys, because a template that reads one renders nothing
+    instead of raising -- the trap `dashboard.instrument_page` documents for keys the route
+    forgets to pass.
+    """
+    return {
+        "news": [],
+        "news_events": [],
+        "news_clustering": None,
+        "news_analysis": {},
+        "news_total": 0,
+        "news_page": news_page,
+        "news_per_page": news_per_page,
+        "news_pages": 1,
+    }
+
+
 def instrument_detail(
     session: Session,
     ticker: str,
     *,
     news_page: int = 1,
     news_per_page: int = 25,
+    sections: Collection[str] | None = None,
 ) -> dict[str, Any] | None:
+    """Everything the instrument page is built from, or only the parts a caller names.
+
+    ``sections`` exists because that page is split into tabs, and a tab must not pay for the
+    others. ``None`` means "all of it", which is what the JSON API and every test asks for;
+    the page passes the set its current tab needs. The keys are ``news``, ``filings``,
+    ``fundamentals`` and ``trades`` -- the four that are both expensive and topic-specific.
+    The instrument, its decision, its valuation and its price bars are always read, because
+    the summary strip at the top of every tab is built from them.
+
+    **The news block is the one that matters.** It pages, it loads an appraisal per story and
+    it clusters them into events through the embeddings; running that on the Refresh tab
+    would be work nobody asked for, recomputed on every click. It lives in
+    :func:`_ticker_news` for that reason.
+    """
+    wanted = set(sections) if sections is not None else {"news", "filings", "fundamentals", "trades"}
     instrument = session.get(Instrument, ticker)
     if instrument is None:
         return None
@@ -953,52 +1033,41 @@ def instrument_detail(
         .limit(750)
     ).scalars().all()
 
-    filings = session.execute(
-        select(Filing)
-        .where(Filing.instrument_t212_ticker == ticker)
-        .order_by(desc(Filing.filed_at))
-        .limit(50)
-    ).scalars().all()
+    filings = (
+        session.execute(
+            select(Filing)
+            .where(Filing.instrument_t212_ticker == ticker)
+            .order_by(desc(Filing.filed_at))
+            .limit(50)
+        ).scalars().all()
+        if "filings" in wanted
+        else []
+    )
 
-    fundamentals = session.execute(
-        select(FundamentalPeriod)
-        .where(FundamentalPeriod.instrument_t212_ticker == ticker)
-        .order_by(desc(FundamentalPeriod.period_end))
-        .limit(40)
-    ).scalars().all()
+    fundamentals = (
+        session.execute(
+            select(FundamentalPeriod)
+            .where(FundamentalPeriod.instrument_t212_ticker == ticker)
+            .order_by(desc(FundamentalPeriod.period_end))
+            .limit(40)
+        ).scalars().all()
+        if "fundamentals" in wanted
+        else []
+    )
 
     # Paged, and filtered in SQL. The first version took the newest 40 items across
     # the whole universe and filtered them by ticker afterwards, so the window was
     # global: measured on 6,555 stored items, 131 of the 153 instruments that had
     # news showed none. See `awltux/db/news.py`.
-    related_news, news_total = news_for_ticker(
-        session, ticker, limit=news_per_page, offset=(news_page - 1) * news_per_page
+    news = (
+        _ticker_news(session, ticker, news_page=news_page, news_per_page=news_per_page)
+        if "news" in wanted
+        else _no_news(news_page=news_page, news_per_page=news_per_page)
     )
-    # Scoped to *this* instrument: `related_news` can name several companies, and the
-    # appraisal the page must show is the one built for the page it is on.
-    appraisals = appraisals_for(session, related_news, subject=("instrument", ticker))
 
-    # One entry per *event*, the same grouping the flash banner uses. A profit warning
-    # reaches this system five or six times, and this list used to show all of them --
-    # so the reader's own company page was the one place the duplicates were certain to
-    # appear. Grouping happens inside the page rather than in SQL because the page is
-    # already the unit: `news_total` still counts stories, so paging is unchanged and a
-    # page of twenty shows however many events those twenty describe.
-    news_events, news_clustering = group_events(list(related_news))
-
-    outcomes = []
-    if decision is not None:
-        outcomes = [
-            {
-                "horizon_days": o.horizon_days,
-                "return_pct": o.return_pct,
-                "benchmark_return_pct": o.benchmark_return_pct,
-                "verdict": o.verdict,
-            }
-            for o in decision.outcomes
-        ]
-
-    trades, trades_truncated = _trades_for(session, ticker)
+    trades, trades_truncated = (
+        _trades_for(session, ticker) if "trades" in wanted else ([], False)
+    )
 
     return {
         "instrument": instrument,
@@ -1007,18 +1076,31 @@ def instrument_detail(
         "bars": list(reversed(bars)),
         "filings": filings,
         "fundamentals": fundamentals,
-        "news": related_news,
-        "news_events": news_events,
-        "news_clustering": news_clustering,
-        "news_analysis": appraisals,
-        "news_total": news_total,
-        "news_page": news_page,
-        "news_per_page": news_per_page,
-        "news_pages": max(1, -(-news_total // news_per_page)),
-        "outcomes": outcomes,
+        "outcomes": _decision_outcomes(decision),
         "trades": trades,
         "trades_truncated": trades_truncated,
+        **news,
     }
+
+
+def _decision_outcomes(decision: Any) -> list[dict[str, Any]]:
+    """How one decision's horizons turned out, as plain dicts for the template.
+
+    Dicts rather than the rows because the page shows four fields of them and nothing else,
+    and the rows drag a back-reference to the decision with them. Empty when there is no
+    decision, which is the same shape as a decision whose horizons have not elapsed.
+    """
+    if decision is None:
+        return []
+    return [
+        {
+            "horizon_days": outcome.horizon_days,
+            "return_pct": outcome.return_pct,
+            "benchmark_return_pct": outcome.benchmark_return_pct,
+            "verdict": outcome.verdict,
+        }
+        for outcome in decision.outcomes
+    ]
 
 
 def _trades_for(session: Session, ticker: str) -> tuple[list[TradeRow], bool]:
