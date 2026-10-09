@@ -116,6 +116,9 @@ def _serialise(item: NewsItem, analysis: NewsAnalysis | None = None) -> dict[str
         # concerns and why, without leaving the app or hitting a paywall.
         "local_url": f"/news/{item.id}",
         "source": item.source,
+        # Who wrote it, versus `source`, which is the feed it arrived through. The two
+        # disagree for 95% of the corpus -- see `analysis.sources.identify`.
+        "publisher": item.publisher,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "tickers": item.tickers or [],
         "sectors": item.sectors or [],
@@ -464,6 +467,7 @@ def _news_filter_specs(session) -> tuple[filters.FilterSpec, ...]:
     nothing, and the reader cannot tell that from a filter that is broken.
     """
     return filters.news_specs(
+        publishers=filters.source_options(queries.news_publisher_counts(session)),
         sources=filters.source_options(queries.news_source_counts(session)),
         materiality=filters.materiality_options(queries.news_materiality_counts(session)),
     )
@@ -491,6 +495,7 @@ def _news_region(
         rows, total = queries.news_listing(
             session,
             search=spec.opt("q"),
+            publisher=spec.opt("publisher"),
             source=spec.opt("source"),
             materiality=spec.opt("materiality"),
             relevant=relevant,

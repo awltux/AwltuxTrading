@@ -209,6 +209,43 @@ def cmd_jobs(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_news_publishers(args: argparse.Namespace) -> int:
+    """Name the writer on every stored story, and re-rate what was rated against the feed.
+
+    Two passes and both are idempotent. The first fills `news_item.publisher` for the rows
+    that predate the column; the second rebuilds every stored appraisal whose source came
+    from a feed URL -- which is 96% of them, because a Google News URL is a redirect.
+
+    **No model calls.** The rebuild is the deterministic half of `appraise_item`; the
+    claims and the omissions the model produced are copied across untouched. The numbers
+    that move are the credibility, the grade and the flags, so the command prints what
+    moved rather than reporting a row count.
+    """
+    from awltux.analysis.news_analysis import backfill_publishers, rerate_publishers
+    from awltux.db import session_scope
+
+    with session_scope() as session:
+        named = backfill_publishers(session)
+        print(
+            f"stories {named['stories']}: {named['named']} named, "
+            f"{named['already_named']} already correct"
+        )
+        if args.names_only:
+            return 0
+        report = rerate_publishers(session)
+
+    print(
+        f"appraisals {report['appraisals']} across {report['stories']} stories: "
+        f"{report['renamed']} re-attributed, {report['rewritten']} re-rated"
+    )
+    for sample in report["samples"]:
+        print(
+            f"  {sample['credibility_was']} -> {sample['credibility_now']}  "
+            f"{sample['was']} -> {sample['now']}  {sample['title']}"
+        )
+    return 0
+
+
 def _local_base_url(settings) -> str:
     """Where a server started by `serve` would be listening.
 
@@ -497,6 +534,17 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_settings
     )
     sub.add_parser("jobs", help="list registered scheduled jobs").set_defaults(func=cmd_jobs)
+
+    publishers = sub.add_parser(
+        "news-publishers",
+        help="name the writer on stored stories and re-rate appraisals made against the feed",
+    )
+    publishers.add_argument(
+        "--names-only",
+        action="store_true",
+        help="fill news_item.publisher but leave the stored appraisals alone",
+    )
+    publishers.set_defaults(func=cmd_news_publishers)
 
     job = sub.add_parser("job", help="run one scheduled job now")
     job.add_argument("job_id")

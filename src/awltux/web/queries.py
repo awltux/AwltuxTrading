@@ -1060,7 +1060,7 @@ def recent_news(
 #: :func:`_priority_expression` for how it is built without becoming a second definition
 #: of the formula.
 NewsSortKey = Literal[
-    "priority", "published_at", "materiality", "source", "title", "relevance"
+    "priority", "published_at", "materiality", "publisher", "title", "relevance"
 ]
 
 SortDirection = Literal["asc", "desc"]
@@ -1141,7 +1141,7 @@ def _news_order(sort: NewsSortKey, direction: SortDirection) -> tuple[Any, ...]:
         "priority": _NEWS_PRIORITY,
         "published_at": NewsItem.published_at,
         "materiality": _MATERIALITY_RANK,
-        "source": NewsItem.source,
+        "publisher": NewsItem.publisher,
         "title": NewsItem.title,
         "relevance": NewsItem.relevant,
     }[sort]
@@ -1158,6 +1158,7 @@ def news_listing(
     session: Session,
     *,
     search: str | None = None,
+    publisher: str | None = None,
     source: str | None = None,
     materiality: str | None = None,
     relevant: bool | None = None,
@@ -1177,6 +1178,10 @@ def news_listing(
     slices in SQL, so the total the pager prints is the whole matching set rather than
     the page -- the defect `tests/test_news_paging.py` records for the instrument page.
 
+    ``publisher`` and ``source`` are different questions and both are asked: the first is
+    *who wrote it*, the second is *which pipe it arrived through*, and on this corpus they
+    almost never agree (26,591 of 27,895 stories came through `google_news`).
+
     ``unassessed`` is a separate argument from ``relevant`` because "no classifier has
     judged this" is not "judged not relevant". ``relevant is None`` is a state the model
     keeps distinct on purpose, and one that a URL cannot express through a boolean.
@@ -1189,8 +1194,14 @@ def news_listing(
     if search:
         pattern = f"%{search}%"
         conditions.append(
-            or_(NewsItem.title.ilike(pattern), NewsItem.source.ilike(pattern))
+            or_(
+                NewsItem.title.ilike(pattern),
+                NewsItem.publisher.ilike(pattern),
+                NewsItem.source.ilike(pattern),
+            )
         )
+    if publisher:
+        conditions.append(NewsItem.publisher == publisher)
     if source:
         conditions.append(NewsItem.source == source)
     if materiality:
@@ -1234,6 +1245,28 @@ def news_source_counts(session: Session) -> list[tuple[str, int]]:
         select(NewsItem.source, func.count())
         .group_by(NewsItem.source)
         .order_by(func.count().desc(), NewsItem.source)
+    ).all()
+    return [(name, int(count)) for name, count in rows]
+
+
+def news_publisher_counts(session: Session, *, limit: int = 200) -> list[tuple[str, int]]:
+    """How many stories each named publisher contributed, busiest first.
+
+    Capped, unlike :func:`news_source_counts`, and the cap is why this one carries a
+    ``limit``. The corpus holds 1,193 distinct mastheads on 2026-10-09 and 684 of them
+    appear once, so an uncapped list is a dropdown nobody can use. The cap is generous
+    relative to the head -- the top 20 mastheads are 17,578 of 26,500 Google rows -- and it
+    is safe in a way a cap on the *feed* list would not be, because a publisher whose
+    value is missing from the options is reported as ignored rather than silently dropped
+    (``filters.FilterSet.parse``); 200 entries is already far past the point where a
+    dropdown is the right control, and the search box above it reaches the tail.
+    """
+    rows = session.execute(
+        select(NewsItem.publisher, func.count())
+        .where(NewsItem.publisher.is_not(None))
+        .group_by(NewsItem.publisher)
+        .order_by(func.count().desc(), NewsItem.publisher)
+        .limit(limit)
     ).all()
     return [(name, int(count)) for name, count in rows]
 

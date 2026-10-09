@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from awltux.analysis import sources
 from awltux.analysis.relevance import assess
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, utcnow
@@ -263,15 +264,17 @@ def _apply_relevance(row: NewsItem, *, about: bool | None) -> None:
         row.relevance_reason = verdict.reason
 
 
-#: Google News renders a headline as "Headline - Publisher". That suffix is the only
-#: part that differs when a wire story is carried by two outlets, so it is the part the
-#: title key drops.
-_PUBLISHER_SEPARATOR = " - "
+#: Google News renders a headline as "Headline - Publisher". Where that split falls, and
+#: whether a trailing clause is a masthead at all, lives in `analysis.sources` beside the
+#: publisher registry that reads it, because the same split now decides which publisher a
+#: story is attributed to. See `sources.split_masthead`.
 
-#: The shortest "headline" that may be left after stripping. A short remainder means the
-#: separator was part of the headline rather than a masthead -- "Form 8.3 - [ADVANCED
-#: MEDICAL SOLUTIONS GROUP PLC - 02 10 2026]" would otherwise key on "Form 8.3" and
-#: merge every filing of that kind into one.
+#: The shortest "headline" that may be left after stripping the masthead.
+#:
+#: A question about *keying*, not about attribution, which is why it is not in
+#: `sources`: a short remainder means the separator was part of the headline rather than
+#: a masthead -- "Form 8.3 - [ADVANCED MEDICAL SOLUTIONS GROUP PLC - 02 10 2026]" would
+#: otherwise key on "Form 8.3" and merge every filing of that kind into one.
 _MIN_HEADLINE_CHARS = 25
 
 
@@ -294,8 +297,8 @@ def title_key(title: str) -> str:
     1,570 (6.0%), and every group checked was one story under two names.
     """
     normalised = re.sub(r"\s+", " ", title or "").strip().lower()
-    head, separator, _tail = normalised.rpartition(_PUBLISHER_SEPARATOR)
-    if separator and len(head) >= _MIN_HEADLINE_CHARS:
+    head, publisher = sources.split_masthead(normalised)
+    if publisher and len(head) >= _MIN_HEADLINE_CHARS:
         normalised = head
     return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
 
@@ -516,6 +519,10 @@ def persist_items(
             url_hash=url_hash,
             title_key=title_key(item.title),
             title=item.title[:768],
+            # Who wrote it, resolved once at the door rather than again per reader: the
+            # masthead is in the title and the redirect hosts are not publishers, and
+            # both facts are true only of the row as fetched. See `sources.identify`.
+            publisher=sources.identify(url=item.url, title=item.title).name,
             summary=item.summary,
             published_at=item.published_at,
             tickers=list(item.tickers),

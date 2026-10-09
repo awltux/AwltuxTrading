@@ -104,7 +104,7 @@
     <tr>
       <th>{{ sort_link('published_at', 'Published', explain_key='news_published') }}</th>
       <th>{{ sort_link('title', 'Headline', explain_key='news_headline') }}</th>
-      <th>{{ sort_link('source', 'Source', explain_key='news_source') }}</th>
+      <th>{{ sort_link('publisher', 'Source', explain_key='news_source') }}</th>
       <th>{{ sort_link('materiality', 'Materiality', explain_key='news_materiality') }}</th>
       <th>Direction</th>
       <th>{{ sort_link('relevance', 'Relevance', explain_key='news_relevance') }}</th>
@@ -128,7 +128,22 @@
            {% if entry.relevance_reason %}title="Relevance: {{ entry.relevance_reason }}"{% endif %}>{{ entry.title }}</a>
       </td>
 
-      <td class="small muted">{{ entry.source }}</td>
+      {# Who wrote it, with the feed beside it when the two differ -- which is almost
+         always, because Google News hands over a redirect and the publisher comes from
+         the masthead. The feed stays visible in small type rather than being dropped:
+         it is where the story was found, and it is what the Feed filter selects. #}
+      <td class="small">
+        {% if entry.publisher %}
+          {{ entry.publisher }}
+        {% else %}
+          {# No masthead to read and no publisher's own URL: the story is attributed to
+             nobody, which is worth seeing rather than filling in with the feed. #}
+          <span class="muted" title="No publisher named in the headline and no publisher's own URL on the story">—</span>
+        {% endif %}
+        {% if entry.source and entry.source != entry.publisher %}
+          <br><span class="muted" title="The pipe this story arrived through, not who wrote it">via {{ entry.source }}</span>
+        {% endif %}
+      </td>
 
       <td>
         {% if entry.materiality %}

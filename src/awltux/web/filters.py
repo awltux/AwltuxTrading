@@ -563,6 +563,7 @@ def materiality_options(
 
 def news_specs(
     *,
+    publishers: Sequence[FilterOption] = (),
     sources: Sequence[FilterOption] = (),
     materiality: Sequence[FilterOption] = (),
 ) -> tuple[FilterSpec, ...]:
@@ -572,6 +573,12 @@ def news_specs(
     decides how a filter is presented and linked, and :mod:`awltux.web.queries` decides
     what is in the database. Keeping the SQL out of the presentation layer is what lets
     these URL rules be tested without a database.
+
+    **Source and Feed are two filters, not one.** Source is who wrote the story, read from
+    the headline's masthead or the publisher's own URL; Feed is the pipe it arrived
+    through, which on this corpus is `google_news` for 95% of it. They answer different
+    questions and a reader wants both -- "what has Simply Wall Street been saying" and
+    "what did the filings feed bring in".
 
     Long, and flat on purpose. The declarations are independent -- each names one
     parameter, its control and the sentence that explains it -- so splitting them across
@@ -584,10 +591,10 @@ def news_specs(
             "q",
             "Search",
             kind="text",
-            placeholder="Headline or source…",
+            placeholder="Headline, source or feed…",
             help=(
-                "Matches any part of the headline, or of the source's own name. Not the "
-                "summary or the article body, which are not both stored."
+                "Matches any part of the headline, the publisher's name or the feed's. "
+                "Not the summary or the article body, which are not both stored."
             ),
         ),
         FilterSpec(
@@ -601,7 +608,26 @@ def news_specs(
                 "as the story mentioning the company in passing."
             ),
         ),
-        FilterSpec("source", "Source", options=tuple(sources)),
+        FilterSpec(
+            "publisher",
+            "Source",
+            options=tuple(publishers),
+            help=(
+                "Who wrote the story, which is not the feed it came through: Google News "
+                "hands over a redirect, so the publisher is read from the masthead the "
+                "headline carries. A name with no assessment on file is still shown, "
+                "because it is still the publisher."
+            ),
+        ),
+        FilterSpec(
+            "source",
+            "Feed",
+            options=tuple(sources),
+            help=(
+                "The pipe the story arrived through. Mostly one entry, because the "
+                "per-company Google News query supplies the great majority of the corpus."
+            ),
+        ),
         FilterSpec(
             "materiality",
             "Materiality",

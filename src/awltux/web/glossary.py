@@ -312,11 +312,15 @@ FIELDS: tuple[Field, ...] = (
     Field(
         "news_source",
         "Source",
-        "Which feed the story arrived through, not the news organisation that wrote it.",
-        "These are two different things and only the feed is stored. Most rows come from "
-        "google_news, which is a search across many publishers, so a source of "
-        "'google_news' says where we found it rather than who stands behind it -- the "
-        "publisher itself is named on the story's page, from the appraisal.",
+        "Who wrote the story, which is not the feed it arrived through.",
+        "The two come apart for almost everything here. Google News supplies the great "
+        "majority of the corpus and hands over a *redirect*, so the URL names Google, not "
+        "the writer -- the publisher is read from the masthead the headline carries "
+        "instead (\"… - Simply Wall Street\"). Where the feed gives the publisher's own "
+        "address, that is used. A name in this column may well have no assessment on "
+        "file; it is still the publisher, and the story page says whether it is rated. "
+        "The feed is shown beneath it when the two differ, and the Feed control filters "
+        "on that.",
     ),
     Field(
         "news_materiality",

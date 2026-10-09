@@ -42,6 +42,7 @@ def make(
     direction: str | None = "positive",
     relevant: bool | None = True,
     source: str = "test",
+    publisher: str | None = None,
     published_at: dt.datetime | None = None,
 ):
     row = NewsItem(
@@ -49,6 +50,7 @@ def make(
         url=f"https://example.com/{title.replace(' ', '-')}",
         url_hash=title,
         title=title,
+        publisher=publisher if publisher is not None else f"{source} desk",
         summary="",
         published_at=(
             published_at if published_at is not None
@@ -124,7 +126,7 @@ class TestTheOrderingHasAUniqueTieBreak:
     @pytest.mark.parametrize("direction", ["asc", "desc"])
     @pytest.mark.parametrize(
         "sort",
-        ["priority", "published_at", "materiality", "source", "title", "relevance"],
+        ["priority", "published_at", "materiality", "publisher", "title", "relevance"],
     )
     def test_every_sort_ends_in_the_id_in_the_same_direction(self, sort, direction):
         sql = str(

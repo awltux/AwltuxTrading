@@ -32,6 +32,7 @@ assessment. Where there is no curated entry the answer is *unknown* -- not
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -420,6 +421,191 @@ def lookup(url_or_domain: str | None) -> Publisher:
             return REGISTRY[known]
 
     return UNKNOWN_PUBLISHER
+
+
+# --------------------------------------------------------------------------- #
+# who actually published it
+# --------------------------------------------------------------------------- #
+
+#: Google News renders a headline as "Headline - Publisher". That suffix is the only
+#: part that differs when a wire story is carried by two outlets, so it is the part
+#: `ingest.news.title_key` drops and the part that names the writer.
+PUBLISHER_SEPARATOR = " - "
+
+#: The longest a masthead can be. Publishers are named, not described; measured
+#: 2026-10-09, well under 1% of the 26,591 Google News headlines carry a trailing clause
+#: longer than this, and the ones that do are subtitles rather than mastheads.
+MAX_MASTHEAD_CHARS = 60
+
+#: Hosts that are a *pipe* rather than a publisher: the story was found through them and
+#: the URL they hand over is theirs, not the writer's.
+#:
+#: Measured 2026-10-09 over 27,895 stored stories: 26,591 (95.3%) carry a
+#: ``news.google.com`` URL, which is a redirect into the Google News reader. Every other
+#: host in the column is the publisher's own address -- `finance.yahoo.com`,
+#: `marketbeat.com`, `sec.gov` -- because those feeds store the article's URL. So this is
+#: a list of one, and it is a list rather than a special case because the next redirect
+#: feed belongs in it too.
+FEED_HOSTS: frozenset[str] = frozenset({"news.google.com"})
+
+#: Registry names, lower-cased, so a masthead can find its rated entry.
+_NAMES: dict[str, Publisher] = {publisher.name.lower(): publisher for publisher in _REGISTRY}
+
+
+def _looks_like_publisher(value: str) -> bool:
+    """Whether a trailing clause names a publisher rather than continuing the headline.
+
+    Three refusals, each for a shape that actually occurs:
+
+    * **Too long.** "Acme beats forecasts on strong demand - here is what it means for
+      the sector this quarter" ends in a subtitle, not a masthead.
+    * **No letters, or more digits than letters.** "Form 8.3 - [ADVANCED MEDICAL
+      SOLUTIONS GROUP PLC - 02 10 2026]" would otherwise yield ``02 10 2026]``.
+    * **A sentence.** A masthead is a name; a full stop means the separator was part of
+      the prose.
+    """
+    if not value or len(value) > MAX_MASTHEAD_CHARS:
+        return False
+    letters = sum(1 for char in value if char.isalpha())
+    digits = sum(1 for char in value if char.isdigit())
+    if not letters or digits > letters:
+        return False
+    return not value.endswith((".", "!", "?"))
+
+
+def split_masthead(title: str) -> tuple[str, str | None]:
+    """``(headline, publisher)`` -- the publisher part is ``None`` when there is none.
+
+    The one implementation of "where does the masthead start", shared with
+    ``ingest.news.title_key``: a second copy of this rule is how a headline gets keyed on
+    one boundary and attributed on another.
+
+    It deliberately says nothing about how long the *headline* is. That is a question
+    `title_key` asks -- a key built on "Form 8.3" would merge every filing of that kind --
+    and it used to be asked here, which meant a 22-character headline like "Acme wins the
+    contract - Yahoo Finance" was attributed to nobody. The two questions are separate and
+    each is now asked by the caller that needs the answer.
+    """
+    head, separator, tail = (title or "").rpartition(PUBLISHER_SEPARATOR)
+    if not separator:
+        return (title or "").strip(), None
+    publisher = tail.strip()
+    if not _looks_like_publisher(publisher):
+        return (title or "").strip(), None
+    return head.strip(), publisher
+
+
+def masthead(title: str) -> str | None:
+    """The publisher a headline names at its end, or ``None``."""
+    return split_masthead(title)[1]
+
+
+def by_name(value: str) -> Publisher | None:
+    """The rated publisher with this name, ignoring case and a leading "The".
+
+    The registry is keyed by domain because that is what a URL gives us; a masthead gives
+    us a *name*, and the two spell the same organisation differently. The registry holds
+    "The Wall Street Journal" where a headline may say either that or "Wall Street
+    Journal", so both directions are tried -- dropping the article off the input, and
+    putting it on.
+    """
+    candidate = " ".join((value or "").lower().split())
+    if not candidate:
+        return None
+    bare = candidate[4:] if candidate.startswith("the ") else candidate
+    for key in (candidate, bare, f"the {bare}"):
+        if key in _NAMES:
+            return _NAMES[key]
+    return None
+
+
+def _by_prefix(value: str) -> Publisher | None:
+    """The longest rated name that opens this masthead.
+
+    For the editions: "Yahoo Finance UK" and "Yahoo! Finance Canada" are Yahoo Finance
+    under a country masthead, and 900-odd rows each carry one. Punctuation is dropped
+    before comparing, because the registry spells it "Yahoo Finance" and the feed spells
+    it "Yahoo! Finance". Longest-first so "Investing.com UK" cannot match a shorter name
+    that happens to open it.
+    """
+    def fold(text: str) -> str:
+        return " ".join(re.sub(r"[^a-z0-9 ]", "", text.lower()).split())
+
+    folded = fold(value)
+    best: Publisher | None = None
+    best_length = 0
+    for name, publisher in _NAMES.items():
+        candidate = fold(name)
+        if candidate and folded.startswith(candidate) and len(candidate) > best_length:
+            best, best_length = publisher, len(candidate)
+    return best
+
+
+def _unrated(name: str, *, domain: str, basis: str) -> Publisher:
+    """A publisher we can name but have not assessed.
+
+    Not `UNKNOWN_PUBLISHER`: that one throws the name away, and the name is the whole
+    point of reading the masthead. The rating columns take the same defaults an
+    unrecognised domain gets, and ``kind="unknown"`` is what makes ``assessed`` false --
+    so the scepticism layer still says "nothing is on file" and flags it as such.
+    """
+    default_reliability, default_independence = KIND_DEFAULTS["unknown"]
+    return Publisher(
+        domain=domain,
+        name=name,
+        kind="unknown",
+        reliability=default_reliability,
+        independence=default_independence,
+        biases=(),
+        ownership=None,
+        basis=basis,
+    )
+
+
+def identify(*, url: str | None, title: str) -> Publisher:
+    """Who actually published this story, as far as we can tell.
+
+    **The URL is the feed's, not the publisher's.** Question asked: *"the Source should be
+    the real source, not the feed."* Before this, ``appraise_item`` derived the publisher
+    from ``item.url`` alone, so measured 2026-10-09, **6,700 of 6,974 stored appraisals
+    rated their source as "Google News", kind ``aggregator```** -- 96% of the corpus graded
+    against the pipe rather than the writer.
+
+    The order:
+
+    1. **The URL's host**, when it is the publisher's own address -- which it is for
+       everything except the redirect feeds in :data:`FEED_HOSTS`. That covers the whole
+       of `yahoo_rss`, `marketaux` and `edgar`.
+    2. **The masthead** otherwise: the "Headline - Publisher" suffix, which 99.7% of
+       Google News rows carry. Resolved against the registry by name, then by prefix (for
+       country editions), then by treating the masthead as a domain.
+    3. The URL's own publisher, whatever it is, when there is no masthead to read. That
+       answer is "Google News" for those rows, and it is the honest one: nothing else on
+       the row says who wrote it.
+    """
+    host = domain_of(url)
+    resolved = lookup(url)
+    if host and host not in FEED_HOSTS and resolved.assessed:
+        return resolved
+
+    name = masthead(title)
+    if name:
+        rated = by_name(name) or _by_prefix(name)
+        if rated is not None:
+            return rated
+        as_domain = lookup(name)
+        if as_domain.assessed:
+            return as_domain
+        return _unrated(
+            name,
+            domain=host or "",
+            basis=(
+                f"Named by the headline's own masthead, \"{name}\". No assessment on "
+                "file for it, which is not the same as a bad assessment."
+            ),
+        )
+
+    return resolved
 
 
 def source_weight(publisher: Publisher, *, direction: str | None = None) -> float:

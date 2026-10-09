@@ -37,6 +37,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from awltux.analysis import sources
 from awltux.analysis.corroboration import Corroboration, assess
 from awltux.analysis.news_scepticism import Claim, NewsAssessment, grade
 from awltux.analysis.rhetoric import RhetoricReport, analyse_text
@@ -254,8 +255,12 @@ def appraise_item(
     that cannot say which subject it means cannot call this.
     """
     config = settings.news.scepticism
-    domain = domain_of(item.url)
-    publisher = lookup(item.url) if item.url else lookup(None)
+    # Who wrote it, not which pipe it arrived through. This was `lookup(item.url)`, and
+    # that answered "Google News" -- kind aggregator -- for 95% of the corpus, because a
+    # Google News URL is a redirect. Measured 2026-10-09: 6,700 of the 6,974 appraisals
+    # stored before this change rated their source as Google News.
+    publisher = sources.identify(url=item.url, title=item.title)
+    domain = publisher.domain or domain_of(item.url)
 
     rhetoric = rhetoric or analyse_text(item.summary or item.title, headline=item.title)
     corroboration = corroboration or Corroboration()
@@ -458,6 +463,29 @@ APPRAISAL_COLUMNS: tuple[str, ...] = (
     "factors", "engine", "analysed_at",
 )
 
+#: The part of an appraisal that came from the model rather than from the rules.
+#:
+#: Named so the publisher re-rating can rebuild a row and put the paid half back without
+#: paying again: the source rating and everything the rules derive from it change, the
+#: claims and the omissions do not. Kept as its own list rather than derived by
+#: subtracting the rule columns, because the rule columns are the ones that grow -- a
+#: field added to `grade()` must be recomputed, and a field the model writes must not.
+MODEL_COLUMNS: tuple[str, ...] = (
+    "claims",
+    "techniques",
+    "omissions",
+    "headline_matches_body",
+    "headline_overstates",
+    "who_benefits",
+    "agenda_basis",
+    "base_rate",
+    "what_would_change_my_mind",
+    "primary_source",
+    "scepticism_summary",
+    "injection_suspected",
+    "engine",
+)
+
 
 def _carry_forward(prior: NewsAnalysis, fresh: NewsAnalysis) -> None:
     """Copy a fresh appraisal onto the row already stored for that story.
@@ -470,6 +498,19 @@ def _carry_forward(prior: NewsAnalysis, fresh: NewsAnalysis) -> None:
     """
     for column in APPRAISAL_COLUMNS:
         setattr(prior, column, getattr(fresh, column))
+
+
+def _carry_model_half(source: NewsAnalysis, target: NewsAnalysis) -> None:
+    """Put the paid half of an appraisal back onto a freshly re-derived one.
+
+    The inverse direction to :func:`_carry_forward`, and it exists for one caller: the
+    publisher re-rating rebuilds a row deterministically and must not throw away what the
+    model was paid to read. Everything the *rules* produce -- the source rating, the
+    credibility, the grade, the flags -- is kept from the rebuild; the claims, the
+    omissions and the deep summary come across unchanged.
+    """
+    for column in MODEL_COLUMNS:
+        setattr(target, column, getattr(source, column))
 
 
 @dataclass(slots=True)
@@ -636,6 +677,165 @@ def appraise_story(
         "deep": report.deep_analysed,
         "deterministic_only": report.deep_analysed == 0,
         "errors": report.errors[:3],
+    }
+
+
+def backfill_publishers(session: Session, *, batch: int = 500) -> dict[str, int]:
+    """Name the writer on every stored story that does not have one yet.
+
+    The half of the fix that needs no rating: `news_item.publisher` is what the news page
+    displays, filters and sorts by. Idempotent, and it rewrites rows whose stored name no
+    longer matches what :func:`sources.identify` answers -- so a change to the parser is
+    picked up by re-running it rather than by a migration.
+
+    One pass, no model calls, and it never touches an appraisal.
+    """
+    written = 0
+    unchanged = 0
+    seen = 0
+    rows = session.execute(select(NewsItem)).scalars()
+    for item in rows:
+        seen += 1
+        name = sources.identify(url=item.url, title=item.title).name
+        if item.publisher == name:
+            unchanged += 1
+        else:
+            item.publisher = name
+            written += 1
+        if seen % batch == 0:
+            session.flush()
+            release_write_lock(session)
+    session.flush()
+    return {"stories": seen, "named": written, "already_named": unchanged}
+
+
+@dataclass(frozen=True, slots=True)
+class _Rerate:
+    """What re-rating one appraisal changed, so the caller only counts."""
+
+    was: str | None
+    now: str | None
+    credibility_was: float | None
+    credibility_now: float | None
+
+    @property
+    def renamed(self) -> bool:
+        return self.was != self.now
+
+    @property
+    def re_rated(self) -> bool:
+        return self.renamed or self.credibility_was != self.credibility_now
+
+
+def _rerate_one(
+    prior: NewsAnalysis,
+    item: NewsItem,
+    *,
+    settings: Settings,
+    held: set[str],
+    held_sectors: set[str],
+) -> _Rerate:
+    """Rebuild one appraisal deterministically and write it back over the stored row.
+
+    The rebuild is `appraise_item` with no analyser; the paid half is put back before the
+    write, so what changes is the source rating and everything the rules derive from it.
+    """
+    subject = Subject(prior.subject_type, prior.subject_id)
+    fresh = appraise_item(
+        item,
+        settings=settings,
+        subject=subject,
+        analyser=None,
+        is_held=subject_is_held(subject, held, held_sectors),
+    )
+    _carry_model_half(prior, fresh)
+    outcome = _Rerate(
+        was=prior.source_name,
+        now=fresh.source_name,
+        credibility_was=prior.credibility,
+        credibility_now=fresh.credibility,
+    )
+    _carry_forward(prior, fresh)
+    return outcome
+
+
+def rerate_publishers(session: Session, *, settings: Settings | None = None) -> dict[str, Any]:
+    """Re-derive every stored appraisal from the publisher that actually wrote the story.
+
+    **Why this is needed at all.** Until `sources.identify` existed, `appraise_item` took
+    the publisher from `item.url`, and 95% of URLs are the Google News redirect -- so
+    measured 2026-10-09, 6,700 of the 6,974 stored appraisals recorded `source_name =
+    "Google News"`, `source_kind = "aggregator"`. That kind feeds `source_weight`, which
+    is the first factor of the credibility the sentiment weighting multiplies by. The
+    numbers were not wrong about the *publisher*; they were answering a different
+    question.
+
+    **Deterministic only, and that is the whole design.** `appraise_item` is called with
+    no analyser, so it recomputes the publisher, the rhetoric scan, the corroboration
+    window and the arithmetic, and makes no model call. The paid half -- the claims, the
+    omissions, the deep summary -- is copied across from the stored row unchanged by
+    :func:`_carry_model_half`, because nothing about it is wrong and re-asking would cost
+    one call per story.
+
+    What moves as a result: `credibility`, `evidence_grade`, `flags`, `warnings`,
+    `caveats` and `factors`, for every appraisal whose publisher changed. Those feed
+    `analysis.sentiment`, and so the decision engine. Measure before and after; the
+    command prints the comparison.
+
+    Idempotent: a second run finds every stored name already correct and writes nothing.
+    """
+    settings = settings or get_settings()
+    held, held_sectors = _held(session)
+
+    stories = 0
+    appraisals = 0
+    rewritten = 0
+    renamed = 0
+    samples: list[dict[str, Any]] = []
+
+    item_ids = list(
+        session.execute(select(NewsAnalysis.news_item_id).distinct()).scalars().all()
+    )
+    for item_id in item_ids:
+        item = session.get(NewsItem, item_id)
+        if item is None:
+            continue
+        stories += 1
+        rows = list(
+            session.execute(
+                select(NewsAnalysis).where(NewsAnalysis.news_item_id == item_id)
+            ).scalars().all()
+        )
+        for prior in rows:
+            outcome = _rerate_one(
+                prior, item, settings=settings, held=held, held_sectors=held_sectors
+            )
+            appraisals += 1
+            renamed += outcome.renamed
+            rewritten += outcome.re_rated
+            if len(samples) < 12 and outcome.renamed:
+                samples.append(
+                    {
+                        "title": item.title[:70],
+                        "was": outcome.was,
+                        "now": outcome.now,
+                        "credibility_was": outcome.credibility_was,
+                        "credibility_now": outcome.credibility_now,
+                    }
+                )
+        # Batched: one flush per story and 6,457 of them meant 6,457 write-lock
+        # releases for a pass that makes no network call and holds nothing else.
+        if stories % 200 == 0:
+            session.flush()
+            release_write_lock(session)
+
+    session.flush()
+    return {
+        "stories": stories,
+        "appraisals": appraisals,
+        "renamed": renamed,
+        "rewritten": rewritten,
+        "samples": samples,
     }
 
 

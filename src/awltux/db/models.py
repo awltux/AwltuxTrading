@@ -613,6 +613,20 @@ class NewsItem(Base, TimestampMixin):
     url: Mapped[str | None] = mapped_column(String(1024))
     url_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
 
+    #: **Who wrote it**, as opposed to `source`, which is the feed it arrived through.
+    #:
+    #: The two come apart for almost everything: 26,591 of the 27,895 stories stored on
+    #: 2026-10-09 came through `google_news`, whose URL is a redirect into the Google
+    #: News reader, so the publisher is read from the headline's own "… - Publisher"
+    #: masthead instead. Nullable because the column arrived after the rows and because
+    #: 5% of headlines name no masthead at all; `analysis.sources.identify` decides, and
+    #: a name the registry has not assessed is stored as it is printed.
+    #:
+    #: Indexed because it is a filter and a sort on the news page -- which is the point:
+    #: a reader looking for what a *publisher* has been saying needs this in SQL, not a
+    #: parse per row at render time.
+    publisher: Mapped[str | None] = mapped_column(String(96), index=True)
+
     #: A digest of the headline with its publisher suffix removed, so the *same story*
     #: carried by two outlets can be recognised as one. Google News titles are
     #: "Headline - Publisher", and that suffix is the only part that differs when a wire
