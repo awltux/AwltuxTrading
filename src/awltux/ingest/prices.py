@@ -26,6 +26,7 @@ from awltux.config import Settings, get_settings
 from awltux.db import Instrument, PriceBar, Quote, utcnow
 from awltux.db.session import release_write_lock
 from awltux.ingest.blockers import clear_blocker, record_blocker
+from awltux.money import multiplier_for
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import BarSeries, YahooProvider
 from awltux.scheduler import progress
@@ -52,6 +53,10 @@ class PriceIngestReport:
     bars_written: int = 0
     bars_skipped_lower_rank: int = 0
     tickers_failed: list[str] = field(default_factory=list)
+    #: Instruments whose bars were refused because the provider's unit contradicts the
+    #: instrument's own. Kept apart from ``tickers_failed``: the provider answered, and the
+    #: answer was in a unit we cannot reconcile with the one the broker prices in.
+    tickers_unit_mismatch: list[str] = field(default_factory=list)
     turnover_updated: int = 0
 
     def as_dict(self) -> dict[str, Any]:
@@ -63,6 +68,8 @@ class PriceIngestReport:
             "turnover_updated": self.turnover_updated,
             "failed": self.tickers_failed[:25],
             "failed_count": len(self.tickers_failed),
+            "unit_mismatch": self.tickers_unit_mismatch[:25],
+            "unit_mismatch_count": len(self.tickers_unit_mismatch),
         }
 
 
@@ -81,6 +88,11 @@ class PriceTargets:
 
     #: Provider symbols, most deserving first.
     symbols: list[str] = field(default_factory=list)
+    #: Symbol -> the unit the instrument is quoted in, from the broker's own instrument
+    #: record. Carried with the symbols because a batched download cannot say what any one
+    #: of them is quoted in, and guessing it from the ``.L`` suffix is what made an LSE ETF
+    #: quoted in pounds 100x too cheap.
+    currencies: dict[str, str] = field(default_factory=dict)
     #: Instruments with no stored bar at all -- the ones this job exists to fill.
     never_priced: int = 0
     #: Instruments whose newest bar predates the newest in the universe.
@@ -169,6 +181,8 @@ def load_price_targets(
         if not instrument.yahoo_symbol:
             continue
         targets.symbols.append(instrument.yahoo_symbol)
+        if instrument.currency_code:
+            targets.currencies[instrument.yahoo_symbol] = instrument.currency_code
         if last_bar is None:
             targets.never_priced += 1
         else:
@@ -184,6 +198,13 @@ def load_price_targets(
 
     if limit is not None and limit > 0:
         targets.symbols = targets.symbols[:limit]
+        # Trimmed with the symbols, so the map cannot describe instruments this run will
+        # not ask for -- the reader of a run report should not have to intersect the two.
+        targets.currencies = {
+            symbol: unit
+            for symbol, unit in targets.currencies.items()
+            if symbol in set(targets.symbols)
+        }
     return targets
 
 
@@ -220,7 +241,6 @@ def persist_batch(
                 reason=f"the provider returned no bars for {symbol}",
             )
             continue
-        clear_blocker(session, instrument.t212_ticker, job=JOB, stage="prices")
         report.tickers_returned += 1
         written += store_bar_series(session, instrument, series, report=report)
         # Commit per instrument. A batch of 40 is roughly 20,000 bars, and writing
@@ -294,10 +314,38 @@ def store_bar_series(
     *,
     report: PriceIngestReport | None = None,
 ) -> int:
-    """Upsert a bar series, respecting source rank. Returns rows written."""
+    """Upsert a bar series, respecting source rank. Returns rows written.
+
+    **A series whose unit contradicts the instrument's own is refused, not stored.** The
+    multiplier the provider applied has to be the one this instrument's currency code implies;
+    when it is not, the price is wrong by whatever factor separates them -- usually 100 -- and
+    it is still a plausible-looking number, which is exactly the failure this project's money
+    handling exists to prevent. Measured 2026-10-09: an LSE ETF quoted in pounds was divided by
+    100 on every refresh, so the page showed £1.41 for something the broker valued at £141.30.
+    Storing nothing leaves the instrument visibly unpriced; storing the wrong unit leaves it
+    confidently wrong, which is worse.
+    """
     if not series.bars:
         return 0
     report = report or PriceIngestReport()
+
+    expected = multiplier_for(instrument.currency_code) if instrument.currency_code else None
+    if expected is not None and abs(series.raw_multiplier - expected) > 1e-9:
+        report.tickers_unit_mismatch.append(instrument.t212_ticker)
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=JOB,
+            stage="prices",
+            reason=(
+                f"{series.raw_currency or 'the provider unit'} against "
+                f"{instrument.currency_code}: the bars came back at "
+                f"{series.raw_multiplier:g} of a unit and this instrument is quoted at "
+                f"{expected:g}, so every price would be out by "
+                f"{expected / series.raw_multiplier:g}x"
+            ),
+        )
+        return 0
 
     # One read of the existing window: the portable alternative to a
     # dialect-specific upsert, and cheap because a daily refresh touches
@@ -346,6 +394,9 @@ def store_bar_series(
 
     session.flush()
     report.bars_written += written
+    # The one place that knows whether this instrument is storable, so the one place that
+    # clears what a previous run recorded against it. Both callers get it for free.
+    clear_blocker(session, instrument.t212_ticker, job=JOB, stage="prices")
     return written
 
 
@@ -383,13 +434,23 @@ def refresh_prices(
         return report
 
     symbols = list(by_symbol)
+    # **The unit each instrument is quoted in, told to the provider rather than guessed.**
+    # Trading 212 publishes one per instrument (`currencyCode`) and we already hold it; a
+    # batched download cannot say (its frame carries one currency for the whole request), so
+    # the ".L means pence" convention used to stand in. That convention is right for nearly
+    # every LSE line and wrong for the ones quoted in a major unit: measured 2026-10-09, it
+    # divided an LSE ETF quoted in pounds by 100, so a £141.30 unit price was stored,
+    # valued and charted as £1.41 while the broker's own position arithmetic used £141.30.
+    currencies = {
+        symbol: row.currency_code for symbol, row in by_symbol.items() if row.currency_code
+    }
     batches = chunks(symbols, BATCH_SIZE)
     for position, batch in enumerate(batches, start=1):
         # Batches alternate network and database, so the count is the only visible
         # sign of progress on a run that prices the whole universe.
         progress.note(f"batch {position} of {len(batches)} ({len(batch)} symbols)")
         try:
-            series_map = provider.get_history_batch(batch, period=period)
+            series_map = provider.get_history_batch(batch, period=period, currencies=currencies)
         except ProviderError as exc:
             logger.warning("price batch failed (%d symbols): %s", len(batch), exc)
             report.tickers_failed.extend(batch)

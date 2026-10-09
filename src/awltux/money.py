@@ -5,6 +5,11 @@ data providers including Yahoo Finance. Trading 212 reports positions in GBP.
 Mixing the two silently inflates or deflates a valuation by 100x, and because
 the result is still a plausible-looking number it tends to survive review.
 
+**Most, not all.** An LSE line can be quoted in a major unit -- ``VWRLl_EQ`` is
+quoted in pounds and Yahoo says so -- so the symbol suffix is a guess and this
+module's callers are expected to supply the unit where they know it. See
+:func:`expected_quote_currency` for what that guess costs when it is wrong.
+
 So the rule enforced here: **money never crosses a layer boundary un-normalised.**
 Every conversion returns the multiplier it applied, and that multiplier is
 persisted next to the value (see ``PriceBar.raw_multiplier``) so the original
@@ -184,10 +189,17 @@ def is_lse_symbol(yahoo_symbol: str | None) -> bool:
 
 
 def expected_quote_currency(yahoo_symbol: str | None) -> str | None:
-    """Best-effort expectation of the unit a provider will quote a symbol in.
+    """The unit a ``.L`` symbol is *usually* quoted in: pence.
 
-    Used to *verify* provider output rather than to convert it: if Yahoo returns
-    ``GBP`` for a ``.L`` symbol, the 100x trap is live and we want to notice.
+    **A guess about a suffix, and it is used as one -- a last resort, never a verification.**
+    It is right for most LSE lines and wrong for the ones quoted in a major unit, which are
+    real: measured 2026-10-09, of the 488 instruments holding prices, 482 agreed with the
+    broker's own per-instrument ``currencyCode`` and six did not. Three of those six were the
+    same 100x error -- ``VWRLl_EQ`` (an LSE ETF quoted in pounds, stored at 1.41 against a true
+    141.30), ``AEEEl_EQ`` (EUR) and ``RNEWl_EQ`` (USD).
+
+    So a caller that knows the unit should state it (``Instrument.currency_code`` is Trading
+    212's own answer and needs no request), and this is what stands in when nobody does.
     """
     if is_lse_symbol(yahoo_symbol):
         return "GBX"

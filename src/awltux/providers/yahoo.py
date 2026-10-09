@@ -7,11 +7,17 @@ shapes how it is wrapped here:
 
 * Every call is treated as fallible. Failures raise; they never return an empty
   frame that a caller might mistake for "no data".
-* **Currency is normalised at this boundary.** LSE symbols quote in pence
-  (``GBp``) while Trading 212 reports GBP, so an un-normalised price is a latent
-  100x error. The multiplier is returned and persisted.
-* Requests are batched *within one quote-currency group* so that the per-symbol
-  currency is never ambiguous.
+* **Currency is normalised at this boundary.** LSE symbols *usually* quote in
+  pence (``GBp``) while Trading 212 reports GBP, so an un-normalised price is a
+  latent 100x error. The multiplier is returned and persisted. **Usually is not
+  always**: an LSE line may be quoted in a major unit (``VWRLl_EQ`` is quoted in
+  GBP, and Yahoo says so), so the unit is taken from the caller's instrument
+  record where the caller has one, and from the ``.L`` convention only when
+  nobody can say.
+* Requests are batched *within one quote-currency group*. A batch response is one
+  frame carrying **one** currency for the whole download, so the frame is not
+  per-symbol evidence; the group is how the symbols are asked for, and the
+  caller-supplied unit is how each one is read back.
 * The provider is deliberately dumb about meaning: it returns provider-shaped
   data and leaves interpretation to ``analysis``.
 """
@@ -21,11 +27,12 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from awltux.config import BudgetRule, Settings, get_settings
-from awltux.money import expected_quote_currency, normalise_money
+from awltux.money import canonical_currency, expected_quote_currency, normalise_money
 from awltux.providers.http import BudgetGuard, ProviderError
 
 logger = logging.getLogger(__name__)
@@ -107,6 +114,39 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _quoted_unit(symbol: str, *, frame_currency: str, stated: str, fallback: str) -> str:
+    """Which unit a symbol's bars are quoted in, from the best evidence available.
+
+    The order is the point, and it is why this is a function rather than three lines inside the
+    frame walk:
+
+    1. **What the caller stated.** It comes from the instrument's own record -- Trading 212's
+       ``currencyCode`` -- so it is the unit the position arithmetic is in, and it costs no
+       request.
+    2. **What the frame says**, when the caller says nothing. For a one-symbol fetch that is the
+       provider's own word; for a batch it describes the whole request, which is why it loses to
+       (1) rather than the other way round.
+    3. **The ``.L`` suffix convention**, which is right for most LSE lines and is still a guess.
+
+    A disagreement between (1) and (2) is logged rather than swallowed: it is a fact about the
+    provider, and applying the frame's unit to a batch is what made an LSE ETF quoted in pounds
+    look as though it cost 1.41.
+    """
+    if stated:
+        if frame_currency and canonical_currency(frame_currency) != canonical_currency(stated):
+            logger.warning(
+                "yahoo: the frame for %s says it is quoted in %s but the instrument's own unit "
+                "is %s; using %s (a batch frame carries one currency for the whole download, so "
+                "it cannot be this symbol's)",
+                symbol,
+                frame_currency,
+                stated,
+                stated,
+            )
+        return stated
+    return frame_currency or fallback or "USD"
 
 
 class YahooProvider:
@@ -236,20 +276,29 @@ class YahooProvider:
         *,
         period: str = "2y",
         interval: str = "1d",
+        currencies: Mapping[str, str] | None = None,
     ) -> dict[str, BarSeries]:
-        """Fetch many symbols at once, grouped by expected quote currency.
+        """Fetch many symbols at once, grouped by the unit they are quoted in.
 
-        Symbols are partitioned by the currency we expect the provider to quote
-        them in, because a single batch download reports one currency for the
-        whole frame. Mixing a ``.L`` symbol with a US symbol in one group would
-        make the pence/pounds distinction unresolvable.
+        ``currencies`` maps a symbol to the unit **the caller already knows it is quoted in** --
+        Trading 212 publishes one per instrument (``currencyCode``) and our rows hold it, and it
+        is the unit the position arithmetic is in. It is taken as given because a batched
+        download cannot supply it: the response is one frame whose metadata carries a single
+        currency for the whole request, so reading the frame's currency per symbol is reading
+        whichever symbol happened to write it.
+
+        The ``.L`` suffix convention remains the fallback for a caller that has no unit to give.
+        It is a good guess -- it is right for 482 of the 488 instruments holding prices on
+        2026-10-09 -- and it is still a guess: the six it got wrong include ``VWRLl_EQ``, an LSE
+        ETF quoted in **pounds**, whose whole price series was 100x too small because of it.
         """
         if not symbols:
             return {}
 
+        stated = currencies or {}
         groups: dict[str, list[str]] = {}
         for symbol in symbols:
-            key = expected_quote_currency(symbol) or "USD"
+            key = stated.get(symbol) or expected_quote_currency(symbol) or "USD"
             groups.setdefault(key, []).append(symbol)
 
         out: dict[str, BarSeries] = {}
@@ -278,7 +327,9 @@ class YahooProvider:
                 sub = self._extract_symbol_frame(frame, symbol, multi=len(group) > 1)
                 if sub is None or sub.empty:
                     continue
-                out[symbol] = self._frame_to_series(symbol, sub, self._fallback_currency(symbol))
+                out[symbol] = self._frame_to_series(
+                    symbol, sub, self._fallback_currency(symbol), stated=stated.get(symbol, "")
+                )
         return out
 
     @staticmethod
@@ -292,7 +343,14 @@ class YahooProvider:
             return None
         return None
 
-    def _frame_to_series(self, symbol: str, frame: Any, raw_currency: str) -> BarSeries:
+    def _frame_to_series(
+        self, symbol: str, frame: Any, raw_currency: str, *, stated: str = ""
+    ) -> BarSeries:
+        """One symbol's bars, with the unit decided by the best evidence available.
+
+        The frame is asked what it says and :func:`_quoted_unit` decides which statement wins.
+        See that function for the order and for why a batch frame loses to the caller.
+        """
         series = BarSeries(
             symbol=symbol,
             currency="",
@@ -309,7 +367,10 @@ class YahooProvider:
                 frame_currency = str(frame.attrs.get("currency") or "")
         except Exception:
             frame_currency = ""
-        raw_currency = frame_currency or raw_currency or "USD"
+
+        raw_currency = _quoted_unit(
+            symbol, frame_currency=frame_currency, stated=stated, fallback=raw_currency
+        )
         series.raw_currency = raw_currency
 
         columns = {str(c).lower(): c for c in frame.columns}

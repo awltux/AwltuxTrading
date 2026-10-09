@@ -184,6 +184,111 @@ class TestCurrencyNormalisationThroughTheProvider:
         assert restored == pytest.approx(110.0)
 
 
+class TestTheBatchUnitComesFromTheCallerNotTheFrame:
+    """A batch download is one frame carrying **one** currency for the whole request.
+
+    So the frame's own metadata is not per-symbol evidence, and reading it as such is how an
+    LSE ETF quoted in pounds came back as 1.41 against a true 141.30. The caller knows the unit
+    -- Trading 212 publishes one per instrument and the row holds it -- and states it.
+    """
+
+    def _instance(self, monkeypatch, settings, *, frame_currency: str):
+        """A provider whose batch download returns one frame for every symbol asked for, and
+        the list of requests it was asked with."""
+        instance = YahooProvider(settings)
+        requests: list = []
+
+        class BatchFrame(FakeFrame):
+            def __init__(self) -> None:
+                super().__init__(
+                    [(dt.datetime(2026, 6, day, tzinfo=dt.UTC), 141.30) for day in (1, 2)]
+                )
+                # One currency for the whole download, as yfinance gives it: whatever the
+                # request's group was, not what any one symbol in it is quoted in.
+                self.attrs = {"currency": frame_currency}
+
+            def __getitem__(self, symbol):
+                return self
+
+        class FakeYf:
+            Ticker = staticmethod(lambda symbol: FakeTicker(symbol))
+            download = staticmethod(
+                lambda **kwargs: (requests.append(kwargs["tickers"]), BatchFrame())[1]
+            )
+
+        monkeypatch.setattr(instance, "_yf", FakeYf)
+        return instance, requests
+
+    def test_a_stated_unit_beats_the_frame(self, monkeypatch, settings):
+        """The bug: VWRL.L is quoted in GBP and Yahoo says GBP, but the batch frame carried the
+        group's unit -- pence -- because the other LSE names in the request are quoted in it.
+        The instrument's own unit has to win, or £141.30 is stored as £1.41."""
+        instance, _ = self._instance(monkeypatch, settings, frame_currency="GBp")
+
+        series = instance.get_history_batch(["VWRL.L"], currencies={"VWRL.L": "GBP"})["VWRL.L"]
+
+        assert series.raw_currency == "GBP"
+        assert series.raw_multiplier == 1.0
+        assert series.bars[-1].close == pytest.approx(141.30)
+
+    def test_a_stated_pence_unit_is_still_divided(self, monkeypatch, settings):
+        """The other direction, and the case that was already right: the same frame, the same
+        request, an instrument the broker says is quoted in pence."""
+        instance, _ = self._instance(monkeypatch, settings, frame_currency="GBP")
+
+        series = instance.get_history_batch(["VOD.L"], currencies={"VOD.L": "GBX"})["VOD.L"]
+
+        assert series.raw_multiplier == pytest.approx(0.01)
+        assert series.bars[-1].close == pytest.approx(1.413)
+
+    def test_the_group_is_the_unit_the_caller_stated(self, monkeypatch, settings):
+        """The grouping is how the symbols are *asked for*, and grouping by the suffix is what
+        put a pound-quoted ETF in the pence request."""
+        instance, requests = self._instance(monkeypatch, settings, frame_currency="GBp")
+
+        instance.get_history_batch(["VOD.L", "VWRL.L"], currencies={"VWRL.L": "GBP"})
+
+        # A one-symbol group is asked for by name, which is what `download` accepts.
+        assert list(requests) == ["VOD.L", "VWRL.L"], "one request per stated unit"
+
+    def test_with_no_stated_unit_the_frame_speaks_for_the_group(self, monkeypatch, settings):
+        """A caller with nothing to say gets the old behaviour: the frame's currency is the
+        provider's own word for the request we made, and the suffix convention only stands in
+        when the frame says nothing at all."""
+        instance, _ = self._instance(monkeypatch, settings, frame_currency="GBP")
+
+        series = instance.get_history_batch(["VOD.L"])["VOD.L"]
+
+        assert series.raw_multiplier == 1.0, "the frame's own unit, not the suffix's"
+
+    def test_with_nothing_stated_anywhere_the_suffix_convention_stands_in(
+        self, monkeypatch, settings
+    ):
+        """Which is right for most LSE lines, and is still a guess -- hence the caller stating
+        the unit wherever it can."""
+        instance, _ = self._instance(monkeypatch, settings, frame_currency="")
+
+        series = instance.get_history_batch(["VOD.L"])["VOD.L"]
+
+        assert series.raw_currency == "GBX"
+        assert series.raw_multiplier == pytest.approx(0.01)
+
+    def test_a_single_symbol_fetch_has_no_group_to_be_wrong_about(
+        self, monkeypatch, settings
+    ):
+        """`get_history` asks for one symbol and takes the unit from the ticker's own
+        ``fast_info`` -- a per-symbol statement -- so it never had this bug. The fix is in the
+        batch path and changes nothing here."""
+        instance, _ = self._instance(monkeypatch, settings, frame_currency="GBP")
+        instance._yf.Ticker = staticmethod(lambda symbol: CurrencyAwareTicker(symbol))
+
+        series = instance.get_history("VOD.L")
+
+        assert series.raw_currency == "GBp", "the ticker's own unit"
+        assert series.raw_multiplier == pytest.approx(0.01)
+        assert series.bars[-1].close == pytest.approx(1.10), "110 pence is 1.10 pounds"
+
+
 class TestFailureHandling:
     def test_a_library_error_becomes_a_provider_error(self, monkeypatch, settings):
         instance = YahooProvider(settings)

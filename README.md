@@ -781,6 +781,14 @@ answers a plain HTTP client with a browser-verification page.
 - **Sector classification is derived**, not licensed (SEC SIC for US, provider
   industry fields for UK), so sector sentiment is approximate.
 - **No free real-time UK RNS.** UK event detection is best-effort.
+- **An instrument whose unit cannot be reconciled is left unpriced rather than priced wrong.**
+  Prices are normalised out of the provider's unit into the broker's, and the unit used is the
+  instrument's own `currencyCode` — an LSE line is usually quoted in pence but not always
+  (`VWRLl_EQ` is quoted in pounds). When the provider's bars come back at a different unit from
+  the one the instrument's code implies, they are refused and recorded as a blocker instead of
+  stored: the two differ by a factor of 100, the result still looks plausible, and an instrument
+  visibly missing from a run is better than one carrying a confident wrong price. Measured
+  2026-10-09: 482 of the 488 priced instruments agreed, and six did not.
 
 ## Licence
 

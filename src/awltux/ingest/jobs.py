@@ -830,7 +830,14 @@ def refresh_prices_eod(tickers: list[str] | None = None) -> JobResult:
     for batch in chunks(symbols, 40):
         # --- network phase: no transaction open -----------------------------
         try:
-            series_map = provider.get_history_batch(batch, period="2y")
+            # The unit each symbol is quoted in travels with the targets: the broker's own
+            # instrument record, so the provider is told rather than left to guess from the
+            # symbol. It cannot guess correctly for a batch -- the response is one frame with
+            # one currency for the whole request -- and the ".L means pence" convention it
+            # fell back on is what stored an LSE ETF quoted in pounds at 100x too little.
+            series_map = provider.get_history_batch(
+                batch, period="2y", currencies=targets.currencies
+            )
         except Exception as exc:
             logger.warning("price batch failed (%d symbols): %s", len(batch), exc)
             report.tickers_failed.extend(batch)

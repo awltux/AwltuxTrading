@@ -162,6 +162,15 @@ def _price_eod(detail: dict[str, Any]) -> str:
     skipped = _get(detail, "bars_skipped_lower_rank")
     if skipped:
         line += f"; {_n(skipped)} bars skipped as a lower-ranked source"
+    # Said separately from "returned nothing", because the provider *did* answer: it answered
+    # in a unit that cannot be reconciled with the one the broker prices the instrument in, so
+    # the bars were refused rather than stored 100x out. An instrument missing from this run is
+    # better than one whose price is confidently wrong.
+    mismatched = _get(detail, "unit_mismatch_count")
+    if mismatched:
+        named = _sample(detail.get("unit_mismatch"), limit=3)
+        line += f". {_n(mismatched)} refused as a unit mismatch"
+        line += f" ({named})" if named else ""
     failed = _get(detail, "failed_count")
     if failed:
         # The stored list is capped at 25, so it is named as a sample and its own

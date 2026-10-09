@@ -155,6 +155,70 @@ class TestTheOrderIsDeterministic:
         assert len(targets) == 0
 
 
+class TestTheUnitTravelsWithTheSymbols:
+    """``refresh_prices_eod`` asks the provider for bars and has to tell it what each symbol is
+    quoted in -- the provider cannot say, because a batch response is one frame with one
+    currency for the whole request. The broker's own ``currencyCode`` is that unit, and it is
+    already in the row this loader reads.
+
+    Measured 2026-10-09 on the live database: of 488 instruments holding prices, 482 agreed
+    with their currency code and six did not. ``VWRLl_EQ`` was one of the six -- an LSE ETF
+    quoted in pounds, divided by 100 on every refresh, so the page showed 1.41 for something
+    the broker valued at 141.30.
+    """
+
+    def test_each_symbol_carries_its_instrument_s_own_unit(self, session):
+        session.add(
+            make_instrument(
+                "POUNDSl_EQ", yahoo_symbol="VWRL.L", currency_code="GBP", in_universe=True
+            )
+        )
+        session.add(
+            make_instrument(
+                "PENCEl_EQ", yahoo_symbol="VOD.L", currency_code="GBX", in_universe=True
+            )
+        )
+        session.flush()
+
+        targets = load_price_targets(session)
+
+        assert targets.currencies == {"VWRL.L": "GBP", "VOD.L": "GBX"}
+
+    def test_an_instrument_with_no_currency_code_is_simply_absent(self, session):
+        """Absent rather than empty, so the provider falls back to its own evidence instead of
+        being told the unit is the empty string."""
+        session.add(
+            make_instrument(
+                "UNKNOWNl_EQ", yahoo_symbol="UNK.L", currency_code=None, in_universe=True
+            )
+        )
+        session.flush()
+
+        targets = load_price_targets(session)
+
+        assert targets.symbols == ["UNK.L"]
+        assert targets.currencies == {}
+
+    def test_the_cap_trims_the_units_with_the_symbols(self, session):
+        """A map that still described instruments this run will not ask for would make a run
+        report say more than the run did."""
+        for index in range(3):
+            session.add(
+                make_instrument(
+                    f"T{index}_US_EQ",
+                    yahoo_symbol=f"T{index}",
+                    currency_code="USD",
+                    in_universe=True,
+                )
+            )
+        session.flush()
+
+        targets = load_price_targets(session, limit=2)
+
+        assert len(targets.symbols) == 2
+        assert set(targets.currencies) == set(targets.symbols)
+
+
 class TestTheJobReportsWhatItAimedAt:
     """A run line reads the same whether the job is closing the gaps or refreshing
     names that were already covered, unless it says which."""
