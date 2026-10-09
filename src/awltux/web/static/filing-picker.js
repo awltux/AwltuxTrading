@@ -219,16 +219,39 @@
     return value.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 10 });
   }
 
+  function pick(target, dates) {
+    /* What a click produced: the figure, the filing's name for its line, its id -- or why
+     * nothing was picked.
+     *
+     * Pulled out of the event handler so that the whole decision is testable: the handler below
+     * is then six lines of DOM plumbing, and everything that can be *wrong* about a click is
+     * here, with the contexts passed in rather than reached for.
+     */
+    var element = factFrom(target);
+    if (!element) return null;
+    var figure = figureOf(element);
+    if (figure.value === undefined) return { problem: figure.reason };
+    var context = dates[figure.context];
+    if (context) figure.asOf = context;
+    return {
+      figure: figure,
+      caption: captionOf(element),
+      elementId: element.getAttribute("id") || ""
+    };
+  }
+
   /* Everything above decides what a clicked figure *is*, what the filing calls the line it sits
    * on, which period it belongs to and where the reader is sent with it. None of it needs a
    * document, and each of those is something that can be wrong in a way nobody notices, so they
    * are handed to `tests/test_filing_picker.py`, which drives them through `node --test`.
-   * Everything below is browser wiring. */
+   * Everything below is browser wiring: building the tray and mounting it. */
   if (typeof document === "undefined" || typeof window === "undefined") {
     module.exports = {
       transform: transform,
       figureOf: figureOf,
       captionOf: captionOf,
+      factFrom: factFrom,
+      pick: pick,
       dateInContext: dateInContext,
       contextDates: contextDates,
       confirmUrl: confirmUrl,
@@ -358,12 +381,22 @@
   /* ------------------------------------------------------------ the document */
 
   function factFrom(node) {
-    /* The nearest `ix:nonFraction` at or above this node.
+    /* The nearest `ix:nonFraction` at or above this node -- which is how a click anywhere on a
+     * figure, including on a `<span>` inside it, finds the fact.
      *
      * Walked by hand rather than with `closest("ix\\:nonfraction")`: a colon in a CSS selector
      * has to be escaped, and that escaping is the kind of detail that works until the day it
-     * does not. The HTML parser uppercases `tagName`, so it is lowercased here. */
-    while (node && node !== document) {
+     * does not.
+     *
+     * The facts carry no `tabindex` and no `role`: a 10-K holds over three thousand of them
+     * (measured: 3,166 in Microsoft's 2026 filing), and three thousand tab stops would make the
+     * document unnavigable by keyboard -- worse than an affordance that is pointer-only. The
+     * tray's own links are ordinary anchors and are reachable by keyboard once a figure is
+     * picked, which is what the reader needs the keyboard for.
+     *
+     * The HTML parser uppercases `tagName`, so it is lowercased here.
+     */
+    while (node) {
       if (node.tagName && node.tagName.toLowerCase() === FACT_TAG) return node;
       node = node.parentElement;
     }
@@ -385,17 +418,14 @@
   document.addEventListener(
     "click",
     function (event) {
-      var element = factFrom(event.target);
-      if (!element) return;
+      var picked = pick(event.target, dates);
+      if (!picked) return;
       event.preventDefault();
-      var figure = figureOf(element);
-      if (figure.value === undefined) {
-        hint.textContent = "That figure cannot be read: " + figure.reason + ".";
+      if (picked.problem) {
+        hint.textContent = "That figure cannot be read: " + picked.problem + ".";
         return;
       }
-      var context = dates[figure.context];
-      if (context) figure.asOf = context;
-      addFigure(figure, element.getAttribute("id") || "", captionOf(element));
+      addFigure(picked.figure, picked.elementId, picked.caption);
     },
     true
   );

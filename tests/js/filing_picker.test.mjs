@@ -275,6 +275,101 @@ test("a context with neither an id nor a date is skipped without throwing", () =
   assert.deepEqual(Object.keys(map), ["C_5"]);
 });
 
+/* Which node a click actually landed on.
+ *
+ * The click is delegated on `document`, so what arrives is whatever was under the pointer -- the
+ * tagged element itself, a `<span>` inside it, or a text node's parent. `factFrom` walks up from
+ * there. Measured on the live filing, the tagged element is often wrapped, so this is the step
+ * that decides whether a click on a figure is seen at all. */
+
+test("a click on the fact itself finds the fact", () => {
+  const fact = { tagName: "IX:NONFRACTION", parentElement: null, children: [] };
+
+  assert.equal(picker.factFrom(fact), fact);
+});
+
+test("a click on something inside the fact finds the fact", () => {
+  const fact = { tagName: "IX:NONFRACTION", parentElement: null, children: [] };
+  const inner = { tagName: "SPAN", parentElement: fact, children: [] };
+  const text = { tagName: "B", parentElement: inner, children: [] };
+  inner.children.push(text);
+  fact.children.push(inner);
+
+  assert.equal(picker.factFrom(text), fact);
+});
+
+test("a click on the row around a fact finds nothing, so the caption is not clickable", () => {
+  // The cell and the row are around the figure, not part of it. Clicking the caption must not
+  // pick up the number beside it.
+  const fact = { tagName: "IX:NONFRACTION", parentElement: null, children: [] };
+  const cell = { tagName: "TD", parentElement: null, children: [fact] };
+  fact.parentElement = cell;
+  const row = { tagName: "TR", parentElement: null, children: [cell] };
+  cell.parentElement = row;
+
+  assert.equal(picker.factFrom(row), null);
+  assert.equal(picker.factFrom(cell), null);
+  assert.equal(picker.factFrom(null), null);
+});
+
+/* What one click produces, end to end through the rules above. */
+
+/** A captioned row with a tagged figure in it, as a filing lays one out. */
+function captionedRow(caption, attributes, text, id = "F_1") {
+  const label = cell(caption);
+  const value = cell(text);
+  const fact = element(Object.assign({ id }, attributes), text);
+  fact.tagName = "IX:NONFRACTION";
+  fact.parentElement = value;
+  fact.children = [];
+  value.children.push(fact);
+  rowOf([label, value]);
+  return fact;
+}
+
+test("a click on a figure gives the figure, the filing's caption and its id", () => {
+  const fact = captionedRow(
+    "Property and equipment, net",
+    { name: "us-gaap:PropertyPlantAndEquipmentNet", scale: "6", contextRef: "C_1" },
+    "12,345"
+  );
+  const dates = { C_1: { date: "2026-06-30", instant: true } };
+
+  const picked = picker.pick(fact, dates);
+
+  assert.equal(picked.figure.value, 12345000000);
+  assert.equal(picked.figure.tag, "us-gaap:PropertyPlantAndEquipmentNet");
+  assert.equal(picked.caption, "Property and equipment, net");
+  assert.equal(picked.elementId, "F_1");
+  assert.deepEqual(picked.figure.asOf, { date: "2026-06-30", instant: true });
+});
+
+test("a click on a figure whose context has no date still picks it, without a period", () => {
+  const fact = captionedRow("Goodwill", { name: "us-gaap:Goodwill" }, "80");
+
+  const picked = picker.pick(fact, {});
+
+  assert.equal(picked.figure.value, 80);
+  assert.equal(picked.figure.asOf, undefined, "no date is invented for it");
+});
+
+test("a click that is not on a figure picks nothing at all", () => {
+  assert.equal(picker.pick(cell("Total assets"), {}), null);
+});
+
+test("a click on a figure that cannot be read reports why instead of a figure", () => {
+  const fact = captionedRow(
+    "Commitments and contingencies",
+    { name: "us-gaap:CommitmentsAndContingencies", "xsi:nil": "true" },
+    ""
+  );
+
+  const picked = picker.pick(fact, {});
+
+  assert.equal(picked.figure, undefined);
+  assert.match(picked.problem, /nil/);
+});
+
 /* The payload. This is the contract between the filing page and the confirmation page, and the
  * property the request named: `metric` is the accounting total the clicked figure is related to,
  * so it is what decides which line of the accounts the figure can be put on. */
