@@ -1026,13 +1026,6 @@ def instrument_detail(
         .limit(1)
     ).scalar_one_or_none()
 
-    bars = session.execute(
-        select(PriceBar)
-        .where(PriceBar.instrument_t212_ticker == ticker)
-        .order_by(desc(PriceBar.date))
-        .limit(750)
-    ).scalars().all()
-
     filings = (
         session.execute(
             select(Filing)
@@ -1073,7 +1066,6 @@ def instrument_detail(
         "instrument": instrument,
         "decision": decision,
         "valuation": valuation,
-        "bars": list(reversed(bars)),
         "filings": filings,
         "fundamentals": fundamentals,
         "outcomes": _decision_outcomes(decision),
