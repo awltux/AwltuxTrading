@@ -787,6 +787,38 @@ data change nobody would connect to this map.
 
 ## Operations
 
+### The balance banner cannot show one key's spend, because nothing records which key paid
+
+Asked for 2026-10-09: *"I think the DeepSeek costs are for all keys? It would be preferable
+if it showed just for this key. I suspect you will need a key name to support that."* The
+name is now in place -- `AWLTUX_DEEPSEEK_KEY_NAME`, shown on the strip beside the figure --
+and it is a **label, not a filter**. What is owed is the scoping, and it has two halves that
+need different answers.
+
+**The balance cannot be scoped by anyone.** `GET /user/balance`
+(`providers/balances.py:220`) answers with `is_available` and a `balance_infos` list per
+currency: the whole account, every key on it. Checked 2026-10-09, the per-key breakdown
+exists only as a **monthly CSV export from the platform console** -- every third-party
+DeepSeek usage dashboard is built by dragging that CSV into a page, e.g.
+[deepseek-api-usage-analysis](https://github.com/GavinCnod/deepseek-api-usage-analysis) and
+[deepseek-usage](https://github.com/shajanjp/deepseek-usage) -- which no job can read. So
+this half is a limitation to state, not a bug to fix, and the strip says it in its tooltip.
+
+**The spend *can* be scoped, and is not.** The `17.07 USD spent / 30d` figure is our own
+`llm_call` ledger (`web/queries.py::_credit_spend`) grouped by `provider`, which is the whole
+installation rather than one key. That only separates two keys if two keys have ever been
+used from this database -- it cannot, today, because **`llm_call` has no column naming the
+key**. Measured 2026-10-09: the table's columns are `provider`, `purpose`, `model_id`,
+`ok`, `error`, `cost_usd`, `created_at` and the token counts; no credential is recorded.
+Adding `key_name` (an additive migration) and writing the configured label at
+`llm/deepseek.py::_write_call` would make the 30-day figure attributable, and it starts
+empty -- every existing row would read "unknown key", which is the honest answer and worth
+showing rather than backfilling a guess.
+
+Do the second half only if more than one DeepSeek key is ever really in play; with one key
+the label already answers the question, and a column that is the same value on every row is
+a column that has stopped carrying information.
+
 ### fal embedding spend is recorded nowhere, so only the balance constrains it
 
 `llm_call` is written by exactly one module -- `llm/deepseek.py:438` -- so it holds

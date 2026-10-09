@@ -49,6 +49,43 @@ class TestWhatItReports:
         assert deepseek["currency"] == "USD"
         assert status["readable"] is True
 
+    def test_the_strip_names_the_key_a_reading_was_taken_with(self, client, session, settings):
+        """Because the balance is the account's, the key name is the only scoping there is.
+
+        Asked for directly: *"the DeepSeek costs are for all keys ... it would be
+        preferable if it showed just for this key."* It cannot show only this key -- the
+        endpoint reports the account -- so it says which key it was read with and the
+        tooltip says what the figure covers.
+        """
+        _store(
+            session,
+            balances.Balance(
+                "deepseek",
+                available=True,
+                amount=21.68,
+                currency="USD",
+                note=balances.DEEPSEEK_BALANCE_SCOPE,
+                key_name="awltux",
+            ),
+        )
+
+        body = " ".join(client.get("/dashboard").text.split())
+
+        assert "deepseek" in body
+        assert "awltux" in body, "the key name is on the strip"
+        assert "whole DeepSeek account" in body, "and the scope is in the tooltip"
+
+    def test_an_unnamed_key_puts_nothing_extra_on_the_strip(self, client, session, settings):
+        """A placeholder word would be noise; the absence of a name says it."""
+        _store(
+            session, balances.Balance("deepseek", available=True, amount=21.68, currency="USD")
+        )
+
+        body = " ".join(client.get("/dashboard").text.split())
+
+        assert "unnamed" not in body
+        assert "None" not in body
+
     def test_an_unreadable_provider_is_not_a_warning(self, session, settings):
         """fal without an Admin key answers 403 -- which is the state this project was in
         for its whole life. A warning here would have been permanently on."""

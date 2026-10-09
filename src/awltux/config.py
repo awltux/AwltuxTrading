@@ -76,6 +76,18 @@ class EnvSettings(BaseSettings):
     # DeepSeek
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
+    #: A name for the key above, so the credit banner can say *which* key a reading
+    #: belongs to. Not a credential and not a secret -- the console lets keys be named, and
+    #: this is the reader's own label for this one. When it is unset the banner says the
+    #: key is unnamed rather than inventing one.
+    #:
+    #: **The balance cannot be scoped to it, and that is DeepSeek's limit rather than
+    #: ours.** ``GET /user/balance`` reports the whole *account* -- every key on it and
+    #: every tool using them -- and there is no per-key endpoint. Checked 2026-10-09: the
+    #: per-key breakdown exists only in the console's monthly CSV export, which no job can
+    #: read. So the name labels the account reading; it does not filter it, and the banner
+    #: says so rather than implying the figure is this project's alone.
+    deepseek_key_name: str | None = None
 
     # JEV / TypeSafe
     typesafe_api_key: SecretStr | None = None
@@ -814,6 +826,11 @@ def redacted_dump(settings: Settings) -> dict[str, Any]:
         "t212_env": env.t212_env,
         "t212_configured": env.t212_configured,
         "deepseek_configured": env.deepseek_configured,
+        # A label, not a credential, so it is printed rather than redacted -- and it is
+        # the one thing that says *which* DeepSeek key this installation is spending.
+        # `null` means the key has not been named; the balance it reads is the account's
+        # either way.
+        "deepseek_key_name": env.deepseek_key_name or None,
         "jev_configured": env.jev_configured,
         "sec_user_agent_set": bool(env.sec_user_agent),
         "companies_house_configured": bool(env.companies_house_api_key),

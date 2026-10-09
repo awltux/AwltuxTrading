@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from awltux.config import Settings, get_settings
@@ -59,6 +59,22 @@ FAL_BILLING_PATH = "/account/billing?expand=credits"
 #: shown beside a dollar spend would be two units and no comparison.
 PREFERRED_CURRENCY = "USD"
 
+#: What DeepSeek's balance figure actually covers, said once so every caller says it the
+#: same way.
+#:
+#: The endpoint is ``GET /user/balance`` and it reports the **account**: every key on it,
+#: and every tool using them. Asked for directly on 2026-10-09 -- *"I think the DeepSeek
+#: costs are for all keys? It would be preferable if it showed just for this key"* -- and
+#: the answer is that the provider cannot be asked that way. There is no per-key endpoint;
+#: the per-key breakdown exists only in the console's monthly CSV export, which no job can
+#: read. So the figure is labelled with the key it was read *with* and this sentence says
+#: what it covers, because a number printed beside this project's name would otherwise
+#: claim a scope it does not have.
+DEEPSEEK_BALANCE_SCOPE = (
+    "The whole DeepSeek account, shared by every key on it -- DeepSeek publishes no "
+    "per-key balance. The spend beside it is this app's own calls, from llm_call."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Balance:
@@ -74,6 +90,10 @@ class Balance:
     #: ``amount`` is ``None``: a blank cell reads as zero.
     note: str = ""
     read_at: dt.datetime | None = None
+    #: The name of the key this reading was taken with, where the reader has given it one
+    #: (``AWLTUX_DEEPSEEK_KEY_NAME``). Descriptive only -- see
+    #: :data:`DEEPSEEK_BALANCE_SCOPE` for what the figure covers and why.
+    key_name: str | None = None
 
     @property
     def known(self) -> bool:
@@ -87,6 +107,7 @@ class Balance:
             "currency": self.currency,
             "note": self.note,
             "read_at": (self.read_at or utcnow()).isoformat(),
+            "key_name": self.key_name,
         }
 
     @classmethod
@@ -96,6 +117,9 @@ class Balance:
         Tolerant of a malformed entry by returning ``None`` rather than raising: this is
         read on every page render, and a corrupt row in `app_setting` must not take the
         whole dashboard down with it. The caller drops what it cannot read.
+
+        ``key_name`` is read with ``.get`` rather than by key: rows stored before the field
+        existed have no such key, and a reading taken by an older build is still a reading.
         """
         try:
             read_at = payload.get("read_at")
@@ -106,6 +130,7 @@ class Balance:
                 currency=payload.get("currency"),
                 note=str(payload.get("note") or ""),
                 read_at=dt.datetime.fromisoformat(read_at) if read_at else None,
+                key_name=payload.get("key_name") or None,
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -202,12 +227,28 @@ def parse_fal(payload: Any) -> Balance:
     return Balance("fal", amount=amount, currency=currency, read_at=utcnow())
 
 
+def _labelled(reading: Balance, *, key_name: str | None) -> Balance:
+    """Name the key a reading was taken with, and say what the figure covers.
+
+    Every DeepSeek path goes through here so that no return can forget one half or the
+    other: the key name is what the reader asked for, and the scope sentence is what stops
+    the number being read as this project's own. A reading that already carries a note --
+    "no credential", "could not read" -- keeps it; the scope sentence only fills the gap
+    on a reading that worked, which is exactly the one that needs explaining.
+    """
+    return replace(reading, key_name=key_name, note=reading.note or DEEPSEEK_BALANCE_SCOPE)
+
+
 def read_deepseek(settings: Settings | None = None) -> Balance:
     """Ask DeepSeek for the balance. Never raises: an unreadable balance is a state."""
     settings = settings or get_settings()
     key = settings.env.deepseek_api_key
+    key_name = settings.env.deepseek_key_name or None
     if key is None:
-        return Balance("deepseek", note="no DeepSeek credential is configured")
+        return _labelled(
+            Balance("deepseek", note="no DeepSeek credential is configured"),
+            key_name=key_name,
+        )
 
     secret = key.get_secret_value() if hasattr(key, "get_secret_value") else str(key)
     client = HttpClient(
@@ -218,11 +259,17 @@ def read_deepseek(settings: Settings | None = None) -> Balance:
     )
     try:
         response = client.request("GET", "/user/balance", cache_ttl=0)
-        return parse_deepseek(response.json())
+        return _labelled(parse_deepseek(response.json()), key_name=key_name)
     except ProviderError as exc:
-        return Balance("deepseek", note=f"could not read the balance: {exc}")
+        return _labelled(
+            Balance("deepseek", note=f"could not read the balance: {exc}"),
+            key_name=key_name,
+        )
     except ValueError as exc:
-        return Balance("deepseek", note=f"the balance response was not JSON: {exc}")
+        return _labelled(
+            Balance("deepseek", note=f"the balance response was not JSON: {exc}"),
+            key_name=key_name,
+        )
     finally:
         client.close()
 

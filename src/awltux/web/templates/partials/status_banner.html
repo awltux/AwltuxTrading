@@ -27,9 +27,15 @@
     <span class="banner-label">CREDIT</span>
     <span class="banner-body">
       {% for row in status.balances %}
+        {# The key name is what the reader reached for: a DeepSeek balance is the whole
+           account's, so naming the key is the only scoping available, and `row.note`
+           (the tooltip) says so rather than letting the figure look like this project's
+           own. An unnamed key is left off rather than labelled "unnamed" -- the absence
+           says it, and a placeholder word in the strip is noise. #}
         <span class="balance {% if row.payment_failure or row.available is sameas false %}bad{% elif row.amount is not none and row.amount < status.floor %}low{% endif %}"
               {% if row.note %}title="{{ row.note }}"{% endif %}>
           <strong>{{ row.provider }}</strong>
+          {% if row.key_name %}<span class="muted small">{{ row.key_name }}</span>{% endif %}
           {% if row.amount is not none %}
             {{ row.amount | money(row.currency) }}
           {% elif row.available is sameas false %}

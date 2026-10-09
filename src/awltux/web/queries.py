@@ -609,6 +609,10 @@ def provider_status(session: Session, *, settings: Any = None) -> dict[str, Any]
                 "currency": balance.currency,
                 "available": balance.available,
                 "note": balance.note,
+                # The key the reading was taken with, where the reader has named it. A
+                # label, not a filter: DeepSeek's endpoint reports the whole account. See
+                # `providers/balances.DEEPSEEK_BALANCE_SCOPE`.
+                "key_name": balance.key_name,
                 "read_at": read_at,
                 "stale": read_at is None or (utcnow() - read_at) > dt.timedelta(hours=3),
                 "spent": spend.get(balance.provider),

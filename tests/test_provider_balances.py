@@ -159,6 +159,129 @@ class TestProbingFal:
         assert balance.amount == 4.0
 
 
+class TestProbingDeepSeek:
+    """The reading is labelled with the key, and with what the figure actually covers.
+
+    Asked for directly on 2026-10-09: *"I think the DeepSeek costs are for all keys? It
+    would be preferable if it showed just for this key. I suspect you will need a key name
+    to support that."* The suspicion is right about the mechanism and the scope cannot be
+    fixed: `GET /user/balance` reports the whole account and DeepSeek publishes no per-key
+    figure (the per-key breakdown is a console CSV export). So the name is a label, and
+    these tests hold both halves -- the label is carried, and the note that says the figure
+    is the account's is not optional.
+    """
+
+    @staticmethod
+    def _answering(monkeypatch, payload):
+        class Fake:
+            def __init__(self, provider, **kwargs):
+                pass
+
+            def request(self, method, path, **kwargs):
+                class Response:
+                    @staticmethod
+                    def json():
+                        return payload
+
+                return Response()
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(balances, "HttpClient", Fake)
+
+    def test_the_reading_carries_the_configured_key_name(self, settings, monkeypatch):
+        self._answering(monkeypatch, _fixture("deepseek_balance.json")["payload"])
+        monkeypatch.setattr(settings.env, "deepseek_api_key", "secret", raising=False)
+        monkeypatch.setattr(settings.env, "deepseek_key_name", "awltux", raising=False)
+
+        balance = balances.read_deepseek(settings)
+
+        assert balance.key_name == "awltux"
+        assert balance.amount == 21.76
+
+    def test_the_note_says_the_figure_is_the_whole_account(self, settings, monkeypatch):
+        """The half that stops the number being read as this project's own spend.
+
+        Without it the strip shows a DeepSeek balance beside this app's name and the
+        reader concludes the money is theirs alone -- which is the misreading that
+        prompted the question.
+        """
+        self._answering(monkeypatch, _fixture("deepseek_balance.json")["payload"])
+        monkeypatch.setattr(settings.env, "deepseek_api_key", "secret", raising=False)
+        monkeypatch.setattr(settings.env, "deepseek_key_name", "awltux", raising=False)
+
+        balance = balances.read_deepseek(settings)
+
+        assert "whole DeepSeek account" in balance.note
+        assert "per-key" in balance.note
+        assert "llm_call" in balance.note, "and which figure *is* ours"
+
+    def test_an_unnamed_key_leaves_the_name_empty_rather_than_inventing_one(
+        self, settings, monkeypatch
+    ):
+        self._answering(monkeypatch, _fixture("deepseek_balance.json")["payload"])
+        monkeypatch.setattr(settings.env, "deepseek_api_key", "secret", raising=False)
+        monkeypatch.setattr(settings.env, "deepseek_key_name", "", raising=False)
+
+        balance = balances.read_deepseek(settings)
+
+        assert balance.key_name is None
+        assert "whole DeepSeek account" in balance.note
+
+    def test_a_failure_keeps_its_own_note_and_still_names_the_key(
+        self, settings, monkeypatch
+    ):
+        """A failure note explains *that* reading; the scope sentence must not replace it."""
+        from awltux.providers.http import ProviderError
+
+        def refuse(self, method, path, **kwargs):
+            raise ProviderError("deepseek", "HTTP 500", status=500)
+
+        monkeypatch.setattr(balances.HttpClient, "request", refuse, raising=False)
+        monkeypatch.setattr(settings.env, "deepseek_api_key", "secret", raising=False)
+        monkeypatch.setattr(settings.env, "deepseek_key_name", "awltux", raising=False)
+
+        balance = balances.read_deepseek(settings)
+
+        assert "could not read the balance" in balance.note
+        assert balance.key_name == "awltux"
+
+    def test_the_scope_survives_a_round_trip_through_the_store(self, session):
+        read = balances.Balance(
+            "deepseek",
+            amount=3.0,
+            currency="USD",
+            note="the whole account",
+            key_name="awltux",
+        )
+
+        balances.store(session, [read])
+        stored = balances.read_stored(session)
+
+        assert stored[0].key_name == "awltux"
+
+    def test_a_reading_stored_before_the_field_existed_still_reads(self, session):
+        """Rows written by an older build have no `key_name` key at all.
+
+        `.get` rather than `[...]`, because a missing label must not take out a reading
+        that is otherwise perfectly good -- and this is read on every page render.
+        """
+        payload = {
+            "provider": "deepseek",
+            "available": True,
+            "amount": 3.0,
+            "currency": "USD",
+            "note": "",
+            "read_at": "2026-10-09T10:00:00+00:00",
+        }
+
+        restored = balances.Balance.from_dict(payload)
+
+        assert restored.key_name is None
+        assert restored.amount == 3.0
+
+
 class TestWhatCountsAsAWarning:
     def test_below_the_floor_warns(self):
         assert balances.warned(balances.Balance("x", amount=1.10), below=5.0) is True
