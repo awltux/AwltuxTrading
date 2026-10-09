@@ -1203,6 +1203,82 @@ class ProviderBalanceReading(Base):
     )
 
 
+class ResearchReport(Base, TimestampMixin):
+    """One deep-dive research report, and the state of the run that produced it.
+
+    **The record and the state in one row**, for the reason :class:`InstrumentRefresh`
+    gives for the same shape: the row that says work is in progress and the row that holds
+    the finished artifact are the same fact seen at two times, and splitting them would
+    let the two disagree about whether a run happened.
+
+    **One subject may have many reports.** They are a dated series -- "what did the system
+    think of this in March, and what does it think now" is the whole point of keeping them
+    -- so there is no unique constraint and the newest is read by ``created_at``.
+
+    ``prompt`` is stored verbatim because the reader may edit it before submitting, and a
+    report whose prompt cannot be read back is one whose conclusions cannot be argued
+    with. ``prompt_sha256`` is what the audit trail ties it to, the same relationship
+    ``llm_call.prompt_hash`` and ``decision_run.state_sha256`` already have.
+
+    ``result`` holds the whole validated result set -- the findings, the news themes and
+    the cited metrics -- as JSON. It is written once and read whole, like ``Filing.parsed``
+    and ``NewsAnalysis.claims``, and no query joins across it.
+
+    ``raw_path`` is relative to the data volume, exactly as ``Filing.raw_path`` is, so the
+    serving route can re-resolve it against the data directory before opening it.
+    """
+
+    __tablename__ = "research_report"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    #: ``instrument`` or ``sector``, and the ticker or one of the eleven sector names.
+    subject_type: Mapped[str] = mapped_column(String(16), index=True)
+    subject_id: Mapped[str] = mapped_column(String(96), index=True)
+
+    #: ``running`` holds the subject; the other two do not. A run that dies leaves this at
+    #: ``running``, which ``research.service.close_orphaned_research`` clears at startup --
+    #: and past ``research.stale_minutes`` the page shows it as stale rather than as work
+    #: in progress, so a stuck row is visible either way.
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)
+
+    #: What the list shows: "AAPL_US_EQ — 9 Oct 2026", or the sector's name.
+    title: Mapped[str] = mapped_column(String(200))
+
+    #: The prompt exactly as submitted, edited or not, and the hash that ties the report
+    #: to it.
+    prompt: Mapped[str] = mapped_column(Text)
+    prompt_sha256: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str | None] = mapped_column(String(32))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    #: The executive summary shown at the top of the subject's page, and the verdict the
+    #: report reached. Both denormalised out of ``result`` because the page reads them on
+    #: every request of every tab, where loading a JSON document to print two fields would
+    #: be work nobody asked for.
+    exec_summary: Mapped[str | None] = mapped_column(Text)
+    verdict: Mapped[str | None] = mapped_column(String(24))
+    confidence: Mapped[float | None] = mapped_column(Float)
+
+    #: The validated result set, and what the run actually read.
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    inventory: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    #: The refresh phase's outcome, so the report can say whether its data was refreshed
+    #: and what the refresh did.
+    refresh: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+    raw_path: Mapped[str | None] = mapped_column(String(512))
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    llm_call_id: Mapped[int | None] = mapped_column(Integer)
+    #: The run this was produced by, so the list can link the live progress log.
+    run_id: Mapped[int | None] = mapped_column(Integer)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_research_subject_created", "subject_type", "subject_id", "created_at"),
+    )
+
+
 class IngestRun(Base):
     """One execution of a scheduled job: observability for the background loop."""
 

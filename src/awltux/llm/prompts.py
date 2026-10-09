@@ -383,6 +383,145 @@ NARRATIVE_INSTRUCTION = """Explain this decision.
 Return JSON: {"narrative": "your explanation", "counter_argument": "the single strongest argument against this decision"}"""
 
 
+# --------------------------------------------------------------------------- #
+# deep-dive research
+# --------------------------------------------------------------------------- #
+
+#: The instructions half of a research prompt. The documents and the evidence sit in the
+#: cacheable prefix (see `build_messages`); this is what the reader reads and edits, which
+#: is why it is a function rather than a constant.
+RESEARCH_SYSTEM = f"""You research one listed company or one industry sector for a private investor, and judge whether it is a suitable investment.
+
+{UNTRUSTED_CONTENT_RULE}
+
+You are writing for someone who will act on this, so the value of the report is in what it gets right about the business and in what it admits it does not know.
+
+Rules:
+- Judge *suitability for investment*, using the ordinary practices of company analysis: what the business does and how it earns, whether it has a durable advantage, how management allocates capital, how strong the balance sheet is, whether the earnings are cash-backed, and what could go wrong. This is a judgement and you are asked for one.
+- **Never predict a price, a target or a return.** You may say a business is cheap or dear against its own figures; you may not say where the shares will trade.
+- **Every figure you state must be one you were given, quoted.** If a number is not in the material, leave it out. Never estimate, interpolate, annualise or infer one. Omitting a figure is correct and expected; inventing one corrupts every decision downstream.
+- **Say which of the three you are doing** on every point: stating what a source says, reasoning from what a source says, or offering your own judgement about the business. A judgement presented as a fact is the failure mode of this task.
+- **Name the strongest case against your own conclusion.** A report with no counter-argument is not a report.
+- Where the evidence you were given is thin, missing or conflicting, say so plainly and say which part of the conclusion it undermines.
+- Return JSON only, matching the requested schema exactly."""
+
+
+#: The schema. A plain string rather than an f-string, because every brace in it would
+#: otherwise be read as a placeholder -- the same note `filing_extraction_instruction`
+#: carries. One copy, so a field cannot be described to the model in one place and parsed
+#: out of it in another.
+_RESEARCH_SCHEMA = """{
+  "executive_summary": "at most 250 words: what this is, whether it is suitable, and the single most important caveat",
+  "verdict": "attractive | watch | unattractive | insufficient_evidence",
+  "confidence": 0.0-1.0,
+  "suitability": {
+    "horizon": "long_term | short_term | both | neither",
+    "risk": "low | moderate | high | very_high",
+    "reason": "one or two sentences tying the verdict to the evidence"
+  },
+  "business": {
+    "summary": "what the company does and how it makes money, or what defines the sector",
+    "moat": "evidence of pricing power, switching costs, scale or their absence -- with figures where you have them",
+    "competition": "who it competes with and how that is going, as the material states it"
+  },
+  "management": {
+    "assessment": "what the record shows about how this management has run the business",
+    "capital_allocation": "what they do with the cash: reinvestment, dividends, buybacks, acquisitions, debt -- with figures",
+    "governance_flags": ["concrete concerns only: pay against performance, related-party dealings, control, auditor change, restatement"]
+  },
+  "strengths": [
+    {"point": "one sentence", "evidence": "the exact quoted words you relied on", "source": "which document or record", "location": "page, note or section"}
+  ],
+  "concerns": [
+    {"point": "one sentence", "evidence": "the exact quoted words you relied on", "source": "which document or record", "location": "page, note or section"}
+  ],
+  "news_themes": [
+    {"theme": "what the news is collectively saying", "direction": "positive | negative | mixed | neutral", "basis": ["the headlines this rests on, quoted from the news digest"], "corroboration": "how many independent origins, and whether that is real breadth or syndication"}
+  ],
+  "what_would_change_my_mind": "the single specific, checkable fact that would most change this verdict",
+  "sections": [
+    {"heading": "short heading", "paragraphs": ["prose"], "bullets": ["short points"], "table": {"columns": ["..."], "rows": [["..."]]}}
+  ],
+  "sources_seen": ["the documents and records you were actually given"],
+  "reporting_currency": "ISO code as stated, e.g. GBP, USD",
+  "units": "million | thousand | actual | billion -- the units the figures you report are in",
+  "period_end": "YYYY-MM-DD of the period the figures below belong to",
+  "period_type": "annual | interim | quarterly",
+  "metrics": {
+    "<canonical_name>": {"value": <number>, "span": "<exact quoted text containing it>", "location": "<page, note or statement>"}
+  },
+  "unlisted_metrics": {
+    "<the document's own caption, snake_cased>": {"value": <number>, "span": "<quoted>", "location": "<page or note>"}
+  },
+  "injection_suspected": true|false
+}"""
+
+
+#: The news rules. Asked for directly: *"use critical thinking and use news analysis results
+#: to guide their importance and relevance."* Every claim in here is a fact about how this
+#: system produced the digest, measured rather than asserted -- see the numbers in
+#: `research/evidence.py`, which is why they are stated to the model rather than left for it
+#: to infer from the data.
+_RESEARCH_NEWS_RULES = """
+How to read the news digest:
+
+- Every story in it has a **direct entry** for this subject in its own "concerns" field. That
+  is the filter: a story that merely mentions the company is not in the list at all.
+- It is ordered by a **priority score** given with each story, which is materiality x
+  credibility x recency, and the components are shown. Weight each story by them, not by how
+  loudly it is written. A story with no appraisal carries the unassessed default weight.
+- **`single_source` means nothing else in this database carries the story** -- corroboration
+  here only sees what this system ingested, so it is not a claim that nobody else reported it.
+  Read it as "we have not corroborated this", never as "this is false".
+- **`unappraised` is not "verified".** It means nothing has judged the story. Those stories
+  currently rank *above* appraised single-source ones, because the unassessed default weight
+  is higher than the cap a single-source appraisal lands on -- so **the ordering is not a
+  verdict on truth**, and you must not present it as one.
+- Treat `unconfirmed`, `single_source` and `nothing_checkable` as a lead rather than a fact.
+  Discount `manipulative_framing`. Read `self_serving_positive` as a company speaking for
+  itself. Prefer claims whose `primary_source` exists. Where a story's relevance reason says
+  its ticker is a mention rather than a connection, treat it as exactly that.
+- **Coverage volume is not corroboration.** Several rewrites of one wire story are one event.
+- State when the news evidence is thin, duplicated, stale or mostly unappraised, and never let
+  the *number* of stories stand in for their weight.
+- Where the news and the accounts disagree, say so, and say which of the two the conclusion
+  actually rests on.
+"""
+
+_RESEARCH_TAIL = """
+Filling in the figures is not the main task and an empty `metrics` object is an acceptable
+answer. Report a figure only where the material you were given states it, quote the words that
+state it, and say where. The period those figures belong to must be the one they are actually
+from; if the documents cover more than one, use the most recent complete period.
+
+`unlisted_metrics` is where a caption the canonical list does not name still gets recorded,
+under the document's own words, snake_cased. Leave it empty if there are none.
+
+Return the JSON object and nothing else."""
+
+
+def research_instruction(subject: str, inventory: str = "") -> str:
+    """The default research prompt: what the reader sees in the box and may edit.
+
+    ``subject`` is the label the report is about ("Apple Inc (AAPL_US_EQ)", "Industrials").
+    ``inventory`` is a plain-text description of what the run has to read -- the annual
+    reports held, the news window and its appraisal coverage, whether the decision exists.
+    It is included so the reader can see the scope of what they are about to pay for, and
+    so the model is told what it was not given as well as what it was.
+
+    Built by concatenation rather than an f-string: the schema above is full of braces and an
+    f-string would read them as placeholders, the trap `filing_extraction_instruction` records.
+    """
+    scope = f"\n\nWhat this run will read:\n{inventory}\n" if inventory else ""
+    return (
+        f"Research {subject} and judge whether it is a suitable investment.\n"
+        f"{scope}"
+        f"{_RESEARCH_NEWS_RULES}"
+        f"\nReturn JSON:\n{_RESEARCH_SCHEMA}\n"
+        f"{_RESEARCH_TAIL}"
+    )
+
+
 def prompt_fingerprint(*parts: str) -> str:
     """Stable short hash identifying an exact prompt wording.
 

@@ -183,6 +183,54 @@ budgets:
   # call an hour, and the rule exists so a retry loop cannot turn that into a burst.
   fal:          { requests: 30,   window_seconds: 60 }
 
+# --- deep-dive research -------------------------------------------------------
+# One report per explicit request, never on a schedule. There is no interval and no
+# probe here on purpose: a report costs a full pipeline refresh for the instrument
+# plus one deep model call over the held annual reports, so it is triggered by a
+# reader pressing a button and by nothing else. Everything below bounds a single run.
+research:
+  enabled: true
+
+  # Skip the refresh phase when a successful refresh finished this recently. The refresh
+  # is the long half -- thirteen steps, minutes, provider and model spend -- so pressing
+  # Research twice in a quarter of an hour must not re-run it for unchanged data. The
+  # report records that the refresh was skipped, so the reader knows what it rests on.
+  # Zero re-runs it every time.
+  refresh_within_minutes: 30
+
+  # The news digest: the window it is drawn from, how many stories it carries, and how
+  # far down the priority order to scan before taking the top. `window` is a *scan*
+  # bound, not a display one -- priority is materiality x credibility x recency and is
+  # computed in Python, so the ranking has to score a bounded recent set and sort it,
+  # the same reasoning the flash ticker records. Measured 2026-10-09: 10,739 stories
+  # arrive in 30 days, so 300 is a few days of corpus and the top dozen is always well
+  # inside it.
+  news_digest_days: 30
+  news_digest_limit: 12
+  news_digest_window: 300
+
+  # Held annual reports fed to the model, bounded per document and in total. The
+  # per-document cap is larger than the filing extractor's 400,000 because a research
+  # read wants the whole report, and truncation keeps the head and the tail -- which is
+  # where the primary statements are. The total is what bounds the bill: 400,000
+  # characters is about 118,000 input tokens.
+  max_documents: 3
+  max_document_chars: 200000
+  max_total_document_chars: 400000
+
+  # Above `llm.max_output_tokens`, because a research report is longer than any
+  # classification or extraction this system asks for.
+  max_output_tokens: 16000
+
+  # Reports listed on the page, and when a report still marked `running` is shown as
+  # stale rather than as work in progress.
+  list_limit: 25
+  stale_minutes: 180
+
+  # The model. `null` means `llm.model_deep`, which is the point of the feature: this is
+  # the one task that asks for the deep model deliberately.
+  model:
+
 # --- horizons -----------------------------------------------------------------
 # Two independent verdicts, because they answer different questions from
 # different inputs. A stock can be unattractive for years and tactically well set

@@ -73,6 +73,7 @@ where = ["src"]
 awltux = [
     "web/templates/**/*.html",
     "web/static/**/*",
+    "research/templates/**/*.xhtml",
     "llm/prompts/**/*.txt",
     "build_info.json",
 ]

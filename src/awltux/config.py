@@ -663,6 +663,61 @@ class ReportsConfig(BaseModel):
     per_run: int = 60
 
 
+class ResearchConfig(BaseModel):
+    """Deep-dive research: one report per explicit request, never on a schedule.
+
+    **Nothing here runs unattended.** A report costs a full pipeline refresh plus one deep
+    model call over the held annual reports, so it is triggered by a reader pressing a
+    button and by nothing else. There is no interval, no coverage probe and no
+    ``run_on_start``, and the defaults below are the bounds on a single run.
+    """
+
+    enabled: bool = True
+
+    #: Skip the refresh phase when a successful refresh of the instrument finished this
+    #: recently, recorded on the report so the reader knows.
+    #:
+    #: The refresh is the long half -- thirteen steps, minutes, provider and model spend --
+    #: and pressing Research twice in a quarter of an hour would otherwise re-run the whole
+    #: pipeline for data that has not changed. Zero re-runs it every time.
+    refresh_within_minutes: int = 30
+
+    #: The news window the digest is drawn from, how many stories it carries, and how far
+    #: down the priority order to look before taking the top.
+    #:
+    #: ``window`` is a *scan* bound, not a display one: priority is computed in Python
+    #: (materiality x credibility x recency), so the ranking has to score a bounded recent
+    #: set and sort it -- the same reasoning `routes/news.py::_ranked` records for the
+    #: ticker. Measured 2026-10-09, 10,739 stories arrive in 30 days, so 300 is a few days
+    #: of corpus and the top dozen is always well inside it.
+    news_digest_days: int = 30
+    news_digest_limit: int = 12
+    news_digest_window: int = 300
+
+    #: Held annual reports fed to the model, bounded per document and in total.
+    #:
+    #: The per-document cap is larger than `llm.extractors`' 400,000 because a research
+    #: read wants the whole report and truncation keeps the head and the tail -- which is
+    #: where the primary statements are. The total is what bounds the bill: 400,000
+    #: characters is about 118,000 input tokens, roughly $0.16 on the deep model.
+    max_documents: int = 3
+    max_document_chars: int = 200_000
+    max_total_document_chars: int = 400_000
+
+    #: Output budget for one report. Above `llm.max_output_tokens` because a research
+    #: report is longer than any classification or extraction this system asks for.
+    max_output_tokens: int = 16_000
+
+    #: Reports listed on the page, and when a report still marked `running` is shown as
+    #: stale rather than as work in progress.
+    list_limit: int = 25
+    stale_minutes: int = 180
+
+    #: The model to use. ``None`` means `llm.model_deep`, which is the point of the
+    #: feature: this is the one task that asks for the deep model deliberately.
+    model: str | None = None
+
+
 class RetentionConfig(BaseModel):
     quote_days: int = 30
     news_days: int = 730
@@ -689,6 +744,7 @@ class YamlConfig(BaseModel):
     gate: GateConfig = Field(default_factory=GateConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
     reports: ReportsConfig = Field(default_factory=ReportsConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 
@@ -755,6 +811,10 @@ class Settings(BaseModel):
         return self.yaml.reports
 
     @property
+    def research(self) -> ResearchConfig:
+        return self.yaml.research
+
+    @property
     def retention(self) -> RetentionConfig:
         return self.yaml.retention
 
@@ -781,6 +841,17 @@ class Settings(BaseModel):
         return self.data_dir / "cache"
 
     @property
+    def research_dir(self) -> Path:
+        """Where generated deep-dive reports are written.
+
+        Not `raw/`: that directory is the archive of what *providers* said, and these are
+        documents this system wrote. Kept inside the data volume, which is also what keeps
+        them out of git -- `docs/research/` is a different thing and is asserted to be
+        tracked (`tests/test_repo_hygiene.py`).
+        """
+        return self.data_dir / "research"
+
+    @property
     def joblog_dir(self) -> Path:
         """Where the most recent progress log of each job is kept.
 
@@ -792,6 +863,9 @@ class Settings(BaseModel):
     def ensure_dirs(self) -> None:
         for path in (self.data_dir, self.raw_dir, self.cache_dir, self.joblog_dir):
             path.mkdir(parents=True, exist_ok=True)
+        # Created here as well as by the writer, so a fresh volume has somewhere for a
+        # report to land rather than failing on the first run of the feature.
+        self.research_dir.mkdir(parents=True, exist_ok=True)
 
 
 def load_yaml_config(path: Path) -> YamlConfig:

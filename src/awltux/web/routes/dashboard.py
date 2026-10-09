@@ -24,7 +24,7 @@ from awltux.analysis.fundamental import build_snapshot
 from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
-from awltux.db import Filing, IngestRun, session_scope
+from awltux.db import Filing, IngestRun, ResearchReport, session_scope
 from awltux.ingest import lease
 from awltux.ingest.universe import cached_t212_capabilities
 from awltux.scheduler import scoped
@@ -1251,6 +1251,26 @@ def _provenance_note(info) -> str:
     )
 
 
+def _header_safe(value: str) -> str:
+    """A header value that cannot break the response.
+
+    HTTP headers are latin-1 on the wire, and a report's title carries an em dash by
+    construction ("TEST_US_EQ — 9 Oct 2026"). Passing that through raised
+    ``UnicodeEncodeError: 'latin-1' codec can't encode character '\\u2014'`` while the
+    response was being sent -- **after** the body had been written, so it surfaced as a 500
+    on every report rather than as a wrong header.
+
+    A filing title has the same exposure: EDGAR carries accents ("Société Générale"), so the
+    document route had the same latent fault and never met it because the stored titles
+    happen to be ASCII.
+
+    The header is informational and nothing reads it programmatically, so anything outside
+    ASCII is replaced rather than encoded. Nothing is truncated by this: the caller's own
+    length limit still applies.
+    """
+    return value.encode("ascii", "replace").decode("ascii")
+
+
 @router.get("/filing/{filing_id}/document", include_in_schema=False)
 def filing_document(filing_id: int) -> Response:
     """Serve a downloaded shareholders' report so it can be read.
@@ -1297,7 +1317,54 @@ def filing_document(filing_id: int) -> Response:
             # browser; a reader going back and forth through six years should not
             # re-download a megabyte each time.
             "Cache-Control": "private, max-age=86400",
-            "X-Document": title[:120],
+            "X-Document": _header_safe(title[:120]),
+        },
+    )
+
+
+@router.get("/research/{report_id}", include_in_schema=False)
+def research_report_document(report_id: int) -> Response:
+    """Serve one deep-dive research report so it can be read.
+
+    **Sandboxed for the same reason a filing is, and one more.** A filing is third-party HTML
+    served from this application's own origin, and this is model-written HTML served from the
+    same origin -- an origin that can reach the API and therefore the account. The reporting
+    path escapes every field it renders, so this is belt and braces; it is fitted anyway
+    because the day someone adds a `|safe` is the day the sandbox is the only thing left.
+
+    The path is re-resolved against the data directory before it is opened. It comes from our
+    own database, but a stored path is still a path, and a route that joins one to a root
+    without checking is how a traversal arrives.
+    """
+    settings = get_settings()
+    with session_scope() as session:
+        row = session.get(ResearchReport, report_id)
+        if row is None or not row.raw_path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no stored report for {report_id}",
+            )
+        raw_path = row.raw_path
+        title = row.title or f"research {report_id}"
+
+    data_dir = settings.data_dir.resolve()
+    path = (data_dir / raw_path).resolve()
+    if not path.is_relative_to(data_dir) or not path.is_file():
+        raise HTTPException(
+            status_code=404, detail=f"stored report {report_id} is missing"
+        )
+
+    return Response(
+        content=path.read_bytes(),
+        media_type="application/xhtml+xml",
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'inline; filename="{report_id}.xhtml"',
+            # A report is immutable once written -- editing one is a new run with a new row --
+            # so it is worth caching, the same reasoning `filing_document` records.
+            "Cache-Control": "private, max-age=86400",
+            "X-Document": _header_safe(title[:120]),
         },
     )
 

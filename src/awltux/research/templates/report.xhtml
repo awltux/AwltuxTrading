@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?>
+{#
+  The deep-dive report, as XHTML.
+
+  Rendered offline by `research/report.py` and written to the data volume; served by
+  `/research/{id}` under `Content-Security-Policy: sandbox`, which is what neutralises
+  anything the escaping below missed. It is not a page of this application and deliberately
+  does not extend `base.html`: it is a document, kept, linkable and readable on its own.
+
+  Every value interpolated here is text a language model wrote. `autoescape` is on, so it is
+  escaped on the way in; nothing here is marked `|safe` and nothing should ever be.
+#}
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>{{ subject_label }} — deep-dive research</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0 auto; padding: 32px 24px 64px; max-width: 900px;
+      background: #ffffff; color: #1c2430;
+      font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    h1 { font-size: 1.7rem; margin: 0 0 4px; }
+    h2 { font-size: 1.15rem; margin: 30px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #dde3ea; }
+    h3 { font-size: 1rem; margin: 18px 0 6px; }
+    p { margin: 8px 0; }
+    ul { margin: 8px 0; padding-left: 20px; }
+    li { margin: 4px 0; }
+    .meta { color: #5b6b7c; font-size: 0.88rem; margin: 0 0 14px; }
+    .verdict {
+      display: inline-block; padding: 6px 12px; border-radius: 6px;
+      border: 1px solid #dde3ea; background: #f5f8fb; font-weight: 600; margin: 0 0 6px;
+    }
+    .verdict-attractive { color: #1c7c3f; border-color: #b6e0c4; background: #f0faf3; }
+    .verdict-watch { color: #8a6100; border-color: #f0dcae; background: #fdf8ec; }
+    .verdict-unattractive { color: #a52a20; border-color: #f2c3bd; background: #fdf3f2; }
+    .verdict-insufficient_evidence { color: #5b6b7c; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 0.92rem; }
+    th, td { text-align: left; vertical-align: top; padding: 7px 9px; border-bottom: 1px solid #e6ebf1; }
+    th { color: #5b6b7c; font-weight: 600; }
+    .evidence { color: #3c4a59; font-style: italic; }
+    .where { color: #7b8794; font-size: 0.82rem; }
+    .summary { background: #f7fafc; border: 1px solid #e6ebf1; border-radius: 8px; padding: 14px 16px; }
+    .summary p:first-child { margin-top: 0; }
+    .summary p:last-child { margin-bottom: 0; }
+    .themes li { margin: 10px 0; }
+    footer { margin-top: 40px; border-top: 1px solid #dde3ea; padding-top: 14px; color: #5b6b7c; font-size: 0.85rem; }
+    footer h2 { font-size: 0.95rem; border: none; margin: 18px 0 4px; }
+    footer ul { padding-left: 18px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em; }
+    .missing { color: #a52a20; }
+  </style>
+</head>
+<body>
+
+<h1>{{ subject_label }}</h1>
+<p class="meta">
+  Deep-dive research · {{ created }} · model <code>{{ model }}</code>
+</p>
+
+<p>
+  <span class="verdict verdict-{{ result.verdict }}">
+    {{ result.verdict | replace('_', ' ') | capitalize }}
+  </span>
+  {% if result.confidence is not none %}
+    <span class="meta">confidence {{ (result.confidence * 100) | round(0) | int }}%</span>
+  {% endif %}
+  {% if result.suitability.horizon or result.suitability.risk %}
+    <span class="meta">
+      {%- if result.suitability.horizon %} · suits {{ result.suitability.horizon | replace('_', ' ') }}{% endif %}
+      {%- if result.suitability.risk %} · risk {{ result.suitability.risk | replace('_', ' ') }}{% endif %}
+    </span>
+  {% endif %}
+</p>
+{% if result.suitability.reason %}<p>{{ result.suitability.reason }}</p>{% endif %}
+
+{% if result.executive_summary %}
+<section id="summary">
+  <h2>Executive summary</h2>
+  <div class="summary"><p>{{ result.executive_summary }}</p></div>
+</section>
+{% endif %}
+
+{% if result.business %}
+<section id="business">
+  <h2>The business</h2>
+  {% if result.business.summary %}<p>{{ result.business.summary }}</p>{% endif %}
+  {% if result.business.moat %}<h3>Durable advantage</h3><p>{{ result.business.moat }}</p>{% endif %}
+  {% if result.business.competition %}<h3>Competition</h3><p>{{ result.business.competition }}</p>{% endif %}
+</section>
+{% endif %}
+
+{% if result.management %}
+<section id="management">
+  <h2>Management and capital allocation</h2>
+  {% if result.management.assessment %}<p>{{ result.management.assessment }}</p>{% endif %}
+  {% if result.management.capital_allocation %}
+    <h3>What they do with the cash</h3><p>{{ result.management.capital_allocation }}</p>
+  {% endif %}
+  {% if result.management.governance_flags %}
+    <h3>Governance</h3>
+    <ul>{% for flag in result.management.governance_flags %}<li>{{ flag }}</li>{% endfor %}</ul>
+  {% endif %}
+</section>
+{% endif %}
+
+{% for section in result.sections %}
+<section id="section-{{ loop.index }}">
+  <h2>{{ section.heading }}</h2>
+  {% for paragraph in section.paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+  {% if section.bullets %}<ul>{% for bullet in section.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>{% endif %}
+  {% if section.rows %}
+    <table>
+      <thead><tr>{% for column in section.columns %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for row in section.rows %}
+        <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+{% endfor %}
+
+{# Strengths and concerns are the same shape, and both carry the words they rest on. A claim
+   without a quotation never reaches here -- `report.py::_points` drops it and names it in
+   the provenance below. #}
+{% for title, points, anchor in [
+     ('What is working', result.strengths, 'strengths'),
+     ('What to worry about', result.concerns, 'concerns')
+   ] %}
+  {% if points %}
+  <section id="{{ anchor }}">
+    <h2>{{ title }}</h2>
+    <table>
+      <thead><tr><th>Point</th><th>What it rests on</th></tr></thead>
+      <tbody>
+      {% for entry in points %}
+        <tr>
+          <td>{{ entry.point }}</td>
+          <td>
+            <span class="evidence">“{{ entry.evidence }}”</span>
+            {% if entry.source or entry.location %}
+              <br/><span class="where">
+                {{ entry.source }}{% if entry.source and entry.location %} · {% endif %}{{ entry.location }}
+              </span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+{% endfor %}
+
+{% if result.news_themes %}
+<section id="news">
+  <h2>What the news is saying</h2>
+  <ul class="themes">
+    {% for theme in result.news_themes %}
+      <li>
+        <strong>{{ theme.theme }}</strong>
+        <span class="meta"> · {{ theme.direction }}</span>
+        {% if theme.basis %}
+          <ul>{% for headline in theme.basis %}<li><span class="evidence">“{{ headline }}”</span></li>{% endfor %}</ul>
+        {% endif %}
+        {% if theme.corroboration %}<span class="where">{{ theme.corroboration }}</span>{% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+  {% if news %}
+    <p class="meta">
+      Drawn from {{ news.get('shown', 0) }} of {{ news.get('stories', 0) }} stories that named
+      this subject directly in the last {{ news.get('window_days', 0) }} days;
+      {{ news.get('appraised', 0) }} carried an appraisal.
+    </p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if result.what_would_change_my_mind %}
+<section id="change">
+  <h2>What would change this view</h2>
+  <p>{{ result.what_would_change_my_mind }}</p>
+</section>
+{% endif %}
+
+{% if result.metrics %}
+<section id="figures">
+  <h2>Figures this report cites</h2>
+  <p class="meta">
+    Reported in {{ result.extraction.units or 'units not stated' }},
+    {{ result.extraction.reporting_currency or 'currency not stated' }},
+    for the period ending {{ result.extraction.period_end or 'not stated' }}.
+    Each is quoted from the material, and each is stored with its quotation.
+  </p>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Quoted from</th></tr></thead>
+    <tbody>
+    {% for name, metric in result.extraction.metrics.items() %}
+      <tr>
+        <td><code>{{ name }}</code></td>
+        <td>{{ metric.value }}</td>
+        <td>
+          <span class="evidence">“{{ metric.span }}”</span>
+          {% if metric.location %}<br/><span class="where">{{ metric.location }}</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# ------------------------------------------------------------------ provenance #}
+{# Everything a reader needs in order to argue with the report rather than take it on trust:
+   which prompt produced it, what the run was given, whether the data was refreshed first, and
+   what was thrown away on the way in. #}
+<footer>
+  <h2>How this was produced</h2>
+  <ul>
+    <li>Generated {{ created }} by {{ generation }}.</li>
+    <li>Model: <code>{{ model }}</code>.</li>
+    <li>Prompt: <code>sha256:{{ prompt_sha256[:16] }}</code> — {{ prompt | length }} characters, submitted by the reader and stored with this report.</li>
+    {% if refresh %}
+      <li>
+        Data: {{ refresh.get('note') or refresh.get('summary') or refresh.get('state', 'unknown') }}
+        {%- if refresh.get('steps_done') is not none and refresh.get('total_steps') %}
+          ({{ refresh.steps_done }} of {{ refresh.total_steps }} pipeline steps completed)
+        {%- endif %}.
+      </li>
+    {% endif %}
+    {% if inventory.get('documents') %}
+      <li>Documents read: {{ inventory.documents }}.</li>
+    {% else %}
+      <li class="missing">No filed document was available to read; this report rests on stored figures, news and the current decision.</li>
+    {% endif %}
+    {% if news %}
+      <li>
+        News: {{ news.get('stories', 0) }} stories naming this subject directly in the last
+        {{ news.get('window_days', 0) }} days, {{ news.get('appraised', 0) }} of them appraised,
+        ranked by priority and shown to a limit of {{ news.get('shown', 0) }}.
+        {% if news.get('single_source') %}
+          {{ news.single_source }} were flagged single-source, which here means nothing else in
+          this database carries them — not that nobody else reported them.
+        {% endif %}
+      </li>
+    {% endif %}
+    {% if inventory.get('decision') is sameas false %}
+      <li class="missing">No stored decision exists for this subject, so no verdict is compared against.</li>
+    {% endif %}
+  </ul>
+
+  {% if problems %}
+    <h2>What went wrong</h2>
+    <ul>{% for problem in problems %}<li class="missing">{{ problem }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if result.discarded %}
+    <h2>Discarded from the model's answer</h2>
+    <p>
+      These were dropped rather than shown, because a claim without a quotation, a figure
+      without a source or a theme resting on no story is not evidence. They are listed so the
+      omission is visible.
+    </p>
+    <ul>{% for note in result.discarded %}<li>{{ note }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if result.sources_seen %}
+    <h2>What the model says it read</h2>
+    <ul>{% for source in result.sources_seen %}<li>{{ source }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <p>
+    Advisory tooling for personal research. Not financial advice. This report was written by a
+    language model from the material listed above; verify anything you would act on.
+  </p>
+</footer>
+
+</body>
+</html>

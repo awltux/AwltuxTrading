@@ -103,6 +103,16 @@ class ExtractionResult:
         return {name: metric.value for name, metric in self.metrics.items()}
 
     @property
+    def unlisted_for_storage(self) -> dict[str, dict[str, Any]]:
+        """The unlisted captions in the same shape as :attr:`metrics_for_storage`.
+
+        Its own property because a second reader now stores them: a research report reports
+        captions the vocabulary does not name, and both callers have to write them the same
+        way or the discovery loop learns from one and not the other.
+        """
+        return {name: metric.as_dict() for name, metric in self.unlisted.items()}
+
+    @property
     def filing_events(self) -> list[str]:
         """The discrete, checkable events this filing disclosed.
 
@@ -133,9 +143,7 @@ class ExtractionResult:
             # Kept, because it is the evidence a discovery rests on: which captions a
             # filing offered, and where each was found. Without it a promoted name has
             # no recorded reason beyond the registry's one-line note.
-            "unlisted_metrics": {
-                name: metric.as_dict() for name, metric in self.unlisted.items()
-            },
+            "unlisted_metrics": self.unlisted_for_storage,
             "quality_notes": self.quality_notes,
             "risk_factors": self.risk_factors,
             "accounting_policy_changes": self.accounting_policy_changes,
