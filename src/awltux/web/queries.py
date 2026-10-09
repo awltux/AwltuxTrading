@@ -35,6 +35,7 @@ from awltux.db import (
     NewsItem,
     PriceBar,
     Quote,
+    ResearchReport,
     SectorPriceIndex,
     SentimentSeries,
     T212Order,
@@ -1064,6 +1065,11 @@ def instrument_detail(
         else _no_news(news_page=news_page, news_per_page=news_per_page)
     )
 
+    # Always read, and the one exception to `sections`: the executive summary of the latest
+    # deep-dive belongs at the top of *every* tab, and the query behind it is two small
+    # indexed reads rather than the pages, appraisals and embeddings the news block costs.
+    deep_dives = research_reports(session, subject_type="instrument", subject_id=ticker)
+
     trades, trades_truncated = (
         _trades_for(session, ticker) if "trades" in wanted else ([], False)
     )
@@ -1077,6 +1083,7 @@ def instrument_detail(
         "outcomes": _decision_outcomes(decision),
         "trades": trades,
         "trades_truncated": trades_truncated,
+        "research": deep_dives,
         **news,
     }
 
@@ -1126,6 +1133,84 @@ def _trades_for(session: Session, ticker: str) -> tuple[list[TradeRow], bool]:
     ).scalar()
     trades = [trade_row(row, close) for row in rows[:TRADES_ON_THE_PAGE]]
     return trades, len(rows) > TRADES_ON_THE_PAGE
+
+
+def _research_row(row: Any, cutoff: dt.datetime) -> dict[str, Any]:
+    """One deep-dive as the page reads it.
+
+    ``stale`` is decided here rather than in the template because it is date arithmetic: a
+    ``running`` row older than the staleness window is a run whose process went away, and the
+    page shows it as stale rather than as work in progress.
+    """
+    created = as_utc(row.created_at)
+    running = row.status == "running"
+    return {
+        "id": row.id,
+        "status": row.status,
+        "running": running,
+        "stale": running and created is not None and created < cutoff,
+        "created_at": created,
+        "finished_at": as_utc(row.finished_at),
+        "verdict": row.verdict,
+        "confidence": row.confidence,
+        "model": row.model,
+        "bytes": row.bytes,
+        "error": row.error,
+        "has_document": bool(row.raw_path),
+        # So the list can offer the live progress log while a run is going, the same way the
+        # Refresh panel does -- a run that says only "running" leaves the reader waiting on
+        # something they cannot see.
+        "run_id": row.run_id,
+    }
+
+
+def research_reports(
+    session: Session,
+    *,
+    subject_type: str,
+    subject_id: str,
+    limit: int = 25,
+    stale_minutes: int = 180,
+) -> dict[str, Any]:
+    """A subject's deep-dives, newest first, and the newest finished one.
+
+    Two queries rather than one, and the second is the reason: the executive summary at the
+    top of the page must be the newest report that *finished*, and the newest row overall may
+    be a run that is still going or one that failed. Taking the first ``done`` row out of the
+    list would answer it only while the list happens to reach back that far.
+    """
+    cutoff = utcnow() - dt.timedelta(minutes=stale_minutes)
+    rows = session.execute(
+        select(ResearchReport)
+        .where(ResearchReport.subject_type == subject_type)
+        .where(ResearchReport.subject_id == subject_id)
+        .order_by(desc(ResearchReport.created_at), desc(ResearchReport.id))
+        .limit(limit)
+    ).scalars().all()
+
+    latest = session.execute(
+        select(ResearchReport)
+        .where(ResearchReport.subject_type == subject_type)
+        .where(ResearchReport.subject_id == subject_id)
+        .where(ResearchReport.status == "done")
+        .order_by(desc(ResearchReport.created_at), desc(ResearchReport.id))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    return {
+        "reports": [_research_row(row, cutoff) for row in rows],
+        "latest_report": _research_row(latest, cutoff) | {"exec_summary": latest.exec_summary}
+        if latest is not None
+        else None,
+        # Whether a button press would be refused, so the page can say so before the reader
+        # spends a click and a server round trip finding out. The same test the service
+        # applies: a `running` row that is not stale. A running row is the newest by
+        # construction, so if one exists at all it is inside the window read above.
+        "research_running": any(
+            row.status == "running" and (as_utc(row.created_at) or cutoff) > cutoff
+            for row in rows
+        ),
+    }
 
 
 def accounts_detail(session: Session, period_id: int) -> dict[str, Any] | None:

@@ -534,3 +534,34 @@ footer {
   pointer-events: none;
 }
 .help:hover::after, .help:focus-visible::after { opacity: 1; visibility: visible; }
+
+/* The latest deep-dive's executive summary, at the top of a subject's page.
+   Set apart from the summary figures above it because it is a *judgement about the business*
+   rather than a measurement, and the paragraph is long enough that it would otherwise read as
+   another line of the strip. The left rule is the whole distinction; no new palette. */
+.research-summary {
+  margin: 18px 0 22px; padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--line);
+}
+.research-summary h2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 6px; }
+.research-summary p { margin: 6px 0; max-width: 78ch; }
+
+/* The deep-dive dialog. `<dialog>` supplies the backdrop, focus trapping and Escape; this
+   only sizes it and makes it readable, and it inherits the page's palette rather than
+   introducing one. `max-height` with the textarea scrolling keeps a 6,000-character prompt
+   from pushing the buttons off the screen. */
+.research-dialog {
+  width: min(900px, 92vw); max-height: 88vh; overflow: auto;
+  padding: 20px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); color: var(--fg);
+}
+.research-dialog::backdrop { background: rgba(0, 0, 0, .6); }
+.research-dialog h3 { margin-top: 0; }
+.research-dialog textarea {
+  width: 100%; min-height: 300px; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem;
+  line-height: 1.5; padding: 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+}
+.dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin: 14px 0 0; padding: 0; }
+.research-open { font-size: 1rem; padding: 8px 18px; }

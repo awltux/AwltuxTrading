@@ -532,11 +532,82 @@
     });
   }
 
+  // ------------------------------------------------------- research dialog
+  //
+  // The prompt is fetched when the dialog opens rather than rendered with the page: building
+  // it reads the held annual reports to work out the scope, which measured 8.4 seconds for a
+  // company with two 10-Ks on file. The reader waits once, having asked for it, instead of on
+  // every visit to the tab.
+  //
+  // `<dialog>` rather than a hand-rolled overlay, so Escape, focus trapping and the backdrop
+  // are the browser's job. The fallback for no JavaScript is in the template: a plain form
+  // that starts the run with the template prompt, which is the one thing that still works.
+
+  function wireResearchDialog() {
+    var openers = document.querySelectorAll(".research-open");
+    if (!openers.length || !window.HTMLDialogElement) return;
+
+    openers.forEach(function (opener) {
+      opener.addEventListener("click", function () {
+        var panel = opener.closest("#research");
+        var dialog = panel && panel.querySelector("dialog.research-dialog");
+        if (!dialog) return;
+
+        loadPrompt(dialog, dialog.querySelector("#research-prompt-holder"));
+        dialog.showModal();
+      });
+    });
+
+    // Delegated, because the dialog's contents are replaced wholesale when the prompt lands.
+    document.addEventListener("click", function (event) {
+      if (!event.target.closest) return;
+      var cancel = event.target.closest(".research-cancel");
+      if (!cancel) return;
+      var dialog = cancel.closest("dialog");
+      if (dialog) dialog.close();
+    });
+  }
+
+  /** Put the server's prompt fragment into the dialog, once. */
+  function loadPrompt(dialog, holder) {
+    if (!holder || holder.dataset.loaded === "yes") return;
+    var form = dialog.querySelector("form");
+    var url = holder.dataset.promptUrl;
+    if (!url || !form) return;
+
+    // Held until there is something to submit: an empty box that was posted by accident
+    // starts the run with the template prompt, which is not what the reader looked at.
+    var submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
+
+    fetch(url, { headers: { "X-Requested-With": "fetch" } })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.text();
+      })
+      .then(function (html) {
+        // Server-rendered and escaped -- the prompt is model-facing text and the template
+        // escapes it into the textarea, so this is not an injection point.
+        holder.innerHTML = html;
+        holder.dataset.loaded = "yes";
+        if (submit) submit.disabled = false;
+      })
+      .catch(function () {
+        // The run can still go ahead: the server builds the template prompt for an empty
+        // submission. So this says what will happen rather than blocking the reader.
+        holder.innerHTML =
+          '<p class="notice warn">The prompt could not be built on this page. ' +
+          "Submitting now starts the run with the default prompt.</p>";
+        if (submit) submit.disabled = false;
+      });
+  }
+
   function init() {
     startTicker();
     drawCharts();
     wireJobButtons();
     wirePartialPaging();
+    wireResearchDialog();
     window.addEventListener("resize", drawCharts);
   }
 

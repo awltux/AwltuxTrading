@@ -191,9 +191,15 @@ def _subject(session: Session, subject_type: str, subject_id: str) -> str | None
     A label rather than a boolean, because it is also what the report is titled with and
     what the prompt addresses. Refusing an unknown subject is the point: a stale link to a
     delisted ticker must not spend a model call on a company nothing is known about.
+
+    A sector is validated against the same list the sector *page* uses, so a name that
+    reaches here from a hand-typed URL cannot start a paid run about an industry this
+    application has no page for.
     """
     if subject_type == "sector":
-        return subject_id if subject_id else None
+        from awltux.analysis.sectors import is_sector_page
+
+        return subject_id if subject_id and is_sector_page(subject_id) else None
     from awltux.db.models import Instrument
 
     instrument = session.get(Instrument, subject_id)

@@ -51,19 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.settings = settings
 
-    # Anything still open was owned by the process that just went away, so it is
-    # interrupted rather than running. Done before the scheduler starts, so the
-    # sweep cannot close a run this process has just opened.
-    from awltux.scheduler.jobs import close_orphaned_runs
-
-    close_orphaned_runs()
-
-    # The same reasoning for deep-dives, whose `running` row is a *subject*-level guard:
-    # left behind, it would refuse every later run about that company until the staleness
-    # window passed, so a restart would silently make one company un-researchable.
-    from awltux.research.service import close_orphaned_research
-
-    close_orphaned_research()
+    _close_interrupted_work()
 
     if settings.env.scheduler_enabled:
         try:
@@ -120,11 +108,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    from awltux.web.routes import api, dashboard, health, news
+    from awltux.web.routes import api, dashboard, health, news, research
 
     app.include_router(health.router)
     app.include_router(api.router)
     app.include_router(news.router)
+    app.include_router(research.router)
     app.include_router(dashboard.router)
 
     _mount_static(app)
@@ -135,6 +124,25 @@ def create_app() -> FastAPI:
         return RedirectResponse(url="/dashboard")
 
     return app
+
+
+def _close_interrupted_work() -> None:
+    """Fail whatever the previous process left open, before anything new is scheduled.
+
+    Two kinds of row, one rule: a row saying *running* whose process is gone is not work in
+    progress. For a job run it is a batch that never finished; for a deep-dive it is worse
+    than lost work, because that row is the subject's own guard -- left behind, it would refuse
+    every later run about that company until the staleness window passed, so a restart would
+    silently make one company un-researchable.
+
+    Owned here rather than by either module because **the order matters**: both have to happen
+    before the scheduler starts, or a sweep could close a run this process has just opened.
+    """
+    from awltux.research.service import close_orphaned_research
+    from awltux.scheduler.jobs import close_orphaned_runs
+
+    close_orphaned_runs()
+    close_orphaned_research()
 
 
 class DisplayZoneMiddleware:

@@ -1,0 +1,116 @@
+{# The deep-dive block: the button, the dialog, and the dated list of reports.
+
+   Used by the instrument's Research tab and by the sector page, so the two cannot drift about
+   what the button says, what the prompt box is, or which reports exist.
+
+   **The prompt is fetched when the dialog opens**, not rendered with the page: building it
+   reads the held annual reports to work out the scope, which measured 8.4 seconds for a
+   company with two 10-Ks on file. The reader waits once, having asked for it, instead of on
+   every visit to the tab. #}
+<section class="panel" id="research">
+  <h2>Deep-dive research</h2>
+  <p class="muted small">
+    Asks the deep model to judge {{ subject_label }} as an investment &mdash; what the business is,
+    whether it has an advantage, how management allocates capital, what the accounts and the
+    news say, and what would change the conclusion. It reads the annual reports this system
+    holds, the appraised news, the figures already extracted and the last decision, and it
+    returns a report with cited figures that feed back into the analysis.
+  </p>
+  <p class="muted small">
+    Nothing here is fetched live. A run refreshes this {{ 'instrument' if subject_type == 'instrument' else 'sector' }}
+    first through the existing pipeline, then reads what that left behind &mdash; so it is
+    minutes of provider and model spend, on a button, and nothing starts on its own.
+  </p>
+
+  {% if research_message == 'started' %}
+    <p class="notice ok">
+      Deep-dive started. It is running in the background &mdash; the report appears in the list
+      below when it finishes, and this page will not update by itself.
+    </p>
+  {% elif research_message == 'refused' %}
+    <p class="notice warn">
+      Nothing was started{% if research_reason %}: {{ research_reason }}{% endif %}.
+    </p>
+  {% endif %}
+
+  {% if research_running %}
+    <p class="notice">
+      A deep-dive of this subject is already running. Its report will appear here.
+      <a href="/jobs/{{ research_job }}/log">Live log &rarr;</a>
+    </p>
+  {% endif %}
+
+  <button type="button" class="research-open">Research</button>
+
+  {# Without JavaScript the dialog cannot be filled, so the reader gets the one thing that
+     still works: start it with the template exactly as it is. #}
+  <noscript>
+    <form method="post" action="{{ research_action }}">
+      <button type="submit">Start a deep-dive with the default prompt</button>
+    </form>
+  </noscript>
+
+  <dialog id="research-dialog" class="research-dialog">
+    <form method="post" action="{{ research_action }}">
+      <h3>Research {{ subject_label }}</h3>
+      <div id="research-prompt-holder" data-prompt-url="{{ research_prompt_url }}">
+        <p class="muted small">Working out what this run will read&hellip;</p>
+      </div>
+      <menu class="dialog-actions">
+        <button type="button" class="research-cancel">Cancel</button>
+        <button type="submit">Start the deep-dive</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <h3>Reports</h3>
+  {% if reports %}
+    <table class="grid compact">
+      <thead>
+        <tr><th>When</th><th>Status</th><th>Verdict</th><th>Model</th><th>Report</th></tr>
+      </thead>
+      <tbody>
+      {% for report in reports %}
+        <tr>
+          <td class="small">{{ report.created_at | datetime('%Y-%m-%d %H:%M') }}</td>
+          <td class="small">
+            {% if report.running and report.stale %}
+              {# A run whose process went away leaves `running` behind, and the page says so
+                 rather than showing work that is not happening. #}
+              <span class="badge warn" title="The process that started this run is gone">stale</span>
+            {% elif report.running %}
+              <span class="badge ok">running</span>
+            {% elif report.status == 'failed' %}
+              <span class="badge bad" {% if report.error %}title="{{ report.error }}"{% endif %}>failed</span>
+            {% else %}
+              <span class="badge good">done</span>
+            {% endif %}
+          </td>
+          <td class="small">
+            {% if report.verdict %}
+              <span class="badge {{ report.verdict | verdict_class }}">{{ report.verdict | replace('_', ' ') }}</span>
+            {% else %}&mdash;{% endif %}
+          </td>
+          <td class="small muted">{{ report.model or '—' }}</td>
+          <td class="small">
+            {% if report.has_document %}
+              <a href="/research/{{ report.id }}">read</a>
+              <span class="muted">({{ report.bytes | number(0) }} bytes)</span>
+            {% elif report.error %}
+              <span class="muted small">{{ report.error[:120] }}</span>
+            {% else %}
+              <span class="muted small">not written yet</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted small">
+      Newest first, kept as a dated series: a report is a judgement at a time, and the useful
+      question is often what changed between two of them.
+    </p>
+  {% else %}
+    <p class="muted">No deep-dive has been run about this subject yet.</p>
+  {% endif %}
+</section>

@@ -1,0 +1,12 @@
+{# The prompt the run will be started with, fetched when the dialog opens.
+
+   A fragment rather than part of the page because building it reads the held annual reports
+   to work out the scope -- 8.4 seconds for a company with two 10-Ks on file. It is editable:
+   what is in the box is exactly what is submitted, and the report stores it verbatim so the
+   conclusions can be argued with afterwards. #}
+<textarea name="prompt" id="research-prompt" rows="24" spellcheck="false"
+          aria-label="The prompt the research run will use">{{ prompt }}</textarea>
+<p class="muted small">
+  This is what will be sent. Edit it if you want, then submit &mdash; the report keeps the
+  wording it was made with, in full, so its conclusions stay arguable.
+</p>

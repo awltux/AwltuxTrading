@@ -304,6 +304,60 @@ ticker. That is the difference between scepticism and censorship.
 
 ---
 
+## Deep-dive research
+
+The **Research** button on an instrument or sector page asks the deep model to judge
+whether that thing is a suitable investment — what the business is and how it earns,
+whether it has a durable advantage, how management allocates capital, what could go
+wrong — and writes the answer as an XHTML report kept on disk. Nothing runs on a
+schedule: it is the most expensive call this application makes, and a person presses
+a button for it.
+
+**Nothing is fetched live.** A run refreshes the instrument through the existing
+pipeline first — unless a successful refresh finished within
+`research.refresh_within_minutes`, which the report records — and then reads what
+that left behind:
+
+- the annual reports held, as text, bounded per document and in total;
+- the appraised news, filtered on the subject's own **"What it concerns"** entry
+  rather than on "the story mentions the ticker": a Google News search for one company
+  returns pieces that only print its name. Each story carries the priority score
+  `materiality × credibility × recency` and its components, and the prompt is told the
+  known inversion — an unappraised story outranks the same story judged single-source,
+  because the unassessed default weight is above the cap a single-source appraisal
+  lands on — so the ranking is not read as a verdict on truth;
+- the figures already extracted, each with the words it was quoted from;
+- the last decision this system made, named as its own view rather than as an input.
+
+Sectors read the news corpus only: there is no sector filing and no sector refresh,
+and the report says so rather than implying a gap.
+
+**The prompt is yours.** The dialog fetches the template — a scope inventory plus the
+rules and the JSON schema — and shows it in an editable box. What is submitted is what
+runs, and the report stores it verbatim with its SHA-256, so the conclusions stay
+arguable. With JavaScript off, the form starts the run with the template unchanged.
+
+**The result set is not a separate island.** The cited figures go through the same
+`validate_extraction` gate as every filing extraction — canonical names, a quoted span
+of at least twelve characters, a location, and a refusal when the document did not say
+what units it used — so the figures a report cites carry the same provenance, in the
+same shape `FundamentalPeriod` stores, as the ones already in the database.
+
+**What it will not do.** It never predicts a price, a target or a return; every figure
+it states must be one it was given and quoted, and an empty `metrics` object is an
+acceptable answer. The model never authors markup either: the report is rendered from
+structured fields with autoescaping, because a model-written document would be an
+injection surface served from this application's own origin.
+
+**What it costs.** One refresh plus one call to the deep model over up to three
+documents. Measured 2026-10-09, a company with two annual reports on file produces
+410,826 characters of evidence — about 120,800 tokens — against a 128,000-token
+context window with a 16,000-token answer requested, so the evidence is trimmed to fit
+and the report's footer lists what was dropped. One deep-dive runs at a time, one per
+subject at a time, and the subject's own row is the guard.
+
+---
+
 ## Provability
 
 Every decision stores: the canonical state and its SHA-256, the exact questions,
@@ -358,8 +412,8 @@ zone so that failure is visible rather than silent.
 | Page | What it shows |
 |---|---|
 | **Recommendations** | Sortable table with **both verdicts side by side**, plus a `Suits` column showing which horizon the evidence actually supports. Filters follow a selected horizon. Views for *actionable only*, *my holdings*, and *suits long/short term* |
-| **Instrument** | Decision receipt with **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, accounts, news. **Refresh now** runs the pipeline stages for this company alone — prices, filings, statements, the annual reports and what they disclose, news, sentiment, valuation, and a fresh decision — so a call can be checked against data the sweeps have not reached yet |
-| **Sectors** | A sector's own **equal-weighted price index** (each instrument rebased to 100, so a 3,000p share and a £30 one contribute the same), its sentiment heatmap, and drill-down to constituents |
+| **Instrument** | Decision receipt with **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, accounts, news. **Refresh now** runs the pipeline stages for this company alone — prices, filings, statements, the annual reports and what they disclose, news, sentiment, valuation, and a fresh decision — so a call can be checked against data the sweeps have not reached yet. **Research** runs a one-off deep-dive of the business and keeps the report, with the latest executive summary above the tabs |
+| **Sectors** | A sector's own **equal-weighted price index** (each instrument rebased to 100, so a 3,000p share and a £30 one contribute the same), its sentiment heatmap, drill-down to constituents, and the same **Research** block |
 | **Calibration** | Per-horizon tabs; realised hit rate and return by confidence and by engine; high-confidence misses |
 | **Operations** | Job status and history, provider health, LLM spend, ledger verification; run any job by hand |
 | **Info** | The commit this process is running, whether the tree was clean when it was captured, the database revision, and the last ten commits with their hashes |

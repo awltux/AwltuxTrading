@@ -218,15 +218,16 @@ research:
   max_document_chars: 200000
   max_total_document_chars: 400000
 
-  # The deep model's context window, and what is held back from it for the answer and the
-  # message wrapper. Nothing else in this app has to know a window size -- every other
-  # request is orders of magnitude smaller -- and a deep-dive is not: measured 2026-10-09,
-  # the evidence for MSFT came to 410,826 characters, about 120,800 tokens, against a
-  # 128,000-token window and a 16,000-token answer. So the totals above are not the whole
-  # bound: the evidence is trimmed to fit this window, and the report's footer lists what
-  # was dropped rather than the request failing after the refresh has been paid for.
+  # The deep model's context window, and what is held back from it for the answer, the
+  # message wrapper and the editable prompt. Nothing else in this app has to know a window
+  # size -- every other request is orders of magnitude smaller -- and a deep-dive is not:
+  # measured 2026-10-09, the evidence for MSFT came to 410,826 characters, about 120,800
+  # tokens, against a 128,000-token window and a 16,000-token answer. So the totals above are
+  # not the whole bound: the evidence is trimmed to fit this window, and the report's footer
+  # lists what was dropped rather than the request failing after the refresh has been paid
+  # for. The reserve covers the prompt, which the reader can edit and the trimmer cannot see.
   context_tokens: 128000
-  reserve_tokens: 2000
+  reserve_tokens: 4000
 
   # Above `llm.max_output_tokens`, because a research report is longer than any
   # classification or extraction this system asks for.

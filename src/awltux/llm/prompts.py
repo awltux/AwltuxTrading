@@ -467,6 +467,10 @@ How to read the news digest:
 
 - Every story in it has a **direct entry** for this subject in its own "concerns" field. That
   is the filter: a story that merely mentions the company is not in the list at all.
+- **Each story carries its URL, and nothing here can open one.** They are there so you can
+  name the source you are relying on and so the reader can go and check it; this run reads
+  only what it was given, and a report that describes an article's contents as though the
+  page had been read is a fabrication however plausible it sounds.
 - It is ordered by a **priority score** given with each story, which is materiality x
   credibility x recency, and the components are shown. Weight each story by them, not by how
   loudly it is written. A story with no appraisal carries the unassessed default weight.

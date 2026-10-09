@@ -127,6 +127,10 @@ class NewsEntry:
     publisher: str | None
     source: str | None
     relevance_reason: str | None
+    #: The story's address, given to the model as a citation. Nothing in this application
+    #: fetches it -- see the news rules in `llm/prompts.py` -- so it identifies the source
+    #: rather than being something the run can read.
+    url: str | None = None
     #: The headline digest used to recognise republication, and how many stories collapsed
     #: into this entry. Kept on the entry so a reader -- and the model -- can see that an
     #: entry stands for more than one story rather than inferring it from a carrier count.
@@ -173,6 +177,8 @@ class NewsDigest:
         ]
         for position, entry in enumerate(self.entries, start=1):
             blocks.append(f"\n{position}. {entry.headline}")
+            if entry.url:
+                blocks.append(f"   url {entry.url}")
             if entry.merged > 1:
                 blocks.append(
                     f"   ({entry.merged - 1} further stor{'y' if entry.merged == 2 else 'ies'} "
@@ -198,6 +204,26 @@ class NewsDigest:
             if entry.relevance_reason:
                 blocks.append(f"   why it is relevant: {entry.relevance_reason}")
         return "\n".join(blocks)
+
+    def urls(self) -> str:
+        """The stories' addresses alone, for the prompt the reader reads and edits.
+
+        Asked for directly: *"The suggested research prompt should contain a list of all the
+        news article URL's."* The reader approving a spend can see exactly which stories the
+        run has, and the addresses are in the box they can edit -- so one they judge
+        irrelevant can be struck out, and the model is told whose words it is working from.
+
+        The addresses are repeated in the digest below, beside the headline they belong to.
+        That costs about 880 tokens of a 110,000-token budget and is deliberate: the prompt is
+        for the reader, the document is what the model reads in order, and making one cite the
+        other by position would be a cross-reference that a trimmed digest could break.
+        """
+        if not self.entries:
+            return ""
+        lines = [f"News URLs, highest priority first ({len(self.entries)}):"]
+        for position, entry in enumerate(self.entries, start=1):
+            lines.append(f"{position}. {entry.headline} -- {entry.url or 'no address stored'}")
+        return "\n".join(lines)
 
 
 @dataclass(slots=True)
@@ -268,6 +294,12 @@ class Evidence:
             "estimates, article text behind a paywall, or anything published since the "
             "data was last refreshed."
         )
+        # The addresses themselves, so the box the reader approves names every story the run
+        # was given. `NewsDigest.urls` records why the list is here as well as in the digest.
+        urls = self.news.urls()
+        if urls:
+            lines.append("")
+            lines.append(urls)
         if self.problems:
             lines.append("- Problems reading the material above:")
             lines.extend(f"  - {problem}" for problem in self.problems)
@@ -350,6 +382,7 @@ def _entry(item: NewsItem, appraisal: Any, *, now: dt.datetime) -> NewsEntry:
         publisher=item.publisher or item.source,
         source=item.source,
         relevance_reason=item.relevance_reason,
+        url=item.url,
         story_key=item.title_key,
     )
 

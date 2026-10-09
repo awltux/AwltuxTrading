@@ -286,6 +286,42 @@ class TestTheOrdering:
         assert digest.total == 3
         assert "2 further stories" in digest.text()
 
+    def test_every_story_carries_its_url(self, session):
+        """Asked for directly: the prompt's news list names where each story is.
+
+        The URLs are citations -- nothing in this application fetches them (see the news
+        rules in `llm/prompts.py`), so a report can name its source and a reader can check
+        it, but a run cannot read the page.
+        """
+        _story(
+            session,
+            title="Test Co warns on costs",
+            url="https://x.test/warns",
+            tickers=[TICKER],
+        )
+
+        digest = evidence_of.news_digest(
+            session, subject_type="instrument", subject_id=TICKER, window_days=30, limit=12, now=NOW
+        )
+
+        assert digest.entries[0].url == "https://x.test/warns"
+        assert "url https://x.test/warns" in digest.text()
+
+    def test_a_story_with_no_url_still_appears(self, session):
+        """`NewsItem.url` is nullable -- a wire copy can arrive without one -- and a missing
+        address must cost the citation, not the evidence."""
+        item = _story(session, title="No address", url="https://x.test/none", tickers=[TICKER])
+        item.url = None
+        session.flush()
+
+        digest = evidence_of.news_digest(
+            session, subject_type="instrument", subject_id=TICKER, window_days=30, limit=12, now=NOW
+        )
+
+        assert [entry.headline for entry in digest.entries] == ["No address"]
+        assert digest.entries[0].url is None
+        assert "url " not in digest.text()
+
     def test_the_digest_is_capped_and_says_what_it_represents(self, session):
         for index in range(5):
             _story(

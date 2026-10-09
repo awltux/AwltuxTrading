@@ -13,6 +13,10 @@
   <a href="/sectors">← All sectors</a>
 </p>
 
+{# The latest deep-dive's executive summary, in the same place the instrument page puts it:
+   the most considered answer the system has about this subject. #}
+{% include "partials/research_summary.html" %}
+
 {% if is_unclassified %}
   <p class="muted small">
     These have neither a SEC SIC code nor a sector string, so there is nothing to derive
@@ -122,6 +126,12 @@
     </p>
   {% endif %}
 </section>
+
+{# ---- the deep-dive ------------------------------------------------------ #}
+{# Placed after the news and before the instruments: a sector deep-dive reads the news corpus
+   and nothing else, so it belongs next to what it reads rather than above the constituents a
+   reader came here for. #}
+{% include "partials/research.html" %}
 
 {# ---- the instruments ---------------------------------------------------- #}
 <section>

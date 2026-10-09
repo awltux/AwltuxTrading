@@ -1,0 +1,32 @@
+{# The latest deep-dive's executive summary, at the top of a subject's page.
+
+   It sits here, above the tabs, because it is the system's most considered answer about this
+   subject and the summary strip is where a reader looks for one. Only the *executive summary*
+   is repeated: the sections, the themes and the figures are one click away in the report
+   itself, and copying them here would rebuild the long page the tabs exist to avoid.
+
+   Rendered from the stored text, not from the model's markup: the document the model wrote is
+   validated and escaped by `research/report.py`, and this is a plain field of the row. #}
+{% if latest_report and latest_report.exec_summary %}
+<section class="research-summary">
+  <div class="receipt-head">
+    <h2>
+      Deep-dive
+      <span class="badge {{ latest_report.verdict | verdict_class }}">
+        {{ (latest_report.verdict or 'no verdict') | replace('_', ' ') }}
+      </span>
+    </h2>
+    <span class="muted small">
+      {{ latest_report.created_at | datetime('%Y-%m-%d %H:%M') }}
+      {%- if latest_report.confidence is not none %} · confidence {{ latest_report.confidence | pct0 }}{% endif %}
+      {%- if latest_report.model %} · {{ latest_report.model }}{% endif %}
+    </span>
+  </div>
+  <p>{{ latest_report.exec_summary }}</p>
+  <p class="muted small">
+    <a href="/research/{{ latest_report.id }}">Read the full report</a>
+    &middot; <a href="{{ research_base }}">all reports</a>
+    &mdash; a deep-dive is the model's judgement of the whole business, not a price target.
+  </p>
+</section>
+{% endif %}

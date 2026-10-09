@@ -27,6 +27,7 @@ from awltux.config import get_settings
 from awltux.db import Filing, IngestRun, ResearchReport, session_scope
 from awltux.ingest import lease
 from awltux.ingest.universe import cached_t212_capabilities
+from awltux.research import service as research_service
 from awltux.scheduler import scoped
 from awltux.timezones import as_utc
 from awltux.web import filters, queries
@@ -183,6 +184,7 @@ INSTRUMENT_TABS: tuple[tuple[str, str], ...] = (
     ("reports", "Published reports"),
     ("accounts", "Accounts"),
     ("news", "News"),
+    ("research", "Research"),
     ("position", "Position"),
     ("refresh", "Refresh"),
 )
@@ -309,6 +311,18 @@ def _instrument_context(
         "refresh": refresh_state,
         "refresh_job": scoped.REFRESH_JOB,
         "refresh_message": request.query_params.get("refresh"),
+        # The deep-dive block, and the latest report's executive summary at the top of every
+        # tab. Both come from one query that is cheap -- a subject has a handful of reports --
+        # so it is not gated behind the Research tab the way the news block is.
+        **detail["research"],
+        "subject_type": "instrument",
+        "subject_label": f"{detail['instrument'].name} ({ticker})",
+        "research_action": f"/instrument/{quote(ticker, safe='')}/research",
+        "research_prompt_url": f"/instrument/{quote(ticker, safe='')}/research/prompt",
+        "research_base": f"/instrument/{quote(ticker, safe='')}?tab=research",
+        "research_job": research_service.RESEARCH_JOB,
+        "research_message": request.query_params.get("research"),
+        "research_reason": request.query_params.get("why"),
         "horizons": {
             "long_term": get_settings().horizons.long_term,
             "short_term": get_settings().horizons.short_term,
@@ -910,6 +924,7 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
         index = queries.sector_price_index(session, name)
         index_basis = queries.sector_index_basis(session, name)
         size = queries.universe_size(session)
+        deep_dives = queries.research_reports(session, subject_type="sector", subject_id=name)
 
     pages = max(1, -(-total // per_page))
     return templates.TemplateResponse(
@@ -932,6 +947,17 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
             "latest": series[-1] if series else None,
             "instrument_count": counts.get(name if name != sector_map.UNCLASSIFIED else None, 0),
             "is_unclassified": name == sector_map.UNCLASSIFIED,
+            # The deep-dive block and the executive summary, the same partial the instrument
+            # page uses. A sector's evidence is the news corpus alone, which the block says.
+            **deep_dives,
+            "subject_type": "sector",
+            "subject_label": f"the {name} sector" if name != sector_map.UNCLASSIFIED else name,
+            "research_action": f"/sectors/{quote(name, safe='')}/research",
+            "research_prompt_url": f"/sectors/{quote(name, safe='')}/research/prompt",
+            "research_base": f"/sectors/{quote(name, safe='')}#research",
+            "research_job": research_service.RESEARCH_JOB,
+            "research_message": request.query_params.get("research"),
+            "research_reason": request.query_params.get("why"),
         },
     )
 

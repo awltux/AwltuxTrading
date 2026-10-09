@@ -1362,6 +1362,20 @@ halving the older 10-K -- and the trim is recorded in the report's footer and in
 `Evidence.dropped`. Raising `research.max_total_document_chars` above 400,000 therefore does
 *not* raise what the model is sent; it only changes which end of the documents gets cut.
 
+### A subject with more than 25 deep-dives loses the older ones from the page
+
+`research.list_limit` caps the report list at 25 and the list is not paged -- `web/queries.py::
+research_reports` takes the newest `limit` rows and the template renders them all. So past 25
+reports about one company the older ones are still in the database, still on disk, and
+unreachable from the page. Nothing is lost; it is invisible, which is the failure mode
+`TODO.md`'s own queue rule calls the quieter one.
+
+Cheap to fix when it matters: the same `partials/_pager.html` the news list uses, and the
+search-param plumbing `instrument_page` already has for `news_page`. It is not fixed now
+because a subject reaching 25 deep-dives means 25 deliberate button presses, and the honest
+fix at that point is a filter (by verdict, by date) rather than a second page of identical
+rows. Measure how the reports are actually distributed before choosing.
+
 ---
 
 ## Deliberately not doing

@@ -279,6 +279,22 @@ def grade_class(grade: str | None) -> str:
     }.get(grade or "", "unknown")
 
 
+def verdict_class(verdict: str | None) -> str:
+    """CSS class for a deep-dive's verdict. Unknown verdicts are visibly unknown.
+
+    ``insufficient_evidence`` is deliberately not a failure colour. It is the *stated answer*
+    for a company nobody has filed much about -- the most common honest conclusion at this
+    system's coverage -- and rendering it red would read as a judgement on the company rather
+    than as a statement about how much is known.
+    """
+    return {
+        "attractive": "good",
+        "watch": "warn",
+        "unattractive": "bad",
+        "insufficient_evidence": "unknown",
+    }.get(verdict or "", "unknown")
+
+
 def pct0(value: Any) -> str:
     """A 0..1 weight as a whole percentage.
 
@@ -335,6 +351,7 @@ def create_templates() -> Jinja2Templates:
             "action_class": action_class,
             "materiality_class": materiality_class,
             "grade_class": grade_class,
+            "verdict_class": verdict_class,
             "engine_label": engine_label,
         }
     )

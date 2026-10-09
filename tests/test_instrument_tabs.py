@@ -73,6 +73,7 @@ class TestTheTabStrip:
             "Published reports",
             "Accounts",
             "News",
+            "Research",
             "Position",
             "Refresh",
         ]

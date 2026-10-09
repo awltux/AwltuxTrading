@@ -714,8 +714,15 @@ class ResearchConfig(BaseModel):
     #: window and a 16,000-token answer. So the totals above are not the whole bound: the
     #: evidence is trimmed to fit this window and the report says what was dropped, rather
     #: than the request being refused *after* the refresh has been paid for.
+    #:
+    #: ``reserve_tokens`` covers the *editable* prompt as well as the message wrapper, and it
+    #: is a fixed number for a text a reader can change: the template plus the scope and the
+    #: news URLs measures about 2,700 tokens. The trimmer cannot see the reader's edits, so
+    #: somebody who pastes a very long prompt can still exceed the window; that is stated
+    #: rather than guarded, because refusing an edit is worse than a provider error that says
+    #: what went wrong.
     context_tokens: int = 128_000
-    reserve_tokens: int = 2_000
+    reserve_tokens: int = 4_000
 
     #: Output budget for one report. Above `llm.max_output_tokens` because a research
     #: report is longer than any classification or extraction this system asks for.

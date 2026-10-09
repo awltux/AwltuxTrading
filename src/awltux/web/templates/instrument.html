@@ -116,6 +116,12 @@
   </details>
 </section>
 
+{# ------------------------------------------------- latest deep-dive, at the top #}
+{# Above the tabs, because it is the most considered answer this system has about the
+   business and this strip is where a reader looks for one. Only the executive summary is
+   repeated; everything else is in the report itself. #}
+{% include "partials/research_summary.html" %}
+
 {# -------------------------------------------------------------------- tabs #}
 {# Real links, one topic each, exactly as `accounts.html` does its statements. A strip that
    only moved a highlight would need JavaScript and would leave "send me the news for this
@@ -773,6 +779,13 @@
 {% else %}
   <p class="muted">No accounts stored yet.</p>
 {% endif %}
+
+{% elif tab == 'research' %}
+{# --------------------------------------------------------------- deep-dive #}
+{# The block is a partial because the sector page shows the same one: the button, the dialog
+   and the report list are one feature, and two copies would drift about what a report is
+   called and which of them a link opens. #}
+{% include "partials/research.html" %}
 
 {% elif tab == 'news' %}
 {# ---------------------------------------------------------------------- news #}
