@@ -17,19 +17,19 @@
 
 <section class="kv">
   <div><dt>Published</dt><dd>{{ published or '—' }}</dd></div>
-  {# Who wrote it, with the feed beside it when the two differ -- the news list's own treatment,
-     because a reader comparing the two pages should not be told two different things about one
-     story. `source_name` is the appraisal's publisher and is *not* repeated here: it is on the
-     scepticism panel below, with the rating that goes with it, and an unrated story would put
-     "Unrecognised publisher" in a field a reader reads as a fact. #}
+  {# Who wrote it. **The publisher only.** Asked for twice: *"the source should list the publisher
+     not the feed."* The first pass listed the feed beside it in small type, on the news list's
+     pattern -- and the request came back unchanged, which is the answer: a Source column that
+     contains "google_news" at all is a Source column that can be read as naming the writer.
+
+     `source_name` is the appraisal's publisher and is not repeated here: it is on the scepticism
+     panel below, with the rating that goes with it, and an unrated story would put "Unrecognised
+     publisher" in a field a reader reads as a fact. #}
   <div>
     <dt>Source</dt>
     <dd>
       {% if item.publisher %}{{ item.publisher }}
       {% else %}<span class="muted" title="No publisher named in the headline and no publisher's own URL on the story">—</span>
-      {% endif %}
-      {% if item.source and item.source != item.publisher %}
-        <span class="muted small" title="The pipe this story arrived through, not who wrote it">via {{ item.source }}</span>
       {% endif %}
     </dd>
   </div>
@@ -246,15 +246,14 @@
     {% for sibling in siblings %}
       <tr>
         <td class="small"><a href="/news/{{ sibling.id }}">{{ sibling.title }}</a></td>
-        {# The publisher, not the feed it was found through: the Feed column would otherwise
-           read "Google News" for every row of the table, which says nothing about who wrote
-           what. Asked for directly -- *"the source should list the publisher not the feed"*. #}
+        {# The publisher, and nothing else: the Feed column would otherwise read "google_news"
+           for every row of the table, which says nothing about who wrote what. Asked for
+           directly -- *"the source should list the publisher not the feed"* -- and asked twice,
+           because the first pass left the feed in small type beside it. A column a reader can
+           take for the writer's name should contain the writer's name. #}
         <td class="small">
           {% if sibling.publisher %}{{ sibling.publisher }}
           {% else %}<span class="muted" title="No publisher named in the headline and no publisher's own URL on the story">—</span>
-          {% endif %}
-          {% if sibling.source and sibling.source != sibling.publisher %}
-            <br><span class="muted" title="The pipe this story arrived through, not who wrote it">via {{ sibling.source }}</span>
           {% endif %}
         </td>
         <td class="small muted">{{ sibling.published_at | datetime if sibling.published_at else '—' }}</td>

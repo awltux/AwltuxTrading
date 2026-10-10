@@ -342,8 +342,10 @@ FIELDS: tuple[Field, ...] = (
         "instead (\"… - Simply Wall Street\"). Where the feed gives the publisher's own "
         "address, that is used. A name in this column may well have no assessment on "
         "file; it is still the publisher, and the story page says whether it is rated. "
-        "The feed is shown beneath it when the two differ, and the Feed control filters "
-        "on that.",
+        "The feed is named beneath it on this list alone, because this is the page the "
+        "Feed control is on and a filter whose value is invisible in every row is one "
+        "nobody can check; on the story page and the event lists the column is the "
+        "publisher and nothing else.",
     ),
     Field(
         "news_materiality",

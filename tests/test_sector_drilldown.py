@@ -457,7 +457,7 @@ class TestASectorPage:
         body = client.get(f"/sectors/{urllib.parse.quote(GROUP, safe='')}").text
 
         assert "Endpoints News" in body
-        assert "via google_news" in body, "the feed, in small type"
+        assert "google_news" not in body, "the feed is not part of an attribution"
 
     def test_a_headline_shows_the_relevance_reason_on_hover(self, client, session, sectors):
         """The sector list carries the same sentence the story page prints.

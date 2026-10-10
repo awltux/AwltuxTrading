@@ -100,14 +100,13 @@
                to open one. Absent for a story no classifier has judged. #}
             {%- if item.relevance_reason %} title="Relevance: {{ item.relevance_reason }}"{% endif %}>
           <a href="/news/{{ item.id }}">{{ item.title }}</a>
-          {# Who wrote it, not the pipe it arrived through -- the news list's own treatment, so
-             one story is not attributed two ways on two pages. The feed is shown when it is all
-             we have, and beside the publisher when the two differ. #}
+          {# Who wrote it, and only that: *"the source should list the publisher not the feed"*.
+             The feed is where the story was found, and it is the same word for nearly every
+             story in the store, so it is not part of an attribution. The news list keeps it --
+             that page's Feed filter selects on it, so there it is actionable. #}
           <span class="muted small">
             {% if item.publisher %}{{ item.publisher }}
-            {%- elif item.source %}{{ item.source }}
-            {%- else %}—{% endif %}
-            {%- if item.publisher and item.source and item.source != item.publisher %} via {{ item.source }}{% endif %}
+            {%- else %}<span title="No publisher named in the headline and no publisher's own URL on the story">—</span>{% endif %}
             · {{ item.published_at | ago }}
             {% if item.direction %} · {{ item.direction }}{% endif %}
             {% if item.materiality %} · {{ item.materiality }}{% endif %}

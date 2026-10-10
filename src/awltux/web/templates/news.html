@@ -128,10 +128,14 @@
            {% if entry.relevance_reason %}title="Relevance: {{ entry.relevance_reason }}"{% endif %}>{{ entry.title }}</a>
       </td>
 
-      {# Who wrote it, with the feed beside it when the two differ -- which is almost
-         always, because Google News hands over a redirect and the publisher comes from
-         the masthead. The feed stays visible in small type rather than being dropped:
-         it is where the story was found, and it is what the Feed filter selects. #}
+      {# Who wrote it, and -- **here, and only here** -- the feed it arrived through. Asked for
+         directly: *"the source should list the publisher not the feed"*, and the answer on every
+         other page is now the publisher alone, because "google_news" is the same word for 95% of
+         the store and a Source column containing it can be read as naming the writer.
+
+         This page keeps it because this is the page the Feed filter is on: `filters.py` offers
+         the feed as a filter with that explanation, and a filter whose value is invisible in
+         every row is a filter nobody can check. #}
       <td class="small">
         {% if entry.publisher %}
           {{ entry.publisher }}
