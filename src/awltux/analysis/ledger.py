@@ -468,6 +468,38 @@ def _stated(metrics: dict[str, Any], key: str) -> float | None:
     return value_of(metrics, key)
 
 
+def _magnitude(key: str, value: float) -> float:
+    """A stored figure read the way the line's weight expects it.
+
+    **A line the chart marks ``signed`` keeps its sign; every other chart line's figure is a
+    magnitude.** The flag says exactly this -- *"True when a negative value is an ordinary reading
+    rather than a data error"* -- so `other_nonoperating_income` at -1,197,000 is a loss and stays
+    one, while a debit line like `sga_expense` is an amount to be deducted and the weight does the
+    deducting. Filings print expenses in brackets, the picker keeps that sign because it is what
+    the page says, and subtracting -64,410,000 would add the expense back. Reported 2026-10-10:
+    *"the account display reads the correct sign, but the 'out by X' calculation is still using
+    the positive sign."*
+
+    A line the *filer* names is not in the chart and has no flag to read: its figure is the
+    reader's statement of the amount, sign and all, and it is read as it stands.
+    """
+    account = BY_KEY.get(key)
+    if account is None or account.signed:
+        return value
+    return abs(value)
+
+
+def _sized(metrics: dict[str, Any], key: str) -> float | None:
+    """A stored chart line's figure as its own weight expects it -- see :func:`_magnitude`.
+
+    One name for the pair, because every sum in the ledger has to read a figure the same way the
+    working beside it does: two of these in one expression is how a total and its explanation come
+    apart.
+    """
+    value = _stated(metrics, key)
+    return None if value is None else _magnitude(key, value)
+
+
 def _sum(*amounts: float | None) -> float | None:
     """Add up whatever is present, or ``None`` if nothing is.
 
@@ -721,6 +753,13 @@ def _profit_cascade(
     """
     revenue = _stated(metrics, "revenue")
     cost = _stated(metrics, "cost_of_goods_sold")
+    # Each figure as its line's weight expects it -- a magnitude for an expense line, its own sign
+    # for one the chart calls `signed`. The working below reads them the same way, so the two
+    # cannot disagree about what a line contributed.
+    def size(key: str) -> float | None:
+        return _sized(metrics, key)
+
+    revenue, cost = size("revenue"), size("cost_of_goods_sold")
     # Which learned lines first join each stage. Every decision about them -- which subtotal,
     # which direction -- was made when they were recorded; nothing here chooses either.
     in_revenue = extras_for_group(extra, "profit_and_loss", "gross_profit")
@@ -733,9 +772,9 @@ def _profit_cascade(
     operating = _plus_extras(
         _subtract(
             gross,
-            _stated(metrics, "research_and_development"),
-            _stated(metrics, "sga_expense"),
-            _stated(metrics, "depreciation_amortisation"),
+            size("research_and_development"),
+            size("sga_expense"),
+            size("depreciation_amortisation"),
         ),
         _extras_total(metrics, in_operating),
     )
@@ -745,10 +784,10 @@ def _profit_cascade(
     # a filer with interest expense and no interest income would have had the expense
     # silently dropped rather than deducted.
     additions = _sum(
-        _stated(metrics, "interest_income"),
-        _stated(metrics, "other_nonoperating_income"),
+        size("interest_income"),
+        size("other_nonoperating_income"),
     )
-    interest = _stated(metrics, "interest_expense")
+    interest = size("interest_expense")
     finance_extras = _extras_total(metrics, in_finance)
     if additions is None and interest is None:
         # Nothing of our own between the two lines -- so a learned one filed under "Finance and
@@ -762,7 +801,7 @@ def _profit_cascade(
         pretax = operating
     else:
         pretax = operating + non_operating + (finance_extras or 0.0)
-    tax = _stated(metrics, "tax_expense")
+    tax = size("tax_expense")
     return _cascade_works(
         metrics,
         gross=gross,
@@ -855,7 +894,8 @@ def _components(
     """The present components of a subtotal, each carrying its key and its weight."""
     out: list[Part] = []
     for key, weight in weighted:
-        out.extend(_component(key, _stated(metrics, key), weight))
+        value = _stated(metrics, key)
+        out.extend(_component(key, None if value is None else _magnitude(key, value), weight))
     return tuple(out)
 
 
@@ -1059,12 +1099,10 @@ def _composition(
         extra, "balance_sheet", "non_current_liabilities"
     )
     return _Composition(
-        current_assets=_sum(*(_stated(metrics, key) for key in current_assets)),
-        non_current_assets=_sum(*(_stated(metrics, key) for key in non_current_assets)),
-        current_liabilities=_sum(*(_stated(metrics, key) for key in current_liabilities)),
-        non_current_liabilities=_sum(
-            *(_stated(metrics, key) for key in non_current_liabilities)
-        ),
+        current_assets=_sum(*(_sized(metrics, key) for key in current_assets)),
+        non_current_assets=_sum(*(_sized(metrics, key) for key in non_current_assets)),
+        current_liabilities=_sum(*(_sized(metrics, key) for key in current_liabilities)),
+        non_current_liabilities=_sum(*(_sized(metrics, key) for key in non_current_liabilities)),
     )
 
 

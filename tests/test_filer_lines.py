@@ -1000,6 +1000,35 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         assert work.computed == 210.0
         assert {part.source: part.contribution for part in work.parts}[account.key] == -40.0
 
+    def test_a_chart_line_stored_negative_is_still_deducted(self):
+        """Reported 2026-10-10: *"the account display reads the correct sign, but the 'out by X'
+        calculation is still using the positive sign"* -- with SG&A taken out and put back by hand
+        as `(64,410)`.
+
+        The chart's own weight is the direction for a line it does **not** call ``signed``, so the
+        figure is read as a magnitude whether the filing printed it in brackets or not: an expense
+        deducted is still deducted, and the number in the working is the number in the figure
+        column rather than its opposite.
+        """
+        period = _profit_period(sga_expense=-150.0)
+
+        work = _line(ledger.profit_and_loss(period), "Operating expenses", "operating_income")
+
+        assert work.computed == 250.0
+        assert {part.source: part.contribution for part in work.parts}["sga_expense"] == -150.0
+
+    def test_a_line_the_chart_calls_signed_keeps_its_sign(self):
+        """``other_nonoperating_income`` is signed, and that flag means exactly this: a negative
+        there is an ordinary reading -- a loss -- rather than a figure the weight has to place."""
+        period = _profit_period(other_nonoperating_income=-20.0)
+
+        work = _line(ledger.profit_and_loss(period), "Finance and tax", "pretax_income")
+
+        assert work.computed == 230.0
+        assert {part.source: part.contribution for part in work.parts}[
+            "other_nonoperating_income"
+        ] == -20.0
+
     def test_a_figure_nobody_stated_is_not_a_component(self):
         """A learned line with no figure under it must not appear as a zero: the working would
         then claim the filing stated nothing there, which is a different fact from our not
