@@ -27,11 +27,13 @@ part a reader argues with; ``source`` says who recorded it.
 unrecognised key is refused rather than mapped to the nearest lever -- the same rule
 `ingest/identity.py` applies to a venue and `analysis/corrections.py` applies to a tag.
 
-**The automatic path is deliberately not built yet.** Filling this from the model rides on the
-deep-dive, which already reads the whole company, so it would spend output tokens on a call
-that is made anyway rather than another call -- but the reader asked for the mechanism first.
-``TODO.md`` carries the prompt block to add and the shape to read, and :func:`record` is the
-seam it will write through.
+**The model fills it, riding on the deep-dive.** That call already reads the whole company, so
+a ``levers`` block is a few hundred output tokens on a call that is made anyway rather than a
+second call. The prompt offers the vocabulary through :func:`prompt_block`, the report reader
+resolves each name it gets back through :func:`resolve` and drops the ones that do not resolve,
+and the survivors are written through :func:`record` with :data:`DEEP_RESEARCH` as their
+provenance. A lever a person recorded is never replaced by one the model named -- see
+``research/service.py::_record_levers``.
 """
 
 from __future__ import annotations
@@ -51,6 +53,12 @@ NO_REASON = "no reason given"
 #: The provenance for a lever a person recorded, named rather than left empty so a page can
 #: mark it -- the same convention as ``analysis/corrections.py::MANUAL``.
 MANUAL = "manual"
+
+#: The provenance for a lever the deep-dive's model named. Its own label rather than "manual"
+#: because the two are read differently: one is a judgement somebody made, the other is a
+#: reading of documents that a later run may replace -- which is exactly the rule
+#: `research.service` applies when it writes one.
+DEEP_RESEARCH = "deep_research"
 
 #: Which way the *business* moves when the lever rises. ``mixed`` is a real answer and not a
 #: failure to decide: a bank's margin improves with rates while its credit losses worsen, and
@@ -273,6 +281,21 @@ def resolve(text: str) -> str | None:
     and nothing downstream would show the mistake.
     """
     return _ALIASES.get(_normalise(text))
+
+
+def prompt_block() -> str:
+    """The vocabulary as the deep-dive prompt lists it, one lever per line.
+
+    Generated from :data:`LEVERS` for the same reason ``metric_fields.prompt_block`` is: a
+    hand-kept copy of the list is a copy that can disagree with :func:`resolve`, and a lever
+    the prompt offers and the reader then refuses reads as a bug in the reader rather than as
+    an omission in the prompt.
+
+    Key and label only. ``channel`` is written for a person choosing between two similar
+    levers on a screen -- it is a paragraph each, and a model that has read the annual report
+    does not need the same 400 words repeated to it.
+    """
+    return "\n".join(f"- {lever.key}: {lever.label}" for lever in LEVERS)
 
 
 @dataclass(frozen=True, slots=True)

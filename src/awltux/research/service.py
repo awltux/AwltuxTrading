@@ -537,14 +537,30 @@ def _finish(
     # and same unit refusal as a filing extraction -- see `ingest.parsing.store_cited_period`
     # -- and ranked below it in `SOURCE_PREFERENCE`, because the filing extractor's whole job
     # is one document while this is a synthesis across several.
-    periods: dict[str, Any] = {}
+    #
+    # The levers it named are written here too. Both are the same idea: the run was paid for
+    # once and what it found is filed where the rest of the analysis can read it, rather than
+    # left inside a document. Both keys are always present, because the report's own footer
+    # says what the run did and "recorded none" is a different answer from a missing field.
+    contributed: dict[str, Any] = {
+        "periods": {},
+        # A sector is not an instrument, so it has no row to attach an exposure to: the block
+        # is read out of a sector report's answer and goes nowhere. Recorded as none rather
+        # than omitted, so the footer of a sector report does not look like an older report.
+        "levers": {"recorded": [], "kept_by_hand": []},
+    }
     if row.subject_type == "instrument":
         from awltux.ingest.parsing import store_cited_period
 
+        # `store_cited_period` counts its outcomes into the dict it is handed -- the same
+        # counters a filing run reports -- so it is the inventory's own ``periods`` object
+        # rather than a copy of it.
+        periods: dict[str, Any] = contributed["periods"]
         outcome = store_cited_period(
             session, row.subject_id, result.extraction, periods, source="deep_research"
         )
         periods["outcome"] = outcome
+        contributed["levers"] = _record_levers(session, row.subject_id, result.levers)
 
     row.status = "done"
     row.result = result.as_dict()
@@ -560,8 +576,42 @@ def _finish(
     row.bytes = size
     row.error = None
     row.finished_at = utcnow()
-    row.inventory = _inventory(evidence, completion) | {"periods": periods}
+    row.inventory = _inventory(evidence, completion) | contributed
     session.commit()
+
+
+def _record_levers(session: Session, ticker: str, exposures: list[Any]) -> dict[str, Any]:
+    """Write the exposures the deep-dive named, leaving every lever a person recorded alone.
+
+    `analysis.levers.record` upserts on ``(ticker, lever)``, so writing the model's list
+    wholesale would let a deep-dive replace a judgement somebody made deliberately -- and
+    because a lever row shows its provenance rather than ranking it, nothing downstream would
+    show that it had happened. The model's answer is one reading of the documents; a person's
+    is a decision, and the decision is the one that stays. Everything else is the model's,
+    including a lever an earlier deep-dive recorded and this one did not repeat: a run that
+    leaves a lever out has not said the lever is gone.
+
+    The return value is what the report's inventory records, because "recorded four" and
+    "recorded none, the reader holds these" are different runs and the footer should say which.
+    """
+    from awltux.analysis import levers as lever_module
+
+    held = {
+        exposure.lever
+        for exposure in lever_module.stored(session, ticker)
+        if exposure.source == lever_module.MANUAL
+    }
+    named = {exposure.lever for exposure in exposures}
+    written = lever_module.record(
+        session,
+        ticker,
+        [exposure for exposure in exposures if exposure.lever not in held],
+        source=lever_module.DEEP_RESEARCH,
+    )
+    return {
+        "recorded": sorted(row.lever for row in written),
+        "kept_by_hand": sorted(held & named),
+    }
 
 
 def _fail(session: Session, report_id: int, message: str) -> None:

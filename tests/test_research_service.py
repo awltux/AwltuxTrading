@@ -770,6 +770,164 @@ class TestTheFiguresReachTheAnalysis:
         assert SOURCE_RANK["deep_research"] > SOURCE_RANK["yahoo_statements"]
 
 
+class TestTheLeversReachTheRecord:
+    """A deep-dive *files* what it finds, rather than leaving it inside a document.
+
+    The levers mechanism was built and then sat empty because filling it looked like a second
+    model call. It is not: the deep-dive already reads the whole company, so the block rides on
+    a call that is made anyway. These tests are the wiring half -- that what the model named
+    reaches `instrument_lever`, through the one writer that already exists.
+    """
+
+    @staticmethod
+    def _held(session, ticker: str = TICKER):
+        from sqlalchemy import select
+
+        from awltux.db import InstrumentLever
+
+        return list(
+            session.scalars(
+                select(InstrumentLever)
+                .where(InstrumentLever.instrument_t212_ticker == ticker)
+                .order_by(InstrumentLever.lever)
+            )
+        )
+
+    def _run_with(self, session, **levers_payload):
+        _instrument(session)
+        session.commit()
+        _run(session, client=StubClient(payload=_payload(**levers_payload)))
+        session.expire_all()
+
+    def test_the_named_levers_are_recorded_against_the_instrument(self, session, settings, inline):
+        self._run_with(
+            session,
+            levers=[
+                {
+                    "lever": "interest_rates",
+                    "direction": "negative",
+                    "strength": "primary",
+                    "reason": "Refinancing 2.1 billion of debt reprices the interest line.",
+                }
+            ],
+        )
+
+        rows = self._held(session)
+        assert len(rows) == 1
+        assert rows[0].lever == "interest_rates"
+        assert rows[0].direction == "negative"
+        assert rows[0].reason.startswith("Refinancing")
+        # The provenance says which of the two wrote it, because a later run replaces its own
+        # reading and never a person's -- see the test below.
+        assert rows[0].source == "deep_research"
+        assert _reports(session)[0].inventory["levers"] == {
+            "recorded": ["interest_rates"],
+            "kept_by_hand": [],
+        }
+
+    def test_a_lever_a_person_recorded_is_not_replaced_by_the_models(
+        self, session, settings, inline
+    ):
+        """`record` upserts on (ticker, lever), so writing the model's list wholesale would let
+        a deep-dive overwrite a judgement somebody made deliberately -- and since a row shows
+        its provenance rather than ranking it, nothing downstream would show that it had."""
+        from awltux.analysis import levers
+
+        _instrument(session)
+        levers.record(
+            session,
+            TICKER,
+            [levers.Exposure(lever="interest_rates", direction="mixed", strength="primary")],
+            reason="Rates cut both ways: it has cash as well as debt.",
+        )
+        session.commit()
+
+        _run(
+            session,
+            client=StubClient(
+                payload=_payload(
+                    levers=[
+                        {
+                            "lever": "interest_rates",
+                            "direction": "negative",
+                            "strength": "secondary",
+                            "reason": "Debt is repriced at maturity.",
+                        },
+                        {"lever": "competition", "direction": "negative", "reason": "Two rivals."},
+                    ]
+                )
+            ),
+        )
+        session.expire_all()
+
+        held = {row.lever: row for row in self._held(session)}
+        assert held["interest_rates"].source == levers.MANUAL
+        assert held["interest_rates"].direction == "mixed"
+        assert held["interest_rates"].reason.startswith("Rates cut both ways")
+        # And the rest of the model's answer is still recorded.
+        assert held["competition"].source == "deep_research"
+        assert _reports(session)[0].inventory["levers"] == {
+            "recorded": ["competition"],
+            "kept_by_hand": ["interest_rates"],
+        }
+
+    def test_an_invented_lever_is_recorded_nowhere_and_the_report_says_so(
+        self, session, settings, inline
+    ):
+        self._run_with(
+            session,
+            levers=[
+                {"lever": "vibes", "direction": "positive", "reason": "Sentiment is good."},
+                {"lever": "inflation", "direction": "negative", "reason": "Inputs are rising."},
+            ],
+        )
+
+        held = self._held(session)
+        assert [row.lever for row in held] == ["inflation"]
+        result = _reports(session)[0].result
+        assert [exposure["lever"] for exposure in result["levers"]] == ["inflation"]
+        assert any("vibes" in note for note in result["discarded"])
+
+    def test_a_report_that_names_no_levers_records_none(self, session, settings, inline):
+        """An empty list is an acceptable answer, and it must not empty the record either:
+        a lever an earlier run recorded stays until somebody forgets it."""
+        self._run_with(session, levers=[])
+
+        assert self._held(session) == []
+        assert _reports(session)[0].inventory["levers"] == {
+            "recorded": [],
+            "kept_by_hand": [],
+        }
+
+    def test_a_sector_run_records_none(self, session, settings, inline):
+        """There is no instrument row to attach an exposure to, and inventing one would put a
+        company's drivers under an industry."""
+        from awltux.analysis.sectors import SECTOR_NAMES
+
+        _instrument(session)
+        session.commit()
+
+        service.start(
+            subject_type="sector",
+            subject_id=SECTOR_NAMES[0],
+            prompt="the sector",
+            client=StubClient(
+                payload=_payload(
+                    levers=[
+                        {"lever": "energy_costs", "direction": "negative", "reason": "Fuel."}
+                    ]
+                )
+            ),
+        )
+        session.expire_all()
+
+        assert self._held(session) == []
+        assert _reports(session)[0].inventory["levers"] == {
+            "recorded": [],
+            "kept_by_hand": [],
+        }
+
+
 class TestTheDraftPrompt:
     def test_it_is_the_template_plus_what_the_run_will_read(self, session, settings):
         """What the reader approves is what the run reads: the inventory comes from the same

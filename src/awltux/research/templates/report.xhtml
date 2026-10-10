@@ -105,6 +105,34 @@
 </section>
 {% endif %}
 
+{% if levers %}
+<section id="levers">
+  <h2>What moves this business</h2>
+  {# The same rows the instrument page and /levers show, because this is where they came from:
+     a reader who wants to know why a lever is recorded against this instrument should be able
+     to read the answer in the report that recorded it. Direction is the vocabulary's, and it
+     is which way the business moves when the lever rises -- not which way the share price
+     does. #}
+  <p class="meta">
+    Filed against the lever vocabulary, so the same lever can be asked for across every
+    instrument. Direction says which way the <em>business</em> moves when the lever rises.
+  </p>
+  <table>
+    <thead><tr><th>Lever</th><th>Direction</th><th>Weight</th><th>Why</th></tr></thead>
+    <tbody>
+    {% for exposure in levers %}
+      <tr>
+        <td>{{ exposure.label }}</td>
+        <td>{{ exposure.direction_label }}</td>
+        <td>{{ exposure.strength_label }}</td>
+        <td>{{ exposure.reason }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
 {% for section in result.sections %}
 <section id="section-{{ loop.index }}">
   <h2>{{ section.heading }}</h2>

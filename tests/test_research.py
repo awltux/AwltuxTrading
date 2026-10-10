@@ -71,6 +71,20 @@ def payload(**overrides):
             }
         ],
         "what_would_change_my_mind": "A refinancing past 2029.",
+        "levers": [
+            {
+                "lever": "interest_rates",
+                "direction": "negative",
+                "strength": "primary",
+                "reason": "Refinancing 2.1 billion of debt reprices the interest line directly.",
+            },
+            {
+                "lever": "raw_material_costs",
+                "direction": "negative",
+                "strength": "secondary",
+                "reason": "Steel is the largest single input and is bought on contract.",
+            },
+        ],
         "sections": [
             {
                 "heading": "The industry",
@@ -112,6 +126,11 @@ class TestWhatIsAccepted:
         assert [point.point for point in result.strengths] == ["Cash conversion is high"]
         assert [point.point for point in result.concerns] == ["Leverage is elevated"]
         assert [theme.theme for theme in result.news_themes] == ["Analyst downgrades dominate"]
+        assert [exposure.lever for exposure in result.levers] == [
+            "interest_rates",
+            "raw_material_costs",
+        ]
+        assert result.levers[0].direction == "negative"
         assert result.discarded == []
 
     def test_the_metrics_are_the_databases_metrics(self):
@@ -174,6 +193,71 @@ class TestWhatIsRefused:
 
         assert result.news_themes == []
         assert any("cites no headline" in note for note in result.discarded)
+
+    def test_a_lever_outside_the_vocabulary_is_refused_not_moved_to_a_neighbour(self):
+        """`levers.resolve` refuses rather than guesses, and its reason holds twice over here:
+        an exposure filed against the wrong key is a claim about what moves a business that
+        nothing downstream could contradict."""
+        result = validate_result(
+            payload(
+                levers=[
+                    {"lever": "interest rates and inflation", "direction": "negative"},
+                    {
+                        "lever": "Competition",
+                        "direction": "negative",
+                        "reason": "Two rivals now hold the same scale.",
+                    },
+                ]
+            ),
+            headlines=HEADLINES,
+        )
+
+        assert [exposure.lever for exposure in result.levers] == ["competition"]
+        assert any("interest rates and inflation" in note for note in result.discarded)
+
+    def test_a_lever_named_twice_keeps_the_first(self):
+        """Last-wins would make the record depend on the order of a list nothing sorts."""
+        result = validate_result(
+            payload(
+                levers=[
+                    {"lever": "inflation", "direction": "negative", "reason": "Input prices."},
+                    {"lever": "inflation", "direction": "positive", "reason": "Contract escalator."},
+                ]
+            ),
+            headlines=HEADLINES,
+        )
+
+        assert len(result.levers) == 1
+        assert result.levers[0].direction == "negative"
+        assert any("named more than once" in note for note in result.discarded)
+
+    def test_a_direction_outside_the_vocabulary_is_unknown_rather_than_guessed(self):
+        """Same rule as the metric vocabulary: a value nobody offered is not one to infer."""
+        result = validate_result(
+            payload(levers=[{"lever": "inflation", "direction": "sideways", "strength": "huge"}]),
+            headlines=HEADLINES,
+        )
+
+        stored = result.levers[0].as_dict()
+        assert stored["direction"] == "unknown"
+        assert stored["strength"] == "primary"
+        # And it says who named it. `Exposure` defaults an empty source to "manual", which
+        # would be the provenance column attributing a model's lever to a person.
+        assert stored["source"] == "deep_research"
+
+    def test_naming_no_lever_is_not_a_failure(self):
+        """The evidence does not establish every business's drivers, and the field is one a
+        model may answer thinly."""
+        result = validate_result(payload(levers=[]), headlines=HEADLINES)
+
+        assert result.levers == []
+        assert result.discarded == []
+
+    def test_a_lever_block_that_is_not_a_list_is_named(self):
+        result = validate_result(payload(levers="interest_rates"), headlines=HEADLINES)
+
+        assert result.levers == []
+        assert any("levers was not a list" in note for note in result.discarded)
 
     def test_a_verdict_outside_the_vocabulary_falls_back_and_says_so(self):
         result = validate_result(payload(verdict="buy"), headlines=HEADLINES)
@@ -293,6 +377,22 @@ class TestTheDocument:
         assert "watch" in document
         assert "net cash from operations was 1.4 times operating profit" in document
         assert "10-K FY2025" in document
+
+    def test_it_shows_what_moves_the_business(self):
+        """The report is where the record came from, so a reader who wants to know why a lever
+        sits against this instrument should be able to read the answer here -- in the
+        vocabulary's own words, from `levers.describe`, rather than the raw keys."""
+        document = self._render()
+
+        assert "What moves this business" in document
+        assert "Interest rates" in document
+        assert "Rises hurt" in document
+        assert "Refinancing 2.1 billion of debt reprices the interest line directly." in document
+
+    def test_a_report_with_no_levers_has_no_such_section(self):
+        document = self._render(validate_result(payload(levers=[]), headlines=HEADLINES))
+
+        assert "What moves this business" not in document
 
     def test_it_states_its_own_basis(self):
         """A report whose provenance is invisible is one nobody can argue with."""

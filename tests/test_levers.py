@@ -64,6 +64,29 @@ class TestTheVocabulary:
         assert levers.group_of("carrying_costs") == ""
 
 
+class TestThePromptOffersIt:
+    """The vocabulary reaches the model through one generator, so it cannot offer a lever the
+    reader then refuses -- the invariant `metric_fields` was written to protect."""
+
+    def test_every_lever_is_listed_once_and_nothing_else_is(self):
+        from awltux.llm.prompts import research_instruction
+
+        block = levers.prompt_block()
+        instruction = research_instruction("Test Co (TEST_US_EQ)")
+
+        assert block in instruction, "the prompt must carry the vocabulary"
+        assert block.count("\n") + 1 == len(levers.LEVERS)
+        for lever in levers.LEVERS:
+            assert f"- {lever.key}: {lever.label}" in block
+
+    def test_the_schema_asks_for_the_block(self):
+        """A vocabulary the prompt lists but the schema does not ask for is a field the model
+        has no reason to fill."""
+        from awltux.llm.prompts import research_instruction
+
+        assert '"levers"' in research_instruction("Test Co (TEST_US_EQ)")
+
+
 class TestParsingAnExposure:
     def test_the_three_parts_are_read(self):
         exposure = levers.parse("interest_rates=negative:secondary")

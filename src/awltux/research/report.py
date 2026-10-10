@@ -27,12 +27,14 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from awltux.analysis.levers import DEEP_RESEARCH, Exposure, describe, resolve
 from awltux.config import Settings
 from awltux.llm.extractors import ExtractionResult, validate_extraction
 
@@ -134,6 +136,9 @@ class ResearchResult:
     strengths: list[Point] = field(default_factory=list)
     concerns: list[Point] = field(default_factory=list)
     news_themes: list[NewsTheme] = field(default_factory=list)
+    #: What the model says moves the business, resolved against `analysis.levers`. Empty is an
+    #: acceptable answer, and every name it did not recognise is in `discarded`.
+    levers: list[Exposure] = field(default_factory=list)
     what_would_change_my_mind: str = ""
     sections: list[Section] = field(default_factory=list)
     sources_seen: list[str] = field(default_factory=list)
@@ -161,6 +166,7 @@ class ResearchResult:
             "strengths": [point.as_dict() for point in self.strengths],
             "concerns": [point.as_dict() for point in self.concerns],
             "news_themes": [theme.as_dict() for theme in self.news_themes],
+            "levers": [exposure.as_dict() for exposure in self.levers],
             "what_would_change_my_mind": self.what_would_change_my_mind,
             "sections": [section.as_dict() for section in self.sections],
             "sources_seen": self.sources_seen,
@@ -282,6 +288,55 @@ def _themes(raw: Any, headlines: list[str], discarded: list[str]) -> list[NewsTh
     return out
 
 
+def _levers(raw: Any, discarded: list[str]) -> list[Exposure]:
+    """What the model says moves the business, resolved against the vocabulary or refused.
+
+    Refused rather than mapped to the nearest lever: `analysis.levers.resolve` already takes
+    that position for a person typing one into the CLI, and the reason it gives holds here twice
+    over -- a lever is a claim about what moves a business, and one filed against the wrong key
+    would sit on a page that nothing downstream could contradict.
+
+    An absent or empty list is not a failure and is not recorded as one: a business whose
+    drivers the evidence does not establish is a real answer, and the field is one of several
+    the model may fill thinly.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        discarded.append("levers was not a list")
+        return []
+    out: list[Exposure] = []
+    named: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            discarded.append("a lever was not an object")
+            continue
+        word = _text(entry.get("lever")) or ""
+        key = resolve(word)
+        if key is None:
+            discarded.append(f"lever {word!r} is not one of the vocabulary")
+            continue
+        if key in named:
+            # The first answer wins. Two entries for one lever is the model repeating itself,
+            # and last-wins would make the record depend on the order of a list nothing sorts.
+            discarded.append(f"lever {key} was named more than once")
+            continue
+        named.add(key)
+        out.append(
+            Exposure(
+                lever=key,
+                direction=(_text(entry.get("direction")) or "").lower(),
+                strength=(_text(entry.get("strength")) or "").lower(),
+                reason=_text(entry.get("reason")) or "",
+                # Stamped here rather than by the writer, so the stored result says who named
+                # it. `Exposure.as_dict` defaults an empty source to "manual", and a model's
+                # lever wearing that label would be the provenance column telling a lie.
+                source=DEEP_RESEARCH,
+            )
+        )
+    return out
+
+
 def _sections(raw: Any, discarded: list[str]) -> list[Section]:
     """The prose body. A section with nothing in it is not rendered and not an error."""
     if not isinstance(raw, list):
@@ -313,6 +368,49 @@ def _sections(raw: Any, discarded: list[str]) -> list[Section]:
         )
         if not section.empty:
             out.append(section)
+    return out
+
+
+def _suitability(raw: Any, discarded: list[str]) -> dict[str, Any]:
+    """The horizon and the risk, each either one of the vocabulary's or null.
+
+    Null rather than a nearest match, which is what the rest of this module does with a word
+    nobody offered: the verdict is read beside these two, and a risk level inferred from an
+    unrecognised word would be a judgement nobody made.
+    """
+    if not isinstance(raw, dict):
+        discarded.append("no suitability block")
+        return {}
+    horizon = (_text(raw.get("horizon")) or "").lower()
+    risk = (_text(raw.get("risk")) or "").lower()
+    return {
+        "horizon": horizon if horizon in HORIZONS else None,
+        "risk": risk if risk in RISKS else None,
+        "reason": _text(raw.get("reason")),
+    }
+
+
+def _keyed_blocks(
+    payload: dict[str, Any], names: Sequence[str], discarded: list[str]
+) -> dict[str, Any]:
+    """The blocks the report reads back key by key, as the model sent them.
+
+    A value that is neither text nor a list is emptied rather than passed through: the document
+    prints these, and a nested object would arrive at the template as a dictionary. A block that
+    is present but not an object is named, because the two failures are different -- one is a
+    field the model filled oddly, the other is a field it did not send.
+    """
+    out: dict[str, Any] = {}
+    for name in names:
+        block = payload.get(name)
+        if isinstance(block, dict):
+            out[name] = {
+                key: (value if isinstance(value, list) else _text(value))
+                for key, value in block.items()
+                if value not in (None, "", [])
+            }
+        elif block is not None:
+            discarded.append(f"{name} was not an object")
     return out
 
 
@@ -348,36 +446,15 @@ def validate_result(
 
     result.confidence = _clamp(payload.get("confidence"), 0.0, 1.0)
 
-    suitability = payload.get("suitability")
-    if isinstance(suitability, dict):
-        horizon = (_text(suitability.get("horizon")) or "").lower()
-        risk = (_text(suitability.get("risk")) or "").lower()
-        result.suitability = {
-            "horizon": horizon if horizon in HORIZONS else None,
-            "risk": risk if risk in RISKS else None,
-            "reason": _text(suitability.get("reason")),
-        }
-    else:
-        result.discarded.append("no suitability block")
-
-    for name in ("business", "management"):
-        block = payload.get(name)
-        if isinstance(block, dict):
-            setattr(
-                result,
-                name,
-                {
-                    key: (value if isinstance(value, list) else _text(value))
-                    for key, value in block.items()
-                    if value not in (None, "", [])
-                },
-            )
-        elif block is not None:
-            result.discarded.append(f"{name} was not an object")
+    result.suitability = _suitability(payload.get("suitability"), result.discarded)
+    blocks = _keyed_blocks(payload, ("business", "management"), result.discarded)
+    result.business = blocks.get("business", {})
+    result.management = blocks.get("management", {})
 
     result.strengths = _points(payload.get("strengths"), "strength", result.discarded)
     result.concerns = _points(payload.get("concerns"), "concern", result.discarded)
     result.news_themes = _themes(payload.get("news_themes"), headlines or [], result.discarded)
+    result.levers = _levers(payload.get("levers"), result.discarded)
     result.what_would_change_my_mind = _text(payload.get("what_would_change_my_mind")) or ""
     result.sections = _sections(payload.get("sections"), result.discarded)
     result.sources_seen = _strings(payload.get("sources_seen"))
@@ -432,6 +509,10 @@ def render_xhtml(
         inventory=inventory or {},
         refresh=refresh or {},
         news=news or {},
+        # Described rather than passed as exposures: the label and the two wordings are
+        # properties of the vocabulary (`levers.describe`), and a template that spelled out
+        # "positive" -> "Rises help" would be a second copy of that mapping.
+        levers=[describe(exposure) for exposure in result.levers],
         problems=list(problems or []),
         generation="AwltuxTrading deep-dive research",
     )

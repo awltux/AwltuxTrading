@@ -835,6 +835,29 @@ the layering the whole tree keeps. Its own commit, because it touches the decisi
 sizing on a deployed path.
 
 
+### The levers a deep-dive records have never been read against a real answer
+
+Added 2026-10-10 with the block itself. `llm/prompts.py::_RESEARCH_LEVER_RULES` asks the
+deep-dive for `levers`, `research/report.py::_levers` resolves what comes back through
+`analysis.levers.resolve` and drops a name that does not resolve, and
+`research/service.py::_record_levers` writes the survivors while leaving every lever a person
+recorded alone. All of it is tested offline against a fixture, and **no live deep-dive has run
+with the block in the prompt**, so three things are assumed rather than measured:
+
+- that the model uses the vocabulary's keys rather than inventing names. If it does not, the
+  field is a token cost that records nothing, and the fix is the prompt's wording rather than
+  the reader -- the reader is right to refuse a lever it cannot resolve.
+- that its `reason` is about the company rather than the label restated. Nothing gates it: a
+  reason is prose the report attributes to itself, the same standing as `management.assessment`
+  and `suitability.reason`, and the span rule `strengths` and `concerns` carry would need a
+  quoted span the schema does not ask the model for.
+- that `secondary` is used at all, rather than every lever arriving `primary`.
+
+What to read from the first live answer: `result["levers"]` and the `discarded` list, both in
+the stored report (`ResearchReport.result`) and in the document's provenance footer. The run
+does not have to be repeated to check it.
+
+
 ## Operations
 
 ### The balance banner cannot show one key's spend, because nothing records which key paid
@@ -1567,38 +1590,6 @@ The enforced gate is complexity at 15 and all of these pass it. The two function
 logic *did* grow materially -- `ingest_rss_news` (77 → 99, then split back to 62 via
 `_poll_instrument` / `_finish_instrument` / `_Feeds`) and `_execute_captured` (60 → 85,
 split back via `_invoke` / `_Outcome`) -- were paid off in that same commit.
-
-### Generating an instrument's levers from the model
-
-The levers mechanism is built and live -- `analysis/levers.py` (the vocabulary, the direction
-convention, `record`/`forget`/`stored`/`totals`/`coverage`/`instruments_for`), the
-`instrument_lever` table, `/levers` and `/levers/{key}`, the instrument-page panel, and
-`awltux levers list|show|set|forget`. Nothing *fills* it: every row is written by hand, so
-`/levers` reads "0 of N" until somebody records one.
-
-The reason it was left there is the reader's, and the measurement contradicts it. The concern
-was that levers need the full company analysis and would "end up being quite expensive in llm
-calls". They do need the full analysis -- but that analysis is the **deep-dive**, which is
-already one call over up to three documents (`research/service.py`), so a `levers` block is a
-few hundred *output* tokens on a call that is made anyway. It is not a second call, and
-nothing schedules one.
-
-What it would take, in `llm/prompts.py` where the schema is stated (~line 400, beside
-`"business": {"summary", "moat", "competition"}`):
-
-```json
-"levers": [{"lever": "interest_rates", "direction": "negative",
-            "strength": "primary", "reason": "one quoted sentence"}]
-```
-
-and then, in the deep-dive's result handler, a tolerant reader that resolves each `lever`
-through `analysis/levers.resolve`, drops what does not resolve (recording the drop rather than
-mapping it to a neighbour -- the rule `resolve` already enforces), and writes the survivors with
-`levers.record(session, ticker, exposures, source="deep_research")`. Two things to decide with
-real output in hand, which is why it is not done blind: whether a model-reported lever should
-overwrite one a person recorded, and whether the model's `reason` is quotable as evidence when
-the report's own `validate_extraction` gate demands a quoted span for a figure but has no such
-rule for prose.
 
 ### A figure clicked out of an untagged table cannot become a line of its own
 

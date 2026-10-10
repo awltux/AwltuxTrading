@@ -429,6 +429,9 @@ _RESEARCH_SCHEMA = """{
     "capital_allocation": "what they do with the cash: reinvestment, dividends, buybacks, acquisitions, debt -- with figures",
     "governance_flags": ["concrete concerns only: pay against performance, related-party dealings, control, auditor change, restatement"]
   },
+  "levers": [
+    {"lever": "one of the keys listed below", "direction": "positive | negative | mixed | unknown", "strength": "primary | secondary", "reason": "one sentence about this company, tied to the material you were given"}
+  ],
   "strengths": [
     {"point": "one sentence", "evidence": "the exact quoted words you relied on", "source": "which document or record", "location": "page, note or section"}
   ],
@@ -492,8 +495,34 @@ How to read the news digest:
   actually rests on.
 """
 
-_RESEARCH_TAIL = """
-Filling in the figures is not the main task and an empty `metrics` object is an acceptable
+#: The lever block. The *vocabulary* is not written here: it is generated from
+#: `analysis/levers.py::LEVERS` and appended by `research_instruction`, so the prompt cannot
+#: offer a lever `levers.resolve` would refuse -- the same invariant
+#: `metric_fields.prompt_block` protects for the metric names.
+_RESEARCH_LEVER_RULES = """
+`levers` is what moves this business, named from the list that follows the schema.
+
+- It is a claim about the *business*, not about the share price: what would make its earnings
+  better or worse, not what would make its shares go up.
+- `direction` is which way the **business** moves when the lever rises. `positive` means rises
+  help it, `negative` means rises hurt it. `mixed` is a real answer and not a failure to decide
+  -- a bank's margin improves with rates while its credit losses worsen -- and `unknown` is the
+  honest answer where nothing you were given establishes the direction.
+- `strength` is `primary` when the lever moves the earnings on its own, `secondary` when it
+  matters without doing that.
+- `reason` is what a reader sees beside the lever, so it has to say something about *this*
+  company: "exposed to interest rates" is the label repeated back and tells them nothing. One
+  sentence, and it must rest on the material you were given rather than on general knowledge
+  about the industry.
+- **Use only the keys listed.** A lever named in your own words is dropped rather than mapped
+  to the nearest one, because an exposure recorded against the wrong lever is worse than a
+  refused one -- it would read as a fact about the business that nothing could show to be wrong.
+- **An empty list is an acceptable answer.** Name only the levers the evidence actually
+  supports; a lever you are not sure of is worse than one you leave out.
+"""
+
+
+_RESEARCH_TAIL = """Filling in the figures is not the main task and an empty `metrics` object is an acceptable
 answer. Report a figure only where the material you were given states it, quote the words that
 state it, and say where. The period those figures belong to must be the one they are actually
 from; if the documents cover more than one, use the most recent complete period.
@@ -515,13 +544,21 @@ def research_instruction(subject: str, inventory: str = "") -> str:
 
     Built by concatenation rather than an f-string: the schema above is full of braces and an
     f-string would read them as placeholders, the trap `filing_extraction_instruction` records.
+
+    The lever vocabulary is imported here rather than written into the text above for the same
+    reason `filing_extraction_instruction` imports the metric list: one generator, so the prompt
+    and the reader that refuses what it does not know cannot drift apart.
     """
+    from awltux.analysis.levers import prompt_block
+
     scope = f"\n\nWhat this run will read:\n{inventory}\n" if inventory else ""
     return (
         f"Research {subject} and judge whether it is a suitable investment.\n"
         f"{scope}"
         f"{_RESEARCH_NEWS_RULES}"
+        f"{_RESEARCH_LEVER_RULES}"
         f"\nReturn JSON:\n{_RESEARCH_SCHEMA}\n"
+        f"\nThe levers you may name:\n{prompt_block()}\n\n"
         f"{_RESEARCH_TAIL}"
     )
 
