@@ -913,7 +913,14 @@
                      the lead: the reader is checking a grouping, and the appraisal is
                      what they are checking it against. #}
                   <a href="/news/{{ other.id }}">{{ other.title }}</a>
-                  <span class="muted">— {{ other.source }}</span>
+                  {# The same attribution the news page and the story page's "Other coverage"
+                     list use: the publisher that wrote it, with the feed beside it when the two
+                     differ. A list of reports whose Source column reads "Google News" every
+                     time says nothing about who said what. #}
+                  <span class="muted">
+                    — {% if other.publisher %}{{ other.publisher }}{% else %}<span title="No publisher named in the headline and no publisher's own URL on the story">—</span>{% endif %}
+                    {%- if other.source and other.source != other.publisher %} <span title="The pipe this story arrived through, not who wrote it">via {{ other.source }}</span>{% endif %}
+                  </span>
                 </li>
               {% endfor %}
             </ul>

@@ -100,8 +100,15 @@
                to open one. Absent for a story no classifier has judged. #}
             {%- if item.relevance_reason %} title="Relevance: {{ item.relevance_reason }}"{% endif %}>
           <a href="/news/{{ item.id }}">{{ item.title }}</a>
+          {# Who wrote it, not the pipe it arrived through -- the news list's own treatment, so
+             one story is not attributed two ways on two pages. The feed is shown when it is all
+             we have, and beside the publisher when the two differ. #}
           <span class="muted small">
-            {{ item.source }} · {{ item.published_at | ago }}
+            {% if item.publisher %}{{ item.publisher }}
+            {%- elif item.source %}{{ item.source }}
+            {%- else %}—{% endif %}
+            {%- if item.publisher and item.source and item.source != item.publisher %} via {{ item.source }}{% endif %}
+            · {{ item.published_at | ago }}
             {% if item.direction %} · {{ item.direction }}{% endif %}
             {% if item.materiality %} · {{ item.materiality }}{% endif %}
           </span>

@@ -14,6 +14,8 @@ design, so it is what is tested.
 
 from __future__ import annotations
 
+from bs4 import BeautifulSoup
+
 from awltux.analysis.embeddings import (
     IDENTITY_FIELDS,
     Event,
@@ -285,6 +287,118 @@ class TestTheIdentityVeto:
         assert [group.size for group in groups] == [1, 1], (
             "opposite directions are two events however alike the headlines read"
         )
+
+
+class TestTheListsNameThePublisher:
+    """Asked for directly: *"The news items listed in 'Other coverage of this event' the source
+    should list the publisher not the feed."*
+
+    A feed column cannot answer the question the column is there for. Google News hands over a
+    *redirect*, so every row of the list would read "google_news" -- the same word for every
+    story -- while the publisher is read from the masthead the headline carries
+    ("… - Simply Wall Street") and is what tells a reader who is making the claim.
+
+    The news list has done this since the publisher column landed; the event lists and the sector
+    page had not, so one story was attributed two ways on two pages. The feed is still shown, in
+    small type, when it differs -- it is where the story was *found*, and it is what the Feed
+    filter selects.
+    """
+
+    def _event(self, session, settings, *, publishers=("Simply Wall Street", None)):
+        rows = _items(
+            session,
+            ["Acme warns on profit", "Acme cuts its outlook"],
+            ticker="TEST_US_EQ",
+            # `_items` already files both under `google_news`, which is the feed every row of
+            # this list would otherwise be attributed to. The materiality and relevance are what
+            # the story page's own ranking window requires -- it reads the banner's population,
+            # not the whole store -- and each title its own `title_key` so the headline collapse
+            # cannot merge the two into one.
+            fields=[
+                {
+                    "publisher": publisher,
+                    "materiality": "material",
+                    "direction": "negative",
+                    "relevant": True,
+                    "relevance": 0.6,
+                    "title_key": f"acme-{index}",
+                }
+                for index, publisher in enumerate(publishers)
+            ],
+        )
+        _store(session, rows, settings, [[1.0, 0.0, 0.0], [0.99, 0.05, 0.0]])
+        return rows
+
+    def test_the_story_page_lists_the_publisher_and_the_feed_beside_it(
+        self, client, session, settings
+    ):
+        """Which row leads the event is the ranking's business, so the assertion follows the link
+        the table emitted rather than assuming an order."""
+        import re
+
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
+        session.flush()
+        rows = self._event(session, settings, publishers=("Simply Wall Street", "Reuters"))
+
+        soup = BeautifulSoup(client.get(f"/news/{rows[0].id}").text, "lxml")
+
+        assert "Other coverage of this event" in soup.get_text(" ")
+        table = next(
+            item
+            for item in soup.select("table.grid")
+            if "Other coverage" in item.find_previous("h2").get_text(" ")
+        )
+        member = table.select("tbody tr")[0]
+        linked = int(re.search(r"/news/(\d+)", member.select_one("a")["href"]).group(1))
+        sibling = next(row for row in rows if row.id == linked)
+
+        assert sibling.publisher in member.get_text(" "), "the publisher, not the feed"
+        assert "via google_news" in member.get_text(" "), "and where it was found, in small type"
+
+    def test_a_story_nobody_can_be_named_for_shows_a_dash_rather_than_the_feed(
+        self, client, session, settings
+    ):
+        """Filling the column in with the feed is the same mistake in a quieter form: the reader
+        reads a Source of "google_news" as who wrote it."""
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
+        session.flush()
+        rows = self._event(session, settings)
+
+        soup = BeautifulSoup(client.get(f"/news/{rows[0].id}").text, "lxml")
+        table = next(
+            item
+            for item in soup.select("table.grid")
+            if "Other coverage" in item.find_previous("h2").get_text(" ")
+        )
+        member = table.select("tbody tr")[0]
+        source_cell = member.select("td")[1]
+
+        assert source_cell.select_one("span[title]") is not None, "an em dash and why"
+        assert "—" in source_cell.get_text(" ")
+        assert source_cell.get_text(" ").strip().startswith("—"), (
+            "the feed is not standing in for a publisher nobody can name"
+        )
+
+    def test_the_instrument_page_s_similar_reports_list_does_the_same(
+        self, client, session, settings
+    ):
+        """The same list by another route, and a story attributed one way here and another on the
+        news page is a page nobody can trust about who said what."""
+        from tests.helpers import make_instrument
+
+        session.add(make_instrument("TEST_US_EQ", sec_cik="0000000001"))
+        session.flush()
+        self._event(session, settings)
+
+        body = client.get("/instrument/TEST_US_EQ?tab=news").text
+
+        assert "1 similar report" in body
+        assert "Simply Wall Street" in body
+        assert "via google_news" in body
 
 
 class TestTheEmbeddedText:

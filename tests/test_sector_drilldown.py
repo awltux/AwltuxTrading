@@ -430,6 +430,35 @@ class TestASectorPage:
             "the sector's own appraisal, not a company's"
         )
 
+    def test_a_sector_story_is_attributed_to_its_publisher_not_the_feed(
+        self, client, session, sectors
+    ):
+        """The news list and the story page both name the writer; this list named the feed, so one
+        story was attributed two ways on two pages of the same application."""
+        from awltux.db import NewsItem, utcnow
+
+        item = NewsItem(
+            source="google_news",
+            publisher="Endpoints News",
+            url="https://x.test/sector-news-publisher",
+            url_hash="sector-news-publisher",
+            title="Pharma pricing pressure builds in Washington",
+            published_at=utcnow(),
+            tickers=[],
+            sectors=[GROUP],
+            materiality="material",
+            direction="negative",
+            relevant=True,
+            created_at=utcnow(),
+        )
+        session.add(item)
+        session.commit()
+
+        body = client.get(f"/sectors/{urllib.parse.quote(GROUP, safe='')}").text
+
+        assert "Endpoints News" in body
+        assert "via google_news" in body, "the feed, in small type"
+
     def test_a_headline_shows_the_relevance_reason_on_hover(self, client, session, sectors):
         """The sector list carries the same sentence the story page prints.
 

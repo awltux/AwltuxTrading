@@ -17,7 +17,22 @@
 
 <section class="kv">
   <div><dt>Published</dt><dd>{{ published or '—' }}</dd></div>
-  <div><dt>Source</dt><dd>{{ item.source or '—' }}{% if analysis and analysis.source_name %} · {{ analysis.source_name }}{% endif %}</dd></div>
+  {# Who wrote it, with the feed beside it when the two differ -- the news list's own treatment,
+     because a reader comparing the two pages should not be told two different things about one
+     story. `source_name` is the appraisal's publisher and is *not* repeated here: it is on the
+     scepticism panel below, with the rating that goes with it, and an unrated story would put
+     "Unrecognised publisher" in a field a reader reads as a fact. #}
+  <div>
+    <dt>Source</dt>
+    <dd>
+      {% if item.publisher %}{{ item.publisher }}
+      {% else %}<span class="muted" title="No publisher named in the headline and no publisher's own URL on the story">—</span>
+      {% endif %}
+      {% if item.source and item.source != item.publisher %}
+        <span class="muted small" title="The pipe this story arrived through, not who wrote it">via {{ item.source }}</span>
+      {% endif %}
+    </dd>
+  </div>
   <div><dt>Event</dt><dd>{{ item.event_type or 'unclassified' }}</dd></div>
   <div><dt>Classified by</dt><dd>{{ item.engine or 'not classified' }}</dd></div>
 </section>
@@ -231,7 +246,17 @@
     {% for sibling in siblings %}
       <tr>
         <td class="small"><a href="/news/{{ sibling.id }}">{{ sibling.title }}</a></td>
-        <td class="small muted">{{ sibling.source }}</td>
+        {# The publisher, not the feed it was found through: the Feed column would otherwise
+           read "Google News" for every row of the table, which says nothing about who wrote
+           what. Asked for directly -- *"the source should list the publisher not the feed"*. #}
+        <td class="small">
+          {% if sibling.publisher %}{{ sibling.publisher }}
+          {% else %}<span class="muted" title="No publisher named in the headline and no publisher's own URL on the story">—</span>
+          {% endif %}
+          {% if sibling.source and sibling.source != sibling.publisher %}
+            <br><span class="muted" title="The pipe this story arrived through, not who wrote it">via {{ sibling.source }}</span>
+          {% endif %}
+        </td>
         <td class="small muted">{{ sibling.published_at | datetime if sibling.published_at else '—' }}</td>
       </tr>
     {% endfor %}
@@ -249,7 +274,7 @@
 {# ------------------------------------------------------------------ source #}
 <h2>The original</h2>
 {% if item.url %}
-  <p><a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Read the article on {{ item.source or 'the publisher' }} &#8599;</a></p>
+  <p><a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Read the article on {{ item.publisher or item.source or 'the publisher' }} &#8599;</a></p>
   <p class="muted small">Opens in a new tab. The publisher may require a subscription.</p>
 {% else %}
   <p class="muted">No source URL was recorded for this item.</p>

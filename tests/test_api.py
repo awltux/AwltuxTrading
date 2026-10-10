@@ -11,6 +11,7 @@ as disabled and nothing reaches the network.
 from __future__ import annotations
 
 import pytest
+from bs4 import BeautifulSoup
 
 from awltux.db import utcnow
 
@@ -784,6 +785,43 @@ class TestTheNewsItemPage:
         session.add(row)
         session.flush()
         return row
+
+    def test_the_source_field_is_the_publisher_and_not_the_feed(self, client, universe_instrument, session):
+        """Asked for directly: *"the source should list the publisher not the feed."*
+
+        Google News hands over a redirect, so the feed is the same word for every story in the
+        whole corpus -- it says nothing about who is making the claim, which is what a field
+        called Source is read as.
+        """
+        row = self._story(
+            session, source="google_news", publisher="Simply Wall Street"
+        )
+        session.commit()
+
+        soup = BeautifulSoup(client.get(f"/news/{row.id}").text, "lxml")
+        field = next(
+            item for item in soup.select("section.kv div") if "Source" in item.get_text(" ")
+        )
+
+        assert "Simply Wall Street" in field.get_text(" ")
+        assert "via google_news" in field.get_text(" "), "the feed, in small type"
+
+    def test_a_story_with_no_publisher_does_not_put_the_feed_in_its_place(
+        self, client, universe_instrument, session
+    ):
+        row = self._story(session, source="google_news", publisher=None)
+        session.commit()
+
+        soup = BeautifulSoup(client.get(f"/news/{row.id}").text, "lxml")
+        field = next(
+            item for item in soup.select("section.kv div") if "Source" in item.get_text(" ")
+        )
+
+        assert "—" in field.get_text(" ")
+        assert field.select_one("span[title]") is not None, "and the dash says why"
+        assert not field.get_text(" ").strip().startswith("google_news"), (
+            "the feed is not standing in for a publisher nobody can name"
+        )
 
     def test_a_sector_story_links_to_the_sector_page(self, client, universe_instrument, session):
         """Reported from the page: the sector was listed and went nowhere.
