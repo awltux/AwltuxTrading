@@ -853,17 +853,40 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
     the same convention the chart's own income lines follow and the trial balance posts by.
     """
 
-    def test_a_debit_under_operating_expenses_is_deducted_from_operating_income_and_below(self):
-        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+    def test_a_figure_printed_negative_is_deducted(self):
+        """**A learned line's figure is its own direction.** The filing prints a deduction as
+        ``(63,061)``, the picker keeps that sign, and the statement adds the figure as it stands
+        -- so what the working shows beside a line is exactly what the accounts print for it.
+
+        Reported 2026-10-10, after the side had been read as a direction as well: *"the account
+        seems to show the correct values, but the calculation in the 'out by X' hint is using
+        invalid signs"*, with dividend income printed at 1,680,000 and subtracted in the working
+        because every line the reader had added carried the form's default side.
+        """
+        period, extra = _learned_period("Operating expenses", -40.0, side="debit")
 
         statement = ledger.profit_and_loss(period, extra=extra)
 
         assert _line(statement, "Operating expenses", "operating_income").computed == 210.0
-        assert _line(statement, "Finance and tax", "pretax_income").computed == 210.0
         assert _line(statement, "Finance and tax", "net_income").computed == 210.0
         # And not in the subtotal above it: a line under a heading joins that stage *and
         # everything below*, never the one it was not filed under.
         assert _line(statement, "Revenue", "gross_profit").computed == 400.0
+
+    def test_a_figure_printed_positive_is_added_whatever_side_it_is_posted_on(self):
+        """The side is a record, not a direction -- so the same figure moves the same way posted
+        either way, and a reader cannot make a line subtract by calling it a debit."""
+        for side in ("debit", "credit"):
+            account = _learned_for("Finance and tax", side=side)
+            period = _profit_period(**{account.key: 1_680_000.0})
+
+            work = _line(
+                ledger.profit_and_loss(period, extra=[account]),
+                "Finance and tax",
+                "pretax_income",
+            )
+
+            assert work.computed == 250.0 + 1_680_000.0, side
 
     def test_a_credit_under_revenue_is_added_to_gross_profit_and_below(self):
         period, extra = _learned_period("Revenue", 100.0, side="credit")
@@ -886,12 +909,13 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
     def test_the_working_beside_the_figure_lists_the_learned_line(self):
         """The hover has to add up to the figure it sits beside, or the residual a reader is
         looking at is explained by arithmetic that does not produce it."""
-        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+        period, extra = _learned_period("Operating expenses", -40.0, side="debit")
         account = extra[0]
 
         work = _line(ledger.profit_and_loss(period, extra=extra), "Operating expenses", "operating_income")
 
         contributions = {part.source: part.contribution for part in work.parts}
+        # The contribution *is* the stored figure, so the working and the figure column agree.
         assert contributions[account.key] == -40.0
         assert sum(contributions.values()) == work.computed
         assert account.label in work.show_work()
@@ -926,7 +950,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
     def test_the_health_check_counts_the_same_lines_the_statement_does(self):
         """One cascade, two callers. A figure the statement counts and the audit does not is the
         disagreement the shared arithmetic exists to prevent -- one row apart on the same page."""
-        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+        period, extra = _learned_period("Operating expenses", -40.0, side="debit")
 
         statement = ledger.profit_and_loss(period, extra=extra)
         check = ledger.profit_articulation(period, extra)
@@ -939,7 +963,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         fix the 'out by X' calculations"*. The stated figure does not move; the computed one does,
         by exactly the figure added."""
         before = ledger.profit_articulation(_profit_period())
-        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+        period, extra = _learned_period("Operating expenses", -40.0, side="debit")
         after = ledger.profit_articulation(period, extra)
 
         assert before.residual == -60.0, "the fixture's gap, before anything is added"
@@ -963,12 +987,9 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
             "profit_and_loss",
         ) is not None
 
-    def test_a_figure_the_filing_prints_negative_still_moves_by_its_side(self):
-        """The sign is the figure's and the direction is the side's, so a deduction the filer
-        brackets -- which the picker now keeps as a negative -- and the reader posts as a debit
-        takes away rather than adding. Reading the sign as a second direction would flip it, and
-        that is the case this filing is full of: Danaos prints its operating expenses as
-        ``(63,061)`` and ``(208,779)``."""
+    def test_a_figure_the_filing_prints_negative_is_deducted(self):
+        """What the filing brackets is a negative, the picker keeps it, and the statement adds it
+        as it stands -- the size is the figure's and so is the direction."""
         account = _learned_for("Operating expenses", side="debit")
         period = _profit_period(**{account.key: -40.0})
 

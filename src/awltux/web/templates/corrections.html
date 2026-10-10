@@ -211,10 +211,12 @@
                         {% if loop.first %}checked{% endif %}> {{ side }}</label>
         {% endfor %}
         <span class="muted small">
-          Which way this line moves the total it feeds: a credit adds to profit, a debit takes
-          away. The line's own normal side is a good default; it is asked for a line the filing
-          names because nothing else knows it, and a line posted the wrong way round moves the
-          figure every ratio downstream divides by.
+          The side the line is posted on, kept with the correction. What moves the total is the
+          <strong>figure's own sign</strong>: a deduction the filing prints as
+          <code>(63,061)</code> belongs on a line as a negative, and a figure clicked out of a
+          filing arrives with the sign the filing printed. A filing that presents its expenses as
+          plain positive numbers needs the minus typed into the figure above — this form reads
+          <code>(1234.5)</code> as negative, which is the same convention.
         </span>
       {% endif %}
     </p>

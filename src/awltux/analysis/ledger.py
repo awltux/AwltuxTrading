@@ -650,7 +650,7 @@ def _extras_total(
         value = _stated(metrics, account.key)
         if value is None:
             continue
-        total = (total or 0.0) + _weight(account) * abs(value)
+        total = (total or 0.0) + value
     return total
 
 
@@ -665,21 +665,16 @@ def _extra_parts(
     "Short-term unearned revenue". An absent figure is left out, exactly as :func:`_component`
     leaves one out, because a zero claims the filing stated nothing there.
 
-    The contribution is the one the total was computed from, sign and all -- see :func:`_weight`
-    -- so the working adds up to the figure beside it rather than explaining a different sum.
+    The contribution is the figure itself, sign and all, so the working adds up to the total *and*
+    agrees line by line with the figure the statement prints beside it. Reported 2026-10-10: the
+    two disagreed, and the reader read the working as the thing that was wrong.
     """
     out: list[Part] = []
     for account in accounts:
         value = _stated(metrics, account.key)
         if value is None:
             continue
-        out.append(
-            Part(
-                label=account.label,
-                contribution=_weight(account) * abs(value),
-                source=account.key,
-            )
-        )
+        out.append(Part(label=account.label, contribution=value, source=account.key))
     return tuple(out)
 
 
@@ -997,22 +992,6 @@ def extra_keys(
     return tuple(
         account.key for account in extras_for_group(extra, statement, group)
     )
-
-
-def _weight(account: Account) -> float:
-    """Which way one learned line moves the figure it feeds: a credit adds, a debit takes away.
-
-    **The size is the figure's; the direction is the side's.** A filing prints a deduction as
-    ``(63,061)`` and a loss as ``(2,499)``, and the picker keeps that sign -- it is what the
-    reader can see on the page and it is what the figure *is* -- so the amount that moves a total
-    is the figure's **size**, not its signed value. Reading the sign as a second direction would
-    turn a deduction posted as a debit into an addition, which is the opposite of what the form
-    says the side does: *"a credit adds to profit, a debit takes away"*. Measured on Danaos'
-    2025 20-F, 2026-10-10: its operating expenses are printed ``(63,061)`` and ``(208,779)``, and
-    both were added under "Operating expenses" as debits to close the residual they were added to
-    fix.
-    """
-    return 1.0 if account.side == CREDIT else -1.0
 
 
 def subtotal_extra_keys(
