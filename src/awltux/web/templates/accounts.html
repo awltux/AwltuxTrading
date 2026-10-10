@@ -202,8 +202,9 @@
             {% elif line.agrees is false %}
               <span class="warn">{{ line.computed | number(line.decimals) }}</span>
               {% if filing %}
+                {% set place = placements.get(line.key, {}) %}
                 <a class="muted small work" data-work="{{ line.show_work() }}"
-                   href="{{ filing.pick }}&amp;awltux_line={{ line.key }}&amp;awltux_label={{ line.label | urlencode }}"
+                   href="{{ filing.pick }}&amp;awltux_line={{ line.key }}&amp;awltux_label={{ line.label | urlencode }}&amp;awltux_statement={{ place.get('statement', statement) }}&amp;awltux_section={{ place.get('section', '') | urlencode }}"
                    target="_blank" rel="noopener">out by {{ line.residual | number(line.decimals) }}</a>
               {% else %}
                 <span class="muted small work" data-work="{{ line.show_work() }}">out by {{ line.residual | number(line.decimals) }}</span>
@@ -309,8 +310,9 @@
              no single line to open and stay plain. #}
           {% if check.residual is none %}<span class="muted">—</span>
           {% elif check.work and filing and check.about %}
+            {% set place = placements.get(check.about, {}) %}
             <a class="work" data-work="{{ check.work }}"
-               href="{{ filing.pick }}&amp;awltux_line={{ check.about }}&amp;awltux_label={{ check.label | urlencode }}"
+               href="{{ filing.pick }}&amp;awltux_line={{ check.about }}&amp;awltux_label={{ check.label | urlencode }}&amp;awltux_statement={{ place.get('statement', statement) }}&amp;awltux_section={{ place.get('section', '') | urlencode }}"
                target="_blank" rel="noopener">{{ check.residual | number(0) }}</a>
           {% elif check.work %}<span class="work" data-work="{{ check.work }}">{{ check.residual | number(0) }}</span>
           {% else %}{{ check.residual | number(0) }}{% endif %}

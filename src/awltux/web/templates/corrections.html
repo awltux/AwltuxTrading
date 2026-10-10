@@ -120,8 +120,58 @@
             {% endfor %}
           </optgroup>
         {% endfor %}
+        {# Lines this filer's filings name and the chart above does not carry. Learned once, from
+           a figure clicked in a filing, and offered here from then on -- which is what makes a
+           line found in one year's 10-K usable in the next. #}
+        {% if learned %}
+          <optgroup label="Lines from this company's filings">
+            {% for line in learned %}
+              <option value="{{ line.metric }}"
+                      {% if line.metric == chosen %}selected{% endif %}>
+                {{ line.label }} — under {{ line.section }}{% if line.metric in held %} · has a figure{% endif %}
+              </option>
+            {% endfor %}
+          </optgroup>
+        {% endif %}
+        {% if new_line %}
+          {# The 10-K's own header for the line the figure sat under, which is the whole point:
+             the chart is this project's vocabulary and the filing's caption is the filer's. #}
+          <optgroup label="Not in the list? Use the filing's own line">
+            <option value="{{ 'new:' ~ new_line.tag }}"
+                    {% if chosen == 'new:' ~ new_line.tag %}selected{% endif %}>
+              Add “{{ new_line.caption }}” as a line of these accounts
+            </option>
+          </optgroup>
+        {% endif %}
       </select>
+      {% if moved_from %}
+        <span class="muted small">
+          Opened on the line the figure you clicked is tagged for, rather than on
+          {{ moved_from }} — the residual you came from is what sent you looking, not where this
+          figure belongs.
+        </span>
+      {% endif %}
     </p>
+
+    {% if new_line %}
+      <p>
+        <label for="section">If that line is new, which heading does it belong under?</label><br>
+        <select id="section" name="section">
+          {% for title in sections %}
+            <option value="{{ title }}"
+                    {% if title == new_line.section %}selected{% endif %}>{{ title }}</option>
+          {% endfor %}
+        </select>
+        <input type="hidden" name="caption" value="{{ new_line.caption }}">
+        <span class="muted small">
+          The line is remembered for <strong>every period this company files</strong>, under this
+          heading, and a figure put on it is added to that heading's total. A heading holding both
+          liabilities and equity is the one place it cannot be counted — the line is printed there
+          and the statement says so, because which side a figure belongs on is not something this
+          page will guess.
+        </span>
+      </p>
+    {% endif %}
 
     <p>
       <label for="value">Figure</label><br>

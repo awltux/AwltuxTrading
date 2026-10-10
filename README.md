@@ -377,6 +377,36 @@ re-applies it after it rewrites a row, so a `companyfacts` re-derive cannot quie
 - **The later act on a line supersedes the earlier one**, and a hand-typed figure is applied
   after the filer-wide rules, so a period can override a rule its own page cannot undo.
 
+### A line the filing names that this project does not
+
+The chart of accounts is this project's vocabulary, and a 10-K has its own. Where a filing states
+a caption the chart does not carry — Microsoft's current liabilities are stated at 168,825
+against the 93,326 our key list holds, and the difference is captions like "Short-term unearned
+revenue" — the confirmation page offers **the filing's own header as a line to create**, beside
+the chart's lines, with the heading it is to be printed under.
+
+- **The tag is the line's name.** Not a slug of the caption: it is the identity the *filing* gives
+  the caption, so next year's 10-K answers to the same key without anything having to remember a
+  label, and a subtotal the filer declares asks for it by tag.
+- **Learned once, offered everywhere.** The line is recorded against the filer's CIK, so every
+  later period offers it under the same heading instead of being taught again. Only the line is
+  carried — the *figure* stays on the period it was stated for.
+- **The heading is what makes it count.** A learned line joins the group its heading feeds, so a
+  figure put under "Current liabilities" is added to current liabilities *and* to total
+  liabilities, and the residual it was added to fix moves. `Equity` and `Memorandum` are printed
+  and summed by nothing, and the statement says so rather than leaving a reader to assume.
+- **A tag that already feeds a line is not offered as a new one.** `us-gaap:InventoryNet` is the
+  Inventory line; a second line for one caption would be two figures that disagree the first time
+  one of them is corrected. The form opens on the chart's line instead.
+- **The form opens on what was clicked, not on what was being investigated.** A residual is what
+  sent the reader looking; the clicked figure is tagged with the line it belongs to. The page says
+  so when the two differ.
+
+The balance sheet used to print one heading, "Non-current liabilities and equity", holding two
+subtotals. That heading cannot say which of the two a first-time line feeds, so the statement now
+prints "Non-current liabilities" and "Equity" separately — which is what the chart always
+distinguished, and what makes every heading mean one total.
+
 ### Reading a value out of the filing
 
 Where a year's accounts are the filer's own XBRL (`xbrl_companyfacts`) *and* the document is

@@ -96,7 +96,7 @@
     };
   }
 
-  function confirmUrl(base, filingId, period, statement, line, figure, caption, elementId) {
+  function confirmUrl(base, filingId, period, statement, line, figure, caption, elementId, section) {
     /* Where a clicked figure goes: the confirmation page, with everything the reader clicked.
      *
      * This is the interface between the two pages, so it is one named function rather than
@@ -104,10 +104,13 @@
      * ("the accounting total the source is related to", in the request's words) is what decides
      * which line of the accounts the figure lands on.
      *
+     * `caption` travels as its own parameter as well as in the note, because it is offered as a
+     * **line to create** when the chart has nothing for it -- *"offer an alternative entry,
+     * alongside the pre-defined, consisting of the header extracted from the 10-K"* -- and
+     * `section` travels with it because a line needs a heading to be printed under.
+     *
      * Resolved against `base` -- the page's own `location.href` -- rather than against the
      * document's `<base>`, because a filing may carry one and it would send our link to sec.gov.
-     * The caption goes into `note`: the record then says which line of the filing the figure was
-     * read from, in the filer's words rather than in a taxonomy's.
      */
     var target = new URL("/accounts/" + encodeURIComponent(period) + "/corrections/new", base);
     target.searchParams.set("statement", statement);
@@ -115,7 +118,11 @@
     target.searchParams.set("value", figureString(figure.value));
     target.searchParams.set("tag", figure.tag);
     target.searchParams.set("origin", "filing");
-    if (caption) target.searchParams.set("note", "filed as: " + caption);
+    if (caption) {
+      target.searchParams.set("caption", caption);
+      target.searchParams.set("note", "filed as: " + caption);
+    }
+    if (section) target.searchParams.set("section", section);
     // Back to the line as it was filed: the element's own id is an anchor in the plain
     // document, so the reader returns to the figure they read rather than to page one.
     if (elementId) {
@@ -265,6 +272,9 @@
   var line = params.get("awltux_line");
   var label = params.get("awltux_label") || line;
   var statement = params.get("awltux_statement") || "profit_and_loss";
+  // The heading the residual's own line sits under, so a line created from this filing lands
+  // where the reader is already working rather than at the top of the statement.
+  var section = params.get("awltux_section") || "";
   // The period end the accounts are for, so a figure clicked out of the *other* column can be
   // marked as the other column rather than written in silently.
   var periodEnd = params.get("awltux_period_end") || "";
@@ -368,7 +378,8 @@
       line,
       figure,
       caption,
-      elementId
+      elementId,
+      section
     );
     link.target = "_blank";
     link.rel = "noopener";

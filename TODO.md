@@ -313,6 +313,29 @@ between the filing's arithmetic and the figures we read. DFPH turns out to be th
 kind. Which filers are the second kind is not yet measured, and cannot be until the
 composition check itself reads the declaration.
 
+### A line learned from a filing is counted on the balance sheet and nowhere else
+
+Added 2026-10-10 with the filer-line work, and it is a *known* gap rather than a discovery: a
+caption the 10-K states under a heading this project's chart does not carry can now be created as
+a line, printed in the statement, and counted in the stated total its heading feeds --
+`ledger.EXTRA_GROUP` maps four balance-sheet headings to the composition groups they belong to, and
+`tests/test_filer_lines.py` asserts each mapping against the headings the statement actually
+prints.
+
+The profit and loss and the cash flow have no such mapping, so a line learned under "Operating
+expenses" is printed there, added to nothing, and the statement carries a note saying so. The
+reason is that those statements' subtotals are not a key list at all: `ledger._profit_cascade` is a
+fixed arithmetic (revenue less cost of sales, less the three operating lines, and so on), and
+joining a new line to it means deciding whether it is added or deducted. The *side* the reader
+chooses looks like it answers that -- the chart's own weights agree with the sides for every line
+below gross profit -- but a new line under "Revenue" could be either, and a wrong guess there moves
+reported profit, which is the figure every ratio downstream divides by.
+
+Measured when this was written: no live filer has yet been given a learned line, so the gap costs
+nothing today. It stops being free the first time a reader finds a missing caption on the income
+statement. The fix is to work out the sign from the heading and the side, refuse where the two
+disagree, and check the result against `profit_articulation` -- which is a stage, not an entry.
+
 ### The attention filter still cannot see a filer whose declared lines hold and do not sum
 
 The linkbase work is now wired: ingest/linkbase.py fetches and parses the calculation,

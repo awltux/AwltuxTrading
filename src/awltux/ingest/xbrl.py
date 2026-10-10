@@ -250,6 +250,35 @@ TAG_MAP: tuple[MetricTag, ...] = (
     )),
 )
 
+#: ``Tag`` (no taxonomy prefix) -> the canonical metric it feeds, from `TAG_MAP`.
+#:
+#: Built rather than written, so it cannot disagree with the table above. Used to answer one
+#: question on the accounts page: a tag a reader clicked in a filing -- is it *already* one of
+#: this project's lines? If it is, offering to create a line of the filer's own for it would be
+#: offering to keep two figures for one caption.
+METRIC_BY_TAG: dict[str, str] = {
+    tag: spec.key for spec in TAG_MAP for tag in spec.tags
+}
+
+
+def metric_for_tag(tag: str) -> str | None:
+    """The chart line a ``taxonomy:Tag`` feeds, or ``None`` when this project does not map it.
+
+    Both tables, because "does this tag already have a line of ours?" has two ways of being yes:
+    the tag that supplies a metric, and a caption that is *summed into* one (`SUM_TAGS`). The
+    second is the one that would go wrong quietly -- a caption already counted inside another
+    line, offered as a line of its own, is the same money in two places.
+    """
+    name = str(tag or "").split(":")[-1]
+    known = METRIC_BY_TAG.get(name)
+    if known:
+        return known
+    # A caption summed into another tag's figure is that line's, not one of its own: the sum is
+    # keyed by the winning tag, so the same lookup answers for it.
+    winning = SUM_TAGS.get(name)
+    return METRIC_BY_TAG.get(winning) if winning else None
+
+
 #: Captions summed into a metric **on top of** the tag that supplies it.
 #:
 #: Keyed by the winning tag, because whether an addition is safe depends on what that
@@ -277,6 +306,16 @@ TAG_MAP: tuple[MetricTag, ...] = (
 #: unexplained rather than closed wrongly for fifteen other filers.
 EXTRA_TAGS: dict[str, tuple[str, ...]] = {
     "OtherAssetsCurrent": ("OtherReceivablesNetCurrent",),
+}
+
+#: ``Tag`` -> the metric it is summed *into*, for the captions `EXTRA_TAGS` adds to another tag's
+#: figure.
+#:
+#: A reader clicking one of these in a filing is clicking a caption this project already counts --
+#: inside another line -- so it must not be offered as a line of its own. Adding it separately
+#: would count the same money twice, in two lines that each look right.
+SUM_TAGS: dict[str, str] = {
+    tag: winning for winning, tags in EXTRA_TAGS.items() for tag in tags
 }
 
 

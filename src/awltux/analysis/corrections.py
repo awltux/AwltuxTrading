@@ -196,20 +196,77 @@ class Record:
 
 
 @dataclass(slots=True)
+class Line:
+    """A line of the accounts the *filer* names and this project's chart does not carry.
+
+    Asked for directly: *"the 'Which line of the Balance sheet' is limited to pre-defined
+    entries... I've already found entries in the 10-K that aren't in the pre-defined entries.
+    offer an alternative entry... consisting of the header extracted from the 10-K. Add this to
+    the pre-defined list for future accounting periods of this instrument"* -- and, on where it
+    belongs, *"it would need to also define which section of the accounts it belonged to"*.
+
+    ``metric`` is the taxonomy tag the figure was tagged with, used verbatim: it is the identity
+    the *filing* gives the line, it cannot collide with a canonical metric (those have no colon),
+    and it is what makes the figure count -- with the calculation linkbase read, a declared
+    subtotal asks for each of its children by tag, and a line keyed by its tag answers.
+
+    ``label`` is the filer's own header for it, which is what a reader recognises; ``section`` is
+    which heading of the accounts it sits under, which is what makes it *appear* somewhere.
+    """
+
+    metric: str
+    label: str
+    statement: str
+    section: str
+    side: str = CREDIT
+    tag: str = ""
+    at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "statement": self.statement,
+            "section": self.section,
+            "side": self.side if self.side in SIDES else CREDIT,
+            "tag": self.tag or self.metric,
+            "at": self.at or stamp(),
+        }
+
+    @classmethod
+    def from_dict(cls, metric: str, payload: Mapping[str, Any]) -> Line:
+        return cls(
+            metric=metric,
+            label=str(payload.get("label") or metric),
+            statement=str(payload.get("statement") or ""),
+            section=str(payload.get("section") or ""),
+            side=str(payload.get("side") or CREDIT),
+            tag=str(payload.get("tag") or metric),
+            at=str(payload.get("at") or ""),
+        )
+
+
+@dataclass(slots=True)
 class Rules:
     """What a filer's periods all have in common, as far as a reader has said so.
 
-    Removals only, for now: a *value* is a fact about one period, and the mapping half of
-    this record arrives with the filing picker, which is what gives a tag something to map.
+    Two halves, and they are different kinds of statement. A **removal** says a line is not one
+    of this company's accounts, which is as true of its other years as of this one. A **line** is
+    a caption the filer uses that this project's chart does not carry, learned once from a filing
+    so that every later period offers it in the same section -- which is the only way a reader can
+    put a figure on it in the next year without re-teaching the page.
     """
 
     removed: dict[str, Removal] = field(default_factory=dict)
+    lines: dict[str, Line] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
-        return bool(self.removed)
+        return bool(self.removed or self.lines)
 
     def as_dict(self) -> dict[str, Any]:
-        return {"removed": {name: entry.as_dict() for name, entry in self.removed.items()}}
+        return {
+            "removed": {name: entry.as_dict() for name, entry in self.removed.items()},
+            "lines": {name: entry.as_dict() for name, entry in self.lines.items()},
+        }
 
     @classmethod
     def from_dict(cls, payload: Any) -> Rules:
@@ -220,7 +277,12 @@ class Rules:
                 str(name): Removal.from_dict(str(name), entry)
                 for name, entry in (payload.get("removed") or {}).items()
                 if isinstance(entry, dict)
-            }
+            },
+            lines={
+                str(name): Line.from_dict(str(name), entry)
+                for name, entry in (payload.get("lines") or {}).items()
+                if isinstance(entry, dict)
+            },
         )
 
 
@@ -232,6 +294,47 @@ def stamp() -> str:
 def load_period(period: FundamentalPeriod) -> Record:
     """A row's own corrections, or an empty record."""
     return Record.from_dict(getattr(period, "corrections", None))
+
+
+def learn_line(
+    rules: Rules,
+    metric: str,
+    *,
+    label: str,
+    statement: str,
+    section: str,
+    side: str = CREDIT,
+    tag: str = "",
+) -> Line:
+    """Record a caption this filer uses, so every later period offers it in the same section.
+
+    Learned once and kept, rather than re-derived from each filing: the picker gives a *label*
+    and a *tag* from one document, and the thing that has to survive into the next year is where
+    the line belongs -- which no filing states machine-readably. Learning the same tag again
+    **updates** it rather than duplicating it, which is what a filer renaming a caption means
+    ("Unearned revenue" to "Short-term unearned revenue"), and the heading travels with the label
+    for the same reason: a reader who moves a line to another heading has said where it belongs.
+    """
+    line = Line(
+        metric=metric,
+        label=label.strip() or metric,
+        statement=statement,
+        section=section,
+        side=side if side in SIDES else CREDIT,
+        tag=tag or metric,
+    )
+    rules.lines[metric] = line
+    return line
+
+
+def forget_line(rules: Rules, metric: str) -> bool:
+    """Stop offering a learned line, and report whether there was one."""
+    return rules.lines.pop(metric, None) is not None
+
+
+def known_line(rules: Rules | None, metric: str) -> Line | None:
+    """The learned line for a metric, if this filer taught us one."""
+    return rules.lines.get(metric) if rules else None
 
 
 def save_period(session: Any, period: FundamentalPeriod, record: Record) -> None:
@@ -261,7 +364,8 @@ def save_filer(session: Any, cik: str, rules: Rules) -> None:
         row = AppSetting(key=key(cik))
         session.add(row)
     row.value = rules.as_dict()
-    row.note = f"{len(rules.removed)} line(s) removed for this filer"
+    learned = f" and {len(rules.lines)} line(s) learned" if rules.lines else ""
+    row.note = f"{len(rules.removed)} line(s) removed for this filer{learned}"
     session.flush()
 
 
@@ -622,6 +726,7 @@ __all__ = [
     "NO_REASON",
     "SETTING_PREFIX",
     "Correction",
+    "Line",
     "Record",
     "Removal",
     "Rules",
@@ -631,8 +736,11 @@ __all__ = [
     "corrections_for",
     "filer_periods",
     "forget",
+    "forget_line",
     "forget_rule",
     "key",
+    "known_line",
+    "learn_line",
     "link_target",
     "load_filer",
     "load_period",

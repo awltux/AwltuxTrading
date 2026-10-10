@@ -428,6 +428,48 @@ test("the filing's own name for the line rides along as the note", () => {
   assert.equal(url.searchParams.get("url"), null, "no anchor when the element has no id");
 });
 
+test("the caption travels as its own property, so the form can offer it as a line", () => {
+  // The confirmation page offers the filing's header as a *line to create* when the chart has
+  // nothing for it -- so the caption is a parameter in its own right, not only the wording of a
+  // note. The heading travels with it, because a line needs one to be printed under.
+  const url = new URL(
+    picker.confirmUrl(
+      "http://127.0.0.1:8092/filing/278/pick",
+      278,
+      178,
+      "balance_sheet",
+      "current_liabilities",
+      FIGURE,
+      "Short-term unearned revenue",
+      "",
+      "Current liabilities"
+    )
+  );
+
+  assert.equal(url.searchParams.get("caption"), "Short-term unearned revenue");
+  assert.equal(url.searchParams.get("section"), "Current liabilities");
+  assert.equal(url.searchParams.get("metric"), "current_liabilities", "the residual's own line");
+});
+
+test("a filing page with no heading says nothing rather than sending an empty one", () => {
+  const url = new URL(
+    picker.confirmUrl(
+      "http://127.0.0.1:8092/filing/278/pick",
+      278,
+      178,
+      "balance_sheet",
+      "total_assets",
+      FIGURE,
+      "Total assets",
+      "",
+      ""
+    )
+  );
+
+  assert.equal(url.searchParams.get("section"), null);
+  assert.equal(url.searchParams.get("caption"), "Total assets");
+});
+
 test("the link is absolute on this application, whatever the document's <base> says", () => {
   // A filing may carry a `<base href="https://www.sec.gov/...">`, and a root-relative href in
   // that document resolves against it -- sending the reader to EDGAR with our query string.

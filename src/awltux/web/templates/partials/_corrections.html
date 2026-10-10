@@ -13,7 +13,7 @@
 
 {% from "partials/_help.html" import help %}
 {% set note = correction_note %}
-{% if note or corrections %}
+{% if note or corrections or learned_lines %}
   <section class="accounts-corrections" id="corrections">
     <h2>Corrections to these accounts{{ help('corrected') }}</h2>
     {% if note %}<p class="notice">{{ note }}</p>{% endif %}
@@ -81,6 +81,29 @@
         {% endfor %}
         </tbody>
       </table>
+    {% endif %}
+    {% if learned_lines %}
+      {# Lines this filer's filings name that the chart does not. Shown because they change what
+         the page offers, and because forgetting one is the only way back from a heading learned
+         by mistake. #}
+      <p class="muted small">
+        <strong>Lines learned from this company’s filings</strong>
+        ({{ learned_lines | length }}):&#32;
+        {% for line in learned_lines %}
+          <code>{{ line.label }}</code>
+          <span class="muted">under {{ line.section }}</span>
+          <form method="post" action="/accounts/{{ period.id }}/filer-lines/forget" class="inline">
+            <input type="hidden" name="metric" value="{{ line.metric }}">
+            <input type="hidden" name="statement" value="{{ statement }}">
+            <button type="submit" class="small">stop offering it</button>
+          </form>
+          {% if not loop.last %}<br>{% endif %}
+        {% endfor %}
+        <br>
+        Offered in every period this company filed, because a figure read out of one of its filings
+        was put on it here. Forgetting one stops it being offered and changes no figure: a value
+        already written to it stays on the period it was written to.
+      </p>
     {% endif %}
     <p class="muted small">
       Something in the extracted accounts is wrong?
