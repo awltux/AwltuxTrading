@@ -143,13 +143,20 @@
    checks on the health tab are the ones a correction moves. #}
 {% if filing %}
   {# Said once rather than on every residual: a table of underlined figures with no explanation
-     reads as decoration, and the point of the link is the one thing a reader cannot guess. #}
+     reads as decoration, and the point of the link is the one thing a reader cannot guess.
+
+     The link on each heading is the other half, and the one that matters when nothing is out
+     by anything: the residual links are the *only* way into the filing for a set of accounts
+     that reconciles, and a reader adding a line the extractor never had has no residual to
+     follow. Reported 2026-10-10 against a filer whose balance sheet was exactly in balance. #}
   <p class="muted small">
     These figures are the filer's own tagged accounts, and we hold the
     <a href="{{ filing.document }}" target="_blank" rel="noopener">{{ filing.type }}</a>
     they were filed in. Where a subtotal is
     <em>out by</em> something, that figure opens the same filing with this period and this line
-    attached — click the number the filer actually tagged and it can be put on this line.
+    attached — click the number the filer actually tagged and it can be put on this line. A
+    heading's <em>read a figure</em> link opens the same filing with nothing attached, for a
+    line the extractor never had.
   </p>
 {% endif %}
 {% include "partials/_corrections.html" %}
@@ -159,6 +166,13 @@
     <h2>{{ section.title }}
       <span class="muted small">
         <a href="/accounts/{{ period.id }}/corrections/new?statement={{ built.which }}&amp;section={{ section.title | urlencode }}">add a line</a>
+        {% if filing %}
+          {# No line and no label: the reader is opening the filing to find a figure, not to
+             follow up one that is out. What they clicked then chooses the line on the form,
+             which already knows which heading they were working under. #}
+          &middot; <a href="{{ filing.pick }}&amp;awltux_statement={{ built.which }}&amp;awltux_section={{ section.title | urlencode }}"
+                     target="_blank" rel="noopener">read a figure from the {{ filing.type }}</a>
+        {% endif %}
       </span>
     </h2>
     <table class="grid compact ledger">

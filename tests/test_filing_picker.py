@@ -14,6 +14,18 @@ So three properties, and the third is the one with teeth:
   document, because a link into a copy, or into an EDGAR fetch, is a different offer;
 * the picker page is served under a policy that runs our script and nothing of the filing's,
   while the ordinary document route keeps the bare ``sandbox`` it has always had.
+
+Two more, added 2026-10-10: *"not all 10-K documents use xbrl ... Is there any way that the
+tables in the local 10-K can be intelligently searched for the primary accounts and
+instrumented as best they can."*
+
+* every heading also opens the filing **with no line attached**, because a residual link is
+  the only way in to a set of accounts that reconciles -- and the reader that prompted this
+  had a balance sheet out by exactly nothing;
+* a document with no `ix:` elements at all has the numbers in its tables offered instead, with
+  the row's caption, matched against this project's own lines for the statement the reader came
+  from. The matching and the reading are in `filing-picker.js`, driven by
+  `tests/js/filing_picker.test.mjs`; what the page hands it is asserted here.
 """
 
 from __future__ import annotations
@@ -48,6 +60,18 @@ FILING_HTML = """<html><head><title>10-K</title>
    contextRef="C_1" unitRef="U_USD" xsi:nil="true"></ix:nonFraction></p>
 </body></html>"""
 
+#: A filing whose accounts are in tables and whose numbers carry no tags at all. Modelled on
+#: `AREC_US_EQ`'s 10-K and `BMM_US_EQ`'s 40-F -- the two of the 603 stored documents that are
+#: not inline XBRL (measured 2026-10-10).
+UNTAGGED_FILING = """<html><head><title>10-K</title></head><body>
+<table><tr><td></td><td>December 31,</td><td>2024</td><td>2023</td></tr>
+<tr><td></td><td>Current assets:</td><td></td><td></td></tr>
+<tr><td></td><td>Cash and cash equivalents</td><td>$ 604,485</td><td>$ 1,318,854</td></tr>
+<tr><td></td><td>Receivables</td><td>38,730</td><td>31,204</td></tr>
+<tr><td></td><td>Total current assets</td><td>643,215</td><td>1,350,058</td></tr>
+</table>
+</body></html>"""
+
 FIGURES = {
     "revenue": 1_000.0,
     "cost_of_goods_sold": 600.0,
@@ -65,7 +89,14 @@ FIGURES = {
 }
 
 
-def _store(session, settings, *, source: str = "xbrl_companyfacts", with_document: bool = True):
+def _store(
+    session,
+    settings,
+    *,
+    source: str = "xbrl_companyfacts",
+    with_document: bool = True,
+    document: str = FILING_HTML,
+):
     """A filer, one period, and the filing the government's tags came from."""
     session.add(make_instrument("TEST_US_EQ", name="Test Co", sec_cik=CIK))
     session.flush()
@@ -86,7 +117,7 @@ def _store(session, settings, *, source: str = "xbrl_companyfacts", with_documen
         relative = Path("raw") / "filings" / "TEST_US_EQ" / "filing.htm"
         path = settings.data_dir / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(FILING_HTML, encoding="utf-8")
+        path.write_text(document, encoding="utf-8")
         filing.raw_path = str(relative)
     period = make_period(
         "TEST_US_EQ",
@@ -255,6 +286,58 @@ class TestTheResidualBecomesAWayIntoTheFiling:
         assert row.select_one("a.work") is None
 
 
+class TestTheWayInWithoutAResidual:
+    """The other half of the link, and the one that matters when nothing is out by anything.
+
+    Reported 2026-10-10 against `DAC_US_EQ`, whose balance sheet reconciles exactly: every
+    residual is zero, so every residual link is absent, and a reader wanting to add a line the
+    extractor never had had no route into the filing at all. Measured then: the document *is*
+    inline XBRL (2,558 `ix:nonFraction` facts), so the reader's diagnosis -- "not all 10-K
+    documents use xbrl" -- was not what was wrong; the entry point was.
+    """
+
+    def test_each_heading_offers_the_filing_with_no_line_attached(self, client, session, settings):
+        period, filing = _store(session, settings)
+
+        soup = BeautifulSoup(client.get(f"/accounts/{period.id}/balance_sheet").text, "lxml")
+        links = [
+            anchor
+            for anchor in soup.select(f"a[href*='/filing/{filing.id}/pick']")
+            if "read a figure" in anchor.get_text(" ")
+        ]
+
+        assert links, "no heading offers a way into the filing without a residual"
+        for link in links:
+            assert "awltux_line" not in link["href"], (
+                "a line would put a figure on the total the reader is not looking at"
+            )
+            assert f"awltux_period={period.id}" in link["href"]
+            assert "awltux_statement=balance_sheet" in link["href"]
+            # The heading the reader is working in, so a line created out of what they click
+            # lands beside its neighbours rather than at the top of the statement.
+            assert "awltux_section=" in link["href"]
+
+    def test_the_link_is_offered_once_per_heading_and_not_per_line(self, client, session, settings):
+        """Fourteen links in a table of twenty lines is noise. One per heading is enough: the
+        reader opens the filing, clicks a figure, and the confirmation form asks the rest."""
+        period, filing = _store(session, settings)
+
+        soup = BeautifulSoup(client.get(f"/accounts/{period.id}/balance_sheet").text, "lxml")
+        headings = [h for h in soup.select("h2") if h.select_one(f"a[href*='/filing/{filing.id}/pick']")]
+
+        assert len(headings) == len(
+            [h for h in soup.select("h2") if "add a line" in h.get_text(" ")]
+        )
+
+    def test_a_filing_we_do_not_hold_offers_nothing(self, client, session, settings):
+        period, _ = _store(session, settings, with_document=False)
+
+        soup = BeautifulSoup(client.get(f"/accounts/{period.id}/balance_sheet").text, "lxml")
+
+        assert not soup.select("a[href*='/pick']")
+        assert not [h for h in soup.select("h2") if "read a figure" in h.get_text(" ")]
+
+
 class TestThePickerPage:
     def test_the_picker_runs_our_script_and_not_the_filing_s(self, client, session, settings):
         """The filing is third-party HTML. Its own scripts are removed rather than left to be
@@ -319,6 +402,45 @@ class TestThePickerPage:
         assert response.status_code == 200
         assert "ix:nonfraction" in response.text
 
+    def test_the_page_carries_the_statement_s_lines_for_the_table_fallback(
+        self, client, session, settings
+    ):
+        """An untagged filing has no `ix:` elements to say which row is which of this project's
+        accounts, so the chart's own labels for the statement travel with the page and the
+        script matches the row captions against them."""
+        _, filing = _store(session, settings)
+
+        soup = BeautifulSoup(
+            client.get(
+                f"/filing/{filing.id}/pick", params={"awltux_statement": "balance_sheet"}
+            ).text,
+            "lxml",
+        )
+        tag = soup.select_one("script[src*='filing-picker.js']")
+        accounts = json.loads(tag["data-awltux-accounts"])
+
+        assert accounts, "no lines were handed to the picker"
+        by_metric = {entry["metric"]: entry["label"] for entry in accounts}
+        assert by_metric["total_assets"] == "Total assets"
+        # Only the statement the reader came from: a balance-sheet caption must not be matched
+        # against an income-statement line.
+        assert "revenue" not in by_metric
+        assert "cost_of_goods_sold" not in by_metric
+
+    def test_a_filing_with_no_tagged_figures_is_still_served_with_the_picker(
+        self, client, session, settings
+    ):
+        """The document itself is served whatever it contains -- the script decides whether the
+        tables can be read, and a filer who furnishes plain HTML is a document to read, not a
+        reason to refuse the page."""
+        _, filing = _store(session, settings, document=UNTAGGED_FILING)
+
+        body = client.get(f"/filing/{filing.id}/pick").text
+
+        assert "ix:nonFraction" not in body
+        assert "Cash and cash equivalents" in body
+        assert "/static/filing-picker.js" in body
+
 
 class TestTheConfirmPageTakesWhatWasClicked:
     def test_a_clicked_figure_lands_on_the_line_the_property_named(
@@ -353,6 +475,59 @@ class TestTheConfirmPageTakesWhatWasClicked:
         # And the page says where it came from, so a reader who arrived by a click knows why the
         # form is already filled in.
         assert "clicked in the filing rather than typed" in soup.get_text(" ")
+
+    def test_a_figure_clicked_out_of_an_untagged_table_says_so(
+        self, client, session, settings
+    ):
+        """There is no tag to carry, so the page has to say why the field below is empty and
+        why its caption cannot become a line of its own: a line this project learns is
+        remembered by the filing's tag, and this filing has none."""
+        period, _ = _store(session, settings, document=UNTAGGED_FILING)
+
+        soup = BeautifulSoup(
+            client.get(
+                f"/accounts/{period.id}/corrections/new",
+                params={
+                    "statement": "balance_sheet",
+                    "value": "604485",
+                    "origin": "table",
+                    "caption": "Cash and cash equivalents",
+                    "note": "filed as: Cash and cash equivalents",
+                    "section": "Current assets",
+                },
+            ).text,
+            "lxml",
+        )
+
+        assert soup.select_one("input[name=origin]")["value"] == "table"
+        assert soup.select_one("input[name=tag]")["value"] == ""
+        assert soup.select_one("input[name=value]")["value"] == "604485"
+        assert soup.select_one("input[name=note]")["value"] == (
+            "filed as: Cash and cash equivalents"
+        )
+        # No metric was sent, so the form opens on the first line of the heading the reader was
+        # working in rather than on nothing at all.
+        assert soup.select_one("select[name=metric] option[selected]") is not None
+        # Whitespace normalised: the sentence is wrapped in the template, and a substring that
+        # spans a line break is not a substring of the rendered text.
+        text = " ".join(soup.get_text(" ").split())
+        assert "carries no tagged figures at all" in text
+        assert "no way to offer its caption as a line of its own" in text
+
+    def test_an_origin_the_route_does_not_know_is_recorded_as_typed(
+        self, client, session, settings
+    ):
+        period, _ = _store(session, settings)
+
+        soup = BeautifulSoup(
+            client.get(
+                f"/accounts/{period.id}/corrections/new",
+                params={"statement": "balance_sheet", "value": "1", "origin": "sandbox"},
+            ).text,
+            "lxml",
+        )
+
+        assert soup.select_one("input[name=origin]")["value"] == "typed"
 
     def test_the_origin_is_recorded_so_the_panel_can_say_it_was_read_not_typed(
         self, client, session, settings

@@ -38,7 +38,8 @@
             <td>
               {% if change.action == 'added' %}
                 <span class="good">added</span>
-                {% if change.origin == 'filing' %}<span class="muted small">from the filing</span>{% endif %}
+                {% if change.origin == 'filing' %}<span class="muted small">from the filing</span>
+                {% elif change.origin == 'table' %}<span class="muted small">from a table in the filing</span>{% endif %}
                 {% if change.overrides_rule %}
                   <br><span class="muted small">
                     overriding the removal recorded for every period this filer has: a figure

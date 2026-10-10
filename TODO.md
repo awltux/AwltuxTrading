@@ -1206,11 +1206,20 @@ and the page — `addFigure`'s DOM assembly, the `document.addEventListener("cli
 registration, and `mount()` — is not covered by anything; a typo there reads as "clicking a
 figure does nothing" with nothing in any log.
 
+**Re-measured 2026-10-10**, when the untagged-table fallback was added: the gap is the same
+seam and it is now wider. `printedNumber`, `rowFigures`, `markTableFigures` and `matchLabel` are
+exported and driven by the node suite (46 tests), but what runs them on a real document —
+`mount()`'s choice between the facts and the tables, and the click on a marked `<td>` — is
+still hand-verified only. `mount()` also picks up an account list off the script tag now, and a
+malformed one is caught and ignored rather than tested.
+
 Verified by hand instead, on 2026-10-09: the tray mounts on the live picker page for filing 278
 (Microsoft's 2026 10-K) through the `sandbox allow-scripts` policy, so `document.createElement`,
 `appendChild` and the injected `<style>` all work there. The click itself was not driven — the
 browser tooling available in that session could not target an `ix:nonFraction` element, because
-the accessibility tree gives refs to rows and controls and these carry neither.
+the accessibility tree gives refs to rows and controls and these carry neither. On 2026-10-10 the
+tray was confirmed to mount the same way for filing 1890 (Danaos' 20-F), which is the document
+that prompted the fallback and which *does* carry 2,558 tagged facts.
 
 Closing it needs either a click-targeting browser harness or a small DOM stand-in. The second is
 ~60 lines of stub and was judged not worth it while the logic above it is exported and tested;
@@ -1589,3 +1598,30 @@ real output in hand, which is why it is not done blind: whether a model-reported
 overwrite one a person recorded, and whether the model's `reason` is quotable as evidence when
 the report's own `validate_extraction` gate demands a quoted span for a figure but has no such
 rule for prose.
+
+### A figure clicked out of an untagged table cannot become a line of its own
+
+Added 2026-10-10 with the table fallback in `filing-picker.js`. A figure clicked out of a
+document with no `ix:` elements carries no taxonomy tag, and a learned line's identity *is* its
+tag (`analysis/corrections.py`: "the identity the filing gives the caption"), so the
+confirmation page offers it on an existing line or a previously learned one and says why it
+cannot offer the caption as a new line.
+
+What it would take is an identity that survives next year's filing, and none of the obvious
+candidates is one: the caption verbatim is the filer's presentation ("Total current assets" one
+year, "Total current assets:" the next), and a hash of it is the same string with the same
+problem. The honest version is a per-filer *name* the reader gives once -- the learned-line
+machinery with the tag column empty and a stable key the reader chose -- which is a feature, not
+a fix, and is worth building only when a filer without XBRL actually needs a line this project's
+chart lacks. Measured 2026-10-10: 2 of the 603 stored documents have no `ix:` elements at all
+(`AREC_US_EQ`'s 10-K, `BMM_US_EQ`'s 40-F), and neither has been read by hand yet.
+
+### Reading the tables of a *partly* tagged document
+
+Added 2026-10-10. The table fallback runs only when a document has **no** `ix:nonFraction`
+elements. A filing that tags its statements but not, say, a note, would get the tagged half and
+nothing from the tables -- which is the right default, because a second reading of the same
+table could only disagree with the filer's own tags, but it is a judgement rather than a
+measurement. What would settle it: a count of stored documents that hold both tagged and
+untagged numbers in the same table, which nothing measures today. Two documents of 603 have no
+tags at all and 601 have tags; the mixed case is assumed to be rare and has not been counted.

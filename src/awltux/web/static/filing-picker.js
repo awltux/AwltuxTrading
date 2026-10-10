@@ -29,6 +29,12 @@
   "use strict";
 
   var FACT_TAG = "ix:nonfraction";
+  //: A number in a filing's table that carries no `ix:` element at all. Measured 2026-10-10:
+  //: 601 of the 603 stored filing documents are inline XBRL, so this is the fallback for the
+  //: two that are not (`AREC_US_EQ`'s 10-K and `BMM_US_EQ`'s 40-F) -- and for the next filer
+  //: who furnishes plain HTML.
+  var TABLE_CLASS = "awltux-tablefact";
+  var SCRIPT_ID = "awltux-picker-script";
   var HINT = "Click a figure in the report to read it here first.";
 
   /* ---------------------------------------------------------------- the value */
@@ -62,6 +68,26 @@
     if ((element.getAttribute("xsi:nil") || "").toLowerCase() === "true") {
       return { reason: "the filer tagged this line as nil, so there is no figure here" };
     }
+    // A table cell the picker marked itself, in a document that tags nothing. The value is the
+    // one `printedNumber` read out of the cell, so there is no scale or sign to apply and no
+    // tag, unit or context to report -- saying so is the honest answer, and the tray shows it.
+    if (element.hasAttribute("data-awltux-value")) {
+      var printed = element.getAttribute("data-awltux-value");
+      var asNumber = Number(printed);
+      if (!isFinite(asNumber)) {
+        return { reason: "this cell does not hold a number" };
+      }
+      return {
+        value: asNumber,
+        raw: element.getAttribute("data-awltux-raw") || printed,
+        scale: 0,
+        sign: "",
+        tag: "",
+        unit: "",
+        context: "",
+        origin: "table"
+      };
+    }
     var text = String(element.textContent == null ? "" : element.textContent)
       .replace(/\u00a0/g, " ")
       .trim()
@@ -92,8 +118,39 @@
       sign: sign,
       tag: element.getAttribute("name") || "",
       unit: element.getAttribute("unitRef") || "",
-      context: element.getAttribute("contextRef") || ""
+      context: element.getAttribute("contextRef") || "",
+      origin: "filing"
     };
+  }
+
+  function printedNumber(text) {
+    /* A number as a *table* prints one, with no element to say what it is.
+     *
+     * Narrow on purpose. A figure written onto a balance sheet out of a cell the page
+     * misread is the failure this whole flow makes easiest, so anything this cannot read
+     * exactly -- a percentage, a footnote marker, a range, a dash, a word -- returns null
+     * and the cell is not offered at all. Parentheses are a negative, a currency symbol is
+     * presentation, and a comma is a thousands separator: those are the filing's own
+     * conventions and are read rather than refused.
+     *
+     * A bare four-digit year is refused as well. A filing's tables are full of them -- the
+     * date header over a column, a maturity year in a debt note -- and one of those landing
+     * on a line of the accounts is worse than a line the reader has to type.
+     */
+    var raw = String(text == null ? "" : text)
+      .replace(/\u00a0/g, " ")
+      .trim();
+    if (!raw) return null;
+    var body = raw.replace(/^[$£€¥]\s*/, "").replace(/\s+/g, "");
+    if (body.slice(-1) === "%") return null;
+    var negative = body.charAt(0) === "(" && body.slice(-1) === ")";
+    if (negative) body = body.slice(1, -1);
+    if (!/^\d{1,3}(,\d{3})*(\.\d+)?$|^\d+(\.\d+)?$/.test(body)) return null;
+    if (/^(19|20)\d{2}$/.test(body)) return null;
+    var value = Number(body.replace(/,/g, ""));
+    if (!isFinite(value)) return null;
+    if (negative) value = -value;
+    return { value: value, raw: raw };
   }
 
   function confirmUrl(base, filingId, period, statement, line, figure, caption, elementId, section) {
@@ -114,10 +171,13 @@
      */
     var target = new URL("/accounts/" + encodeURIComponent(period) + "/corrections/new", base);
     target.searchParams.set("statement", statement);
-    target.searchParams.set("metric", line);
+    // Omitted when the reader came in without a line to fill: the confirmation form then asks
+    // which line the figure belongs on, which is the question an "add a line" visit is there
+    // to answer. An empty `metric` would be read as a line called "".
+    if (line) target.searchParams.set("metric", line);
     target.searchParams.set("value", figureString(figure.value));
     target.searchParams.set("tag", figure.tag);
-    target.searchParams.set("origin", "filing");
+    target.searchParams.set("origin", figure.origin || "filing");
     if (caption) {
       target.searchParams.set("caption", caption);
       target.searchParams.set("note", "filed as: " + caption);
@@ -142,7 +202,7 @@
      * Where the figure *is* the first cell there is no caption to show and none is invented.
      * The walk is by hand rather than with `closest`, so it can be exercised without a browser.
      */
-    var node = element.parentElement;
+    var node = element;
     var cell = null;
     while (node) {
       var name = (node.tagName || "").toLowerCase();
@@ -172,6 +232,164 @@
       .replace(/\s+/g, " ")
       .trim();
     return text.slice(0, 120);
+  }
+
+  function normaliseLabel(text) {
+    /* A caption reduced to the thing two spellings of it have in common.
+     *
+     * The filing writes "Total current assets:" and the chart writes "Total current assets".
+     * Case, punctuation, a trailing colon, a bracketed note reference -- "(note 4)", "(1)",
+     * "(net of allowance)" -- and a footnote marker are presentation, so they go; the words are
+     * the identity. Used on *both* sides of the comparison, which is why it lives here rather
+     * than on the server that sends the labels.
+     */
+    return String(text == null ? "" : text)
+      .toLowerCase()
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/\[[^\]]*\]/g, " ")
+      .replace(/[\u2018\u2019']/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  //: Words that carry no identity in an account caption: a filing writes "Cash and cash
+  //: equivalents" where the chart writes "Cash and equivalents", and the second "cash" and the
+  //: "and" are the whole of the difference. Dropped before comparing, so that pair matches.
+  var EMPTY_WORDS = { "and": 1, "of": 1, "the": 1, "to": 1, "for": 1, "in": 1, "on": 1 };
+
+  function labelTokens(text) {
+    /* The words of a caption, without repeats -- compared as a *set*, which is what makes the
+     * matching safe in both directions:
+     *
+     * * "Cash and cash equivalents" and "Cash and equivalents" both reduce to
+     *   {cash, equivalents}, so the commonest divergence in a real filing matches;
+     * * "Total assets" reduces to {total, assets} and "Total current assets" to
+     *   {total, current, assets}, which are **not** equal -- so the most dangerous pair in a
+     *   balance sheet, a subtotal against the one below it, does not.
+     *
+     * A caption that matches nothing simply leaves the reader to choose the line in the form,
+     * which is where they were going anyway. A wrong guess pre-selected costs a correction.
+     */
+    var words = normaliseLabel(text).split(" ").filter(Boolean);
+    var seen = {};
+    var out = [];
+    for (var i = 0; i < words.length; i++) {
+      if (EMPTY_WORDS[words[i]] || seen[words[i]]) continue;
+      seen[words[i]] = 1;
+      out.push(words[i]);
+    }
+    out.sort();
+    return out;
+  }
+
+  function matchLabel(caption, known) {
+    /* Which of this project's lines a filing's caption looks like, or "".
+     *
+     * `known` is an array of `{label, metric}` for the statement the reader came from, so a
+     * caption on the balance sheet is never matched against an income-statement line.
+     */
+    var wanted = labelTokens(caption);
+    if (!wanted.length) return "";
+    for (var i = 0; i < known.length; i++) {
+      var theirs = labelTokens(known[i].label);
+      if (theirs.length !== wanted.length) continue;
+      var same = true;
+      for (var j = 0; j < wanted.length; j++) {
+        if (theirs[j] !== wanted[j]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return known[i].metric;
+    }
+    return "";
+  }
+
+  function inHeaderRow(row) {
+    /* A `th` row is a heading -- "2024", "2023" -- and its cells are dates, not figures. */
+    var node = row.parentElement;
+    while (node) {
+      var name = (node.tagName || "").toLowerCase();
+      if (name === "thead") return true;
+      if (name === "table" || name === "body") return false;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function cellsOf(row) {
+    var out = [];
+    var children = row.children || [];
+    for (var i = 0; i < children.length; i++) {
+      var tag = (children[i].tagName || "").toLowerCase();
+      if (tag === "td" || tag === "th") out.push(children[i]);
+    }
+    return out;
+  }
+
+  function rowFigures(row, known) {
+    /* What one table row offers: the caption the filing gives it, the line it looks like, and
+     * the cells that hold a readable figure.
+     *
+     * The caption is the **first cell with a word in it**, not simply the first cell: a filing
+     * lays out an indent, a bullet or an empty spacer in front of the label often enough that
+     * taking cell zero would caption half the statement with nothing. The cells that hold the
+     * figures are everything after it, on the same reasoning.
+     *
+     * Takes a row rather than reaching for the document, so a whole table can be exercised
+     * without a browser -- the same shape `contextDates` uses for contexts.
+     */
+    if ((row.tagName || "").toLowerCase() === "tr" && inHeaderRow(row)) {
+      return { caption: "", metric: "", values: [] };
+    }
+    var cells = cellsOf(row);
+    if (cells.length < 2) return { caption: "", metric: "", values: [] };
+    var at = -1;
+    for (var i = 0; i < cells.length; i++) {
+      if (/[a-z]/i.test(String(cells[i].textContent || ""))) {
+        at = i;
+        break;
+      }
+    }
+    if (at === -1 || at === cells.length - 1) {
+      return { caption: "", metric: "", values: [] };
+    }
+    var caption = String(cells[at].textContent || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    var values = [];
+    for (var j = at + 1; j < cells.length; j++) {
+      if ((cells[j].tagName || "").toLowerCase() === "th") continue;
+      var figure = printedNumber(cells[j].textContent);
+      if (figure) values.push({ cell: cells[j], value: figure.value, raw: figure.raw });
+    }
+    return { caption: caption, metric: matchLabel(caption, known), values: values };
+  }
+
+  function markTableFigures(rows, known) {
+    /* Every readable figure in every table, marked so a click can find it. Returns how many.
+     *
+     * This is the fallback for a report with no tagged figures at all. It is deliberately not
+     * run on a document that *is* tagged: there the facts are the filer's own statement of
+     * what each number is, and a second reading of the same table could only disagree with it.
+     */
+    var marked = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var found = rowFigures(rows[i], known);
+      for (var j = 0; j < found.values.length; j++) {
+        var cell = found.values[j].cell;
+        cell.className =
+          (cell.className ? cell.className + " " : "") + TABLE_CLASS;
+        cell.setAttribute("data-awltux-value", String(found.values[j].value));
+        cell.setAttribute("data-awltux-raw", found.values[j].raw);
+        cell.setAttribute("data-awltux-caption", found.caption);
+        if (found.metric) cell.setAttribute("data-awltux-metric", found.metric);
+        marked++;
+      }
+    }
+    return marked;
   }
 
   function dateInContext(context) {
@@ -243,7 +461,11 @@
     return {
       figure: figure,
       caption: captionOf(element),
-      elementId: element.getAttribute("id") || ""
+      elementId: element.getAttribute("id") || "",
+      // The line this row *looks like*, for a table cell the page could match against the
+      // chart. Empty for a tagged figure and for a caption nothing recognises, and the reader
+      // chooses the line in the confirmation form either way.
+      metric: element.getAttribute("data-awltux-metric") || ""
     };
   }
 
@@ -256,6 +478,7 @@
     module.exports = {
       transform: transform,
       figureOf: figureOf,
+      printedNumber: printedNumber,
       captionOf: captionOf,
       factFrom: factFrom,
       pick: pick,
@@ -263,6 +486,10 @@
       contextDates: contextDates,
       confirmUrl: confirmUrl,
       figureString: figureString,
+      normaliseLabel: normaliseLabel,
+      matchLabel: matchLabel,
+      rowFigures: rowFigures,
+      markTableFigures: markTableFigures,
     };
     return;
   }
@@ -279,9 +506,40 @@
   // marked as the other column rather than written in silently.
   var periodEnd = params.get("awltux_period_end") || "";
   var filingId = (window.location.pathname.match(/\/filing\/(\d+)\//) || [])[1] || "";
-  if (!period || !line) return;
+  // Only the period is required. A link that names a line is the reader following up a
+  // subtotal that is out by something; one that does not is the reader opening the filing to
+  // find a figure the extractor never had -- which is the *only* way in when every subtotal
+  // reconciles, so refusing it would leave those accounts with no route to their own filing.
+  if (!period) return;
+
+  // The chart's lines for the statement the reader came from, put on the script tag by the
+  // route. Used only by the untagged-table fallback, to say which of the project's accounts a
+  // row's caption looks like -- see `matchLabel`.
+  var known = [];
+  (function () {
+    var tag = document.getElementById(SCRIPT_ID);
+    var payload = tag ? tag.getAttribute("data-awltux-accounts") : "";
+    if (!payload) return;
+    try {
+      var parsed = JSON.parse(payload);
+      if (Object.prototype.toString.call(parsed) === "[object Array]") known = parsed;
+    } catch (error) {
+      // A payload this page cannot read means no line is pre-selected, which is where the
+      // reader starts anyway. It is not a reason to refuse to instrument the document.
+      known = [];
+    }
+  })();
 
   var dates = contextDates(document.getElementsByTagName("xbrli:context"));
+
+  function labelForMetric(metric) {
+    /* The chart's own name for a line recognised by a row's caption, for the tray's link. */
+    if (!metric) return "";
+    for (var i = 0; i < known.length; i++) {
+      if (known[i].metric === metric) return known[i].label;
+    }
+    return "";
+  }
 
   /* ----------------------------------------------------------------- the tray */
 
@@ -291,7 +549,9 @@
 
   var heading = document.createElement("p");
   heading.className = "awltux-tray-head";
-  heading.textContent = "Picked from this report \u2014 add one to " + label;
+  heading.textContent = line
+    ? "Picked from this report \u2014 add one to " + label
+    : "Picked from this report \u2014 click a figure, then say which line it is";
   tray.appendChild(heading);
 
   var list = document.createElement("ul");
@@ -312,7 +572,7 @@
   });
   tray.appendChild(clear);
 
-  function addFigure(figure, elementId, caption) {
+  function addFigure(figure, elementId, caption, metric) {
     hint.textContent = HINT;
     var item = document.createElement("li");
 
@@ -330,18 +590,27 @@
     item.appendChild(figureLine);
 
     // The working, so the figure can be checked rather than taken: what the filing printed,
-    // what it was scaled by, and the sign it carried.
+    // what it was scaled by, and the sign it carried. A figure read out of an untagged table
+    // has none of those, and says so rather than showing an empty sum.
     var working = document.createElement("span");
     working.className = "awltux-tray-working";
-    var steps = [figure.raw];
-    if (figure.scale) steps.push("\u00d7 10^" + figure.scale);
-    if (figure.sign === "-") steps.push("sign \u2212");
-    working.textContent = " = " + steps.join(" ");
+    if (figure.origin === "table") {
+      working.textContent = " = " + figure.raw + ", as the table prints it";
+    } else {
+      var steps = [figure.raw];
+      if (figure.scale) steps.push("\u00d7 10^" + figure.scale);
+      if (figure.sign === "-") steps.push("sign \u2212");
+      working.textContent = " = " + steps.join(" ");
+    }
     item.appendChild(working);
 
-    var tag = document.createElement("code");
-    tag.textContent = figure.tag;
-    item.appendChild(tag);
+    // Only when there is one. A table cell carries no tag, and an empty code block would say
+    // "we looked for a tag and found nothing" -- which is true but is not what the reader needs.
+    if (figure.tag) {
+      var tag = document.createElement("code");
+      tag.textContent = figure.tag;
+      item.appendChild(tag);
+    }
 
     if (figure.context) {
       var context = document.createElement("span");
@@ -375,7 +644,7 @@
       filingId,
       period,
       statement,
-      line,
+      metric || line,
       figure,
       caption,
       elementId,
@@ -383,7 +652,11 @@
     );
     link.target = "_blank";
     link.rel = "noopener";
-    link.textContent = "Add to " + label;
+    // Named after the line the figure is going onto when one is known -- the line the reader
+    // came in with, or the line the row's own caption matched -- and otherwise after what the
+    // link does, because the confirmation form is where the line gets chosen.
+    var onto = label || labelForMetric(metric);
+    link.textContent = onto ? "Add to " + onto : "Use this figure";
     item.appendChild(link);
 
     list.insertBefore(item, list.firstChild);
@@ -393,7 +666,8 @@
 
   function factFrom(node) {
     /* The nearest `ix:nonFraction` at or above this node -- which is how a click anywhere on a
-     * figure, including on a `<span>` inside it, finds the fact.
+     * figure, including on a `<span>` inside it, finds the fact -- or, in a report that tags
+     * nothing, the nearest table cell this script marked itself.
      *
      * Walked by hand rather than with `closest("ix\\:nonfraction")`: a colon in a CSS selector
      * has to be escaped, and that escaping is the kind of detail that works until the day it
@@ -410,6 +684,7 @@
      */
     while (node) {
       if (node.tagName && node.tagName.toLowerCase() === FACT_TAG) return node;
+      if (node.hasAttribute && node.hasAttribute("data-awltux-value")) return node;
       node = node.parentElement;
     }
     return null;
@@ -437,7 +712,7 @@
         hint.textContent = "That figure cannot be read: " + picked.problem + ".";
         return;
       }
-      addFigure(picked.figure, picked.elementId, picked.caption);
+      addFigure(picked.figure, picked.elementId, picked.caption, picked.metric);
     },
     true
   );
@@ -446,6 +721,11 @@
   style.textContent = [
     ".awltux-fact{cursor:pointer;border-bottom:1px dotted rgba(120,120,120,.75)}",
     ".awltux-fact:hover{background:rgba(227,179,65,.18)}",
+    // An untagged table cell: the same affordance, and the same colour when the row's caption
+    // matched one of this project's lines -- that row is the one the reader most likely wants.
+    ".awltux-tablefact{cursor:pointer;border-bottom:1px dotted rgba(120,120,120,.75)}",
+    ".awltux-tablefact:hover{background:rgba(227,179,65,.18)}",
+    ".awltux-tablefact[data-awltux-metric]{border-bottom-color:rgba(138,180,248,.9)}",
     // A tray rather than a modal: the report has to stay readable while a figure is checked
     // against the statement it is going onto, and a modal would hide the thing being read.
     ".awltux-tray{position:fixed;right:12px;bottom:12px;z-index:2147483647;width:340px;",
@@ -469,11 +749,23 @@
   function mount() {
     document.body.appendChild(style);
     document.body.appendChild(tray);
-    if (!markFacts()) {
+    if (markFacts()) return;
+    // No tagged figures: this filer furnished the report as plain HTML, so the tables are read
+    // instead. `getElementsByTagName("tr")` is every row in the document, including the ones
+    // inside the notes -- a report has hundreds of tables and the reader is looking for one
+    // number in one of them, which is why the row's caption is carried onto every figure.
+    var marked = markTableFigures(document.getElementsByTagName("tr"), known);
+    if (marked) {
       hint.textContent =
-        "This report holds no tagged figures to click. It may be the wrong document -- the " +
-        "accounts can still be corrected by hand from the accounts page.";
+        "This report carries no tagged figures, so the numbers in its tables are offered " +
+        "instead. " +
+        marked +
+        " of them can be read: click the one you want and say which line it belongs on.";
+      return;
     }
+    hint.textContent =
+      "This report holds no tagged figures and no table figures that can be read. It may be " +
+      "the wrong document -- the accounts can still be corrected by hand from the accounts page.";
   }
 
   // The script is loaded with `defer`, so the document is parsed and `body` exists by the time

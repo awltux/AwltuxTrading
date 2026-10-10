@@ -93,6 +93,14 @@
       writing it in — the report tags thousands of numbers and not all of them belong on this
       statement.
     </p>
+  {% elif origin == 'table' %}
+    <p class="notice">
+      This figure was clicked in a table of the filing, which carries no tagged figures at all —
+      so there is no tag below, no machine-readable name for the line it came from, and no way
+      to offer its caption as a line of its own: a line this project learns is remembered by the
+      filing's tag, and this filing has none. The caption the row was filed under is in the
+      note. Check the figure, and say which line it belongs on.
+    </p>
   {% endif %}
   <p class="muted small">
     A figure put in by hand is a fact about <em>this period</em> only: it is stored on this set

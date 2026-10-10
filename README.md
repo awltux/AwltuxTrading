@@ -448,6 +448,26 @@ chooses the side and presses the button there. The picker runs in an opaque orig
 but its own document, which is exactly the position from which it should not be trusted with a
 write.
 
+**Every heading has a way in, not only a broken subtotal.** A residual link is the *only* route
+into the filing for a set of accounts that reconciles — and a reader adding a line the extractor
+never had has no residual to follow. So each heading on the accounts page also offers *read a
+figure from the 10-K*, which opens the same picker with nothing attached: the reader clicks the
+number, and the confirmation form asks which line it belongs on.
+
+**And a filing with no tagged figures is still readable.** 601 of the 603 stored filing documents
+are inline XBRL (measured 2026-10-10); for the two that are not — `AREC_US_EQ`'s 10-K and
+`BMM_US_EQ`'s 40-F — the picker reads the numbers out of the tables instead. A row is captioned
+by its first cell that holds a word, and every readable figure after it becomes clickable, with
+the figure read the way a table prints one (`$ 604,485`, `(1,347,784 )`) and anything else —
+a percentage, a footnote marker, a bare year, a dash — refused rather than guessed at.
+
+The row's caption is then matched against this project's own labels for the statement the reader
+came from, and a match pre-selects that line on the confirmation form. The match is on the whole
+set of words, so *Cash and cash equivalents* finds *Cash and equivalents* while *Total assets*
+does **not** find *Total current assets*. A caption that matches nothing costs nothing: the form
+still asks. What such a figure cannot do is become a line of its own — a line this project learns
+is remembered by the filing's tag, and this filing has none — and the confirmation page says so.
+
 ---
 
 ## Deep-dive research

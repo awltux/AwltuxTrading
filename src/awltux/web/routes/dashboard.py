@@ -8,6 +8,8 @@ updates (the news ticker) are the only thing that requires JS.
 from __future__ import annotations
 
 import datetime as dt
+import html
+import json
 import logging
 import re
 from typing import Any, Literal
@@ -1148,7 +1150,12 @@ NEW_LINE_PREFIX = "new:"
 #: The origins an added figure may carry. Anything else is recorded as typed, because the
 #: distinction is "a person read this out of a filing" against "a person entered it", and a
 #: value that came from anywhere else has no filing to point at.
-CORRECTION_ORIGINS = ("typed", "filing")
+#:
+#: ``table`` is a figure clicked out of a filing whose tables carry no `ix:` elements, so there
+#: is no tag to point at either -- the reader read it off the page, and the record says which of
+#: the two that was. Kept apart from ``filing`` because the tag column is empty for one of them
+#: and a reader comparing two corrections deserves to know which.
+CORRECTION_ORIGINS = ("typed", "filing", "table")
 
 
 def _accounts_detail(session: Any, period_id: int) -> dict[str, Any]:
@@ -2334,6 +2341,29 @@ def filing_document(filing_id: int) -> Response:
 #: spelled out from the request the browser actually made.
 _PICKER_SCRIPT = "/static/filing-picker.js"
 
+#: The id the injected tag carries, so the script can read the chart's labels off it. An id
+#: rather than `document.currentScript`: this tag is inserted into a document written by
+#: somebody else, and an id is the one thing about it the script can be sure of.
+_PICKER_SCRIPT_ID = "awltux-picker-script"
+
+
+def _picker_accounts(statement: str) -> list[dict[str, str]]:
+    """The chart's own lines for one statement, as ``{label, metric}`` pairs.
+
+    Handed to the picker so it can say which of them an *untagged* table row's caption looks
+    like -- the one thing that can tell a filing with no `ix:` elements which of its hundreds
+    of rows is "Trade receivables". Filtered by the same rule the correction form uses
+    (:func:`_line_choices`), so the picker can never recognise a line the form does not offer.
+
+    Both sides of the comparison are normalised in the script rather than here: the caption
+    being matched is in the browser, and one normaliser is one thing to keep true.
+    """
+    return [
+        {"label": account.label, "metric": account.key}
+        for account in ledger.CHART
+        if account.statement == statement
+    ]
+
 
 def _picker_origin(request: Request) -> str:
     """The origin this request was served from, as the browser sees it."""
@@ -2354,9 +2384,19 @@ def _strip_scripts(document: str) -> str:
     return re.sub(r"<script\b[^>]*/\s*>", "", without_paired, flags=re.I)
 
 
-def _with_picker(document: str) -> str:
-    """The filing with the picker's script appended, before the end of the body."""
-    tag = f'<script src="{_PICKER_SCRIPT}" defer></script>'
+def _with_picker(document: str, *, accounts: list[dict[str, str]]) -> str:
+    """The filing with the picker's script appended, before the end of the body.
+
+    The statement's lines travel on the tag itself rather than on the URL, because they are
+    the same for every visit to one statement and the query string is where the *reader's*
+    coordinates live. Escaped for an attribute and not for HTML text: the payload is JSON, so
+    its quotes are the ones that would end the attribute early.
+    """
+    payload = html.escape(json.dumps(accounts, separators=(",", ":")), quote=True)
+    tag = (
+        f'<script id="{_PICKER_SCRIPT_ID}" src="{_PICKER_SCRIPT}" '
+        f'defer data-awltux-accounts="{payload}"></script>'
+    )
     at = document.lower().rfind("</body>")
     if at == -1:
         return document + tag
@@ -2392,8 +2432,15 @@ def filing_picker(filing_id: int, request: Request) -> Response:
         "Content-Disposition": f'inline; filename="{filing_id}.htm"',
         "Cache-Control": "private, max-age=86400",
     }
+    # The statement the reader came from. It decides which of the chart's labels the picker
+    # matches an untagged table row against, so a balance-sheet caption is never compared with
+    # an income-statement line. Defaulted rather than refused: the same default the confirmation
+    # form and the script use, so an old link still works.
+    statement = request.query_params.get("awltux_statement") or ledger.DEFAULT_STATEMENT
     return Response(
-        content=_with_picker(_strip_scripts(text)),
+        content=_with_picker(
+            _strip_scripts(text), accounts=_picker_accounts(statement)
+        ),
         media_type=document_type,
         headers=headers,
     )

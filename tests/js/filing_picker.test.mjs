@@ -501,3 +501,170 @@ test("a figure too large for an exponent notation is still a figure", () => {
 });
 
 
+
+/* ======================================================================
+ * The untagged tables.
+ *
+ * A filing that carries no `ix:` elements at all still lays its accounts out in tables, and
+ * the reader's need is the same. Measured 2026-10-10: 601 of the 603 stored filing documents
+ * are inline XBRL, so this path covers the two that are not -- and the next filer who
+ * furnishes plain HTML.
+ * ==================================================================== */
+
+/** A table row as the picker sees one: cells, and (for a header) an ancestor. */
+function row(cells, { header = false } = {}) {
+  const built = cells.map((text) => ({
+    tagName: "TD",
+    textContent: text,
+    className: "",
+    attributes: {},
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+    getAttribute(name) {
+      return name in this.attributes ? this.attributes[name] : null;
+    },
+    hasAttribute(name) {
+      return name in this.attributes;
+    },
+  }));
+  return {
+    tagName: "TR",
+    children: built,
+    parentElement: header ? { tagName: "THEAD", parentElement: null } : null,
+  };
+}
+
+test("a printed number is read the way a table prints one", () => {
+  assert.equal(picker.printedNumber("604,485").value, 604485);
+  assert.equal(picker.printedNumber("$ 604,485").value, 604485);
+  assert.equal(picker.printedNumber("1,318,854").value, 1318854);
+  assert.equal(picker.printedNumber("1234.5").value, 1234.5);
+  // An accounting negative: the brackets are the sign, and the space inside is layout.
+  assert.equal(picker.printedNumber("(1,347,784 )").value, -1347784);
+});
+
+test("anything that is not plainly a figure is refused rather than guessed at", () => {
+  // Every one of these is a cell a real 10-K contains, and none of them is a figure that
+  // belongs on a balance sheet. A percentage read as 12.5 would be worse than no offer.
+  for (const text of ["", " ", "\u2014", "-", "n/a", "12.5%", "2024", "1999", "1,23,456", "1 234 567 abc", "Note 4"]) {
+    assert.equal(picker.printedNumber(text), null, JSON.stringify(text));
+  }
+});
+
+test("a caption is matched to a line by its words, not its punctuation", () => {
+  const known = [
+    { label: "Trade receivables", metric: "receivables" },
+    { label: "Total current assets", metric: "current_assets" },
+    { label: "Cash and equivalents", metric: "cash_and_equivalents" },
+  ];
+
+  assert.equal(picker.matchLabel("Trade receivables", known), "receivables");
+  assert.equal(picker.matchLabel("Trade receivables:", known), "receivables");
+  assert.equal(picker.matchLabel("TOTAL CURRENT ASSETS", known), "current_assets");
+  assert.equal(picker.matchLabel("Total current assets (note 4)", known), "current_assets");
+  // The commonest divergence in a real filing: the filer repeats a word the chart does not.
+  assert.equal(picker.matchLabel("Cash and cash equivalents", known), "cash_and_equivalents");
+});
+
+test("a subtotal is not matched to the line below it", () => {
+  // The dangerous pair in every balance sheet: a strict subset of the words would make
+  // "Total assets" match "Total current assets", and pre-selecting the wrong line is the kind
+  // of help that costs a correction. The comparison is on the whole set, so it does not.
+  const known = [{ label: "Total current assets", metric: "current_assets" }];
+
+  assert.equal(picker.matchLabel("Total assets", known), "");
+  assert.equal(picker.matchLabel("Total assets (note 4)", known), "");
+  // A line on another statement is not offered either: the picker is told only the lines of
+  // the statement the reader came from, and this is the assertion that it does not reach wider.
+  assert.equal(picker.matchLabel("Revenues", known), "");
+});
+
+test("a row offers its caption and every figure after it", () => {
+  const found = picker.rowFigures(
+    row(["Cash and cash equivalents", "$ 604,485", "$ 1,318,854"]),
+    [{ label: "Cash and equivalents", metric: "cash_and_equivalents" }]
+  );
+
+  assert.equal(found.caption, "Cash and cash equivalents");
+  assert.equal(found.metric, "cash_and_equivalents");
+  assert.deepEqual(found.values.map((v) => v.value), [604485, 1318854]);
+});
+
+test("a row whose first cell is empty is captioned by the first cell with a word in it", () => {
+  // Filings indent with an empty spacer cell often enough that taking cell zero would caption
+  // half the statement with nothing.
+  const found = picker.rowFigures(row(["", "Total assets", "5,113,930"]), []);
+
+  assert.equal(found.caption, "Total assets");
+  assert.deepEqual(found.values.map((v) => v.value), [5113930]);
+});
+
+test("a header row of years is not offered as figures", () => {
+  const found = picker.rowFigures(row(["", "December 31,", "2024", "2023"], { header: true }), []);
+
+  assert.deepEqual(found.values, []);
+});
+
+test("a row with no caption, or nothing after it, offers nothing", () => {
+  assert.deepEqual(picker.rowFigures(row(["2024", "2025"]), []).values, []);
+  assert.deepEqual(picker.rowFigures(row(["Total assets"]), []).values, []);
+});
+
+test("marking a table writes the figure, the caption and the matched line onto the cell", () => {
+  const target = row(["Receivables", "38,730"]);
+  const marked = picker.markTableFigures([target], [
+    { label: "Receivables", metric: "receivables" },
+  ]);
+
+  assert.equal(marked, 1);
+  const cell = target.children[1];
+  assert.equal(cell.attributes["data-awltux-value"], "38730");
+  assert.equal(cell.attributes["data-awltux-raw"], "38,730");
+  assert.equal(cell.attributes["data-awltux-caption"], "Receivables");
+  assert.equal(cell.attributes["data-awltux-metric"], "receivables");
+  assert.match(cell.className, /awltux-tablefact/);
+});
+
+test("a marked cell is read as a figure with no tag, no unit and no context", () => {
+  const target = row(["Receivables", "38,730"]);
+  picker.markTableFigures([target], []);
+  const figure = picker.figureOf(target.children[1]);
+
+  assert.equal(figure.value, 38730);
+  assert.equal(figure.raw, "38,730");
+  assert.equal(figure.origin, "table");
+  assert.equal(figure.tag, "");
+  // No scale to apply: the cell holds the number as printed, and saying so is the difference
+  // between a figure and a figure multiplied by a million.
+  assert.equal(figure.scale, 0);
+});
+
+test("a click inside a marked cell finds it, and a click on the row does not", () => {
+  const target = row(["Receivables", "38,730"]);
+  picker.markTableFigures([target], []);
+  const cell = target.children[1];
+
+  cell.parentElement = target;
+  target.parentElement = { tagName: "TABLE", parentElement: null };
+  assert.equal(picker.factFrom(cell), cell);
+  // The row itself is not a figure: making it one would give the caption a click target.
+  assert.equal(picker.factFrom(target), null);
+});
+
+test("a link from a table carries the figure and says where it came from", () => {
+  const target = row(["Receivables", "38,730"]);
+  picker.markTableFigures([target], []);
+  const figure = picker.figureOf(target.children[1]);
+  const url = new URL(
+    picker.confirmUrl("http://x/filing/1/pick", 1, 256, "balance_sheet", "", figure, "Receivables", "", "Current assets")
+  );
+
+  assert.equal(url.searchParams.get("value"), "38730");
+  assert.equal(url.searchParams.get("origin"), "table");
+  assert.equal(url.searchParams.get("caption"), "Receivables");
+  assert.equal(url.searchParams.get("section"), "Current assets");
+  // No line to name: the form asks which one, which is the whole point of an "add a line"
+  // visit. An empty `metric` would be read on the other side as a line called "".
+  assert.equal(url.searchParams.get("metric"), null);
+});
