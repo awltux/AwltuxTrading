@@ -642,15 +642,45 @@ def _corrected_accounts(
     """
     cik = instrument.sec_cik if instrument is not None else None
     rules = corrections_rules.load_filer(session, cik)
+    offerable, superseded = _learned_lines(rules, period)
     return {
         "corrections": corrections_rules.corrections_for(period, rules),
         "correction_note": CORRECTION_NOTES.get(outcome or ""),
         # Offered only where there is a filer to offer it for: a removal recorded against a CIK
         # that this period does not have would have nothing to apply to.
         "cik": cik,
-        "learned_lines": [line.as_dict() | {"metric": line.metric} for line in rules.lines.values()],
-        "extra": [_account_for(line) for line in rules.lines.values()],
+        "learned_lines": [line.as_dict() | {"metric": line.metric} for line in offerable],
+        "superseded_lines": [line.as_dict() | {"metric": line.metric} for line in superseded],
+        "extra": [_account_for(line) for line in offerable],
     }
+
+
+def _learned_lines(rules: Any, period: Any) -> tuple[list[Any], list[Any]]:
+    """A filer's learned lines, split into the ones to offer and the ones the chart has caught up.
+
+    ``TAG_MAP`` grows: a caption that had no line when a reader taught the page one may be carried
+    by the chart now. Where that has happened *and* the chart's line holds a figure, the learned
+    line is the same money again -- the extractor filled the chart's line from the payload while
+    the reader's figure still sits under the tag -- so it is no longer printed, no longer counted,
+    and reported rather than dropped in silence.
+
+    Where the chart's line holds *nothing*, the learned line keeps its place: nothing else is
+    holding that figure, and hiding it would lose the one set of accounts that has it.
+    """
+    chart = {}
+    for line in getattr(rules, "lines", {}).values():
+        mapped = _metric_for_tag(line.tag or line.metric, period)
+        # Only a mapping to a *different* line counts as the chart catching up. A learned line's
+        # metric *is* its tag and its own provenance records that tag as the span, so the period's
+        # own evidence names the line itself -- which would make every learned line supersede
+        # itself the moment a figure was put on it.
+        chart[line.metric] = mapped if mapped and mapped != line.metric else ""
+    held = set((period.metrics or {}).keys())
+    offerable = [
+        line for line in rules.lines.values() if not (chart[line.metric] and chart[line.metric] in held)
+    ]
+    superseded = [line for line in rules.lines.values() if line not in offerable]
+    return offerable, superseded
 
 
 def _account_for(line: Any) -> Any:

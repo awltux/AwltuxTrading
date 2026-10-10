@@ -13,7 +13,7 @@
 
 {% from "partials/_help.html" import help %}
 {% set note = correction_note %}
-{% if note or corrections or learned_lines %}
+{% if note or corrections or learned_lines or superseded_lines %}
   <section class="accounts-corrections" id="corrections">
     <h2>Corrections to these accounts{{ help('corrected') }}</h2>
     {% if note %}<p class="notice">{{ note }}</p>{% endif %}
@@ -103,6 +103,19 @@
         Offered in every period this company filed, because a figure read out of one of its filings
         was put on it here. Forgetting one stops it being offered and changes no figure: a value
         already written to it stays on the period it was written to.
+      </p>
+    {% endif %}
+    {% if superseded_lines %}
+      {# The chart caught up with a caption a reader taught the page. Printed nowhere and counted
+         nowhere, because the chart's own line holds the same figure now, and said so rather than
+         vanished. #}
+      <p class="notice">
+        <strong>Superseded lines</strong> ({{ superseded_lines | length }}):&#32;
+        {% for line in superseded_lines %}<code>{{ line.label }}</code>{% if not loop.last %}, {% endif %}{% endfor %} —
+        this project's own chart carries these captions now and holds a figure for them, so the
+        copies learned here are no longer printed or counted, and the same money is not on the
+        page twice. Nothing was deleted: a value put on one is still stored, and undoing that
+        correction in the table above takes it off.
       </p>
     {% endif %}
     <p class="muted small">

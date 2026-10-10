@@ -499,6 +499,90 @@ class TestTheLineIsALineOfTheAccounts:
         assert "no-line" in response.headers["location"]
 
 
+class TestALineTheChartHasCaughtUpWith:
+    """`TAG_MAP` grows, and a caption a reader taught the page may be one the chart carries now.
+
+    Where the chart's line holds a figure, the learned line is that same money again -- the
+    extractor filled the chart line from the payload while the reader's figure still sits under
+    the tag -- so it stops being printed, stops being counted, and is reported.
+    """
+
+    def _learn(self, session, tag: str, label: str = "Inventories") -> None:
+        rules = corrections.load_filer(session, CIK)
+        corrections.learn_line(
+            rules,
+            tag,
+            label=label,
+            statement="balance_sheet",
+            section="Current assets",
+            tag=tag,
+        )
+        corrections.save_filer(session, CIK, rules)
+        session.commit()
+
+    def test_a_learned_line_the_chart_now_carries_is_reported_and_not_printed(
+        self, client, session
+    ):
+        """`us-gaap:InventoryNet` is the Inventory line, and this period holds a figure for it,
+        so the learned copy is the same money again."""
+        period = _store(
+            session,
+            _period("TEST_US_EQ", dt.date(2024, 12, 31), {**FIGURES, "inventory": 120.0}),
+        )
+        self._learn(session, "us-gaap:InventoryNet")
+        # And the reader's own figure under the tag, which is what the extractor's Inventory line
+        # would now be duplicating.
+        client.post(
+            f"/accounts/{period.id}/corrections/add",
+            data={
+                "metric": "us-gaap:InventoryNet",
+                "value": "120",
+                "statement": "balance_sheet",
+                "tag": "us-gaap:InventoryNet",
+            },
+        )
+
+        soup = BeautifulSoup(client.get(f"/accounts/{period.id}/balance_sheet").text, "lxml")
+        panel = soup.select_one("#corrections").get_text(" ")
+
+        assert "Superseded lines" in panel
+        assert "no longer printed or counted" in panel
+        # Printed once, as the chart's own line -- not twice.
+        chart_label = ledger.BY_KEY["inventory"].label
+        rows = [
+            row
+            for row in soup.select("table.ledger tbody tr")
+            if chart_label in row.get_text(" ")
+        ]
+        assert len(rows) == 1, [row.get_text(" ") for row in rows]
+
+    def test_it_keeps_its_place_while_the_chart_s_line_holds_nothing(self, client, session):
+        """Nothing else is holding that figure, so hiding it would lose the one set of accounts
+        that has it."""
+        period = _store(
+            session,
+            _period("TEST_US_EQ", dt.date(2024, 12, 31), {"revenue": 1_000.0}),
+        )
+        self._learn(session, "us-gaap:InventoryNet")
+
+        soup = BeautifulSoup(client.get(f"/accounts/{period.id}/balance_sheet").text, "lxml")
+
+        assert "Superseded lines" not in soup.get_text(" "), "the chart's line holds no figure"
+        assert any(
+            "Inventories" in row.get_text(" ") for row in soup.select("table.ledger tbody tr")
+        ), "the learned line is still printed"
+        form = BeautifulSoup(
+            client.get(
+                f"/accounts/{period.id}/corrections/new", params={"statement": "balance_sheet"}
+            ).text,
+            "lxml",
+        )
+        assert any(
+            option["value"] == "us-gaap:InventoryNet"
+            for option in form.select("select[name=metric] option")
+        ), "and still offered"
+
+
 class TestTheLedgerDecidesWhereAHeadingCounts:
     """A pure table, because it is the only place that decides which stated total a learned line
     joins -- and the one heading it deliberately does not decide for."""
