@@ -17,6 +17,7 @@ from sqlalchemy import Select, case, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from awltux.analysis import attention as attention_rules
+from awltux.analysis import levers as lever_map
 from awltux.analysis import macro, sectors
 from awltux.analysis.attention import Reason
 from awltux.analysis.collate import collate
@@ -1081,6 +1082,13 @@ def instrument_detail(
         _trades_for(session, ticker) if "trades" in wanted else ([], False)
     )
 
+    # What the business *is*, and what moves it. Both are read on every tab for the same
+    # reason the deep-dive summary is: they are the shortest answer to "what am I looking at",
+    # and both are small indexed reads -- one row for the description and a handful for the
+    # levers -- rather than the pages and appraisals the news block costs.
+    business = latest_business(session, ticker)
+    exposures = [lever_map.describe(exposure) for exposure in lever_map.stored(session, ticker)]
+
     return {
         "instrument": instrument,
         "decision": decision,
@@ -1092,6 +1100,9 @@ def instrument_detail(
         "trades": trades,
         "trades_truncated": trades_truncated,
         "research": deep_dives,
+        "business": business,
+        "levers": exposures,
+        "levers_recorded": bool(exposures),
         **news,
     }
 
@@ -1218,6 +1229,50 @@ def research_reports(
             row.status == "running" and (as_utc(row.created_at) or cutoff) > cutoff
             for row in rows
         ),
+    }
+
+
+#: The three sentences a deep-dive writes about a business, in the order the page reads them:
+#: what it does, what protects it, and who it is up against. The keys are the model's schema,
+#: stated in `llm/prompts.py`, and are listed here so a page never has to know them.
+BUSINESS_FIELDS: tuple[str, ...] = ("summary", "moat", "competition")
+
+
+def latest_business(session: Session, ticker: str) -> dict[str, Any] | None:
+    """What the newest *finished* deep-dive said the business is, or ``None``.
+
+    The instrument page's short description comes from the deep-dive rather than from a new
+    column, because the deep-dive is where that judgement is formed and paid for and
+    ``result.business`` already holds it. Copying it onto the instrument would be a second
+    source of truth for the same sentences, and a reader could no longer tell which of the two
+    a verdict rested on.
+
+    ``None`` when there is no finished report *or* when the report said nothing about the
+    business: the page then offers the Research tab, which is a different thing from printing
+    an empty panel and leaving the reader to guess whether the model was silent or the page
+    was broken. A ``running`` row does not count, for the reason
+    :func:`research_reports` gives.
+    """
+    row = session.execute(
+        select(ResearchReport)
+        .where(ResearchReport.subject_type == "instrument")
+        .where(ResearchReport.subject_id == ticker)
+        .where(ResearchReport.status == "done")
+        .order_by(desc(ResearchReport.created_at), desc(ResearchReport.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    business = (row.result or {}).get("business")
+    if not isinstance(business, dict):
+        return None
+    text = {field: str(business.get(field) or "").strip() for field in BUSINESS_FIELDS}
+    if not any(text.values()):
+        return None
+    return text | {
+        "report_id": row.id,
+        "at": as_utc(row.created_at),
+        "verdict": row.verdict,
     }
 
 

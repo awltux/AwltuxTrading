@@ -1,0 +1,148 @@
+{# What the business is, and what moves it -- above the tabs on the instrument page.
+
+   Two halves with two different sources, and saying which is which is most of this panel's
+   job. The description is the latest deep-dive's own account of the company (`business` in
+   `llm/prompts.py`), read out of the report rather than copied onto the instrument, so there
+   is one place to argue with and one place a verdict rests on. The levers are recorded by hand
+   for now: nothing generates them, and a panel that showed an empty table without saying why
+   would read as a broken query rather than as work not yet done.
+
+   It is above the tabs because it is the shortest answer to "what am I looking at", which is
+   the question a reader has before any of the tabs. #}
+{% from "partials/_help.html" import help %}
+<section class="business-profile">
+  <div class="receipt-head">
+    <h2>What the business is{{ help('business_profile') }}</h2>
+    <span class="muted small">
+      {% if business %}
+        from <a href="/research/{{ business.report_id }}">the deep-dive</a>
+        of {{ business.at | datetime('%Y-%m-%d') }}
+      {% else %}
+        no deep-dive yet
+      {% endif %}
+    </span>
+  </div>
+
+  {% if business %}
+    <p>{{ business.summary }}</p>
+    {% if business.moat %}
+      <p><strong>Durable advantage.</strong> {{ business.moat }}</p>
+    {% endif %}
+    {% if business.competition %}
+      <p><strong>Competition.</strong> {{ business.competition }}</p>
+    {% endif %}
+  {% else %}
+    <p class="muted">
+      This company has not been through a deep-dive, so nothing here describes what it does or
+      how it makes money. The deep-dive is where that is worked out &mdash;
+      <a href="/instrument/{{ ticker | urlencode }}?tab=research">run one</a> and this panel
+      fills in.
+    </p>
+  {% endif %}
+
+  {# ------------------------------------------------------------- the levers #}
+  <h3>What moves it{{ help('levers') }}</h3>
+  {% if lever_note %}
+    {# The outcome of a form on this page. The sentence is chosen from a fixed table in the
+       route, so nothing a reader typed is echoed back as page text. #}
+    <p class="notice">{{ lever_note }}</p>
+  {% endif %}
+
+  {% if levers %}
+    <table class="grid compact">
+      <thead>
+        <tr>
+          <th>Lever</th>
+          <th>When it rises</th>
+          <th>Strength</th>
+          <th>Why</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in levers %}
+        {# The group travels as a word, not an icon: it says which part of the taxonomy the
+           lever comes from, and the hover carries the channel so a reader can check they
+           filed the right one without leaving the page. #}
+        <tr>
+          <td>
+            <a href="/levers/{{ row.lever | urlencode }}"><strong>{{ row.label }}</strong></a>
+            <span class="muted small" title="{{ row.channel }}">{{ row.group_label }}</span>
+          </td>
+          <td>{{ row.direction_label }}</td>
+          <td class="muted small">{{ row.strength_label }}</td>
+          <td>
+            {{ row.reason }}
+            {% if row.source and row.source != 'manual' %}
+              <span class="muted small">({{ row.source }})</span>
+            {% endif %}
+          </td>
+          <td>
+            {# A POST rather than a link, for the reason every other write here is: a GET would
+               be followed by any prefetcher that saw the URL and would change stored state. #}
+            <form method="post" action="/instrument/{{ ticker | urlencode }}/levers/{{ row.lever | urlencode }}/forget" class="inline">
+              <input type="hidden" name="tab" value="{{ tab }}">
+              <button type="submit" class="small">remove</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">
+      Nothing is recorded against this business. That is <em>not</em> the same as "nothing moves
+      it" &mdash; it means nobody has written the exposures down, and none are generated.
+    </p>
+  {% endif %}
+
+  <details{% if not levers %} open{% endif %}>
+    <summary>Record a lever</summary>
+    <form method="post" action="/instrument/{{ ticker | urlencode }}/levers">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <label>Lever
+        <select name="lever" required>
+          {% for group in lever_groups %}
+            <optgroup label="{{ lever_group_labels[group] }}">
+            {% for choice in lever_choices if choice.group == group %}
+              <option value="{{ choice.key }}" title="{{ choice.channel }}">{{ choice.label }}</option>
+            {% endfor %}
+            </optgroup>
+          {% endfor %}
+        </select>
+      </label>
+      <label>When the lever rises{{ help('lever_direction') }}
+        <select name="direction">
+          {% for direction in lever_directions %}
+            <option value="{{ direction }}"{% if direction == 'unknown' %} selected{% endif %}>{{ lever_direction_labels[direction] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Strength
+        <select name="strength">
+          {% for strength in lever_strengths %}
+            <option value="{{ strength }}">{{ lever_strength_labels[strength] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Why
+        <input type="text" name="reason" size="60"
+               placeholder="the evidence, in your own words — stored verbatim">
+      </label>
+      <button type="submit">Record it</button>
+    </form>
+    <p class="muted small">
+      Recording a lever again replaces the earlier judgement of the same lever rather than
+      adding a second one. The direction is read <em>against a rise</em> in the lever, which is
+      what makes a bank, a housebuilder and a utility comparable on the
+      <a href="/levers">levers page</a>.
+    </p>
+  </details>
+
+  {% if levers %}
+    <p class="muted small">
+      <a href="/levers">All levers</a> &mdash; and on each one, every instrument recorded
+      against it. This is the list to read when a mover like rates or inflation changes.
+    </p>
+  {% endif %}
+</section>

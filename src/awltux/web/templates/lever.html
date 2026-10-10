@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}{{ label }} — levers — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>{{ label }}</h1>
+<p class="muted small">
+  <a href="/levers">All levers</a> &middot; {{ group_label }}
+</p>
+<p>{{ channel }}</p>
+<p class="muted small">{{ group_note }}</p>
+
+<h2>Instruments this moves</h2>
+<p class="muted small">
+  {% if rows %}
+    <strong>{{ rows | length }}</strong> in-universe instrument{{ '' if rows | length == 1 else 's' }}
+    recorded against this lever, primary exposures first and held positions before the rest
+    within each band. The order claims nothing about <em>how much</em> each is affected —
+    only how central the lever is to the business, as whoever recorded it judged.
+  {% else %}
+    No in-universe instrument is recorded against this lever yet. That is a statement about
+    the records and not about the world: nothing generates exposures, so a lever stays empty
+    until someone writes one down.
+  {% endif %}
+</p>
+
+{% if rows %}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>Instrument</th>
+      <th>Sector</th>
+      <th>When it rises</th>
+      <th>Strength</th>
+      <th>Why</th>
+      <th>Recorded</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td>
+        <a href="/instrument/{{ row.ticker | urlencode }}"><strong>{{ row.name }}</strong></a>
+        <span class="muted small">{{ row.ticker }}</span>
+        {% if row.is_held %}<span class="badge">held</span>{% endif %}
+      </td>
+      <td class="muted small">
+        {% if row.sector_group %}<a href="/sectors/{{ row.sector_group | urlencode }}">{{ row.sector_group }}</a>{% else %}—{% endif %}
+        {% if row.sector %}<span class="muted small">{{ row.sector }}</span>{% endif %}
+      </td>
+      <td>{{ row.direction_label }}</td>
+      <td class="muted small">{{ row.strength_label }}</td>
+      <td>
+        {{ row.reason }}
+        {% if row.source and row.source != 'manual' %}
+          <span class="muted small">({{ row.source }})</span>
+        {% endif %}
+      </td>
+      <td class="muted small">{{ row.updated_at | datetime('%Y-%m-%d') }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<p class="muted small">
+  {{ coverage.recorded }} of {{ coverage.universe }} in-universe instruments carry any recorded
+  lever at all, so the absence of an instrument from the table above is usually the absence of
+  a record rather than the absence of an exposure.
+</p>
+{% endblock %}

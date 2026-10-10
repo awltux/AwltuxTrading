@@ -11,7 +11,7 @@ import datetime as dt
 import logging
 import re
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -22,12 +22,13 @@ from awltux import metrics as metrics_module
 from awltux.analysis import adopted as adopted_map
 from awltux.analysis import corrections as corrections_rules
 from awltux.analysis import ledger
+from awltux.analysis import levers as lever_map
 from awltux.analysis import sectors as sector_map
 from awltux.analysis.fundamental import build_snapshot
 from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
-from awltux.db import Filing, IngestRun, ResearchReport, session_scope
+from awltux.db import Filing, IngestRun, Instrument, ResearchReport, session_scope
 from awltux.ingest import lease
 from awltux.ingest.universe import cached_t212_capabilities
 from awltux.research import service as research_service
@@ -263,6 +264,29 @@ def _instrument_summary(
     }
 
 
+def _lever_context(detail: dict[str, Any], request: Request) -> dict[str, Any]:
+    """The business description, the recorded exposures, and the vocabulary the form offers.
+
+    The vocabulary travels with the exposures because the form on this page is the way a lever
+    is recorded: a page that could show a lever but not name one would send the reader to a
+    shell to write one down. The outcome note is looked up here rather than in the template so
+    that a code a caller invented prints nothing instead of a raw query parameter.
+    """
+    return {
+        "business": detail["business"],
+        "levers": detail["levers"],
+        "levers_recorded": detail["levers_recorded"],
+        "lever_note": LEVER_NOTES.get(request.query_params.get("levers") or ""),
+        "lever_choices": lever_map.LEVERS,
+        "lever_groups": lever_map.GROUP_ORDER,
+        "lever_group_labels": lever_map.GROUP_LABELS,
+        "lever_directions": lever_map.DIRECTIONS,
+        "lever_direction_labels": lever_map.DIRECTION_LABELS,
+        "lever_strengths": lever_map.STRENGTHS,
+        "lever_strength_labels": lever_map.STRENGTH_LABELS,
+    }
+
+
 def _instrument_context(
     request: Request,
     *,
@@ -319,6 +343,9 @@ def _instrument_context(
         # tab. Both come from one query that is cheap -- a subject has a handful of reports --
         # so it is not gated behind the Research tab the way the news block is.
         **detail["research"],
+        # What the business is and what moves it, in one block: the panel needs the recorded
+        # exposures *and* the whole vocabulary, because its form is how a lever is recorded.
+        **_lever_context(detail, request),
         "subject_type": "instrument",
         "subject_label": f"{detail['instrument'].name} ({ticker})",
         "research_action": f"/instrument/{quote(ticker, safe='')}/research",
@@ -405,6 +432,86 @@ def instrument_refresh(ticker: str) -> RedirectResponse:
         url=f"/instrument/{quote(ticker, safe='')}?tab=refresh&refresh={reason}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+
+@router.post("/instrument/{ticker}/levers", include_in_schema=False)
+def add_instrument_lever(
+    ticker: str,
+    lever: str = Form(...),
+    direction: str = Form(lever_map.UNKNOWN),
+    strength: str = Form(lever_map.PRIMARY),
+    reason: str = Form(""),
+    tab: str = Form("decision"),
+) -> RedirectResponse:
+    """Record one lever against an instrument, replacing any earlier judgement of it.
+
+    A POST with a 303 back to the tab the form was on, for the reason
+    :func:`instrument_refresh` gives: the reader stays where they were and the page prints
+    what happened.
+
+    **Both halves are validated here and neither is inferred.** An unknown lever key, a
+    direction outside the vocabulary or a strength outside it is refused with an outcome the
+    page turns into a sentence -- not mapped to the nearest legal value, because the page
+    these feed is a claim about what moves a business and nothing downstream would show the
+    substitution.
+    """
+    key = lever_map.resolve(lever)
+    if key is None:
+        outcome = "unknown-lever"
+    elif direction not in lever_map.DIRECTIONS or strength not in lever_map.STRENGTHS:
+        outcome = "bad-direction"
+    else:
+        with session_scope() as session:
+            if session.get(Instrument, ticker) is None:
+                return RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+            lever_map.record(
+                session,
+                ticker,
+                [
+                    lever_map.Exposure(
+                        lever=key, direction=direction, strength=strength
+                    )
+                ],
+                reason=reason,
+            )
+        outcome = "lever-recorded"
+    return RedirectResponse(
+        url=_instrument_tab_url(ticker, tab, levers=outcome),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/instrument/{ticker}/levers/{key}/forget", include_in_schema=False)
+def forget_instrument_lever(
+    ticker: str,
+    key: str,
+    tab: str = Form("decision"),
+) -> RedirectResponse:
+    """Drop one lever from an instrument.
+
+    Refuses a key the vocabulary does not know rather than reporting a deletion of nothing: a
+    link built against a lever that has since been retired should look wrong, not succeed
+    silently.
+    """
+    if not lever_map.is_lever(key):
+        outcome = "unknown-lever"
+    else:
+        with session_scope() as session:
+            gone = lever_map.forget(session, ticker, key)
+        outcome = "lever-forgotten" if gone else "nothing-to-forget"
+    return RedirectResponse(
+        url=_instrument_tab_url(ticker, tab, levers=outcome),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _instrument_tab_url(ticker: str, tab: str, **message: str) -> str:
+    """Back to one instrument's tab, with an outcome for the page to print.
+
+    Encoded rather than pasted, because the tab arrives in a form field a caller controls and
+    it is going into a URL.
+    """
+    return f"/instrument/{quote(ticker, safe='')}?{urlencode({'tab': tab or 'decision', **message})}"
 
 
 @router.post("/credit/refresh", include_in_schema=False)
@@ -1000,6 +1107,36 @@ CORRECTION_NOTES: dict[str, str] = {
         "nothing was changed."
     ),
     "bad-value": "That is not a figure, so nothing was changed.",
+}
+
+# The levers a business is exposed to, recorded by hand for now. `analysis/levers.py` owns the
+# vocabulary and the direction convention; what a lever is *for* is the cross-instrument
+# question the `/levers` pages answer, and that is why the key is one of a fixed list rather
+# than free text.
+#
+# Nothing fills these from the model yet. The deep-dive already reads the whole company, so the
+# block that would ride on it costs output tokens on a call that is made anyway rather than a
+# call of its own -- but the mechanism came first, and `TODO.md` carries the prompt change and
+# the shape to read when it is wanted.
+
+#: What each lever outcome says on the page it returns to. The code travels in the URL and the
+#: sentence is chosen here, so nothing a reader typed is ever echoed back as page text.
+LEVER_NOTES: dict[str, str] = {
+    "lever-recorded": (
+        "The lever was recorded. It now appears on this page and under /levers, where the "
+        "instruments exposed to it are listed."
+    ),
+    "lever-forgotten": "The lever was removed from this instrument.",
+    "nothing-to-forget": "That lever was not recorded on this instrument, so nothing changed.",
+    "unknown-lever": (
+        "That is not one of the levers in the vocabulary, so nothing was recorded. The list is "
+        "on /levers -- a lever outside it would not be found by the query this feature exists "
+        "for."
+    ),
+    "bad-direction": (
+        "The direction or the strength was not one of the allowed values, so nothing was "
+        "recorded."
+    ),
 }
 
 #: How the form says "this is a line to create, not one to choose". The option's value carries
@@ -1695,6 +1832,95 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
             "research_job": research_service.RESEARCH_JOB,
             "research_message": request.query_params.get("research"),
             "research_reason": request.query_params.get("why"),
+        },
+    )
+
+
+@router.get("/levers", response_class=HTMLResponse, include_in_schema=False)
+def levers_page(request: Request) -> HTMLResponse:
+    """The lever vocabulary, and how many instruments are recorded against each.
+
+    Grouped by the vocabulary's own groups and ordered by them, not by the counts: this page
+    is also the place a reader checks what a lever *means* before recording one, and a page
+    that reordered itself as exposures were added would make that harder every time.
+
+    The counts are the honest headline of the feature's state. Nothing fills these
+    automatically yet -- `TODO.md` carries the deep-dive block that will -- so a reader who
+    finds the page nearly empty should be able to see that plainly rather than wonder whether
+    the query is broken.
+    """
+    with session_scope() as session:
+        totals = lever_map.totals(session)
+        recorded = lever_map.coverage(session)
+
+    groups = []
+    for group in lever_map.GROUP_ORDER:
+        rows = []
+        for lever in lever_map.LEVERS:
+            if lever.group != group:
+                continue
+            counted = totals.get(lever.key, {})
+            rows.append(
+                {
+                    "key": lever.key,
+                    "label": lever.label,
+                    "channel": lever.channel,
+                    "instruments": counted.get("instruments", 0),
+                    "primary": counted.get("primary", 0),
+                }
+            )
+        groups.append(
+            {
+                "key": group,
+                "label": lever_map.GROUP_LABELS.get(group, group),
+                "note": lever_map.GROUP_NOTES.get(group, ""),
+                "levers": rows,
+            }
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "levers.html",
+        {
+            "groups": groups,
+            "vocabulary": len(lever_map.LEVERS),
+            "coverage": recorded,
+            "directions": lever_map.DIRECTIONS,
+            "direction_labels": lever_map.DIRECTION_LABELS,
+        },
+    )
+
+
+@router.get("/levers/{key}", response_class=HTMLResponse, include_in_schema=False)
+def lever_page(request: Request, key: str) -> HTMLResponse:
+    """One lever: what it is, and every in-universe instrument recorded against it.
+
+    An unknown key is a 404 rather than an empty list, for the reason
+    :func:`sector_page` gives: "no such lever" and "nothing recorded for it yet" are
+    different answers, and only one of them should make a reader doubt their spelling.
+    """
+    if not lever_map.is_lever(key):
+        raise HTTPException(status_code=404, detail="no such lever")
+
+    with session_scope() as session:
+        rows = lever_map.instruments_for(session, key)
+        coverage = lever_map.coverage(session)
+
+    lever = lever_map.BY_KEY[key]
+    return templates.TemplateResponse(
+        request,
+        "lever.html",
+        {
+            "key": key,
+            "label": lever.label,
+            "channel": lever.channel,
+            "group": lever.group,
+            "group_label": lever_map.GROUP_LABELS.get(lever.group, lever.group),
+            "group_note": lever_map.GROUP_NOTES.get(lever.group, ""),
+            "rows": rows,
+            "coverage": coverage,
+            "direction_labels": lever_map.DIRECTION_LABELS,
+            "strength_labels": lever_map.STRENGTH_LABELS,
         },
     )
 

@@ -517,6 +517,63 @@ subject at a time, and the subject's own row is the guard.
 
 ---
 
+## Levers: what moves a business
+
+A deep-dive answers whether the *business* is worth owning. Two shorter answers sit above
+the tabs on every instrument page, because they are what a reader wants before choosing a
+tab: **what the company is**, and **what moves it**.
+
+**What the business is** is the latest finished deep-dive's own account — what it does, how
+it makes money, the advantage it believes it has, who it competes with. It is read out of the
+stored report (`business` in the report's result set) rather than copied onto the instrument,
+so the sentences a verdict rests on are the ones the report contains and there is one place to
+argue with. A company no one has run a deep-dive for shows nothing there, and says so.
+
+**Levers** are the things that move the business: `interest_rates`, `inflation`,
+`exchange_rates`, `economic_growth`, `energy_costs`, `raw_material_costs`, `labour_costs`,
+`consumer_demand`, `corporate_spending`, `government_spending`, `technology_change`,
+`regulation`, `competition` and `weather_and_climate` — fourteen, in four groups, each with a
+sentence in `analysis/levers.py` saying how it reaches a business.
+
+The vocabulary is fixed rather than free text, and that is the whole design. The value of the
+feature is the question asked *across* instruments — **what is affected if rates rise, or the
+pound falls, or energy gets dearer** — and nobody can join on prose. So a lever is a key, and:
+
+- **`/levers`** lists the vocabulary with how many in-universe instruments each is recorded
+  against, and how much of the universe carries any record at all;
+- **`/levers/{key}`** lists the instruments recorded against one lever, with the direction of
+  the effect for each.
+
+**A direction is read against a *rise* in the lever**, which is what makes a bank, a
+housebuilder and a utility comparable on one page: `positive` means the business does better
+when the lever goes up, `negative` that it does worse, `mixed` that it cuts both ways — a real
+answer, not an undecided one — and `unknown` that the direction has not been established. Each
+record also says whether the lever is **primary** (it moves the earnings on its own) or
+**secondary**, and carries the **reason** in the recorder's words. A record with no reason says
+"no reason given" rather than carrying a sentence nobody wrote.
+
+One row per instrument and lever, upserted: recording again replaces the judgement rather than
+appending a second opinion, because the question is what the exposure *is*. Table
+`instrument_lever`, owned by `analysis/levers.py`.
+
+**Recording one.** On the instrument page, under *What moves it*, or:
+
+```bash
+awltux levers list
+awltux levers set AAPL_US_EQ interest_rates=negative:primary exchange_rates=mixed \
+  --reason "sells worldwide, borrows at floating rates"
+awltux levers show AAPL_US_EQ
+awltux levers forget AAPL_US_EQ interest_rates
+```
+
+**Nothing generates them yet.** The obvious source is the deep-dive, which already reads the
+whole company — so a `levers` block would spend output tokens on a call that is made anyway,
+not another call — but the mechanism came first and `TODO.md` carries the prompt change and
+the shape to read. Until then the pages fill in only as exposures are written down, and they
+say so rather than leaving an empty table to be read as "nothing moves this business".
+
+---
+
 ## Provability
 
 Every decision stores: the canonical state and its SHA-256, the exact questions,

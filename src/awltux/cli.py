@@ -549,6 +549,191 @@ def _ask_server(settings, method: str, path: str) -> dict | None:
         return None
 
 
+def _lever_instrument(session, ticker: str):
+    """The instrument row for a ticker, or ``None`` -- with why it was refused left to the
+    caller.
+
+    The levers are stored against ``instrument.t212_ticker``, a real foreign key, so a typo
+    would otherwise surface as an integrity error or, worse on a database with the pragma off,
+    as a row attached to nothing. Resolving it here turns that into one sentence.
+    """
+    from awltux.db import Instrument
+
+    return session.get(Instrument, ticker)
+
+
+def cmd_levers_list(args: argparse.Namespace) -> int:
+    """The vocabulary, in the order the pages show it, so a recording can be checked by eye."""
+    from awltux.analysis.levers import (
+        DIRECTIONS,
+        GROUP_LABELS,
+        GROUP_ORDER,
+        LEVERS,
+        STRENGTHS,
+    )
+
+    for group in GROUP_ORDER:
+        print(f"\n{GROUP_LABELS[group]}")
+        for lever in LEVERS:
+            if lever.group != group:
+                continue
+            print(f"  {lever.key:<20} {lever.label}")
+            print(f"  {'':<20} {lever.channel}")
+    print(f"\ndirection (what happens to the business when the lever rises): {', '.join(DIRECTIONS)}")
+    print(f"strength: {', '.join(STRENGTHS)}")
+    print("\nset one with: awltux levers set TICKER lever=direction[:strength] --reason TEXT")
+    return 0
+
+
+def cmd_levers_show(args: argparse.Namespace) -> int:
+    """What is recorded for one instrument, primary first."""
+    from awltux.analysis import levers
+    from awltux.db import session_scope
+
+    with session_scope() as session:
+        instrument = _lever_instrument(session, args.ticker)
+        if instrument is None:
+            print(f"no such instrument: {args.ticker}", file=sys.stderr)
+            return 2
+        rows = [levers.describe(exposure) for exposure in levers.stored(session, args.ticker)]
+
+    print(f"{instrument.name} ({args.ticker})")
+    if not rows:
+        print("  no levers recorded. The pages show this as 'not recorded yet' rather than")
+        print("  as 'nothing moves it' -- the two are different answers.")
+        return 0
+    for row in rows:
+        print(
+            f"  [{row['strength_label']:<9}] {row['label']:<28} "
+            f"{row['direction_label']}"
+        )
+        print(f"  {'':<12} {row['reason']}  ({row['source']}, {row['group_label']})")
+    return 0
+
+
+def cmd_levers_set(args: argparse.Namespace) -> int:
+    """Record one or more levers against an instrument.
+
+    Every argument is validated before anything is written, so a typo in the third assignment
+    does not leave the first two stored -- a half-applied command is worse than a refused one.
+    """
+    from awltux.analysis import levers
+    from awltux.db import session_scope
+
+    try:
+        exposures = [levers.parse(text) for text in args.exposure]
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not exposures:
+        print("nothing to record: give at least one lever=DIRECTION", file=sys.stderr)
+        return 2
+
+    with session_scope() as session:
+        instrument = _lever_instrument(session, args.ticker)
+        if instrument is None:
+            print(f"no such instrument: {args.ticker}", file=sys.stderr)
+            return 2
+        written = levers.record(
+            session,
+            args.ticker,
+            exposures,
+            reason=args.reason or "",
+            source=args.source or levers.MANUAL,
+        )
+        names = [row.lever for row in written]
+
+    for name in names:
+        print(f"recorded {name} for {instrument.name} ({args.ticker})")
+    print("it is on the instrument page now, and in the list under /levers")
+    return 0
+
+
+def cmd_levers_forget(args: argparse.Namespace) -> int:
+    """Drop one lever, or every lever, from an instrument."""
+    from awltux.analysis import levers
+    from awltux.db import session_scope
+
+    lever = None
+    if args.lever:
+        # Through the same resolver the setter uses, so a key, a label or a stray capital all
+        # name the same lever here as they do there.
+        lever = levers.resolve(args.lever)
+        if lever is None:
+            print(f"unknown lever: {args.lever}", file=sys.stderr)
+            return 2
+
+    with session_scope() as session:
+        gone = levers.forget(session, args.ticker, lever)
+
+    what = lever or "every lever"
+    print(f"forgot {gone} record(s) of {what} for {args.ticker}")
+    return 0
+
+
+def cmd_levers(args: argparse.Namespace) -> int:
+    return int(
+        {
+            "list": cmd_levers_list,
+            "show": cmd_levers_show,
+            "set": cmd_levers_set,
+            "forget": cmd_levers_forget,
+        }[args.levers_command](args)
+        or 0
+    )
+
+
+def _add_levers_parser(sub) -> None:
+    """The `levers` command group: the vocabulary, and what is recorded against an instrument.
+
+    Its own function because `build_parser` is a flat list of declarations and this is
+    thirty lines of them: inlined, the group reads as the shape of the whole CLI rather than
+    as one command's arguments.
+    """
+    levers = sub.add_parser(
+        "levers",
+        help="record the levers an instrument's business is exposed to",
+    )
+    levers_sub = levers.add_subparsers(dest="levers_command", required=True)
+    levers_sub.add_parser("list", help="print the lever vocabulary").set_defaults(
+        func=cmd_levers
+    )
+    levers_show = levers_sub.add_parser("show", help="what is recorded for one instrument")
+    levers_show.add_argument("ticker")
+    levers_show.set_defaults(func=cmd_levers)
+
+    levers_set = levers_sub.add_parser(
+        "set",
+        help="record lever=direction[:strength], replacing any earlier judgement",
+    )
+    levers_set.add_argument("ticker")
+    levers_set.add_argument(
+        "exposure",
+        nargs="+",
+        metavar="LEVER=DIRECTION[:STRENGTH]",
+        help="e.g. interest_rates=negative:primary inflation=mixed",
+    )
+    levers_set.add_argument(
+        "--reason",
+        default="",
+        help=(
+            "the evidence for the judgement, stored verbatim and shown on the page. "
+            "Left out, the record says 'no reason given' rather than inventing one."
+        ),
+    )
+    levers_set.add_argument(
+        "--source",
+        default="",
+        help="who recorded it: defaults to 'manual', the label a page prints as by hand",
+    )
+    levers_set.set_defaults(func=cmd_levers)
+
+    levers_forget = levers_sub.add_parser("forget", help="drop one lever, or all of them")
+    levers_forget.add_argument("ticker")
+    levers_forget.add_argument("lever", nargs="?", default=None)
+    levers_forget.set_defaults(func=cmd_levers)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="awltux", description="AwltuxTrading")
     parser.add_argument("--log-level", default=None, help="override the configured log level")
@@ -644,6 +829,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="print what would change and write nothing",
     )
     repair_units.set_defaults(func=cmd_repair_price_units)
+
+    _add_levers_parser(sub)
 
     quiet = sub.add_parser(
         "quiet",

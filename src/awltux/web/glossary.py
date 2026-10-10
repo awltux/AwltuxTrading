@@ -232,6 +232,36 @@ FIELDS: tuple[Field, ...] = (
         "What the extractor had said is kept beside the change, which is what makes it "
         "undoable -- and what says how much of the automation needed a person.",
     ),
+    Field(
+        "business_profile",
+        "What the business is",
+        "The latest deep-dive's account of what the company does, how it makes money and "
+        "what protects it.",
+        "Read out of the stored report rather than copied onto the instrument, so the "
+        "sentences a verdict rests on are the ones the report contains and there is one "
+        "place to argue with. A company with no finished deep-dive shows nothing here, "
+        "which is different from a report that had nothing to say.",
+    ),
+    Field(
+        "levers",
+        "Levers",
+        "The things that move a business: rates, inflation, currencies, input costs, the "
+        "demand it depends on, and the things that change its industry.",
+        "Chosen from a fixed list, because the value of the feature is the question asked "
+        "across instruments -- what is affected if rates rise -- and that cannot be put to "
+        "free text. A record for one instrument gives the direction of the effect when the "
+        "lever rises, whether the lever is primary or secondary to that business, and the "
+        "reason, which is the part to argue with.",
+    ),
+    Field(
+        "lever_direction",
+        "When the lever rises",
+        "Which way the business moves if the lever goes up, which is not the same question "
+        "as whether the lever is good or bad.",
+        "The same direction means the same thing for a bank, a housebuilder and a utility, "
+        "which is what lets one page compare them. Cuts both ways is a real answer, not an "
+        "undecided one: higher rates widen a bank's margin and worsen its credit losses.",
+    ),
     # ------------------------------------------------------------ the counters
     Field(
         "universe_size",

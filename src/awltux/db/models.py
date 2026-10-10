@@ -604,6 +604,62 @@ class InstrumentBlocker(Base, TimestampMixin):
     )
 
 
+class InstrumentLever(Base, TimestampMixin):
+    """One lever a business is exposed to, as somebody recorded it.
+
+    Asked for directly: *"what the primary levers are that affect its performance ... [it]
+    could be used to analyse which instruments are affected by a specific lever e.g.
+    interest rates, exchange rates, inflation, resource costs, technology."*
+
+    **A row per (instrument, lever), not a JSON document on the instrument.** The question
+    this feature exists to answer runs the opposite way round to every other read of an
+    instrument -- *which instruments does this lever move?* -- and answering that from a
+    document means loading one row per instrument in the universe and scanning it. With the
+    lever as a column it is one indexed lookup with the instrument joined on, which is what
+    makes a page listing what a lever touches possible at all.
+
+    **``direction`` is which way the business moves when the lever *rises***, and that
+    framing is the record's contract rather than a comment on the lever: it is what makes
+    "rates up" mean one thing across a bank, a housebuilder and a utility, so a list of what
+    a lever touches can be read without opening any single row.
+
+    **``reason`` is what the direction rests on.** The direction is a judgement and the
+    reason is the evidence for it; without one a row is an assertion nobody can argue with,
+    which is the state the rest of this codebase avoids.
+
+    **One row, upserted**, like :class:`InstrumentBlocker`: what is wanted is what this
+    instrument's exposure *is*, not what somebody once thought -- so recording again replaces
+    the judgement and bumps ``updated_at`` rather than appending a history nobody reads. A
+    deep-dive keeps a dated series because "what did we think of this company in March" is
+    worth keeping about a whole business; a single lever is not.
+    """
+
+    __tablename__ = "instrument_lever"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    instrument_t212_ticker: Mapped[str] = mapped_column(
+        ForeignKey("instrument.t212_ticker", ondelete="CASCADE"), index=True
+    )
+
+    #: One of ``analysis.levers.LEVERS`` by key. Indexed on its own because *that* is the
+    #: lookup the feature exists for, and it is the only column a cross-instrument query
+    #: filters on.
+    lever: Mapped[str] = mapped_column(String(48), index=True)
+    #: ``positive``/``negative``/``mixed``/``unknown``, read against a *rise* in the lever.
+    direction: Mapped[str] = mapped_column(String(16))
+    #: ``primary`` or ``secondary``: whether it moves the earnings on its own.
+    strength: Mapped[str] = mapped_column(String(16), default="primary")
+    #: The evidence, in the recorder's words, or the empty string when they gave none. Never
+    #: invented on their behalf -- see ``analysis/levers.py::NO_REASON``.
+    reason: Mapped[str] = mapped_column(Text, default="")
+    #: Who recorded it: ``manual`` for a person, and a short label of their own otherwise.
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+
+    __table_args__ = (
+        UniqueConstraint("instrument_t212_ticker", "lever", name="uq_instrument_lever"),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # news & sentiment
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Levers — {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Levers</h1>
+<p class="muted small">
+  The things that move a business, in a fixed vocabulary so the same exposure is filed under
+  the same name by whoever records it. The point of the list is the question it can be asked
+  across instruments — <em>what is affected if rates rise, or the pound falls, or energy gets
+  dearer</em> — which is why a lever is one of these {{ vocabulary }} rather than free text:
+  nobody can join on prose.
+</p>
+<p class="muted small">
+  <strong>{{ coverage.recorded }}</strong> of {{ coverage.universe }} in-universe instruments
+  carry a recorded lever, {{ coverage.held }} of them held in this account. Nothing generates
+  them yet — the deep-dive block that will is queued in <code>TODO.md</code> — so this page
+  starts nearly empty and fills as exposures are recorded on the instrument pages.
+</p>
+
+{% for group in groups %}
+  <section class="lever-group">
+    <h2>{{ group.label }}</h2>
+    <p class="muted small">{{ group.note }}</p>
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Lever</th>
+          <th>How it reaches a business</th>
+          <th class="num">Instruments</th>
+          <th class="num">Primary</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in group.levers %}
+        <tr>
+          <td>
+            {# Every lever links, including one with nothing recorded: landing on a page that
+               says "no instrument recorded" answers the question, while a disabled link
+               leaves the reader wondering whether it was empty or broken. #}
+            <a href="/levers/{{ row.key | urlencode }}"><strong>{{ row.label }}</strong></a>
+          </td>
+          <td class="muted small">{{ row.channel }}</td>
+          <td class="num {% if not row.instruments %}muted{% endif %}">
+            {{ row.instruments if row.instruments else '—' }}
+          </td>
+          <td class="num {% if not row.primary %}muted{% endif %}">
+            {{ row.primary if row.primary else '—' }}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endfor %}
+
+<section>
+  <h2>Reading a direction</h2>
+  <p class="muted small">
+    Every record says which way the <em>business</em> moves when the lever <em>rises</em>, and
+    that framing is the contract, not a comment on the lever: it is what lets a bank, a
+    housebuilder and a utility be compared on one page without opening any of them.
+  </p>
+  <table class="grid">
+    <thead><tr><th>Direction</th><th>Means</th></tr></thead>
+    <tbody>
+    {% for direction in directions %}
+      <tr><td>{{ direction_labels[direction] }}</td><td class="muted small"><code>{{ direction }}</code></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">
+    Recorded by hand on an instrument's page, or with
+    <code>awltux levers set TICKER interest_rates=negative:primary --reason "…"</code>.
+    The reason is stored verbatim and is the part a reader argues with; a lever recorded
+    without one says so rather than carrying an invented sentence.
+  </p>
+</section>
+{% endblock %}
