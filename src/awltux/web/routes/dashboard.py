@@ -1384,6 +1384,15 @@ def _metric_for_tag(tag: str, period: Any) -> str:
     Two sources, because either alone is incomplete: the tags this project maps by name
     (`ingest/xbrl.py::TAG_MAP`), and the provenance of the period in front of us -- a tag we
     extracted from *this* filing has a line whether or not the hand-maintained table lists it.
+
+    **Only a chart line answers here.** The provenance also holds the keys of figures a reader
+    put in by hand, and for one of those the key *is* the filing's tag -- so a learned line
+    looked like a tag that already fed a line, which is the one condition that suppresses the
+    offer to create one. Reported 2026-10-10: *"the 'Add a line to these accounts' ... no [longer]
+    gives the option to use the line name from the accounts read page"*, after a reader had added
+    a caption from a 20-F and then removed and restored it. Whether a key the chart does not carry
+    is *printed* depends on the filer still having that line, which the caller checks against its
+    own list of learned lines; this function answers only for the chart.
     """
     if not tag:
         return ""
@@ -1393,6 +1402,8 @@ def _metric_for_tag(tag: str, period: Any) -> str:
     if known:
         return known
     for name, entry in (period.metric_sources or {}).items():
+        if name not in ledger.BY_KEY:
+            continue
         if isinstance(entry, dict) and str(entry.get("span") or "") == tag:
             return name
     return ""

@@ -221,6 +221,150 @@ class TestTheFormOffersIt:
         assert not any(value.startswith("new:") for value in options)
         assert soup.select_one("select[name=metric] option[selected]")["value"] == "inventory"
 
+    def test_a_line_that_was_taken_out_can_be_created_again(self, client, session, two_years):
+        """Reported 2026-10-10, after a reader added a caption from a 20-F and then removed it:
+        *"That has broken the 'Add a line to these accounts', it no [longer] gives the option to
+        use the line name from the accounts read page."*
+
+        The removal was doing its job too well. A learned line's *key is the filing's tag*, so
+        once a figure sits under that key the period's provenance holds a `span` equal to the tag
+        -- and the dashboard's tag lookup read that as "this tag already feeds a line", which is
+        the one condition that suppresses the offer to create one. It fed a line only while the
+        filer still had it; a key the chart does not carry is not a line by itself.
+
+        The three steps are the reader's own, in their order: add the line, take it out of the
+        accounts, and stop the filer offering it.
+        """
+        period = two_years
+        client.post(
+            f"/accounts/{period.id}/corrections/add",
+            data={
+                "metric": f"new:{TAG}",
+                "value": "72965",
+                "statement": "balance_sheet",
+                "section": "Current liabilities",
+                "caption": CAPTION,
+                "tag": TAG,
+                "origin": "filing",
+            },
+        )
+        client.post(
+            f"/accounts/{period.id}/corrections/remove",
+            data={"metric": TAG, "statement": "balance_sheet"},
+        )
+        client.post(
+            f"/accounts/{period.id}/filer-lines/forget",
+            data={"metric": TAG, "statement": "balance_sheet"},
+        )
+
+        soup = BeautifulSoup(
+            client.get(
+                f"/accounts/{period.id}/corrections/new",
+                params={
+                    "statement": "balance_sheet",
+                    "value": "72965",
+                    "tag": TAG,
+                    "caption": CAPTION,
+                    "section": "Current liabilities",
+                    "origin": "filing",
+                },
+            ).text,
+            "lxml",
+        )
+        options = {option["value"]: option for option in soup.select("select[name=metric] option")}
+
+        assert f"new:{TAG}" in options, "the caption the reader removed cannot be added again"
+        assert CAPTION in options[f"new:{TAG}"].get_text(" ")
+
+    def test_a_figure_left_under_a_forgotten_key_does_not_block_the_line(self, client, session):
+        """The state the reader was actually in, found in the live database: the figure is back
+        in the period's figures and its provenance with no removal marker against it, because the
+        removal was undone -- but the filer's line has since been forgotten, so nothing prints it
+        and nothing counts it. It is not a line of these accounts, and offering the caption is
+        the reader's way to make it one again."""
+        period = _store(session, _period("TEST_US_EQ", dt.date(2024, 12, 31)))
+        rules = corrections.Rules()
+        corrections.learn_line(
+            rules,
+            TAG,
+            label=CAPTION,
+            statement="balance_sheet",
+            section="Current liabilities",
+            tag=TAG,
+        )
+        corrections.save_filer(session, CIK, rules)
+        session.commit()
+        client.post(
+            f"/accounts/{period.id}/corrections/add",
+            data={
+                "metric": f"new:{TAG}",
+                "value": "72965",
+                "statement": "balance_sheet",
+                "section": "Current liabilities",
+                "caption": CAPTION,
+                "tag": TAG,
+                "origin": "filing",
+            },
+        )
+        # The line is forgotten, and its figure is left exactly where it was put -- which is what
+        # `filer-lines/forget` promises: it changes no figure.
+        client.post(
+            f"/accounts/{period.id}/filer-lines/forget",
+            data={"metric": TAG, "statement": "balance_sheet"},
+        )
+
+        soup = BeautifulSoup(
+            client.get(
+                f"/accounts/{period.id}/corrections/new",
+                params={
+                    "statement": "balance_sheet",
+                    "tag": TAG,
+                    "caption": CAPTION,
+                    "section": "Current liabilities",
+                    "origin": "filing",
+                },
+            ).text,
+            "lxml",
+        )
+        options = {option["value"]: option for option in soup.select("select[name=metric] option")}
+
+        assert f"new:{TAG}" in options
+
+    def test_a_line_that_is_still_there_is_not_offered_as_a_new_one(self, client, session, two_years):
+        """The other half, so the fix cannot be "never suppress the offer": a line that *is* one
+        of this period's accounts does not want a second copy under the filing's caption."""
+        period = two_years
+        client.post(
+            f"/accounts/{period.id}/corrections/add",
+            data={
+                "metric": f"new:{TAG}",
+                "value": "72965",
+                "statement": "balance_sheet",
+                "section": "Current liabilities",
+                "caption": CAPTION,
+                "tag": TAG,
+                "origin": "filing",
+            },
+        )
+
+        soup = BeautifulSoup(
+            client.get(
+                f"/accounts/{period.id}/corrections/new",
+                params={
+                    "statement": "balance_sheet",
+                    "value": "72965",
+                    "tag": TAG,
+                    "caption": CAPTION,
+                    "section": "Current liabilities",
+                    "origin": "filing",
+                },
+            ).text,
+            "lxml",
+        )
+        options = {option["value"]: option for option in soup.select("select[name=metric] option")}
+
+        assert not any(value.startswith("new:") for value in options)
+
     def test_a_learned_line_is_offered_in_a_later_period(self, client, session):
         """*"Add this to the pre-defined list for future accounting periods of this instrument"*.
         The period doing the offering here is a *different row* from the one that learned it,

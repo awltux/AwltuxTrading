@@ -313,6 +313,25 @@ between the filing's arithmetic and the figures we read. DFPH turns out to be th
 kind. Which filers are the second kind is not yet measured, and cannot be until the
 composition check itself reads the declaration.
 
+### A forgotten line can leave a stored figure that nothing prints
+
+Added 2026-10-10, found in the live database while fixing the tag lookup that follows from it.
+`filer-lines/forget` says the value "stays on the period it was written to, where it can be taken
+off in the usual way" -- and there is no usual way once the line is gone, because the ledger
+prints the lines it is *offered*: `_corrected_accounts` builds `extra` from the filer's learned
+lines, so a figure left under a key the filer no longer has is in `metrics`, in `metric_sources`,
+counted by nothing and shown on no row. Measured on `DAC_US_EQ` period 256 that day:
+`dac:VoyageExpenses` held 63,061,000 in `metrics` with a `span` in its provenance, the filer's
+learned lines were empty, and the profit and loss printed no such row.
+
+The reader is not stuck -- the confirmation form offers the caption again since the same day's
+fix, and re-creating the line prints the figure that is already stored -- but the state exists
+and only the panel's own Undo leads out of it. Worth deciding: refuse to forget a line whose
+figure is still stored, or keep printing a learned line that still holds a figure (which is what
+`_learned_lines` already does for a learned line the *chart* has since taken over: "where the
+chart's line holds nothing, the learned line keeps its place, because nothing else is holding
+that figure").
+
 ### The attention filter still cannot see a filer whose declared lines hold and do not sum
 
 The linkbase work is now wired: ingest/linkbase.py fetches and parses the calculation,
