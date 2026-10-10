@@ -418,8 +418,43 @@ class TestServing:
 
         assert client.get("/research/1").status_code == 404
 
+    def test_a_bare_file_name_in_the_record_does_not_hide_the_document(
+        self, client, session, settings
+    ):
+        """The bug this fixes, measured 2026-10-10 on the first deep-dive ever completed.
+
+        The writer stored `1.xhtml` where the route joined the value to the data directory, so
+        `data / "1.xhtml"` named nothing and a finished report answered
+        `{"detail": "stored report 1 is missing"}` while its document sat under
+        `research/instrument/GWW_US_EQ/`. The route derives the location from the row now, so
+        what the column holds cannot take a readable report away.
+        """
+        row = _stored_report(session, settings)
+        row.raw_path = "1.xhtml"
+        session.commit()
+
+        response = client.get("/research/1")
+
+        assert response.status_code == 200
+        assert "stored" in response.text
+
+    def test_a_report_that_never_finished_is_a_404(self, client, session, settings):
+        """A file only exists once the write phase has run, so a row that says anything else
+        has no document to serve -- and saying so is better than serving one if a stray file
+        happened to be at the derived path."""
+        row = _stored_report(session, settings)
+        row.status = "failed"
+        session.commit()
+
+        assert client.get("/research/1").status_code == 404
+
     def test_a_path_that_escapes_the_data_directory_is_refused(self, client, session, settings):
-        """A stored path is still a path. The route re-resolves it against the root."""
+        """A stored path is still a path, and a report is still not served from one.
+
+        The route does not read `raw_path` any more, which is a stronger answer than checking
+        it: there is no input here that reaches the filesystem. The escape attempt is still
+        recorded, so the property is asserted rather than assumed.
+        """
         from awltux.db import ResearchReport
 
         session.add(

@@ -1290,8 +1290,13 @@ class ResearchReport(Base, TimestampMixin):
     the cited metrics -- as JSON. It is written once and read whole, like ``Filing.parsed``
     and ``NewsAnalysis.claims``, and no query joins across it.
 
-    ``raw_path`` is relative to the data volume, exactly as ``Filing.raw_path`` is, so the
-    serving route can re-resolve it against the data directory before opening it.
+    ``raw_path`` is relative to the data volume, exactly as ``Filing.raw_path`` is. **The
+    serving route does not read it**: it derives the location from the subject and the id,
+    because that is what the writer uses and a copy can disagree with the thing it copies.
+    It did -- measured 2026-10-10, the writer stored a bare ``1.xhtml``, the route joined it
+    to the data directory and the first deep-dive ever completed answered 404 while the page
+    listed it as readable. This column is the record of where the file went, for a person
+    looking at the volume.
     """
 
     __tablename__ = "research_report"

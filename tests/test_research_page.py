@@ -63,7 +63,7 @@ def _report(
     verdict: str | None = "watch",
     created_at: dt.datetime | None = None,
     error: str | None = None,
-    raw_path: str | None = "1.xhtml",
+    raw_path: str | None = None,
 ) -> ResearchReport:
     row = ResearchReport(
         subject_type=subject_type,
@@ -76,6 +76,9 @@ def _report(
         exec_summary=summary if status == "done" else None,
         verdict=verdict if status == "done" else None,
         error=error,
+        # Not written here, and the page does not read it: whether a report can be opened is
+        # decided by the file, which a test that wants the link has to put there -- see
+        # `test_each_finished_report_links_to_its_document`.
         raw_path=raw_path if status == "done" else None,
         bytes=4096,
         created_at=created_at or utcnow(),
@@ -194,7 +197,6 @@ class TestTheReportList:
                 session,
                 summary=f"{label} answer",
                 created_at=utcnow() - dt.timedelta(days=10 - index * 5),
-                raw_path=f"{index}.xhtml",
             )
         session.commit()
 
@@ -206,15 +208,45 @@ class TestTheReportList:
         dates = [row.select_one("td").get_text(strip=True) for row in rows]
         assert dates == sorted(dates, reverse=True)
 
-    def test_each_finished_report_links_to_its_document(self, client, session):
+    def test_each_finished_report_links_to_its_document(self, client, session, settings):
+        """The link is offered because the file is there, not because a column says so.
+
+        Until 2026-10-10 the page read `raw_path`, which the writer filled with a bare file
+        name, so this list offered a link to a document the route could not open. The test
+        writes the file now, because that is what the answer depends on.
+        """
+        from awltux.research import report as research_report
+
         _instrument(session)
         row = _report(session)
         session.commit()
+        research_report.write_report(
+            research_report.report_path(
+                settings,
+                subject_type="instrument",
+                subject_id=TICKER,
+                report_id=row.id,
+            ),
+            "<html><body>stored</body></html>",
+        )
 
         soup = BeautifulSoup(client.get(f"/instrument/{TICKER}?tab=research").text, "lxml")
 
         link = soup.select_one("#research table a[href^='/research/']")
         assert link is not None and link["href"] == f"/research/{row.id}"
+
+    def test_a_report_with_no_document_on_disk_is_not_offered_as_readable(
+        self, client, session
+    ):
+        """The other half of the same bug: a link that 404s is worse than no link, and the row
+        alone cannot tell the two apart -- the volume can be rebuilt without it."""
+        _instrument(session)
+        _report(session)
+        session.commit()
+
+        soup = BeautifulSoup(client.get(f"/instrument/{TICKER}?tab=research").text, "lxml")
+
+        assert soup.select_one("#research table a[href^='/research/']") is None
 
     def test_a_stale_running_report_is_shown_as_stale(self, client, session):
         """A run whose process went away leaves `running` behind. The page says stale rather

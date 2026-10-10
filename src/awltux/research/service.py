@@ -553,7 +553,10 @@ def _finish(
     row.confidence = result.confidence
     row.model = completion.model
     row.llm_call_id = completion.llm_call_id
-    row.raw_path = str(path.name)
+    # Relative to the data directory, the same shape `ingest/documents.py` stores for a filing
+    # -- it was `path.name` until 2026-10-10, a bare `1.xhtml`, which is a file name rather
+    # than a location and made the serving route's join resolve to nothing.
+    row.raw_path = str(path.relative_to(get_settings().data_dir))
     row.bytes = size
     row.error = None
     row.finished_at = utcnow()

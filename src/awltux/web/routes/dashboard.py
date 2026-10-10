@@ -31,6 +31,7 @@ from awltux.config import get_settings
 from awltux.db import Filing, IngestRun, Instrument, ResearchReport, session_scope
 from awltux.ingest import lease
 from awltux.ingest.universe import cached_t212_capabilities
+from awltux.research import report as research_report
 from awltux.research import service as research_service
 from awltux.scheduler import scoped
 from awltux.timezones import as_utc
@@ -2408,23 +2409,36 @@ def research_report_document(report_id: int) -> Response:
     path escapes every field it renders, so this is belt and braces; it is fitted anyway
     because the day someone adds a `|safe` is the day the sandbox is the only thing left.
 
-    The path is re-resolved against the data directory before it is opened. It comes from our
-    own database, but a stored path is still a path, and a route that joins one to a root
-    without checking is how a traversal arrives.
+    The path is **derived from the row, not read out of it**. `raw_path` was written as a bare
+    file name where this route joined it to the data directory, so the file it named was never
+    where the row said it was and a finished report answered 404 -- reported 2026-10-10 against
+    the first deep-dive ever completed. The location is a pure function of the subject and the
+    id, all of them columns, so deriving it cannot disagree with itself the way a stored copy
+    can. The stored path is still written correctly for anyone reading the volume; it is just
+    not what decides which file is served.
+
+    The re-resolve is kept even though nothing a writer controls is in the path any more: it
+    is the check that says the derived location is inside the directory it is supposed to be
+    in, which is a claim about the configuration rather than about the input.
     """
     settings = get_settings()
     with session_scope() as session:
         row = session.get(ResearchReport, report_id)
-        if row is None or not row.raw_path:
+        if row is None or row.status != "done":
             raise HTTPException(
                 status_code=404,
                 detail=f"no stored report for {report_id}",
             )
-        raw_path = row.raw_path
+        subject_type, subject_id = row.subject_type, row.subject_id
         title = row.title or f"research {report_id}"
 
     data_dir = settings.data_dir.resolve()
-    path = (data_dir / raw_path).resolve()
+    path = research_report.report_path(
+        settings,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        report_id=report_id,
+    ).resolve()
     if not path.is_relative_to(data_dir) or not path.is_file():
         raise HTTPException(
             status_code=404, detail=f"stored report {report_id} is missing"

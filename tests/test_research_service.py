@@ -345,6 +345,11 @@ class TestTheRun:
         path = settings.research_dir / "instrument" / TICKER / f"{row.id}.xhtml"
         assert path.exists(), "the report has to be on disk for the list to link to it"
         assert row.bytes == path.stat().st_size > 0
+        # `raw_path` is a *location*, relative to the data directory, the same shape a filing
+        # stores. It was `path.name` until 2026-10-10 -- a bare `1.xhtml` -- which is not a
+        # path at all, so joining it to the data directory named nothing and the first
+        # deep-dive ever completed answered 404 while the page listed it as readable.
+        assert row.raw_path == str(path.relative_to(settings.data_dir))
         # Parsed as XML, which is the only definition of "is XHTML" that is checkable.
         ElementTree.parse(path)
 

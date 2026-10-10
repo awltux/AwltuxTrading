@@ -52,6 +52,7 @@ from awltux.db.news import (
     primary_credibility,
 )
 from awltux.db.session import RECENCY_FUNCTION
+from awltux.research.report import report_path
 from awltux.timezones import as_utc, format_moment, utc_today
 
 SortKey = Literal[
@@ -1175,12 +1176,35 @@ def _research_row(row: Any, cutoff: dt.datetime) -> dict[str, Any]:
         "model": row.model,
         "bytes": row.bytes,
         "error": row.error,
-        "has_document": bool(row.raw_path),
+        "has_document": _research_document_exists(row),
         # So the list can offer the live progress log while a run is going, the same way the
         # Refresh panel does -- a run that says only "running" leaves the reader waiting on
         # something they cannot see.
         "run_id": row.run_id,
     }
+
+
+def _research_document_exists(row: Any) -> bool:
+    """Whether a report's document is actually on disk.
+
+    Derived from the row's own subject and id rather than from ``raw_path``, which is what the
+    page used to trust: the writer stored a bare file name where the route expected a path
+    relative to the data directory, so a finished report was listed as readable and then
+    404'd when the reader opened it. The location is a pure function of columns on the row, so
+    asking the filesystem is both the truthful answer and the one that cannot disagree with
+    itself.
+
+    It is a `stat` per row, which is why the report lists are bounded to 25 -- the cost is
+    real but it is the only way to answer a question about the volume.
+    """
+    settings = get_settings()
+    path = report_path(
+        settings,
+        subject_type=row.subject_type,
+        subject_id=row.subject_id,
+        report_id=row.id,
+    )
+    return path.is_file()
 
 
 def research_reports(
