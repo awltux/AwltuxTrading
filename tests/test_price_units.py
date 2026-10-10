@@ -14,8 +14,9 @@ wrong.
 
 Measured across the 488 instruments holding prices: 482 agreed with the broker's currency code
 and six did not. Three of those six were this 100x error -- ``VWRLl_EQ`` (GBP),
-``AEEEl_EQ`` (EUR) and ``RNEWl_EQ`` (USD) -- and three were LSE shells whose stored close is
-~1e-5 with no conversion at all, which is a different question and is queued in ``TODO.md``.
+``AEEEl_EQ`` (EUR) and ``RNEWl_EQ`` (USD) -- and three were LSE shells holding ~1e-5 with no
+conversion applied at all, which is a different fault and is queued in ``TODO.md`` rather than
+guessed at here.
 """
 
 from __future__ import annotations

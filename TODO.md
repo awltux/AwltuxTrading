@@ -20,29 +20,31 @@ the reason, so it is not re-litigated.
 
 ## Bugs
 
-### Three LSE shells hold a stored close of ~1e-5, with no unit conversion applied at all
+### Three LSE shells hold a stored close of ~1e-6, which is not a price either
 
-Measured 2026-10-09, while fixing the unit bug that made `VWRLl_EQ` read 1.41 against a true
-141.30. These are a *different* fault, and they are not 100x out:
+Measured 2026-10-09 while fixing the unit bug that made `VWRLl_EQ` read 1.41 against a true
+141.30, and **re-measured 2026-10-10** after `awltux repair-price-units` corrected the units:
+these three are a different fault, and a correction of the unit does not make them right.
 
-| ticker | broker unit | stored close | stored multiplier | last fetched |
+| ticker | broker unit | stored close before | after the repair | last fetched |
 |---|---|---|---|---|
-| `PFCl_EQ` (Petrofac) | GBX | 9.9999997e-06 | 1.0 | 2026-10-05 |
-| `RENEl_EQ` (ReNeuron) | GBX | 0.0011 | 1.0 | 2026-10-05 |
-| `SDXl_EQ` (SDX Energy) | GBX | 9.9999997e-05 | 1.0 | 2026-10-05 |
+| `PFCl_EQ` (Petrofac) | GBX | 9.9999997e-06 | 9.9999997e-08 | 2026-10-05 |
+| `RENEl_EQ` (ReNeuron) | GBX | 0.0011 | 1.1e-05 | 2026-10-05 |
+| `SDXl_EQ` (SDX Energy) | GBX | 9.9999997e-05 | 9.9999997e-07 | 2026-10-05 |
 
-All three are LSE names the broker says are quoted in pence, so the multiplier should be 0.01;
-each holds 499 bars with `raw_multiplier = 1.0`, i.e. the conversion was never applied, and each
-`raw_close` equals its `close`. Their values are nonsense either way — Petrofac at £0.00001 is
-not a price, it is a suspended or delisted line — so this is not the 100x error and multiplying
-by 100 would not make them right.
+All three are LSE names the broker says are quoted in pence, and each held 499 bars with
+`raw_multiplier = 1.0` — the conversion was never applied. `repair-price-units` has now applied
+it, so the rows agree with the instrument's currency, and the values are *still* not prices:
+Petrofac at £0.0000001 is a suspended or delisted line, not a quotation. A uniform factor across
+a whole series cancels out of every return and drawdown the markers compute, so nothing downstream
+changed when the repair landed; what is missing is a check that a stored price is *plausible* at
+all, which no part of the pipeline has.
 
-They have not been refreshed since 2026-10-05 while `HASl_EQ` and `RNEWl_EQ` were refreshed on
-2026-10-09, so the provider is presumably returning no bars for them now and `price_eod` records
-"the provider returned no bars". What is not established is what Yahoo said on 2026-10-05 and
-why it landed with a multiplier of 1.0 under a `GBX` group; the rows are the only record and
-they have been overwritten-frozen since. The unit guard added on 2026-10-09 would now refuse
-these bars rather than store them, so a refresh cannot make them worse.
+Also unexplained: why the conversion was never applied on 2026-10-05, when every other LSE
+instrument priced that day has `raw_multiplier = 0.01`. They have not been refreshed since — the
+provider appears to return no bars for them now and `price_eod` records "the provider returned no
+bars" — so the 2026-10-05 rows are the only record and they cannot be re-derived. The unit guard
+refuses their bars now, so a refresh cannot make them worse.
 
 ### The news feed volume is not feed-reader traffic, and the daily ceiling now shows it
 
