@@ -172,6 +172,53 @@ class TestTheExecutiveSummary:
 
         assert "the model's judgement of the whole business, not a price target" in body
 
+    def test_the_verdict_sits_between_the_description_and_its_provenance(
+        self, client, session
+    ):
+        """What the removed panel carried that *was* wanted back, asked for directly: the
+        deep-dive's current verdict, beside the description rather than on the Research tab.
+
+        Position is the assertion, not just presence: "after the title and before the 'from
+        the deep-dive' line" is the layout, and a receipt head is a flex row of title, badge,
+        provenance.
+        """
+        _instrument(session)
+        _report(session, verdict="watch", result={"business": {"summary": "It distributes."}})
+        session.commit()
+
+        head = BeautifulSoup(client.get(f"/instrument/{TICKER}").text, "lxml").select_one(
+            ".business-profile .receipt-head"
+        )
+
+        badge = head.select_one(".badge")
+        assert badge is not None and badge.get_text(strip=True) == "watch"
+        assert "badge" in badge.get("class", [])
+        order = head.get_text(" ", strip=True)
+        assert order.index("What the business is") < order.index("watch") < order.index("from")
+
+    def test_a_finished_report_that_reached_no_verdict_says_so(self, client, session):
+        """A report that declined to reach a verdict is a different answer from a report that
+        has not been run, and the panel shows two different things for them."""
+        _instrument(session)
+        _report(session, verdict=None, result={"business": {"summary": "It distributes."}})
+        session.commit()
+
+        head = BeautifulSoup(client.get(f"/instrument/{TICKER}").text, "lxml").select_one(
+            ".business-profile .receipt-head"
+        )
+
+        assert head.select_one(".badge").get_text(strip=True) == "no verdict"
+
+    def test_no_report_means_no_verdict_badge(self, client, session):
+        _instrument(session)
+        session.commit()
+
+        head = BeautifulSoup(client.get(f"/instrument/{TICKER}").text, "lxml").select_one(
+            ".business-profile .receipt-head"
+        )
+
+        assert head.select_one(".badge") is None
+
     def test_a_sector_still_carries_it_at_the_top_of_its_page(self, client, session):
         """The half of the feature that stayed: a sector has no other answer to show."""
         _report(session, subject_type="sector", subject_id=SECTOR, summary="Margins compress.")

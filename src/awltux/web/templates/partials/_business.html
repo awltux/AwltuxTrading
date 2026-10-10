@@ -13,6 +13,19 @@
 <section class="business-profile">
   <div class="receipt-head">
     <h2>What the business is{{ help('business_profile') }}</h2>
+    {# The deep-dive's verdict, in the place the removed executive-summary panel had it: the
+       description says what the company is, and this says what the model concluded about
+       buying it. A `receipt-head` is a flex row whose gaps separate its children, so the chip
+       is a child of its own rather than text inside either neighbour -- which is also why the
+       verdict carries no tooltip here: a `?` after a 12px gap would read as belonging to the
+       provenance line. "No verdict" is printed rather than nothing, because a finished report
+       that declined to reach one is a different answer from a report never run -- the
+       `{% else %}` below. #}
+    {% if business %}
+      <span class="badge {{ business.verdict | verdict_class }}">
+        {{ (business.verdict or 'no verdict') | replace('_', ' ') }}
+      </span>
+    {% endif %}
     <span class="muted small">
       {% if business %}
         from <a href="/research/{{ business.report_id }}">the deep-dive</a>
