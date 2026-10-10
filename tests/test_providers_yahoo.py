@@ -103,6 +103,51 @@ def provider(monkeypatch, settings):
     return instance
 
 
+class FakeMultiColumns:
+    """yfinance's MultiIndex columns, as far as this provider looks at them."""
+
+    NAMES = ("Open", "High", "Low", "Close", "Adj Close", "Volume")
+
+    def __init__(self, symbols: list[str]) -> None:
+        self.levels = [list(symbols)]
+        self._columns = [(symbol, name) for symbol in symbols for name in self.NAMES]
+
+    def get_level_values(self, level: int) -> list[str]:
+        return [column[0] for column in self._columns]
+
+    def __iter__(self):
+        return iter(self._columns)
+
+    def __len__(self) -> int:
+        return len(self._columns)
+
+
+class FakeMultiFrame:
+    """What ``yf.download`` returns, and it is a MultiIndex **even for one ticker**.
+
+    Measured against the real library on 2026-10-09: ``download(["VWRL.L"],
+    group_by="ticker")`` gives 6 columns of ``('VWRL.L', 'Open')`` … with
+    ``columns.levels`` present -- not 6 simple columns. A stub with simple columns would have
+    hidden the bug this models, so there isn't one.
+    """
+
+    def __init__(self, symbols: list[str], rows: list[tuple[dt.datetime, float]]) -> None:
+        self.columns = FakeMultiColumns(symbols)
+        self.attrs: dict[str, str] = {}
+        self._symbols = symbols
+        self._rows = rows
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    @property
+    def empty(self) -> bool:
+        return not self._rows
+
+    def __getitem__(self, symbol: str) -> FakeFrame:
+        return FakeFrame(self._rows)
+
+
 class TestHistorySignature:
     def test_history_does_not_pass_progress(self, provider):
         """The exact bug: ``progress`` is a ``download`` argument, not a
@@ -248,8 +293,7 @@ class TestTheBatchUnitComesFromTheCallerNotTheFrame:
 
         instance.get_history_batch(["VOD.L", "VWRL.L"], currencies={"VWRL.L": "GBP"})
 
-        # A one-symbol group is asked for by name, which is what `download` accepts.
-        assert list(requests) == ["VOD.L", "VWRL.L"], "one request per stated unit"
+        assert list(requests) == [["VOD.L"], ["VWRL.L"]], "one request per stated unit"
 
     def test_with_no_stated_unit_the_frame_speaks_for_the_group(self, monkeypatch, settings):
         """A caller with nothing to say gets the old behaviour: the frame's currency is the
@@ -287,6 +331,50 @@ class TestTheBatchUnitComesFromTheCallerNotTheFrame:
         assert series.raw_currency == "GBp", "the ticker's own unit"
         assert series.raw_multiplier == pytest.approx(0.01)
         assert series.bars[-1].close == pytest.approx(1.10), "110 pence is 1.10 pounds"
+
+
+class TestASymbolAloneInItsGroupStillGetsItsBars:
+    """`refresh_prices_eod` groups symbols by the unit they are quoted in, and a unit one symbol
+    has to itself is ordinary -- an LSE ETF quoted in pounds, in a universe of US and pence
+    lines. yfinance answers a one-ticker request with MultiIndex columns exactly as it does a
+    forty-ticker one, so which shape comes back is a property of the *frame*:
+
+    measured 2026-10-09, `download(["VWRL.L"], group_by="ticker")` gives 6 columns of
+    `('VWRL.L', 'Open')` … and `columns.levels` is present.
+
+    Asking "were more than one symbol requested?" instead got this wrong, and the symptom was
+    not a wrong price but no price at all: "the provider returned no bars for VWRL.L" on every
+    run after the unit fix landed.
+    """
+
+    def _instance(self, monkeypatch, settings, *, symbols: list[str]):
+        instance = YahooProvider(settings)
+        rows = [(dt.datetime(2026, 6, day, tzinfo=dt.UTC), 141.30) for day in (1, 2)]
+
+        class FakeYf:
+            Ticker = staticmethod(lambda symbol: FakeTicker(symbol))
+            download = staticmethod(lambda **kwargs: FakeMultiFrame(symbols, rows))
+
+        monkeypatch.setattr(instance, "_yf", FakeYf)
+        return instance
+
+    def test_one_symbol_in_its_group_still_reads(self, monkeypatch, settings):
+        instance = self._instance(monkeypatch, settings, symbols=["VWRL.L"])
+
+        series = instance.get_history_batch(["VWRL.L"], currencies={"VWRL.L": "GBP"})["VWRL.L"]
+
+        assert len(series.bars) == 2, "the rows were there; the columns were not found"
+        assert series.bars[-1].close == pytest.approx(141.30)
+        assert series.raw_multiplier == 1.0
+
+    def test_a_symbol_missing_from_the_frame_yields_nothing_rather_than_crashing(
+        self, monkeypatch, settings
+    ):
+        """A download that answered for different symbols than it was asked for is a real
+        provider response, and the caller records it as "no bars" rather than failing the run."""
+        instance = self._instance(monkeypatch, settings, symbols=["SOMETHINGELSE.L"])
+
+        assert instance.get_history_batch(["VWRL.L"]) == {}
 
 
 class TestFailureHandling:

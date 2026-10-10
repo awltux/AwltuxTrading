@@ -306,7 +306,10 @@ class YahooProvider:
             self._account()
             try:
                 frame = self.yf.download(
-                    tickers=group if len(group) > 1 else group[0],
+                    # Always a list: a one-symbol group is ordinary (a unit only one
+                    # instrument is quoted in), and the frame comes back with the same
+                    # MultiIndex columns either way -- measured, see `_extract_symbol_frame`.
+                    tickers=group,
                     period=period,
                     interval=interval,
                     auto_adjust=False,
@@ -324,7 +327,7 @@ class YahooProvider:
                 continue
 
             for symbol in group:
-                sub = self._extract_symbol_frame(frame, symbol, multi=len(group) > 1)
+                sub = self._extract_symbol_frame(frame, symbol)
                 if sub is None or sub.empty:
                     continue
                 out[symbol] = self._frame_to_series(
@@ -333,15 +336,27 @@ class YahooProvider:
         return out
 
     @staticmethod
-    def _extract_symbol_frame(frame: Any, symbol: str, *, multi: bool) -> Any | None:
-        if not multi:
-            return frame
+    def _extract_symbol_frame(frame: Any, symbol: str) -> Any | None:
+        """One symbol's columns out of a download, single or multi.
+
+        **Decided from the frame, not from how many symbols were asked for.** yfinance returns
+        MultiIndex columns for a one-ticker request too -- measured 2026-10-09:
+        ``download(["VWRL.L"], group_by="ticker")`` gives ``[('VWRL.L', 'Open'), ...]`` and 6
+        columns, not 6 simple ones. The old ``len(group) > 1`` therefore asked the wrong
+        question, and it answered itself wrongly the first time a symbol became the only member
+        of its currency group: an LSE ETF quoted in pounds has a group of one, so nothing was
+        extracted and the run recorded "the provider returned no bars for VWRL.L" instead of
+        storing the right price.
+        """
         try:
-            if hasattr(frame.columns, "levels") and symbol in frame.columns.get_level_values(0):
-                return frame[symbol]
+            if hasattr(frame.columns, "levels"):
+                # A ticker *list* was answered, so this symbol's columns either exist or the
+                # provider did not answer for it. Never "fall back to the whole frame": that
+                # would store another company's prices under this ticker.
+                return frame[symbol] if symbol in frame.columns.get_level_values(0) else None
         except Exception:
             return None
-        return None
+        return frame
 
     def _frame_to_series(
         self, symbol: str, frame: Any, raw_currency: str, *, stated: str = ""
@@ -373,7 +388,14 @@ class YahooProvider:
         )
         series.raw_currency = raw_currency
 
-        columns = {str(c).lower(): c for c in frame.columns}
+        # yfinance answers a ticker *list* with MultiIndex columns, so a level left on a column
+        # is unwrapped rather than becoming a name nobody looks up. The extraction above should
+        # have taken it off already; this is the second net, and it is what makes a mis-shaped
+        # frame read as "no bars for this symbol" rather than as a crash.
+        columns: dict[str, Any] = {}
+        for column in frame.columns:
+            key = column[-1] if isinstance(column, tuple) else column
+            columns[str(key).lower()] = column
 
         for index, row in frame.iterrows():
             close = _as_float(row.get(columns.get("close", "Close")))
