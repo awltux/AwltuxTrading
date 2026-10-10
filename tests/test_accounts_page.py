@@ -158,6 +158,40 @@ class TestWhatTheStatementsShow:
 
         assert "Stated" in body and "Computed" in body
 
+    def test_the_columns_are_the_two_facts_and_not_a_third_copy(
+        self, client, session, stored_period
+    ):
+        """Reported twice: *"the USD and Stated always match"*, then *"the Computed is always
+        empty. Is it just misalignment"*.
+
+        Both were true of the same third column, which held the stated figure with the computed
+        one as its fallback. On the live page it was measured (period 256, DAC_US_EQ): "USD" and
+        "Stated" agreed on 22 of the 23 profit-and-loss rows carrying a figure, and differed only
+        on the two subtotals the filing states nothing for -- a figure under a currency heading
+        with a blank "Stated" beside it, which reads as a number that came from nowhere.
+
+        Computed is not misaligned either: it is populated exactly where there is arithmetic, so
+        a component line is blank and a subtotal is not.
+        """
+        soup = BeautifulSoup(
+            client.get(f"/accounts/{stored_period.id}/profit_and_loss").text, "lxml"
+        )
+        headers = [
+            cell.get_text(" ", strip=True).replace("?", "").strip()
+            for cell in soup.select_one("table.ledger thead tr").select("th")
+        ]
+
+        assert headers[:3] == ["Line", "Stated", "Computed"], headers
+
+        figures = {
+            row.select("td")[0].get_text(" ", strip=True): [
+                cell.get_text(" ", strip=True) for cell in row.select("td")[1:3]
+            ]
+            for row in soup.select("table.ledger tbody tr")
+        }
+        assert figures["Revenue"] == ["1,000", "—"], "a component has nothing to compute"
+        assert figures["Gross profit"] == ["400", "400"], "a subtotal does"
+
     def test_a_disagreeing_subtotal_is_flagged_rather_than_absorbed(
         self, client, session
     ):

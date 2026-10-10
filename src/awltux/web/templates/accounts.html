@@ -179,8 +179,18 @@
     <table class="grid compact ledger">
       <thead>
         <tr>
+          {# Two figure columns, not three. There used to be an "Amount" column ahead of these,
+             holding `Line.amount` -- the stated figure with the computed one as its fallback --
+             and it was reported as a duplicate: *"do the USD and Stated actually differ? They
+             always match."* They did, on every row the filing states a figure, because that is
+             what the column was. What it did *not* duplicate was a subtotal the filing never
+             states: on the live page those two rows printed a figure under "USD" with "Stated"
+             blank beside it, which reads as a figure that came from nowhere. The filing's own
+             figure and our arithmetic are the two facts here and neither is derivable from the
+             other, so those are the two columns; where the filing states nothing, Stated is
+             blank and the figure the reader needs is in Computed. The currency is on the Basis
+             line above rather than heading a column of its own. #}
           <th>Line</th>
-          <th class="num">{{ currency or 'Amount' }}</th>
           <th class="num">Stated{{ help('stated') }}</th>
           <th class="num">Computed{{ help('computed') }}</th>
           <th></th>
@@ -193,15 +203,13 @@
             {% if line.role == 'memo' %}<span class="muted">{{ line.label }}</span>
             {% else %}{{ line.label }}{% endif %}
           </td>
-          <td class="num">
-            {% if line.amount is not none %}{{ line.amount | number(line.decimals) }}{% else %}<span class="muted">—</span>{% endif %}
-          </td>
           {# Stated and computed are columns of their own rather than a footnote: the
              residual between them is the size of the lines this project does not
              extract, and a reader who cannot see it cannot tell an extraction gap from
-             a business with unusual economics. #}
-          <td class="num small muted">
-            {% if line.stated is not none %}{{ line.stated | number(line.decimals) }}{% else %}—{% endif %}
+             a business with unusual economics. Stated is the prominent figure, because it
+             is the filing's own; it is blank only where the filing stated nothing. #}
+          <td class="num">
+            {% if line.stated is not none %}{{ line.stated | number(line.decimals) }}{% else %}<span class="muted">—</span>{% endif %}
           </td>
           <td class="num small">
             {# The "out by" figure is the one a reader cannot act on without knowing what
@@ -224,7 +232,10 @@
               {% else %}
                 <span class="muted small work" data-work="{{ line.show_work() }}">out by {{ line.residual | number(line.decimals) }}</span>
               {% endif %}
-            {% else %}<span class="muted work" data-work="{{ line.show_work() }}">{{ line.computed | number(line.decimals) }}</span>{% endif %}
+            {% else %}{# Nothing is out by anything. Where the filing stated no figure of its own,
+               this is the row's only figure and prints at full strength; otherwise it is the
+               check beside the stated one and stays quiet. #}
+              <span class="{% if line.stated is not none %}muted {% endif %}work" data-work="{{ line.show_work() }}">{{ line.computed | number(line.decimals) }}</span>{% endif %}
           </td>
           {# Taking a line out is offered only where there is a line: a figure that was never
              extracted is absent rather than wrong, and the way to put one in is "add a line"
