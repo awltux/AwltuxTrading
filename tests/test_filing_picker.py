@@ -127,11 +127,40 @@ class TestTheResidualBecomesAWayIntoTheFiling:
         assert f"awltux_period={period.id}" in link["href"]
         assert "awltux_line=total_assets" in link["href"]
         assert "awltux_statement=balance_sheet" in link["href"]
+        # Once each. A duplicate is not harmless: `URLSearchParams.get` returns the *first*, so a
+        # base URL carrying the tab the reader is on would win over the line's own statement --
+        # which is the whole difference on the health tab, whose rows audit lines printed
+        # elsewhere.
+        assert link["href"].count("awltux_statement=") == 1
+        assert "awltux_section=Non-current%20assets" in link["href"], (
+            "the heading the line is printed under travels with it"
+        )
         # The period end goes too: a filing prints the current year and the prior year in one
         # row under one caption, both tagged, and the script marks a figure clicked out of the
         # wrong column rather than letting it be written in.
         assert "awltux_period_end=2024-12-31" in link["href"]
         assert "out by" in link.get_text(" ")
+
+    def test_a_health_row_carries_the_statement_its_line_is_printed_on(
+        self, client, session, settings
+    ):
+        """The health tab audits lines printed on the statements, so the link has to name the
+        statement *the line* belongs to. Naming the tab the reader is on instead sent them to a
+        confirmation page with no lines to choose from."""
+        period, filing = _store(session, settings)
+
+        soup = BeautifulSoup(client.get(f"/accounts/{period.id}/health").text, "lxml")
+        row = next(
+            item
+            for item in soup.select("table.grid tbody tr")
+            if "Components sum to stated total assets" in item.get_text(" ")
+        )
+        href = row.select_one("a.work")["href"]
+
+        assert "awltux_statement=balance_sheet" in href
+        assert "health" not in href, "the tab is not the statement the line is printed on"
+        assert "awltux_line=total_assets" in href
+        assert "awltux_section=Non-current%20assets" in href
 
     def test_the_hover_working_survives_the_link(self, client, session, settings):
         """The calculation a reader was already shown on hover has to stay: the link adds an

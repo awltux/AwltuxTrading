@@ -494,7 +494,7 @@ def accounts_page(
     extra = corrections_context.pop("extra")
     # The filing behind these figures, when they are the government's own XBRL and we hold the
     # document: that is what lets the page open it at the line that does not reconcile.
-    filing = _filing_target(session, period, statement)
+    filing = _filing_target(session, period)
 
     return templates.TemplateResponse(
         request,
@@ -554,7 +554,7 @@ def _placements(period: Any) -> dict[str, dict[str, str]]:
     return out
 
 
-def _filing_target(session: Any, period: Any, statement: str) -> dict[str, Any] | None:
+def _filing_target(session: Any, period: Any) -> dict[str, Any] | None:
     """The stored filing behind a period the *government's own* XBRL describes.
 
     Asked for directly: *"if the accounts for a period are based on government xbrl, convert the
@@ -598,13 +598,15 @@ def _filing_target(session: Any, period: Any, statement: str) -> dict[str, Any] 
         # decide: which period and which line are fixed by the link the reader pressed. The
         # period *end* goes with them because a filing prints the current year and the prior year
         # in one row under one caption, both tagged, and the script marks a figure clicked out of
-        # the wrong column rather than letting it be written in. The *heading* is appended per
-        # link in the template, from `line_sections`, because a line created out of a caption in
-        # the filing needs one to be printed under and the heading the reader came from is the
-        # one they are working in.
+        # the wrong column rather than letting it be written in.
+        #
+        # **The statement and the heading are per link**, appended by the template from
+        # `placements`: a residual on the health tab audits a line that is printed on a statement
+        # of its own, and a duplicate `awltux_statement` here would be read by `URLSearchParams`
+        # as the *first* one -- which is this one, the tab the reader happens to be on.
         "pick": (
             f"/filing/{row.id}/pick"
-            f"?awltux_period={period.id}&awltux_statement={quote(statement)}"
+            f"?awltux_period={period.id}"
             f"&awltux_period_end={period.period_end.isoformat()}"
         ),
         "document": f"/filing/{row.id}/document",
