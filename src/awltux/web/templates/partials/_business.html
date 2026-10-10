@@ -61,13 +61,13 @@
       </thead>
       <tbody>
       {% for row in levers %}
-        {# The group travels as a word, not an icon: it says which part of the taxonomy the
-           lever comes from, and the hover carries the channel so a reader can check they
-           filed the right one without leaving the page. #}
+        {# The group travels as a word, not an icon, and the hover carries the channel on the
+           *lever's* name so a reader can check they filed the right one without leaving the
+           page. On the group label it would have explained the wrong thing. #}
         <tr>
           <td>
-            <a href="/levers/{{ row.lever | urlencode }}"><strong>{{ row.label }}</strong></a>
-            <span class="muted small" title="{{ row.channel }}">{{ row.group_label }}</span>
+            <a href="/levers/{{ row.lever | urlencode }}" title="{{ row.channel }}"><strong>{{ row.label }}</strong></a>
+            <span class="muted small">{{ row.group_label }}</span>
           </td>
           <td>{{ row.direction_label }}</td>
           <td class="muted small">{{ row.strength_label }}</td>
