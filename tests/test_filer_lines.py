@@ -963,6 +963,22 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
             "profit_and_loss",
         ) is not None
 
+    def test_a_figure_the_filing_prints_negative_still_moves_by_its_side(self):
+        """The sign is the figure's and the direction is the side's, so a deduction the filer
+        brackets -- which the picker now keeps as a negative -- and the reader posts as a debit
+        takes away rather than adding. Reading the sign as a second direction would flip it, and
+        that is the case this filing is full of: Danaos prints its operating expenses as
+        ``(63,061)`` and ``(208,779)``."""
+        account = _learned_for("Operating expenses", side="debit")
+        period = _profit_period(**{account.key: -40.0})
+
+        work = _line(
+            ledger.profit_and_loss(period, extra=[account]), "Operating expenses", "operating_income"
+        )
+
+        assert work.computed == 210.0
+        assert {part.source: part.contribution for part in work.parts}[account.key] == -40.0
+
     def test_a_figure_nobody_stated_is_not_a_component(self):
         """A learned line with no figure under it must not appear as a zero: the working would
         then claim the filing stated nothing there, which is a different fact from our not

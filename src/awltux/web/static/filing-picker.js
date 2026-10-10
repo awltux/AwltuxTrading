@@ -121,13 +121,13 @@
       .replace(/\u00a0/g, " ")
       .trim()
       .replace(/\s+/g, "");
-    // Brackets are the accounting negative, and they are printed on one side of the tag or the
-    // other. Only the ones *inside* the element are stripped from its text; the ones printed
+    // Brackets are the accounting negative, and a filing prints them on one side of the tag or
+    // the other. Only the ones *inside* the element are stripped from its text; the ones printed
     // around it belong to the markup, and slicing those off would eat a digit from each end of
-    // the figure. One negation per figure, or a figure printed both ways would come back positive.
+    // the figure.
     var bracketed = text.charAt(0) === "(" && text.slice(-1) === ")";
     if (bracketed) text = text.slice(1, -1);
-    var negative = bracketed || bracketedOutside(element);
+    var in_brackets = bracketed || bracketedOutside(element);
     // A currency symbol is presentation: the unit is in `unitRef`.
     text = text.replace(/^[$£€¥]/, "");
 
@@ -139,17 +139,26 @@
     if (!isFinite(value)) {
       return { reason: "this figure is not a number" };
     }
-    if (negative) value = -value;
+    var sign = (element.getAttribute("sign") || "").trim();
+    // **A negative is a negative however the filing says it, and never both.** The two ways a
+    // filing marks one -- brackets round the number, `sign="-"` on the tag -- are the same
+    // statement about the same figure, so applying both reads a loss as a profit. Measured
+    // 2026-10-10 over every stored document: 58,150 tagged figures are bracketed with no sign
+    // attribute, **49,170 carry both**, and *none* is bracketed inside the element where the two
+    // could mean different things. Reported by a reader clicking a loss: *"some, but not all,
+    // populate the Account as positives. I can see the sign value is set in the ix:nonfraction,
+    // but it doesn't seem to transfer"* -- it did transfer, and the brackets round it undid it.
+    var negative_from = in_brackets ? "brackets" : sign === "-" ? "sign" : "";
+    if (negative_from) value = -value;
     var scale = parseInt(element.getAttribute("scale") || "0", 10);
     if (!isFinite(scale)) scale = 0;
     if (scale !== 0) value = value * Math.pow(10, scale);
-    var sign = (element.getAttribute("sign") || "").trim();
-    if (sign === "-") value = -value;
     return {
       value: value,
       raw: text,
       scale: scale,
       sign: sign,
+      negative_from: negative_from,
       tag: element.getAttribute("name") || "",
       unit: element.getAttribute("unitRef") || "",
       context: element.getAttribute("contextRef") || "",
@@ -681,8 +690,10 @@
     item.appendChild(figureLine);
 
     // The working, so the figure can be checked rather than taken: what the filing printed,
-    // what it was scaled by, and the sign it carried. A figure read out of an untagged table
-    // has none of those, and says so rather than showing an empty sum.
+    // what it was scaled by, and **why the sign is what it is**. That last one is the step a
+    // reader needs and could not get: a figure the filing brackets came back positive with the
+    // tray saying "sign −", and the two statements of it read as agreement rather than as a
+    // cancellation. A figure read out of an untagged table has none of this and says so.
     var working = document.createElement("span");
     working.className = "awltux-tray-working";
     if (figure.origin === "table") {
@@ -690,7 +701,8 @@
     } else {
       var steps = [figure.raw];
       if (figure.scale) steps.push("\u00d7 10^" + figure.scale);
-      if (figure.sign === "-") steps.push("sign \u2212");
+      if (figure.negative_from === "brackets") steps.push("in brackets");
+      else if (figure.negative_from === "sign") steps.push("sign \u2212");
       working.textContent = " = " + steps.join(" ");
     }
     item.appendChild(working);

@@ -62,8 +62,13 @@ test("a figure with nothing to apply is the number as printed", () => {
 test("sign='-' negates, and so does a figure in parentheses", () => {
   assert.equal(picker.figureOf(element({ name: "us-gaap:X", sign: "-" }, "500")).value, -500);
   assert.equal(picker.figureOf(element({ name: "us-gaap:X" }, "(500)")).value, -500);
-  // Both at once is a credit printed as a deduction: one negation, not two.
-  assert.equal(picker.figureOf(element({ name: "us-gaap:X", sign: "-" }, "(500)")).value, 500);
+  // **Both at once is still one negation**, which reverses what this test asserted until
+  // 2026-10-10. The two are the same statement about the same figure, and a filing that prints
+  // a loss both ways was being read as a profit -- reported by a reader, and measured across
+  // every stored document: 49,170 tagged figures carry brackets *and* `sign="-"`, and none of
+  // the 962,078 is bracketed inside the element, which is the only shape where the two could
+  // mean different things.
+  assert.equal(picker.figureOf(element({ name: "us-gaap:X", sign: "-" }, "(500)")).value, -500);
 });
 
 test("a negative scale divides", () => {
@@ -759,4 +764,43 @@ test("brackets inside the tag are still read, and are not read twice", () => {
 test("the bracket rule is available without a figure, for the working shown beside it", () => {
   assert.equal(picker.bracketedOutside(placed("(", "1", ")")), true);
   assert.equal(picker.bracketedOutside(placed("", "1", "")), false);
+});
+
+/* ---------------------------------------------------------------------------------------
+ * A bracket and a sign attribute are one negative, not two.
+ *
+ * Reported 2026-10-10 with the filing page open: *"The bracketed negatives in the accounts
+ * document aren't currently captured reliably. Some, but not all, populate the Account as
+ * positives. I can see the sign value is set in the ix:nonfraction, but it doesn't seem to
+ * transfer."*
+ * ------------------------------------------------------------------------------------- */
+
+test("a loss the filing brackets *and* signs is a loss", () => {
+  // Danaos' 2025 20-F, verbatim: the row prints "(2,499)" with the brackets outside the tag and
+  // `sign="-"` on it, scaled by 10^3. Applying both read it as +2,499,000, and the tray said
+  // "sign −" while showing a positive -- which is what the reader saw.
+  const figure = picker.figureOf(
+    placed("(", "2,499", ")", {
+      name: "us-gaap:GainsLossesOnExtinguishmentOfDebt",
+      format: "ixt:num-dot-decimal",
+      sign: "-",
+      scale: "3",
+    })
+  );
+
+  assert.equal(figure.value, -2499000);
+  assert.equal(figure.negative_from, "brackets");
+  assert.equal(picker.figureString(figure.value), "-2499000");
+});
+
+test("the reason for the sign is carried, so the working can say it", () => {
+  // Two shapes, two reasons, and the tray prints exactly one of them: a figure whose value is
+  // negative and whose working does not say why is the state the reader could not check.
+  const outer = picker.figureOf(placed("(", "32,000", ")", { name: "us-gaap:X" }));
+  const signed = picker.figureOf(element({ name: "us-gaap:X", sign: "-" }, "32,000"));
+  const plain = picker.figureOf(element({ name: "us-gaap:X" }, "32,000"));
+
+  assert.equal(outer.negative_from, "brackets");
+  assert.equal(signed.negative_from, "sign");
+  assert.equal(plain.negative_from, "");
 });

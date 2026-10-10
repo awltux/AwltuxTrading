@@ -416,6 +416,9 @@ the chart's lines, with the heading it is to be printed under.
   adds, a debit takes away. That is the convention the chart's own income lines follow and the
   trial balance posts by, the sign is in the working shown beside the figure, and the health check
   that audits reported profit reads the same cascade, so the row and the statement cannot disagree.
+  **The figure keeps the sign the filing printed** — a deduction the filer brackets stays negative
+  on the page — and it is its *size* the side then moves, so a deduction posted as a debit takes
+  away rather than adding itself back.
 - **A tag that already feeds a line is not offered as a new one.** `us-gaap:InventoryNet` is the
   Inventory line; a second line for one caption would be two figures that disagree the first time
   one of them is corrected. The form opens on the chart's line instead.

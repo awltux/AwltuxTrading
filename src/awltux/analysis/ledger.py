@@ -650,7 +650,7 @@ def _extras_total(
         value = _stated(metrics, account.key)
         if value is None:
             continue
-        total = (total or 0.0) + _weight(account) * value
+        total = (total or 0.0) + _weight(account) * abs(value)
     return total
 
 
@@ -664,6 +664,9 @@ def _extra_parts(
     ``us-gaap:ContractWithCustomerLiabilityCurrent`` where the statement prints
     "Short-term unearned revenue". An absent figure is left out, exactly as :func:`_component`
     leaves one out, because a zero claims the filing stated nothing there.
+
+    The contribution is the one the total was computed from, sign and all -- see :func:`_weight`
+    -- so the working adds up to the figure beside it rather than explaining a different sum.
     """
     out: list[Part] = []
     for account in accounts:
@@ -673,7 +676,7 @@ def _extra_parts(
         out.append(
             Part(
                 label=account.label,
-                contribution=_weight(account) * value,
+                contribution=_weight(account) * abs(value),
                 source=account.key,
             )
         )
@@ -999,12 +1002,15 @@ def extra_keys(
 def _weight(account: Account) -> float:
     """Which way one learned line moves the figure it feeds: a credit adds, a debit takes away.
 
-    The heading says *where* a line joins the profit and loss; the side the reader posted it on
-    says which way it moves the result. That is the same rule the chart's own income lines
-    follow -- `revenue` is a credit and adds, `sga_expense` a debit and takes away -- and the
-    same one the trial balance posts by. It is not a guess the page makes: the side is asked for
-    on the confirmation form, and the sign is printed in the working a reader hovers, so a line
-    deducted where they meant it added is visible without recomputing anything.
+    **The size is the figure's; the direction is the side's.** A filing prints a deduction as
+    ``(63,061)`` and a loss as ``(2,499)``, and the picker keeps that sign -- it is what the
+    reader can see on the page and it is what the figure *is* -- so the amount that moves a total
+    is the figure's **size**, not its signed value. Reading the sign as a second direction would
+    turn a deduction posted as a debit into an addition, which is the opposite of what the form
+    says the side does: *"a credit adds to profit, a debit takes away"*. Measured on Danaos'
+    2025 20-F, 2026-10-10: its operating expenses are printed ``(63,061)`` and ``(208,779)``, and
+    both were added under "Operating expenses" as debits to close the residual they were added to
+    fix.
     """
     return 1.0 if account.side == CREDIT else -1.0
 
