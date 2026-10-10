@@ -1025,3 +1025,78 @@ class TestThePanelOnEveryTab:
         body = client.get(f"/accounts/{two_years.id}").text
 
         assert "Corrections to these accounts" not in body
+
+
+class TestThePanelIsOutOfTheWay:
+    """Asked for directly 2026-10-10: *"move the Accounts corrections section to the bottom of the
+    accounts tab and minimise it. It's useful if you are currently editing the Accounts, but not
+    if you are just viewing."*
+
+    Both halves, because either alone is the wrong answer: minimised it still has to be findable,
+    and at the bottom it still has to say what it holds.
+    """
+
+    def _remove(self, client, period) -> None:
+        client.post(
+            f"/accounts/{period.id}/corrections/remove",
+            data={"metric": "inventory", "statement": "balance_sheet"},
+        )
+
+    def test_it_sits_below_the_figures_it_changes(self, client, session, two_years):
+        self._remove(client, two_years)
+
+        html = client.get(f"/accounts/{two_years.id}/balance_sheet").text
+
+        # Asserted on the rendered order rather than on elements found: "after the statement" is
+        # a fact about the page, and `select` returns document order but not the identity a
+        # reader sees. The trial balance is the other table on the tab, so both are checked.
+        assert html.index('class="grid compact ledger"') < html.index('id="corrections"')
+        assert html.index("The trial balance") < html.index('id="corrections"')
+
+    def test_it_is_minimised_while_a_reader_is_only_viewing(self, client, session, two_years):
+        self._remove(client, two_years)
+
+        panel = BeautifulSoup(
+            client.get(f"/accounts/{two_years.id}/balance_sheet").text, "lxml"
+        ).select_one("#corrections")
+
+        assert panel.name == "details"
+        assert not panel.has_attr("open")
+
+    def test_the_heading_says_what_is_inside_it_without_opening(self, client, session, two_years):
+        """A closed panel with a bare heading is a panel nobody opens."""
+        self._remove(client, two_years)
+        client.post(
+            f"/accounts/{two_years.id}/corrections/add",
+            data={
+                "metric": "operating_lease_assets",
+                "value": "10",
+                "statement": "balance_sheet",
+            },
+        )
+
+        summary = BeautifulSoup(
+            client.get(f"/accounts/{two_years.id}/balance_sheet").text, "lxml"
+        ).select_one("#corrections > summary")
+
+        assert "Corrections to these accounts" in summary.get_text(" ")
+        assert "2 changes" in summary.get_text(" ")
+
+    def test_it_opens_itself_when_a_change_has_just_been_made(self, client, session, two_years):
+        """The outcome note only travels with a redirect from a correction route, so it is the
+        signal that the reader is editing rather than reading -- and a message about what just
+        happened, inside a closed panel, is a message nobody sees."""
+        response = client.post(
+            f"/accounts/{two_years.id}/corrections/remove",
+            data={"metric": "inventory", "statement": "balance_sheet"},
+            follow_redirects=False,
+        )
+        assert "#corrections" in response.headers["location"]
+
+        soup = BeautifulSoup(
+            client.get(response.headers["location"].split("#")[0]).text, "lxml"
+        )
+        panel = soup.select_one("#corrections")
+
+        assert panel.has_attr("open")
+        assert "was taken out" in panel.select_one("summary ~ p.notice").get_text(" ")

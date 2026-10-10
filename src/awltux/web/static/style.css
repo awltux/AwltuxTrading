@@ -511,15 +511,22 @@ footer {
 .ledger td.act a { text-decoration: none; }
 .ledger td.act a:hover { color: var(--warn); text-decoration: underline; }
 
-/* What a person has changed about these accounts, above the figures it changes. Set apart
-   from the statements because it is a statement *about* them: every row below it is a line
-   that is not what the filing said, and a reader who cannot see this will read the difference
-   as an extraction fault. */
+/* What a person has changed about these accounts, at the foot of the tab it changes and
+   minimised. It is a statement *about* the figures above it -- every row is a line that is not
+   what the filing said -- and a reader who cannot find it will read a correction as an
+   extraction fault. But it is a record consulted while editing rather than a figure anyone came
+   to read, so it opens itself only when a change has just been made (see the template) and is a
+   heading with a count otherwise. */
 .accounts-corrections {
-  margin: 18px 0 22px; padding: 2px 0 2px 14px;
+  margin: 26px 0 22px; padding: 2px 0 2px 14px;
   border-left: 3px solid var(--line);
 }
-.accounts-corrections h2 { margin-top: 4px; }
+.accounts-corrections > summary { padding: 4px 0; }
+/* The heading, inside the summary that opens it. Inline and unbordered, because a rule under a
+   heading that is also a control reads as a table edge rather than as a way in. */
+.accounts-corrections > summary h2 {
+  display: inline; font-size: 1.25rem; margin: 0; padding: 0; border-bottom: 0;
+}
 
 /* What a field is, on hover or on keyboard focus.
    See `partials/_help.html`: the text rides in `data-help`, so this needs no script.

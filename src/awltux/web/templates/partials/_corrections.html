@@ -1,8 +1,17 @@
 {# What a person has changed about this period's accounts.
 
-   Rendered on every accounts tab, above the figures, because the whole point of recording a
-   correction is that the figure below it is *not* what the filing said — and a reader who
-   cannot see that will read the difference as an extraction fault and go looking for it.
+   Rendered at the **foot** of every accounts tab, and minimised. It used to sit above the
+   figures, on the argument that a reader looking at a corrected number needs to know it is not
+   what the filing said -- and that is still why it exists, but the record is something a reader
+   consults *while editing* rather than something they came to read. Asked for directly
+   2026-10-10: *"move the Accounts corrections section to the bottom of the accounts tab and
+   minimise it. It's useful if you are currently editing the Accounts, but not if you are just
+   viewing."*
+
+   So it opens itself when a change has just been made -- the outcome note is the signal, and it
+   only travels with a redirect from one of the correction routes -- and stays a heading with a
+   count the rest of the time. The figures it corrects are above it, which is also the order the
+   page reads in: what the accounts say, then what is not the source's.
 
    One panel for additions and removals together. To the reader they are the same kind of
    thing, a line that is not what the source said, and two panels would make them hunt for
@@ -14,8 +23,23 @@
 {% from "partials/_help.html" import help %}
 {% set note = correction_note %}
 {% if note or corrections or learned_lines or superseded_lines %}
-  <section class="accounts-corrections" id="corrections">
-    <h2>Corrections to these accounts{{ help('corrected') }}</h2>
+  {# `id="corrections"` stays on the element the page scrolls to: every correction route
+     redirects to `…?corrections=<what happened>#corrections`, and an anchor that landed on
+     nothing would leave the reader at the top of a page they have just changed. #}
+  <details class="accounts-corrections" id="corrections"{% if note %} open{% endif %}>
+    <summary>
+      <h2>Corrections to these accounts{{ help('corrected') }}</h2>
+      <span class="muted small">
+        {%- set changes = corrections | length -%}
+        {%- set learned = learned_lines | length -%}
+        {%- set superseded = superseded_lines | length -%}
+        {% if changes %}{{ changes }} change{{ '' if changes == 1 else 's' }}{% endif %}
+        {%- if changes and (learned or superseded) %} · {% endif %}
+        {%- if learned %}{{ learned }} learned line{{ '' if learned == 1 else 's' }}{% endif %}
+        {%- if learned and superseded %} · {% endif %}
+        {%- if superseded %}{{ superseded }} superseded{% endif %}
+      </span>
+    </summary>
     {% if note %}<p class="notice">{{ note }}</p>{% endif %}
     {% if corrections %}
       <p class="muted small">
@@ -128,5 +152,5 @@
         Add a line from any of the statements.
       {% endif %}
     </p>
-  </section>
+  </details>
 {% endif %}

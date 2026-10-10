@@ -138,9 +138,11 @@
   {% endfor %}
 </nav>
 
-{# The record of what a person has changed, on every tab: a reader looking at a figure that is
-   not what the filing said needs to know that before they read anything above it, and the
-   checks on the health tab are the ones a correction moves. #}
+{# The record of what a person has changed, at the foot of the tab: a reader looking at a figure
+   that is not what the filing said needs to be able to find that out, and the checks on the
+   health tab are the ones a correction moves -- but the record is what a reader consults while
+   editing, so it is minimised and it sits under the figures rather than in front of them. #}
+
 {% if filing %}
   {# Said once rather than on every residual: a table of underlined figures with no explanation
      reads as decoration, and the point of the link is the one thing a reader cannot guess.
@@ -159,7 +161,6 @@
     line the extractor never had.
   </p>
 {% endif %}
-{% include "partials/_corrections.html" %}
 
 {% if built %}
   {% for section in built.sections %}
@@ -503,4 +504,7 @@
     <p class="muted">No marker could be computed from the stored periods.</p>
   {% endfor %}
 {% endif %}
+
+{# Last on the page, and minimised: what the accounts say, then what is not the source's. #}
+{% include "partials/_corrections.html" %}
 {% endblock %}

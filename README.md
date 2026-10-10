@@ -359,6 +359,12 @@ heading an **add a line**, and both go to a confirmation page that asks what the
 cannot say: which side a figure is posted on, and whether a removal is for this period or for
 every period the filer has.
 
+**What has been changed is recorded at the foot of the tab, minimised.** Every correction is a
+line that is not what the source said, so the record has to be findable from the figures it
+corrects — but it is a record a reader consults *while editing* rather than a figure they came to
+read, so it is a closed heading carrying a count ("3 changes · 1 learned line") and it opens
+itself when a change has just been made. A period nobody has corrected shows no panel at all.
+
 **The side is asked for only where nothing else knows it.** A figure is a magnitude; which way it
 moves a total is a property of the *line*. A line the chart already carries is posted where the
 chart posts it — the ledger sums it with that weight whatever the form says — so the form states
