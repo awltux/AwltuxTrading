@@ -579,8 +579,88 @@ def update_turnover_estimates(
     return updated
 
 
-def latest_bar(session: Session, ticker: str) -> PriceBar | None:
-    return session.execute(
+def repair_price_units(session: Session, *, dry_run: bool = False) -> dict[str, Any]:
+    """Rewrite stored bars whose multiplier contradicts the instrument's own currency.
+
+    **A refresh does not necessarily reach every row, which is why this exists.** The write
+    path refuses a wrong-unit series now, but a row already stored keeps its wrong unit until
+    something overwrites it -- and the row the page reads is the *newest* one. Measured
+    2026-10-10: after the unit fix, 504 of `VWRLl_EQ`'s 507 bars were re-written correctly and
+    the newest was not, because the provider's live row for that date carries a `NaN` close and
+    every row without a close is skipped. So the page still showed £1.41 from a bar nothing
+    could overwrite.
+
+    **The figures are exact to restore, not re-estimated.** `raw_close` is the provider's own
+    number and the multiplier to apply is the one the instrument's currency code implies; open,
+    high, low and adj_close were all scaled by the same wrong factor as the close, so dividing
+    them by it recovers them. Nothing is fetched, so this is safe to run on a live database and
+    says what it would do with ``dry_run``.
+    """
+    instruments = {
+        instrument.t212_ticker: instrument
+        for instrument in session.execute(select(Instrument)).scalars()
+    }
+    changed: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    for bar in session.execute(select(PriceBar)).scalars():
+        instrument = instruments.get(bar.instrument_t212_ticker)
+        if instrument is None or not instrument.currency_code:
+            continue
+        expected = multiplier_for(instrument.currency_code)
+        stored = bar.raw_multiplier or 0.0
+        if stored <= 0 or abs(stored - expected) <= 1e-9:
+            continue
+        raw_close = bar.raw_close if bar.raw_close is not None else bar.close
+        if raw_close is None:
+            skipped.append(bar.instrument_t212_ticker)
+            continue
+        ratio = expected / stored
+        entry = {
+            "ticker": bar.instrument_t212_ticker,
+            "date": bar.date.isoformat(),
+            "currency": instrument.currency_code,
+            "was_multiplier": stored,
+            "now_multiplier": expected,
+            "was": bar.close,
+            "now": raw_close * expected,
+        }
+        changed.append(entry)
+        if dry_run:
+            continue
+        bar.open = _scaled_by(bar.open, ratio)
+        bar.high = _scaled_by(bar.high, ratio)
+        bar.low = _scaled_by(bar.low, ratio)
+        bar.adj_close = _scaled_by(bar.adj_close, ratio)
+        bar.close = raw_close * expected
+        # The provider's own number, left exactly as it came: it is what the multiplier is
+        # recorded to undo.
+        bar.raw_close = raw_close
+        bar.raw_multiplier = expected
+        # The unit the figure is quoted in. It was *our* guess that was wrong, so what is
+        # recorded afterwards is the instrument's own -- not the label the guess produced.
+        bar.raw_currency = instrument.currency_code
+        bar.currency = _major_currency(instrument.currency_code)
+    if not dry_run:
+        session.flush()
+    return {
+        "changed": changed,
+        "changed_count": len(changed),
+        "unreadable": len(skipped),
+        "tickers": sorted({entry["ticker"] for entry in changed}),
+    }
+
+
+def _scaled_by(value: float | None, ratio: float) -> float | None:
+    return None if value is None else value * ratio
+
+
+def _major_currency(currency_code: str) -> str:
+    from awltux.money import to_major_currency
+
+    return to_major_currency(1.0, currency_code)[1]
+
+
+def latest_bar(session: Session, ticker: str) -> PriceBar | None:    return session.execute(
         select(PriceBar)
         .where(PriceBar.instrument_t212_ticker == ticker)
         .order_by(PriceBar.date.desc())

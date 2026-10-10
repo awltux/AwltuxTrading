@@ -228,6 +228,39 @@ def cmd_repair_scaled(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repair_price_units(args: argparse.Namespace) -> int:
+    """Rewrite stored price bars whose unit contradicts the instrument's own currency.
+
+    The companion to the write-time refusal in ``ingest/prices.py``: the guard stops a wrong
+    unit being stored again, and this corrects the rows a previous version already wrote. It
+    fetches nothing -- ``raw_close`` is the provider's own number and the multiplier is the one
+    the instrument's currency code implies -- which is why it is safe to run against the live
+    database.
+
+    ``--dry-run`` prints what it would change and writes nothing.
+    """
+    from awltux.db.session import session_scope
+    from awltux.ingest.prices import repair_price_units
+
+    with session_scope() as session:
+        report = repair_price_units(session, dry_run=args.dry_run)
+
+    for entry in report["changed"]:
+        arrow = "would be" if args.dry_run else "now"
+        print(
+            f"{entry['ticker']} {entry['date']} ({entry['currency']}): "
+            f"{entry['was']:,.6g} {arrow} {entry['now']:,.6g} "
+            f"[multiplier {entry['was_multiplier']:g} -> {entry['now_multiplier']:g}]"
+        )
+    note = "would change" if args.dry_run else "changed"
+    tickers = len(report["tickers"])
+    print(
+        f"{report['changed_count']} bar(s) {note}, across {tickers} instrument(s)"
+        + (f": {', '.join(report['tickers'][:10])}" if tickers else "")
+    )
+    return 0
+
+
 def cmd_jobs(_args: argparse.Namespace) -> int:
     from awltux.config import get_settings
     from awltux.scheduler.registry import build_job_specs
@@ -600,6 +633,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="print what would change and write nothing",
     )
     repair.set_defaults(func=cmd_repair_scaled)
+
+    repair_units = sub.add_parser(
+        "repair-price-units",
+        help="correct stored prices whose unit contradicts the instrument's own currency",
+    )
+    repair_units.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would change and write nothing",
+    )
+    repair_units.set_defaults(func=cmd_repair_price_units)
 
     quiet = sub.add_parser(
         "quiet",

@@ -29,6 +29,7 @@ from awltux.db import Instrument, InstrumentBlocker, PriceBar
 from awltux.ingest.prices import (
     JOB,
     refresh_prices,
+    repair_price_units,
     store_bar_series,
 )
 from awltux.providers.yahoo import Bar, BarSeries
@@ -300,6 +301,122 @@ class TestTheRunLineSaysWhatWasRefused:
 
         assert "1 refused as a unit mismatch (VWRLl_EQ)" in text
         assert "returned nothing" not in text, "the provider answered; it was refused"
+
+
+class TestTheRepairOfRowsTheBugAlreadyWrote:
+    """The write path refuses a wrong unit now; these are the rows it refused *after* an older
+    version had already written them, and a refresh does not necessarily reach them.
+
+    Measured 2026-10-10: after the fix, 504 of `VWRLl_EQ`'s 507 bars were re-written correctly
+    and the newest was not, because the provider's live row for that date carries a `NaN` close
+    and a row with no close is skipped. The newest bar is the one the page reads, so the page
+    still showed 1.41.
+    """
+
+    def _wrong_row(
+        self,
+        session,
+        ticker: str = POUNDS,
+        *,
+        close: float = 1.413,
+        raw: float = 141.30,
+        mult: float = 0.01,
+    ):
+        """A bar exactly as the bug left it."""
+        session.add(
+            PriceBar(
+                instrument_t212_ticker=ticker,
+                date=dt.date(2026, 10, 9),
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                adj_close=close,
+                raw_close=raw,
+                currency="GBP",
+                raw_currency="GBX",
+                raw_multiplier=mult,
+                source="yahoo",
+                source_rank=20,
+            )
+        )
+        session.commit()
+
+    def test_a_pound_priced_bar_is_restored_from_the_provider_s_own_number(self, session):
+        _instruments(session)
+        self._wrong_row(session)
+
+        report = repair_price_units(session)
+        session.commit()
+
+        row = session.execute(select(PriceBar).where(PriceBar.instrument_t212_ticker == POUNDS)).scalar_one()
+        assert row.close == pytest.approx(141.30), "the provider's number, in the unit it is in"
+        assert row.raw_multiplier == 1.0
+        assert row.raw_currency == "GBP", "our guess is replaced by the instrument's own unit"
+        assert row.raw_close == pytest.approx(141.30), "already the provider's own number"
+        assert report["changed_count"] == 1
+        assert report["tickers"] == [POUNDS]
+
+    def test_a_pence_priced_bar_is_divided_so_the_ratio_holds(self, session):
+        """The other direction: a bar stored at a multiplier of 1.0 that should have been 0.01.
+        Nothing about the repair assumes the error went one way."""
+        _instruments(session)
+        self._wrong_row(session, PENCE, close=64.25, raw=64.25, mult=1.0)
+
+        repair_price_units(session)
+        session.commit()
+
+        row = session.execute(select(PriceBar).where(PriceBar.instrument_t212_ticker == PENCE)).scalar_one()
+        assert row.close == pytest.approx(0.6425)
+        assert row.raw_multiplier == pytest.approx(0.01)
+
+    def test_a_dry_run_changes_nothing_and_still_reports(self, session):
+        _instruments(session)
+        self._wrong_row(session)
+
+        report = repair_price_units(session, dry_run=True)
+
+        row = session.execute(select(PriceBar).where(PriceBar.instrument_t212_ticker == POUNDS)).scalar_one()
+        assert row.close == pytest.approx(1.413), "untouched"
+        assert row.raw_multiplier == 0.01
+        assert report["changed_count"] == 1
+        assert report["changed"][0]["now"] == pytest.approx(141.30)
+
+    def test_running_it_twice_changes_nothing_the_second_time(self, session):
+        """It reads `raw_close` and applies the instrument's own multiplier, so it is a
+        statement about the *row* rather than about how far out it was -- and a repair that
+        could be applied twice would be one nobody dares run."""
+        _instruments(session)
+        self._wrong_row(session)
+        repair_price_units(session)
+        session.commit()
+        after_first = session.execute(
+            select(PriceBar).where(PriceBar.instrument_t212_ticker == POUNDS)
+        ).scalar_one()
+        closed = after_first.close
+
+        second = repair_price_units(session)
+        session.commit()
+
+        assert second["changed_count"] == 0
+        row = session.execute(select(PriceBar).where(PriceBar.instrument_t212_ticker == POUNDS)).scalar_one()
+        assert row.close == pytest.approx(closed) == pytest.approx(141.30)
+
+    def test_a_correct_bar_is_left_alone(self, session):
+        """It is a repair, not a rewrite: 482 of the 488 instruments holding prices on
+        2026-10-09 agreed with their currency code already."""
+        _instruments(session)
+        store_bar_series(
+            session,
+            session.get(Instrument, PENCE),
+            _series("VOD.L", currency="GBp", multiplier=0.01, close=64.25),
+        )
+        session.commit()
+
+        report = repair_price_units(session)
+
+        assert report["changed_count"] == 0
+        assert report["tickers"] == []
 
 
 class TestTheRecordOutlivesTheRefreshThatRewritesIt:

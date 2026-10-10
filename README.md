@@ -788,7 +788,10 @@ answers a plain HTTP client with a browser-verification page.
   the one the instrument's code implies, they are refused and recorded as a blocker instead of
   stored: the two differ by a factor of 100, the result still looks plausible, and an instrument
   visibly missing from a run is better than one carrying a confident wrong price. Measured
-  2026-10-09: 482 of the 488 priced instruments agreed, and six did not.
+  2026-10-09: 482 of the 488 priced instruments agreed, and six did not. `awltux repair-price-units`
+  corrects rows an earlier version stored the wrong way round — a refresh does not always reach
+  them, because the row the page reads is the newest and the provider's live row for the current
+  day carries a null close until the session settles.
 
 ## Licence
 
