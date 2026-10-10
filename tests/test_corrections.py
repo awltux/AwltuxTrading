@@ -346,8 +346,7 @@ class TestTheConfirmPage:
             f"/accounts/{without.id}/corrections/new?remove=revenue"
         ).text
 
-    def test_a_line_that_is_already_removed_says_so_instead_of_offering_it_again(
-        self, client, session, two_years
+    def test_a_line_that_is_already_removed_says_so_instead_of_offering_it_again(        self, client, session, two_years
     ):
         client.post(
             f"/accounts/{two_years.id}/corrections/remove",
@@ -412,6 +411,109 @@ class TestTheConfirmPage:
             "us-gaap:OperatingLeaseRightOfUseAssetNoncurrent"
         )
         assert soup.select_one("input[name=url]")["value"].endswith("x.htm")
+
+
+class TestTheSideOfTheLine:
+    """*"Selecting the debit/credit selectors when configuring the add line doesn't seem to do
+    anything, they are always positive."* -- reported 2026-10-10.
+
+    Two different things, and the answer to both is that the *line* decides the direction, not
+    the figure: a figure is a magnitude, and a line the chart already carries is posted on the
+    side the chart gives it, so there was nothing for that choice to change and it was recorded
+    anyway. A line created from the filing's caption is the one nothing else knows, and that is
+    where the reader is asked.
+    """
+
+    def test_the_chart_fixes_the_side_of_its_own_lines_whatever_the_form_says(
+        self, client, session, two_years
+    ):
+        """The live row read "revenue ... debit" while the chart posts revenue as a credit, and
+        every sum in the ledger used the credit. The record now says what the ledger does."""
+        client.post(
+            f"/accounts/{two_years.id}/corrections/add",
+            data={
+                "metric": "revenue",
+                "value": "1000",
+                "side": "debit",
+                "statement": "profit_and_loss",
+            },
+        )
+
+        row = _row(session, two_years.id)
+        assert ledger.BY_KEY["revenue"].side == "credit"
+        assert row.metric_sources["revenue"]["side"] == "credit"
+
+    def test_the_reader_decides_the_side_of_a_line_they_create(self, client, session, two_years):
+        client.post(
+            f"/accounts/{two_years.id}/corrections/add",
+            data={
+                "metric": "new:us-gaap:ContractWithCustomerLiabilityCurrent",
+                "value": "250",
+                "side": "credit",
+                "statement": "balance_sheet",
+                "section": "Current liabilities",
+                "caption": "Short-term unearned revenue",
+                "tag": "us-gaap:ContractWithCustomerLiabilityCurrent",
+            },
+        )
+
+        row = _row(session, two_years.id)
+        key = "us-gaap:ContractWithCustomerLiabilityCurrent"
+        assert row.metric_sources[key]["side"] == "credit"
+
+    def test_the_form_asks_for_a_line_to_create_and_states_a_line_the_chart_has(
+        self, client, session, two_years
+    ):
+        """The affordance and the arithmetic have to agree: a control that is recorded and then
+        ignored by everything that reads the accounts is worse than no control."""
+        on_a_chart_line = BeautifulSoup(
+            client.get(
+                f"/accounts/{two_years.id}/corrections/new",
+                params={"statement": "profit_and_loss", "metric": "revenue"},
+            ).text,
+            "lxml",
+        )
+
+        assert on_a_chart_line.select("input[type=radio][name=side]") == []
+        assert on_a_chart_line.select_one("input[type=hidden][name=side]")["value"] == "credit"
+        assert "posted where the chart posts it" in on_a_chart_line.get_text(" ")
+
+    def test_pressing_add_a_line_on_a_heading_does_not_ask_for_a_side_either(
+        self, client, session, two_years
+    ):
+        """The other way into this form, and the one with nothing preselected: it opens on the
+        heading's own first line, so the side is the chart's there too. This is the path the
+        reader took -- *"selecting the debit/credit selectors when configuring the add line"*."""
+        form = BeautifulSoup(
+            client.get(
+                f"/accounts/{two_years.id}/corrections/new",
+                params={"statement": "profit_and_loss", "section": "Revenue"},
+            ).text,
+            "lxml",
+        )
+
+        assert form.select_one("select[name=metric] option[selected]")["value"] == "revenue"
+        assert form.select("input[type=radio][name=side]") == []
+        assert form.select_one("input[type=hidden][name=side]")["value"] == "credit"
+
+    def test_the_form_asks_when_the_line_is_the_filing_s_own(self, client, session, two_years):
+        form = BeautifulSoup(
+            client.get(
+                f"/accounts/{two_years.id}/corrections/new",
+                params={
+                    "statement": "balance_sheet",
+                    "metric": "new:us-gaap:ContractWithCustomerLiabilityCurrent",
+                    "tag": "us-gaap:ContractWithCustomerLiabilityCurrent",
+                    "caption": "Short-term unearned revenue",
+                    "section": "Current liabilities",
+                },
+            ).text,
+            "lxml",
+        )
+
+        radios = form.select("input[type=radio][name=side]")
+        assert [radio["value"] for radio in radios] == list(corrections.SIDES)
+        assert form.select_one("input[type=hidden][name=side]") is None
 
 
 class TestRemovingALine:

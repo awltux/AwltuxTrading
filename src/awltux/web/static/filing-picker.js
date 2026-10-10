@@ -60,6 +60,35 @@
     return null;
   }
 
+  function adjacentText(node, before) {
+    /* The text immediately before or after an element, or "" when an element intervenes.
+     *
+     * One sibling, not a walk: the bracket this looks for is printed against the figure, and
+     * text on the far side of another element belongs to something else.
+     */
+    var current = before ? node.previousSibling : node.nextSibling;
+    if (!current || current.nodeType !== 3) return "";
+    return String(current.nodeValue || "");
+  }
+
+  function bracketedOutside(element) {
+    /* Whether the filing printed this figure inside brackets that sit *outside* the tag.
+     *
+     * Measured on Danaos' 2025 20-F, 2026-10-10: **173** of its tagged figures are printed as
+     * `(<ix:nonFraction …>32,000</ix:nonFraction>)`, so the element's own text is positive and
+     * the minus sign is in the markup around it. A reader clicking one got a positive figure
+     * however the filing printed it, and reported it: *"the links in the Accounts document
+     * should be aware of the brackets round the numbers meaning negative"*.
+     *
+     * Whitespace is allowed between the bracket and the figure -- filings lay the cells out that
+     * way -- and nothing else is: a "(" further along the line is somebody else's.
+     */
+    return (
+      /\(\s*$/.test(adjacentText(element, true)) &&
+      /^\s*\)/.test(adjacentText(element, false))
+    );
+  }
+
   function figureOf(element) {
     /* What this element says, or why it cannot be read. Never a guess. */
     if (element.hasAttribute("continuedat")) {
@@ -92,8 +121,13 @@
       .replace(/\u00a0/g, " ")
       .trim()
       .replace(/\s+/g, "");
-    var negative = text.charAt(0) === "(" && text.slice(-1) === ")";
-    if (negative) text = text.slice(1, -1);
+    // Brackets are the accounting negative, and they are printed on one side of the tag or the
+    // other. Only the ones *inside* the element are stripped from its text; the ones printed
+    // around it belong to the markup, and slicing those off would eat a digit from each end of
+    // the figure. One negation per figure, or a figure printed both ways would come back positive.
+    var bracketed = text.charAt(0) === "(" && text.slice(-1) === ")";
+    if (bracketed) text = text.slice(1, -1);
+    var negative = bracketed || bracketedOutside(element);
     // A currency symbol is presentation: the unit is in `unitRef`.
     text = text.replace(/^[$£€¥]/, "");
 
@@ -497,10 +531,11 @@
       transform: transform,
       figureOf: figureOf,
       printedNumber: printedNumber,
+      bracketedOutside: bracketedOutside,
+      adjacentText: adjacentText,
       captionOf: captionOf,
       factFrom: factFrom,
-      pick: pick,
-      dateInContext: dateInContext,
+      pick: pick,      dateInContext: dateInContext,
       contextDates: contextDates,
       confirmUrl: confirmUrl,
       figureString: figureString,

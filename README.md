@@ -359,6 +359,12 @@ heading an **add a line**, and both go to a confirmation page that asks what the
 cannot say: which side a figure is posted on, and whether a removal is for this period or for
 every period the filer has.
 
+**The side is asked for only where nothing else knows it.** A figure is a magnitude; which way it
+moves a total is a property of the *line*. A line the chart already carries is posted where the
+chart posts it — the ledger sums it with that weight whatever the form says — so the form states
+that side instead of offering a choice it would ignore. A line created from the filing's caption
+is the one nothing else can decide, and there the reader is asked.
+
 **A correction reaches the stored figures, not the display of them.** The corrected values are
 written into `fundamental_period.metrics` and `metric_sources`, so the ledger, the hover
 working, the composition checks, the markers, the valuation and the decisions all read the
@@ -443,7 +449,12 @@ confirmation page opened from here would inherit the sandbox and load in an opaq
 
 Clicking a figure reads it the way the stored one was read: the printed text through its `format`
 transform, times `10^scale`, negated by `sign="-"`, with a nil or continued fact refused rather
-than read as zero. Two things come from around it, and both are measured on Microsoft's 2026
+than read as zero. **Brackets are the accounting negative, and they are read on either side of the
+tag** — filings print `(1,234)` with the brackets inside the tagged element and, far more often,
+around it, as `(<ix:nonFraction>1,234</ix:nonFraction>)`. Measured 2026-10-10 across the stored
+documents: **130,527 of 962,078** tagged figures in **497 of the 601** documents are printed the
+second way, and before this they all read as positive. One negation per figure: a figure the
+filing brackets twice is not a credit. Two things come from around it, and both are measured on Microsoft's 2026
 10-K — 1,583 tagged figures, of which 1,465 sit inside a table row and 454 of the 476 rows that
 hold one are captioned. The row's first cell names the line in the filer's own words (the "Total
 assets" row is captioned exactly that), and the `contextRef` dates it, which matters because that

@@ -698,3 +698,65 @@ test("an empty document navigates nowhere instead of throwing", () => {
   assert.equal(picker.step([], 0, 1), -1);
   assert.equal(picker.step(null, 0, 1), -1);
 });
+
+/* ======================================================================
+ * Brackets printed *around* the tag.
+ *
+ * Reported 2026-10-10: *"The links in the Accounts document should be aware of the brackets
+ * round the numbers meaning negative."* Measured on Danaos' 2025 20-F the same day: 173 of its
+ * tagged figures are printed as `(<ix:nonFraction>32,000</ix:nonFraction>)`, so the element's own
+ * text is positive and the sign is in the markup around it.
+ * ==================================================================== */
+
+/** A fact with siblings, which is what the bracket test reads. */
+function placed(before, text, after, attributes = {}) {
+  const node = element(attributes, text);
+  node.previousSibling = before === null ? null : { nodeType: 3, nodeValue: before };
+  node.nextSibling = after === null ? null : { nodeType: 3, nodeValue: after };
+  return node;
+}
+
+test("a bracket printed outside the tag makes the figure negative", () => {
+  const figure = picker.figureOf(
+    placed("(", "32,000", ")", { name: "us-gaap:X", format: "ixt:num-dot-decimal" })
+  );
+
+  assert.equal(figure.value, -32000);
+});
+
+test("the bracket may be separated from the figure by whitespace", () => {
+  const figure = picker.figureOf(placed("  (", "12,345", ")  ", { name: "us-gaap:X" }));
+
+  assert.equal(figure.value, -12345);
+});
+
+test("a bracket that is not against the figure is somebody else's", () => {
+  // The row is full of brackets -- a note reference, a negative in another column -- and only
+  // the pair printed against this figure is its own.
+  assert.equal(picker.figureOf(placed("(1) ", "32,000", "", { name: "us-gaap:X" })).value, 32000);
+  assert.equal(picker.figureOf(placed("(", "32,000", "1)", { name: "us-gaap:X" })).value, 32000);
+  assert.equal(picker.figureOf(placed(null, "32,000", ")", { name: "us-gaap:X" })).value, 32000);
+});
+
+test("an element between the bracket and the figure ends the run", () => {
+  // A `<span>` in between means the bracket belongs to whatever that span is part of.
+  const element_ = element({ name: "us-gaap:X" }, "32,000");
+  element_.previousSibling = { nodeType: 1, nodeValue: null, tagName: "SPAN" };
+  element_.nextSibling = { nodeType: 3, nodeValue: ")" };
+
+  assert.equal(picker.figureOf(element_).value, 32000);
+});
+
+test("brackets inside the tag are still read, and are not read twice", () => {
+  // A figure printed both ways would otherwise come back positive: one negation per figure.
+  const inside = picker.figureOf(element({ name: "us-gaap:X" }, "(500)"));
+  const both = picker.figureOf(placed("(", "(500)", ")", { name: "us-gaap:X" }));
+
+  assert.equal(inside.value, -500);
+  assert.equal(both.value, -500);
+});
+
+test("the bracket rule is available without a figure, for the working shown beside it", () => {
+  assert.equal(picker.bracketedOutside(placed("(", "1", ")")), true);
+  assert.equal(picker.bracketedOutside(placed("", "1", "")), false);
+});

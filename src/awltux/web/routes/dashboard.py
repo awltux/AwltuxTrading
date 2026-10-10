@@ -1255,6 +1255,12 @@ def corrections_form(
     aren't in the pre-defined entries"* -- the form offers it as a **line to create**, with the
     heading the reader is working in, and the addition teaches that line to the filer for its
     later periods.
+
+    **Whether the side is asked depends on the line.** Which way a figure moves the total is
+    decided by the *line*: the chart's own lines are posted on the side the chart gives them, and
+    the ledger sums them with that weight whatever the form says, so a line the chart carries
+    shows its side rather than offering a choice that would be ignored. For a line created from
+    the filing's caption nothing else knows, so the reader is asked.
     """
     tab = _correction_tab(statement)
     with session_scope() as session:
@@ -1276,6 +1282,12 @@ def corrections_form(
             caption, tag, section=section, headings=headings, known=learned, mapped=mapped
         )
         chosen = _preselected(mapped=mapped, tag=tag, learned=learned, new_line=new_line, metric=metric)
+        # Nothing to go on -- the reader pressed *add a line* on a heading -- so the form opens on
+        # the first line of that heading. Decided **here** rather than in the template, where it
+        # used to be: which line is being edited is what decides whether the side is asked for, and
+        # one rule in two places is how a form and the record it posts come to disagree.
+        if not chosen:
+            chosen = _default_line(groups, section)
         context = {
             "period": period,
             "instrument": instrument,
@@ -1295,6 +1307,14 @@ def corrections_form(
             ),
             "held": set(metrics),
             "sides": corrections_rules.SIDES,
+            # A line the chart carries has its side already, and the ledger posts it there
+            # whatever the form says -- so the form stops asking. Empty for a line to create,
+            # which is the one case the reader has to decide.
+            "fixed_side": (
+                ""
+                if chosen.startswith(NEW_LINE_PREFIX) or chosen not in ledger.BY_KEY
+                else ledger.BY_KEY[chosen].side
+            ),
             "chosen": chosen,
             "value": value,
             "tag": tag,
@@ -1376,6 +1396,20 @@ def _label_for(metric: str) -> str:
     """The printed label of a chart line, for naming it back to a reader."""
     account = ledger.BY_KEY.get(metric)
     return account.label if account else metric
+
+
+def _default_line(groups: list[dict[str, Any]], section: str) -> str:
+    """The line the form opens on when the reader arrived with nothing to go on.
+
+    The first line of the heading they pressed *add a line* under, or ``""`` when they named no
+    heading -- in which case the form opens on nothing and the reader chooses. Its own function
+    because the answer decides more than what is highlighted: the side is only asked for a line
+    the chart does not carry, so "which line is this" has to be settled before the page is built.
+    """
+    for group in groups:
+        if group["section"] == section and group["lines"]:
+            return group["lines"][0].key
+    return ""
 
 
 def _metric_for_tag(tag: str, period: Any) -> str:
@@ -1546,11 +1580,18 @@ def add_corrected_line(
             return _correction_redirect(period_id, statement, "no-line")
         if figure is None:
             return _correction_redirect(period_id, statement, "bad-value")
+        # A line the chart already carries is posted on **the chart's side**, whatever the form
+        # said. The ledger sums it with the weight its own line carries, so a reader's choice
+        # here was recorded and then ignored by everything that reads the accounts -- the live
+        # row read "revenue ... debit" while the chart posts revenue as a credit. Reported
+        # 2026-10-10: *"selecting the debit/credit selectors when configuring the add line
+        # doesn't seem to do anything"*. The form no longer asks for those lines either.
+        posted_side = side if metric not in ledger.BY_KEY else ledger.BY_KEY[metric].side
         corrections_rules.add(
             period,
             metric,
             value=figure,
-            side=side,
+            side=posted_side,
             tag=tag,
             url=url.strip(),
             note=note.strip(),
