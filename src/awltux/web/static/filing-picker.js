@@ -234,6 +234,20 @@
     return text.slice(0, 120);
   }
 
+  function step(list, from, delta) {
+    /* Which of a list of figures is next, as a ring, or -1 for an empty list.
+     *
+     * Pulled out of the buttons because it is the one part of the navigation that can be wrong
+     * without *looking* wrong: a document holds 1,583 figures (Microsoft's 2026 10-K) and the
+     * reader is walking them with two buttons, so "next" at the last one has to arrive at the
+     * first rather than at nothing. Driven by `tests/js/filing_picker.test.mjs`.
+     */
+    var count = list ? list.length : 0;
+    if (!count) return -1;
+    if (from < 0) return delta < 0 ? count - 1 : 0;
+    return ((from + delta) % count + count) % count;
+  }
+
   function normaliseLabel(text) {
     /* A caption reduced to the thing two spellings of it have in common.
      *
@@ -462,6 +476,10 @@
       figure: figure,
       caption: captionOf(element),
       elementId: element.getAttribute("id") || "",
+      // The node itself, so the tray can scroll back to it. Not part of what a click *means*,
+      // and the node tests ignore it -- but a document with no ids on its table cells has
+      // nothing else to point at.
+      element: element,
       // The line this row *looks like*, for a table cell the page could match against the
       // chart. Empty for a tagged figure and for a caption nothing recognises, and the reader
       // chooses the line in the confirmation form either way.
@@ -490,6 +508,7 @@
       matchLabel: matchLabel,
       rowFigures: rowFigures,
       markTableFigures: markTableFigures,
+      step: step,
     };
     return;
   }
@@ -554,6 +573,43 @@
     : "Picked from this report \u2014 click a figure, then say which line it is";
   tray.appendChild(heading);
 
+  /* The navigation row. The report is up to 8MB of third-party HTML -- measured 2026-10-10:
+   * Microsoft's 2026 10-K holds 1,583 tagged figures -- so a reader who has scrolled away from
+   * the figure they picked has no way back to it, and no way to find the next one. Two buttons
+   * walk every figure in document order and a counter says where in that list the reader is;
+   * the toggle is there because an unmissable highlight on 1,583 figures is a lot of colour to
+   * read a filing through. */
+  var nav = document.createElement("p");
+  nav.className = "awltux-tray-nav";
+
+  var back = document.createElement("button");
+  back.type = "button";
+  back.className = "awltux-tray-button";
+  back.textContent = "\u2039 Previous";
+  back.title = "The previous figure in this report";
+
+  var counter = document.createElement("span");
+  counter.className = "awltux-tray-count";
+  counter.textContent = "no figure picked";
+
+  var forward = document.createElement("button");
+  forward.type = "button";
+  forward.className = "awltux-tray-button";
+  forward.textContent = "Next \u203a";
+  forward.title = "The next figure in this report";
+
+  var markToggle = document.createElement("button");
+  markToggle.type = "button";
+  markToggle.className = "awltux-tray-button awltux-tray-mark";
+  markToggle.textContent = "Highlight: on";
+  markToggle.title = "Show or hide the marks on the figures that can be clicked";
+
+  nav.appendChild(back);
+  nav.appendChild(counter);
+  nav.appendChild(forward);
+  nav.appendChild(markToggle);
+  tray.appendChild(nav);
+
   var list = document.createElement("ul");
   tray.appendChild(list);
 
@@ -572,7 +628,7 @@
   });
   tray.appendChild(clear);
 
-  function addFigure(figure, elementId, caption, metric) {
+  function addFigure(figure, element, elementId, caption, metric) {
     hint.textContent = HINT;
     var item = document.createElement("li");
 
@@ -659,7 +715,95 @@
     link.textContent = onto ? "Add to " + onto : "Use this figure";
     item.appendChild(link);
 
+    // And the way back: the reader picked this out of a document they then scrolled, and the
+    // item is the only record of where it was. A plain anchor would be wrong here -- there is
+    // no id to link to in the plain document, and the point is to scroll *this* page.
+    if (element) {
+      var find = document.createElement("button");
+      find.type = "button";
+      find.className = "awltux-tray-find";
+      find.textContent = "show in the report";
+      find.title = "Scroll the report to this figure";
+      find.addEventListener("click", function () {
+        reveal(element, item);
+      });
+      item.appendChild(find);
+    }
+
     list.insertBefore(item, list.firstChild);
+  }
+
+  /* --------------------------------------------------------------- finding them */
+
+  function collect(root) {
+    /* Every figure the reader can click, in document order.
+     *
+     * Tagged figures when the filer tagged them, and the marked table cells when it did not --
+     * the same choice `mount` makes about which to mark, so the two cannot disagree about how
+     * many there are. A nil fact is left out because it holds nothing to click.
+     */
+    var out = [];
+    var tagged = root.getElementsByTagName(FACT_TAG);
+    for (var i = 0; i < tagged.length; i++) {
+      if ((tagged[i].getAttribute("xsi:nil") || "").toLowerCase() === "true") continue;
+      out.push(tagged[i]);
+    }
+    if (out.length) return out;
+    var cells = root.querySelectorAll("[data-awltux-value]");
+    for (var j = 0; j < cells.length; j++) out.push(cells[j]);
+    return out;
+  }
+
+  var figures = [];
+  var cursor = -1;
+
+  function markCurrent(item) {
+    /* Which tray entry the reader is looking at, so the list says where in the report they are.
+     * The class is stripped from every other entry first: appending it on each visit would
+     * leave a trail of highlighted rows that means nothing. */
+    var items = list.getElementsByTagName("li");
+    for (var i = 0; i < items.length; i++) {
+      items[i].className = items[i].className.replace(/\s*awltux-current/g, "");
+    }
+    if (item) item.className = item.className + " awltux-current";
+  }
+
+  function reveal(node, item) {
+    /* Scroll a figure into the middle of the viewport and flash it.
+     *
+     * The flash is what makes the scroll land: arriving at a number in a page of numbers is
+     * not the same as knowing which one you arrived at. It is restarted explicitly, because
+     * asking for the same figure twice would otherwise leave the animation already spent.
+     */
+    if (!node || !node.scrollIntoView) return;
+    node.scrollIntoView({ block: "center", behavior: "smooth" });
+    node.classList.remove("awltux-flash");
+    void node.offsetWidth;
+    node.classList.add("awltux-flash");
+    markCurrent(item);
+  }
+
+  function go(delta) {
+    cursor = step(figures, cursor, delta);
+    if (cursor < 0) return;
+    var node = figures[cursor];
+    reveal(node);
+    counter.textContent = (cursor + 1).toLocaleString("en-US") + " of " + figures.length.toLocaleString("en-US");
+  }
+
+  function remember(node) {
+    /* Remember where in the document the reader is, so "previous" and "next" walk from the
+     * figure they last touched rather than from the top of a report they are halfway down. */
+    var at = -1;
+    for (var i = 0; i < figures.length; i++) {
+      if (figures[i] === node) {
+        at = i;
+        break;
+      }
+    }
+    if (at === -1) return;
+    cursor = at;
+    counter.textContent = (at + 1).toLocaleString("en-US") + " of " + figures.length.toLocaleString("en-US");
   }
 
   /* ------------------------------------------------------------ the document */
@@ -712,20 +856,37 @@
         hint.textContent = "That figure cannot be read: " + picked.problem + ".";
         return;
       }
-      addFigure(picked.figure, picked.elementId, picked.caption, picked.metric);
+      // Marked as used, so the reader can see at a glance which figures they have already taken
+      // and which are still to come.
+      picked.element.className = (picked.element.className ? picked.element.className + " " : "") + "awltux-picked";
+      remember(picked.element);
+      addFigure(picked.figure, picked.element, picked.elementId, picked.caption, picked.metric);
     },
     true
   );
 
   var style = document.createElement("style");
   style.textContent = [
-    ".awltux-fact{cursor:pointer;border-bottom:1px dotted rgba(120,120,120,.75)}",
-    ".awltux-fact:hover{background:rgba(227,179,65,.18)}",
-    // An untagged table cell: the same affordance, and the same colour when the row's caption
-    // matched one of this project's lines -- that row is the one the reader most likely wants.
-    ".awltux-tablefact{cursor:pointer;border-bottom:1px dotted rgba(120,120,120,.75)}",
-    ".awltux-tablefact:hover{background:rgba(227,179,65,.18)}",
-    ".awltux-tablefact[data-awltux-metric]{border-bottom-color:rgba(138,180,248,.9)}",
+    // Unmissable on purpose. It was a 1px dotted grey underline until 2026-10-10, when the
+    // reader reported they could not find the clickable figures at all while scrolling an
+    // 8MB filing -- a mark that has to be hunted for is not an affordance. The tray's toggle
+    // is the answer for a reader who finds 1,583 of them too loud to read through.
+    ".awltux-fact,.awltux-tablefact{cursor:pointer;background:rgba(227,179,65,.20);",
+    "border-bottom:2px solid rgba(200,150,20,.95)}",
+    ".awltux-fact:hover,.awltux-tablefact:hover{background:rgba(227,179,65,.45)}",
+    // Already taken from this report: a different colour, so "which have I picked" is a glance.
+    ".awltux-picked,.awltux-picked:hover{background:rgba(138,180,248,.42);",
+    "border-bottom-color:rgba(90,140,215,.95)}",
+    // The reader asked for a figure and it has scrolled into view: said loudly, twice, because
+    // arriving at a number in a page of numbers is not the same as knowing which one arrived.
+    ".awltux-flash{animation:awltux-flash .9s ease-out 2}",
+    "@keyframes awltux-flash{0%{background:rgba(255,255,255,.98);outline:3px solid #e3b341}",
+    "100%{background:rgba(227,179,65,.20);outline:3px solid transparent}}",
+    // Highlight off, for reading. The figures are still clickable and still explained by the
+    // cursor; only the paint goes.
+    ".awltux-plain .awltux-fact,.awltux-plain .awltux-tablefact{background:none;",
+    "border-bottom:1px dotted rgba(120,120,120,.75)}",
+    ".awltux-plain .awltux-picked{background:none}",
     // A tray rather than a modal: the report has to stay readable while a figure is checked
     // against the statement it is going onto, and a modal would hide the thing being read.
     ".awltux-tray{position:fixed;right:12px;bottom:12px;z-index:2147483647;width:340px;",
@@ -733,39 +894,69 @@
     "background:#1b2129;color:#e8eef5;font:13px/1.45 system-ui,sans-serif;",
     "box-shadow:0 8px 28px rgba(0,0,0,.55);border:1px solid #39434f}",
     ".awltux-tray-head{margin:0 0 6px;font-weight:600}",
+    ".awltux-tray-nav{display:flex;align-items:center;gap:6px;margin:0 0 6px}",
+    ".awltux-tray-count{flex:1;text-align:center;font-size:11px;color:#afb9c6}",
+    ".awltux-tray-button{background:transparent;color:#8ab4f8;border:1px solid #39434f;",
+    "border-radius:4px;padding:2px 6px;cursor:pointer;font:inherit;font-size:11px}",
+    ".awltux-tray-button:hover{background:#252d38}",
+    ".awltux-tray-mark{color:#e3b341}",
     ".awltux-tray ul{list-style:none;margin:0;padding:0}",
     ".awltux-tray li{padding:8px 0;border-top:1px solid #39434f}",
+    ".awltux-tray li.awltux-current{border-left:3px solid #e3b341;padding-left:6px}",
     ".awltux-tray code{display:block;font-size:11px;color:#afb9c6;word-break:break-all}",
     ".awltux-tray-caption{display:block;font-weight:600}",
     ".awltux-tray-working,.awltux-tray-context,.awltux-tray-hint{display:block;",
     "font-size:11px;color:#afb9c6}",
     ".awltux-tray-off{display:block;font-size:11px;color:#e3b341;font-weight:600}",
     ".awltux-tray a{color:#8ab4f8;font-weight:600}",
+    ".awltux-tray-find{display:block;margin-top:4px;background:transparent;color:#e3b341;",
+    "border:1px solid #39434f;border-radius:4px;padding:2px 6px;cursor:pointer;",
+    "font:inherit;font-size:11px}",
+    ".awltux-tray-find:hover{background:#252d38}",
     ".awltux-tray-hint{margin:0}",
     ".awltux-tray-clear{margin-top:8px;background:transparent;color:#afb9c6;",
     "border:1px solid #39434f;border-radius:4px;padding:2px 8px;cursor:pointer}"
   ].join("");
 
+  back.addEventListener("click", function () {
+    go(-1);
+  });
+  forward.addEventListener("click", function () {
+    go(1);
+  });
+  markToggle.addEventListener("click", function () {
+    var off = document.documentElement.classList.toggle("awltux-plain");
+    markToggle.textContent = off ? "Highlight: off" : "Highlight: on";
+  });
+
   function mount() {
     document.body.appendChild(style);
     document.body.appendChild(tray);
-    if (markFacts()) return;
-    // No tagged figures: this filer furnished the report as plain HTML, so the tables are read
-    // instead. `getElementsByTagName("tr")` is every row in the document, including the ones
-    // inside the notes -- a report has hundreds of tables and the reader is looking for one
-    // number in one of them, which is why the row's caption is carried onto every figure.
-    var marked = markTableFigures(document.getElementsByTagName("tr"), known);
-    if (marked) {
+    var marked = markFacts();
+    if (!marked) {
+      // No tagged figures: this filer furnished the report as plain HTML, so the tables are
+      // read instead. `getElementsByTagName("tr")` is every row in the document, including the
+      // ones inside the notes -- a report has hundreds of tables and the reader is looking for
+      // one number in one of them, which is why the row's caption is carried onto every figure.
+      marked = markTableFigures(document.getElementsByTagName("tr"), known);
+      if (marked) {
+        hint.textContent =
+          "This report carries no tagged figures, so the numbers in its tables are offered " +
+          "instead. " +
+          marked +
+          " of them can be read: click the one you want and say which line it belongs on.";
+      }
+    }
+    if (!marked) {
       hint.textContent =
-        "This report carries no tagged figures, so the numbers in its tables are offered " +
-        "instead. " +
-        marked +
-        " of them can be read: click the one you want and say which line it belongs on.";
+        "This report holds no tagged figures and no table figures that can be read. It may be " +
+        "the wrong document -- the accounts can still be corrected by hand from the accounts page.";
       return;
     }
-    hint.textContent =
-      "This report holds no tagged figures and no table figures that can be read. It may be " +
-      "the wrong document -- the accounts can still be corrected by hand from the accounts page.";
+    // The navigation is built from what was actually marked, so the counter can never claim a
+    // figure the reader cannot click.
+    figures = collect(document);
+    counter.textContent = figures.length.toLocaleString("en-US") + " figures can be read";
   }
 
   // The script is loaded with `defer`, so the document is parsed and `body` exists by the time

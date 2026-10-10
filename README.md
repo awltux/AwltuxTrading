@@ -468,6 +468,16 @@ does **not** find *Total current assets*. A caption that matches nothing costs n
 still asks. What such a figure cannot do is become a line of its own — a line this project learns
 is remembered by the filing's tag, and this filing has none — and the confirmation page says so.
 
+**Finding them in the document.** A filing is up to 8MB of somebody else's HTML and Microsoft's
+2026 10-K holds 1,583 tagged figures, so the tray carries the navigation: **‹ Previous** and
+**Next ›** walk every readable figure in document order and wrap at the ends, with a counter
+saying where in that list the reader is; each picked figure has a **show in the report** button
+that scrolls back to it and flashes it; and a row is outlined when the reader is on it. The
+figures themselves are marked loudly — an amber wash and a solid underline — because a mark that
+has to be hunted for is not an affordance, with a **Highlight: on/off** toggle beside the
+navigation for reading a document rather than picking out of it, and a picked figure turning blue
+so "which have I taken" is a glance.
+
 ---
 
 ## Deep-dive research

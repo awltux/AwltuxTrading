@@ -668,3 +668,33 @@ test("a link from a table carries the figure and says where it came from", () =>
   // visit. An empty `metric` would be read on the other side as a line called "".
   assert.equal(url.searchParams.get("metric"), null);
 });
+
+/* ======================================================================
+ * Finding them: the navigation the reader asked for on 2026-10-10 --
+ * *"add value link navigation buttons to the toast ... Currently, I cannot find the
+ * inserted links."*
+ * ==================================================================== */
+
+test("next and previous walk the figures as a ring", () => {
+  const figures = ["a", "b", "c"];
+
+  assert.equal(picker.step(figures, 0, 1), 1);
+  assert.equal(picker.step(figures, 1, 1), 2);
+  // The last one wraps: a reader who has walked to the end of a 1,583-figure 10-K should
+  // arrive back at the first rather than at nothing.
+  assert.equal(picker.step(figures, 2, 1), 0);
+  assert.equal(picker.step(figures, 0, -1), 2);
+  assert.equal(picker.step(figures, 1, -1), 0);
+});
+
+test("with nothing picked yet, next starts at the top and previous at the bottom", () => {
+  const figures = ["a", "b", "c"];
+
+  assert.equal(picker.step(figures, -1, 1), 0);
+  assert.equal(picker.step(figures, -1, -1), 2);
+});
+
+test("an empty document navigates nowhere instead of throwing", () => {
+  assert.equal(picker.step([], 0, 1), -1);
+  assert.equal(picker.step(null, 0, 1), -1);
+});

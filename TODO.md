@@ -1207,11 +1207,16 @@ registration, and `mount()` — is not covered by anything; a typo there reads a
 figure does nothing" with nothing in any log.
 
 **Re-measured 2026-10-10**, when the untagged-table fallback was added: the gap is the same
-seam and it is now wider. `printedNumber`, `rowFigures`, `markTableFigures` and `matchLabel` are
-exported and driven by the node suite (46 tests), but what runs them on a real document —
-`mount()`'s choice between the facts and the tables, and the click on a marked `<td>` — is
-still hand-verified only. `mount()` also picks up an account list off the script tag now, and a
+seam and it is now wider. `printedNumber`, `rowFigures`, `markTableFigures`, `matchLabel` and
+`step` are exported and driven by the node suite (49 tests), but what runs them on a real
+document — `mount()`'s choice between the facts and the tables, the click on a marked `<td>`,
+the previous/next buttons, the highlight toggle and `reveal`'s scroll-and-flash — is still
+hand-verified only. `mount()` also picks up an account list off the script tag now, and a
 malformed one is caught and ignored rather than tested.
+
+The navigation added the same day (`step` is tested; the buttons that call it are not) is the
+part that would fail quietly: a mistyped class name in `reveal` reads as "the *show in the
+report* button does nothing", and nothing in any log says why.
 
 Verified by hand instead, on 2026-10-09: the tray mounts on the live picker page for filing 278
 (Microsoft's 2026 10-K) through the `sandbox allow-scripts` policy, so `document.createElement`,
