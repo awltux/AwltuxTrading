@@ -393,8 +393,17 @@ the chart's lines, with the heading it is to be printed under.
   carried — the *figure* stays on the period it was stated for.
 - **The heading is what makes it count.** A learned line joins the group its heading feeds, so a
   figure put under "Current liabilities" is added to current liabilities *and* to total
-  liabilities, and the residual it was added to fix moves. `Equity` and `Memorandum` are printed
-  and summed by nothing, and the statement says so rather than leaving a reader to assume.
+  liabilities, and the residual it was added to fix moves. It is printed **above** the subtotal it
+  feeds rather than after it, because under the total it would read as a memorandum. `Equity` and
+  `Memorandum` are printed and summed by nothing, and the statement says so rather than leaving a
+  reader to assume.
+- **On the profit and loss the heading says *where* and the side says *which way*.** The income
+  statement's subtotals are a formula rather than a key list, so a learned line joins at the stage
+  its heading names — "Revenue" from gross profit down, "Operating expenses" from operating income
+  down, "Finance and tax" from profit before tax down — and moves the result by its side: a credit
+  adds, a debit takes away. That is the convention the chart's own income lines follow and the
+  trial balance posts by, the sign is in the working shown beside the figure, and the health check
+  that audits reported profit reads the same cascade, so the row and the statement cannot disagree.
 - **A tag that already feeds a line is not offered as a new one.** `us-gaap:InventoryNet` is the
   Inventory line; a second line for one caption would be two figures that disagree the first time
   one of them is corrected. The form opens on the chart's line instead.

@@ -641,7 +641,60 @@ class _Work:
     missing_total: float | None = None
 
 
-def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
+def _extras_total(
+    metrics: dict[str, Any], accounts: Sequence[Account]
+) -> float | None:
+    """What the learned lines of one stage add up to, or ``None`` when none of them has a figure."""
+    total: float | None = None
+    for account in accounts:
+        value = _stated(metrics, account.key)
+        if value is None:
+            continue
+        total = (total or 0.0) + _weight(account) * value
+    return total
+
+
+def _extra_parts(
+    metrics: dict[str, Any], accounts: Sequence[Account]
+) -> tuple[Part, ...]:
+    """The learned lines as components of a subtotal, in the *filer's* words for them.
+
+    Deliberately not through :func:`_label`, which knows only the chart: a learned line's key is
+    its taxonomy tag, so the working a reader hovers would list
+    ``us-gaap:ContractWithCustomerLiabilityCurrent`` where the statement prints
+    "Short-term unearned revenue". An absent figure is left out, exactly as :func:`_component`
+    leaves one out, because a zero claims the filing stated nothing there.
+    """
+    out: list[Part] = []
+    for account in accounts:
+        value = _stated(metrics, account.key)
+        if value is None:
+            continue
+        out.append(
+            Part(
+                label=account.label,
+                contribution=_weight(account) * value,
+                source=account.key,
+            )
+        )
+    return tuple(out)
+
+
+def _plus_extras(base: float | None, added: float | None) -> float | None:
+    """A stage's figure with what the reader added to it.
+
+    A ``None`` base stays ``None``: a line put under "Finance and tax" cannot make profit before
+    tax computable when operating income is not, and inventing a total out of the part of the
+    cascade that happens to be present would be the residual lying about what it measures.
+    """
+    if base is None or added is None:
+        return base
+    return base + added
+
+
+def _profit_cascade(
+    metrics: dict[str, Any], extra: Sequence[Account] | None = None
+) -> dict[str, _Work]:
     """The four subtotals this project can derive from the lines it holds.
 
     One cascade rather than one per caller: the profit and loss statement prints these
@@ -654,6 +707,11 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
     one a reader cannot investigate. Deriving the components again where they are printed
     would be the duplication this function exists to prevent.
 
+    **A line the filer names joins here, and this is the only place it can.** The heading the
+    reader filed it under says which stage it first feeds and the side it was posted on says
+    which way -- see :func:`signed_extras` -- and both go into the total *and* into ``parts``,
+    so the working printed beside the figure lists the line it was computed from.
+
     **Profit before tax is not "operating income less interest".** Interest *income* and
     other non-operating items sit between the two as well, and leaving them out put a
     visible residual on the page for any filer that has them. Measured on `AIT_US_EQ`
@@ -665,12 +723,23 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
     """
     revenue = _stated(metrics, "revenue")
     cost = _stated(metrics, "cost_of_goods_sold")
-    gross = _subtract(revenue, cost)
-    operating = _subtract(
-        gross,
-        _stated(metrics, "research_and_development"),
-        _stated(metrics, "sga_expense"),
-        _stated(metrics, "depreciation_amortisation"),
+    # Which learned lines first join each stage. Every decision about them -- which subtotal,
+    # which direction -- was made when they were recorded; nothing here chooses either.
+    in_revenue = extras_for_group(extra, "profit_and_loss", "gross_profit")
+    in_operating = extras_for_group(extra, "profit_and_loss", "operating_income")
+    in_finance = extras_for_group(extra, "profit_and_loss", "pretax_income")
+
+    gross = _plus_extras(
+        _subtract(revenue, cost), _extras_total(metrics, in_revenue)
+    )
+    operating = _plus_extras(
+        _subtract(
+            gross,
+            _stated(metrics, "research_and_development"),
+            _stated(metrics, "sga_expense"),
+            _stated(metrics, "depreciation_amortisation"),
+        ),
+        _extras_total(metrics, in_operating),
     )
     # Added when present, deducted when present, and `None` only when neither side is
     # stated -- which is what falls back to operating income. Using `_subtract` here
@@ -682,8 +751,11 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
         _stated(metrics, "other_nonoperating_income"),
     )
     interest = _stated(metrics, "interest_expense")
+    finance_extras = _extras_total(metrics, in_finance)
     if additions is None and interest is None:
-        non_operating = None
+        # Nothing of our own between the two lines -- so a learned one filed under "Finance and
+        # tax" is the whole of the difference, and profit before tax is not left uncomputable.
+        non_operating = 0.0 if finance_extras is not None else None
     else:
         non_operating = (additions or 0.0) - (interest or 0.0)
     if operating is None:
@@ -691,13 +763,45 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
     elif non_operating is None:
         pretax = operating
     else:
-        pretax = operating + non_operating
+        pretax = operating + non_operating + (finance_extras or 0.0)
     tax = _stated(metrics, "tax_expense")
+    return _cascade_works(
+        metrics,
+        gross=gross,
+        operating=operating,
+        pretax=pretax,
+        tax=tax,
+        in_revenue=in_revenue,
+        in_operating=in_operating,
+        in_finance=in_finance,
+    )
 
+
+def _cascade_works(
+    metrics: dict[str, Any],
+    *,
+    gross: float | None,
+    operating: float | None,
+    pretax: float | None,
+    tax: float | None,
+    in_revenue: Sequence[Account],
+    in_operating: Sequence[Account],
+    in_finance: Sequence[Account],
+) -> dict[str, _Work]:
+    """The four subtotals, each carrying the arithmetic that produced it.
+
+    Split from the derivation above because the working is the other half of the job: a page
+    that can print a residual but not how the figure beside it was reached is one a reader
+    cannot investigate. A learned line joins here as well as in the totals, or the hover would
+    not add up to the figure it sits beside -- which is the one thing it is for.
+    """
     return {
         "gross_profit": _Work(
             total=gross,
-            parts=_components(metrics, ("revenue", 1.0), ("cost_of_goods_sold", -1.0)),
+            parts=(
+                _components(metrics, ("revenue", 1.0), ("cost_of_goods_sold", -1.0))
+                + _extra_parts(metrics, in_revenue)
+            ),
         ),
         "operating_income": _Work(
             total=operating,
@@ -709,6 +813,7 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
                     ("sga_expense", -1.0),
                     ("depreciation_amortisation", -1.0),
                 )
+                + _extra_parts(metrics, in_operating)
             ),
         ),
         "pretax_income": _Work(
@@ -721,6 +826,7 @@ def _profit_cascade(metrics: dict[str, Any]) -> dict[str, _Work]:
                     ("other_nonoperating_income", 1.0),
                     ("interest_expense", -1.0),
                 )
+                + _extra_parts(metrics, in_finance)
             ),
         ),
         "net_income": _Work(
@@ -831,11 +937,21 @@ COMPONENT_KEYS: dict[str, tuple[str, ...]] = {
 #: count anything under it; the chart already separated the two, the statement now prints them
 #: separately, and :data:`ledger.uncounted_extras` reports the headings that remain -- "Equity"
 #: and "Memorandum", where this page computes no sum of the lines at all.
+#:
+#: On the profit and loss the group is the **stage of the cascade the line first feeds** rather
+#: than a bucket of components, because that statement's subtotals are a formula and not a sum of
+#: a key list: a line filed under "Operating expenses" belongs in operating income and in
+#: everything below it, and in nothing above. Added 2026-10-10 with the same report the ordering
+#: fix above answers -- the two lines the reader added under "Operating expenses" were printed
+#: and counted nowhere, so the "out by" they were added to fix did not move.
 EXTRA_GROUP: dict[tuple[str, str], str] = {
     ("balance_sheet", "Current assets"): "current_assets",
     ("balance_sheet", "Non-current assets"): "non_current_assets",
     ("balance_sheet", "Current liabilities"): "current_liabilities",
     ("balance_sheet", "Non-current liabilities"): "non_current_liabilities",
+    ("profit_and_loss", "Revenue"): "gross_profit",
+    ("profit_and_loss", "Operating expenses"): "operating_income",
+    ("profit_and_loss", "Finance and tax"): "pretax_income",
 }
 
 #: Which stated subtotals a component group feeds, so a line added to one is counted in the
@@ -859,15 +975,38 @@ def extras_in(
     ]
 
 
+def extras_for_group(
+    extra: Sequence[Account] | None, statement: str, group: str
+) -> list[Account]:
+    """The learned lines that join one group -- a component bucket, or a stage of the cascade."""
+    return [
+        account
+        for account in (extra or ())
+        if account.statement == statement
+        and EXTRA_GROUP.get((account.statement, account.section)) == group
+    ]
+
+
 def extra_keys(
     extra: Sequence[Account] | None, statement: str, group: str
 ) -> tuple[str, ...]:
     """The learned lines in one component group -- the components a subtotal is summed from."""
     return tuple(
-        account.key
-        for account in (extra or ())
-        if account.statement == statement and EXTRA_GROUP.get((account.statement, account.section)) == group
+        account.key for account in extras_for_group(extra, statement, group)
     )
+
+
+def _weight(account: Account) -> float:
+    """Which way one learned line moves the figure it feeds: a credit adds, a debit takes away.
+
+    The heading says *where* a line joins the profit and loss; the side the reader posted it on
+    says which way it moves the result. That is the same rule the chart's own income lines
+    follow -- `revenue` is a credit and adds, `sga_expense` a debit and takes away -- and the
+    same one the trial balance posts by. It is not a guess the page makes: the side is asked for
+    on the confirmation form, and the sign is printed in the working a reader hovers, so a line
+    deducted where they meant it added is visible without recomputing anything.
+    """
+    return 1.0 if account.side == CREDIT else -1.0
 
 
 def subtotal_extra_keys(
@@ -956,18 +1095,17 @@ def profit_and_loss(
     operating income, associates, minority interests), and a reader who cannot see it
     cannot tell an extraction gap from a business with unusual economics.
 
-    A line the filer names is printed under its heading and **does not join the cascade**: the
-    four subtotals here are a fixed arithmetic, not a key list, and deciding whether a new line
-    is added or deducted is a judgement about the statement rather than about the figure. Where
-    the calculation linkbase has been read the *filer's* arithmetic picks such a line up by its
-    tag, which is the check that matters.
+    A line the filer names joins the cascade: the heading the reader filed it under says which
+    subtotal it first feeds and the side they posted it on says which way, so a figure added to
+    fix a residual moves it. Where the calculation linkbase has been read the *filer's* own
+    arithmetic picks such a line up by its tag too, which is the check that matters.
     """
     metrics = period.metrics or {}
     gaps: list[str] = []
 
     if _stated(metrics, "revenue") is None:
         gaps.append("revenue")
-    cascade = _profit_cascade(metrics)
+    cascade = _profit_cascade(metrics, extra)
 
     def held(title: str, lines: list[Line]) -> Section:
         return _section(
@@ -1229,11 +1367,26 @@ def _section_lines(
     section: str,
     extra: Sequence[Account] | None,
 ) -> list[Line]:
-    """One section's own lines, then the learned ones, ready for its subtotal to follow."""
-    return base + [
-        _extra_line(metrics, account)
-        for account in extras_in(extra, statement, section)
-    ]
+    """One section's own lines with the learned ones **before** its subtotal.
+
+    Position is not decoration here. A learned line printed under the total it feeds reads as
+    a memorandum -- and it was, in the first version, because the extras were appended and the
+    statement builders put each section's subtotal last in ``base``. Reported 2026-10-10: *"they
+    appear below the section total and aren't included in the section total calculation ... the
+    point of adding these values is to fix the 'out by X'"*. So the extras go in front of the
+    first subtotal line, which is the one they are counted in -- see :data:`EXTRA_GROUP` for
+    which subtotal that is, by heading and by statement.
+
+    A section with no subtotal (the cash flow's "Financing", the balance sheet's "Equity") keeps
+    them at the end, where the note beside the statement says they are counted nowhere.
+    """
+    learned = [_extra_line(metrics, account) for account in extras_in(extra, statement, section)]
+    if not learned:
+        return list(base)
+    at = next(
+        (index for index, line in enumerate(base) if line.role == "subtotal"), len(base)
+    )
+    return base[:at] + learned + base[at:]
 
 
 def statement(
@@ -1582,7 +1735,9 @@ def composition(
     ]
 
 
-def profit_articulation(period: FundamentalPeriod) -> Check:
+def profit_articulation(
+    period: FundamentalPeriod, extra: Sequence[Account] | None = None
+) -> Check:
     """Whether the lines we hold add up to the profit the filing reports.
 
     The most consequential composition check, because profit is what every ratio
@@ -1591,13 +1746,15 @@ def profit_articulation(period: FundamentalPeriod) -> Check:
 
     It reads :func:`_profit_cascade`, the same arithmetic the statement prints, so the
     two cannot drift into disagreeing about which lines count -- which would make the
-    audit pass a statement that is visibly wrong.
+    audit pass a statement that is visibly wrong. ``extra`` travels with it for the same
+    reason: a line the reader added that the statement counts and this check did not would
+    be exactly that disagreement, one row apart on the same page.
     """
     metrics = period.metrics or {}
     # The cascade's own working travels with the figure, so the health row explains itself the
     # same way the statement line it audits does -- a reader hovering one and then the other
     # must not get two different accounts of the same subtraction.
-    work = _profit_cascade(metrics)["net_income"]
+    work = _profit_cascade(metrics, extra)["net_income"]
     return _agree(
         "profit_articulation",
         "Lines we hold reconcile to reported profit",
@@ -1740,7 +1897,7 @@ def checks(
     """
     return [
         equation_check(period),
-        profit_articulation(period),
+        profit_articulation(period, extra),
         *composition(period, declared=declared, extra=extra),
         retained_earnings_rollforward(period, previous),
         cash_movement(period, previous),

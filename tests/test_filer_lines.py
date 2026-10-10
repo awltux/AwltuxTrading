@@ -614,23 +614,24 @@ class TestTheLedgerDecidesWhereAHeadingCounts:
 
     def test_every_heading_that_is_counted_is_a_heading_the_statement_prints(self):
         """The table above is keyed by printed headings, so a rename in the statement would
-        silently stop counting a line. This is the join between the two."""
-        printed = {
-            section.title
-            for section in ledger.balance_sheet(
-                FundamentalPeriod(
-                    instrument_t212_ticker="X",
-                    period_end=dt.date(2026, 1, 1),
-                    period_type="annual",
-                    currency="USD",
-                    source="xbrl_companyfacts",
-                    metrics={},
-                )
-            ).sections
-        }
+        silently stop counting a line. This is the join between the two, and it is per
+        statement: the map covers the balance sheet's four component headings and the profit
+        and loss's three stages, and a heading that belongs to one of them proves nothing
+        about the other."""
+        period = FundamentalPeriod(
+            instrument_t212_ticker="X",
+            period_end=dt.date(2026, 1, 1),
+            period_type="annual",
+            currency="USD",
+            source="xbrl_companyfacts",
+            metrics={},
+        )
 
-        for _, heading in ledger.EXTRA_GROUP:
-            assert heading in printed, f"{heading!r} is not a heading the balance sheet prints"
+        for statement, heading in ledger.EXTRA_GROUP:
+            printed = {
+                section.title for section in ledger.statement(period, statement).sections
+            }
+            assert heading in printed, f"{heading!r} is not a heading {statement} prints"
 
     def test_a_heading_of_another_statement_never_counts(self):
         account = ledger.Account(
@@ -644,3 +645,190 @@ class TestTheLedgerDecidesWhereAHeadingCounts:
         equity = self._account("Equity")
 
         assert ledger.uncounted_extras([counted, equity], "balance_sheet") == [equity]
+
+
+def _profit_period(**overrides) -> FundamentalPeriod:
+    """A year whose stated profit is **60 short of the lines we hold**, on purpose.
+
+    The gap is the whole point: it is the "out by X" a reader adds a line to fix, and a fixture
+    where the two already agreed could not tell a counted line from an uncounted one.
+    """
+    metrics = {
+        "revenue": 1_000.0,
+        "cost_of_goods_sold": 600.0,
+        "sga_expense": 150.0,
+        "tax_expense": 0.0,
+        # The filing's own figure, 60 below the 250 the three lines above add up to.
+        "net_income": 190.0,
+    }
+    metrics.update(overrides)
+    return _period("TEST_US_EQ", dt.date(2024, 12, 31), metrics)
+
+
+def _learned_for(section: str, *, side: str, key: str | None = None) -> ledger.Account:
+    """A line learned from a filing under one heading, as `corrections` would build it."""
+    return ledger.Account(
+        key=key or f"test:{section.replace(' ', '')}",
+        label=f"A {section.lower()} line",
+        statement="profit_and_loss",
+        section=section,
+        side=side,
+    )
+
+
+def _learned_period(
+    section: str, value: float, *, side: str
+) -> tuple[FundamentalPeriod, list[ledger.Account]]:
+    """A year's result plus one figure the filer named, already written onto the period.
+
+    Two things at once, because they are two halves of one act: the line is learned under a
+    heading (which decides where it counts) and its figure is written through into ``metrics``
+    (which is what the statement sums).
+    """
+    account = _learned_for(section, side=side)
+    return _profit_period(**{account.key: value}), [account]
+
+
+def _line(statement: ledger.Statement, section: str, key: str) -> ledger.Line:
+    for built in statement.sections:
+        if built.title != section:
+            continue
+        for line in built.lines:
+            if line.key == key:
+                return line
+    raise AssertionError(f"no line {key!r} under {section!r}")
+
+
+class TestALineOnTheProfitAndLossJoinsTheCascade:
+    """Reported 2026-10-10: *"I can now add additional figures to the accounts, but they appear
+    below the section total and aren't included in the section total calculation, the one
+    highlighted as 'out by X'. The point of adding these values is to fix the 'out by X'."*
+
+    Both halves of that, and the rule that makes the second one decidable: the heading says
+    which subtotal the line first feeds, and the side the reader posted it on says which way --
+    the same convention the chart's own income lines follow and the trial balance posts by.
+    """
+
+    def test_a_debit_under_operating_expenses_is_deducted_from_operating_income_and_below(self):
+        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+
+        statement = ledger.profit_and_loss(period, extra=extra)
+
+        assert _line(statement, "Operating expenses", "operating_income").computed == 210.0
+        assert _line(statement, "Finance and tax", "pretax_income").computed == 210.0
+        assert _line(statement, "Finance and tax", "net_income").computed == 210.0
+        # And not in the subtotal above it: a line under a heading joins that stage *and
+        # everything below*, never the one it was not filed under.
+        assert _line(statement, "Revenue", "gross_profit").computed == 400.0
+
+    def test_a_credit_under_revenue_is_added_to_gross_profit_and_below(self):
+        period, extra = _learned_period("Revenue", 100.0, side="credit")
+
+        statement = ledger.profit_and_loss(period, extra=extra)
+
+        assert _line(statement, "Revenue", "gross_profit").computed == 500.0
+        assert _line(statement, "Operating expenses", "operating_income").computed == 350.0
+        assert _line(statement, "Finance and tax", "net_income").computed == 350.0
+
+    def test_a_line_under_finance_and_tax_joins_at_profit_before_tax(self):
+        period, extra = _learned_period("Finance and tax", 7.0, side="credit")
+
+        statement = ledger.profit_and_loss(period, extra=extra)
+
+        assert _line(statement, "Operating expenses", "operating_income").computed == 250.0
+        assert _line(statement, "Finance and tax", "pretax_income").computed == 257.0
+        assert _line(statement, "Finance and tax", "net_income").computed == 257.0
+
+    def test_the_working_beside_the_figure_lists_the_learned_line(self):
+        """The hover has to add up to the figure it sits beside, or the residual a reader is
+        looking at is explained by arithmetic that does not produce it."""
+        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+        account = extra[0]
+
+        work = _line(ledger.profit_and_loss(period, extra=extra), "Operating expenses", "operating_income")
+
+        contributions = {part.source: part.contribution for part in work.parts}
+        assert contributions[account.key] == -40.0
+        assert sum(contributions.values()) == work.computed
+        assert account.label in work.show_work()
+
+    def test_the_learned_line_is_printed_above_the_subtotal_it_feeds(self):
+        """Position is the other half of the report: under the total it reads as a memorandum."""
+        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+
+        statement = ledger.profit_and_loss(period, extra=extra)
+        section = next(s for s in statement.sections if s.title == "Operating expenses")
+        keys = [line.key for line in section.lines]
+
+        assert keys.index(extra[0].key) < keys.index("operating_income")
+
+    def test_the_balance_sheet_prints_its_learned_lines_above_the_total_too(self):
+        """The same rule on the other statement, which is where they were appended after it."""
+        account = ledger.Account(
+            key=TAG,
+            label=CAPTION,
+            statement="balance_sheet",
+            section="Current liabilities",
+            side="credit",
+        )
+        period = _period("TEST_US_EQ", dt.date(2024, 12, 31), dict(FIGURES))
+
+        statement = ledger.balance_sheet(period, extra=[account])
+        section = next(s for s in statement.sections if s.title == "Current liabilities")
+        keys = [line.key for line in section.lines]
+
+        assert keys.index(TAG) < keys.index("current_liabilities")
+
+    def test_the_health_check_counts_the_same_lines_the_statement_does(self):
+        """One cascade, two callers. A figure the statement counts and the audit does not is the
+        disagreement the shared arithmetic exists to prevent -- one row apart on the same page."""
+        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+
+        statement = ledger.profit_and_loss(period, extra=extra)
+        check = ledger.profit_articulation(period, extra)
+
+        assert check.inputs["computed"] == _line(statement, "Finance and tax", "net_income").computed
+        assert check.inputs["computed"] == 210.0
+
+    def test_the_residual_the_line_was_added_to_fix_moves_by_it(self):
+        """The reader's own words for what this is for: *"the point of adding these values is to
+        fix the 'out by X' calculations"*. The stated figure does not move; the computed one does,
+        by exactly the figure added."""
+        before = ledger.profit_articulation(_profit_period())
+        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+        after = ledger.profit_articulation(period, extra)
+
+        assert before.residual == -60.0, "the fixture's gap, before anything is added"
+        assert after.residual - before.residual == 40.0
+
+    def test_a_heading_whose_lines_are_counted_is_no_longer_reported_as_uncounted(self):
+        period, extra = _learned_period("Operating expenses", 40.0, side="debit")
+
+        assert ledger.uncounted_extras(extra, "profit_and_loss") == []
+        assert ledger.uncounted_note(extra, "profit_and_loss") is None
+        assert ledger.uncounted_note(
+            [
+                ledger.Account(
+                    key="x",
+                    label="x",
+                    statement="profit_and_loss",
+                    section="Memorandum",
+                    side="credit",
+                )
+            ],
+            "profit_and_loss",
+        ) is not None
+
+    def test_a_figure_nobody_stated_is_not_a_component(self):
+        """A learned line with no figure under it must not appear as a zero: the working would
+        then claim the filing stated nothing there, which is a different fact from our not
+        holding it."""
+        account = _learned_for("Operating expenses", side="debit", key="test:notheld")
+        period = _profit_period()
+
+        work = _line(
+            ledger.profit_and_loss(period, extra=[account]), "Operating expenses", "operating_income"
+        )
+
+        assert work.computed == 250.0
+        assert [part.source for part in work.parts if part.source == account.key] == []
