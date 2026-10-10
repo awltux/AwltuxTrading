@@ -401,6 +401,13 @@ the chart's lines, with the heading it is to be printed under.
 - **The form opens on what was clicked, not on what was being investigated.** A residual is what
   sent the reader looking; the clicked figure is tagged with the line it belongs to. The page says
   so when the two differ.
+- **A learned line yields to the chart.** The mapping grows, and a caption taught to the page one
+  year may be one the chart carries the next — at which point the learned copy is the same money
+  again, because the extractor fills the chart's line from the payload while the reader's figure
+  still sits under the tag. It is then printed by neither twice nor in silence: the statement drops
+  the copy, and the corrections panel names it as superseded and says how to take the stored figure
+  off. Where the chart's line holds *nothing*, the learned line keeps its place, because nothing
+  else is holding that figure.
 
 The balance sheet used to print one heading, "Non-current liabilities and equity", holding two
 subtotals. That heading cannot say which of the two a first-time line feeds, so the statement now
