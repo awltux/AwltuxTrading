@@ -4,8 +4,9 @@ The feature is expensive and irreversible -- a press spends a provider refresh a
 model call -- so the properties worth pinning are the ones a reader relies on *before*
 pressing it and *after* it has run:
 
-* the latest finished report's executive summary is at the top of the subject's page, on every
-  tab, because that is the answer the reader came for;
+* the latest finished report's executive summary is at the top of a *sector's* page -- an
+  instrument's page describes the business from the same report instead, and shows the
+  summary only on its Research tab, as the dated list;
 * the report list is the dated series, newest first, with each finished one linked to the
   document on disk;
 * the dialog carries the prompt the run will actually use, fetched on demand rather than on
@@ -64,6 +65,7 @@ def _report(
     created_at: dt.datetime | None = None,
     error: str | None = None,
     raw_path: str | None = None,
+    result: dict | None = None,
 ) -> ResearchReport:
     row = ResearchReport(
         subject_type=subject_type,
@@ -76,6 +78,7 @@ def _report(
         exec_summary=summary if status == "done" else None,
         verdict=verdict if status == "done" else None,
         error=error,
+        result=result if status == "done" else None,
         # Not written here, and the page does not read it: whether a report can be opened is
         # decided by the file, which a test that wants the link has to put there -- see
         # `test_each_finished_report_links_to_its_document`.
@@ -122,33 +125,69 @@ def refused(monkeypatch) -> _Start:
 
 
 class TestTheExecutiveSummary:
-    def test_it_sits_at_the_top_of_the_instrument_page(self, client, session):
+    """Where the report's executive summary is shown, and where it deliberately is not.
+
+    It was at the top of *every* instrument tab until 2026-10-10, when the reader removed it:
+    `partials/_business.html` now describes the company from the same report, and for a company
+    the model can describe the two panels were the same answer twice. A sector keeps it, because
+    a sector has no business panel -- there is no business, only a news corpus.
+    """
+
+    def test_the_instrument_page_does_not_repeat_it(self, client, session):
         _instrument(session)
         _report(session)
         session.commit()
 
         body = client.get(f"/instrument/{TICKER}").text
 
-        assert "A test company with thin evidence but a sound balance sheet." in body
-        assert "watch" in body
+        assert "A test company with thin evidence but a sound balance sheet." not in body
+        assert BeautifulSoup(body, "lxml").select_one(".research-summary") is None
 
-    def test_it_is_there_on_every_tab(self, client, session):
-        """The summary strip is what a reader lands on whatever topic they opened, and the
-        whole point of repeating it is that they do not have to go looking."""
+    def test_the_report_is_still_one_click_away_from_every_instrument_tab(self, client, session):
+        """What the removed panel carried that was *not* a description: the way to the
+        document. The business panel holds it now, and this checks it is there on every tab."""
         _instrument(session)
-        _report(session)
+        row = _report(
+            session,
+            result={"business": {"summary": "It distributes maintenance supplies."}},
+        )
         session.commit()
 
         for tab in ("decision", "valuation", "price", "reports", "accounts", "news", "position"):
-            body = client.get(f"/instrument/{TICKER}?tab={tab}").text
-            assert "thin evidence but a sound balance sheet" in body, tab
+            soup = BeautifulSoup(client.get(f"/instrument/{TICKER}?tab={tab}").text, "lxml")
+            links = [a["href"] for a in soup.select(".business-profile a[href^='/research/']")]
+            assert f"/research/{row.id}" in links, tab
 
-    def test_it_links_to_the_report_itself(self, client, session):
+    def test_the_caveat_about_what_a_deep_dive_is_moved_with_the_description(
+        self, client, session
+    ):
+        """The one sentence the removed panel carried that was not a description: a report is
+        the model's judgement, not a price target. It belongs beside the sentences it
+        qualifies, so it moved into the panel that replaced the summary."""
         _instrument(session)
-        row = _report(session)
+        _report(session, result={"business": {"summary": "It distributes supplies."}})
         session.commit()
 
-        soup = BeautifulSoup(client.get(f"/instrument/{TICKER}").text, "lxml")
+        body = client.get(f"/instrument/{TICKER}").text
+
+        assert "the model's judgement of the whole business, not a price target" in body
+
+    def test_a_sector_still_carries_it_at_the_top_of_its_page(self, client, session):
+        """The half of the feature that stayed: a sector has no other answer to show."""
+        _report(session, subject_type="sector", subject_id=SECTOR, summary="Margins compress.")
+        session.commit()
+
+        soup = BeautifulSoup(client.get(f"/sectors/{SECTOR}").text, "lxml")
+
+        block = soup.select_one(".research-summary")
+        assert block is not None
+        assert "Margins compress." in block.get_text(" ")
+
+    def test_a_sector_summary_links_to_the_report_itself(self, client, session):
+        row = _report(session, subject_type="sector", subject_id=SECTOR)
+        session.commit()
+
+        soup = BeautifulSoup(client.get(f"/sectors/{SECTOR}").text, "lxml")
 
         block = soup.select_one(".research-summary")
         assert block is not None
@@ -158,12 +197,24 @@ class TestTheExecutiveSummary:
         """The executive summary is the answer of a *finished* run. Showing the previous one
         is right; showing nothing at all next to a run in progress would be wrong, and this
         checks the page distinguishes the two."""
-        _instrument(session)
-        _report(session, status="done", created_at=utcnow() - dt.timedelta(days=2), summary="The older answer.")
-        _report(session, status="running", created_at=utcnow())
+        _report(
+            session,
+            subject_type="sector",
+            subject_id=SECTOR,
+            status="done",
+            created_at=utcnow() - dt.timedelta(days=2),
+            summary="The older answer.",
+        )
+        _report(
+            session,
+            subject_type="sector",
+            subject_id=SECTOR,
+            status="running",
+            created_at=utcnow(),
+        )
         session.commit()
 
-        body = client.get(f"/instrument/{TICKER}?tab=research").text
+        body = client.get(f"/sectors/{SECTOR}").text
 
         assert "The older answer." in body, "the last finished report is still the answer"
         assert "already running" in body
@@ -180,10 +231,7 @@ class TestTheExecutiveSummary:
         assert not soup.select("#research a[href^='/research/']")
 
     def test_no_reports_means_no_summary_block(self, client, session):
-        _instrument(session)
-        session.commit()
-
-        soup = BeautifulSoup(client.get(f"/instrument/{TICKER}?tab=research").text, "lxml")
+        soup = BeautifulSoup(client.get(f"/sectors/{SECTOR}").text, "lxml")
 
         assert soup.select_one(".research-summary") is None
         assert "No deep-dive has been run about this subject yet." in soup.select_one("#research").get_text(" ")

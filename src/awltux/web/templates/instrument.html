@@ -116,16 +116,16 @@
   </details>
 </section>
 
-{# ------------------------------------------------- latest deep-dive, at the top #}
-{# Above the tabs, because it is the most considered answer this system has about the
-   business and this strip is where a reader looks for one. Only the executive summary is
-   repeated; everything else is in the report itself. #}
-{% include "partials/research_summary.html" %}
-
 {# ------------------------------------------------- what the business is, and what moves it #}
-{# Above the tabs as well, and for the same reason: it is the shortest answer to "what am I
-   looking at", which a reader wants before any of them. Built from the latest deep-dive and
-   from the levers recorded on this page, and it says which of the two each half came from. #}
+{# Above the tabs, because it is the shortest answer to "what am I looking at" and a reader
+   wants that before any of them. Built from the latest finished deep-dive and from the levers
+   recorded on this page, and it says which of the two each half came from.
+
+   The report's *executive summary* used to sit above this as its own panel and was removed
+   on 2026-10-10: for a described business it was the same answer twice, and the reader who
+   asked for it removed said the description superseded it. Its one line that was not a
+   description -- the reminder that a deep-dive is a judgement and not a price target -- moved
+   into this panel, where the sentences it qualifies are read. #}
 {% include "partials/_business.html" %}
 
 {# -------------------------------------------------------------------- tabs #}

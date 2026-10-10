@@ -1,9 +1,14 @@
-{# The latest deep-dive's executive summary, at the top of a subject's page.
+{# The latest deep-dive's executive summary, at the top of a *sector's* page.
 
-   It sits here, above the tabs, because it is the system's most considered answer about this
-   subject and the summary strip is where a reader looks for one. Only the *executive summary*
-   is repeated: the sections, the themes and the figures are one click away in the report
-   itself, and copying them here would rebuild the long page the tabs exist to avoid.
+   A sector has no "what the business is" panel -- there is no business, only a news corpus --
+   so this is the only place its most considered answer appears, and it sits above everything
+   else for that reason. An instrument had the same panel until 2026-10-10, when the reader
+   removed it: `partials/_business.html` describes the company, and the executive summary was
+   the same answer twice. The caveat it carried moved in there with the sentences it qualifies.
+
+   Only the *executive summary* is repeated: the sections, the themes and the figures are one
+   click away in the report itself, and copying them here would rebuild the long page the tabs
+   exist to avoid.
 
    Rendered from the stored text, not from the model's markup: the document the model wrote is
    validated and escaped by `research/report.py`, and this is a plain field of the row. #}

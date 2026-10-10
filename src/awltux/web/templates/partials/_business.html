@@ -31,6 +31,13 @@
     {% if business.competition %}
       <p><strong>Competition.</strong> {{ business.competition }}</p>
     {% endif %}
+    {# The reminder that used to sit with the report's executive summary panel, which was
+       removed when this panel took its place: the description is safe to read as fact, and
+       the rest of the document is not. #}
+    <p class="muted small">
+      A deep-dive is the model's judgement of the whole business, not a price target.
+      <a href="{{ research_base }}">All reports for this instrument</a>.
+    </p>
   {% else %}
     <p class="muted">
       This company has not been through a deep-dive, so nothing here describes what it does or
