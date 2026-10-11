@@ -110,7 +110,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C90"]
 ignore = ["E501"]
 
 [tool.ruff.lint.mccabe]
-# Fifteen paths through one function. Most of this tree is far under it. The five
+# Fifteen paths through one function. Most of this tree is far under it. The two
 # functions above it carry a `# noqa: C901` naming why the flat form is the clearer
 # one -- a decision table read top to bottom, where extracting the branches into
 # helpers would scatter one policy across five functions and hide the ordering

@@ -254,13 +254,13 @@ What the pass looks for, in this codebase's idiom:
 **Length is not the measure.** `decision/gate.py::evaluate` is 241 lines and is the
 clearest form it has: an ordered list of checks where the order *is* the policy, and
 the first failure binds. `analysis/news_scepticism.py::grade` is a flat table of
-independent observations. Both are excused by name in `pyproject.toml`. A 40-line
-function interleaving three concerns is worse than either — complexity, not line
-count, is what makes a function hard to change, because every branch is a case the
-reader must hold at once.
+independent observations. Both carry the excuse, with the reason above the
+definition. A 40-line function interleaving three concerns is worse than either —
+complexity, not line count, is what makes a function hard to change, because every
+branch is a case the reader must hold at once.
 
 **Enforced, not remembered.** `pyproject.toml` selects `C90` at
-`max-complexity = 15`, so a new function past that fails the build. Four are above it
+`max-complexity = 15`, so a new function past that fails the build. Two are above it
 and carry `# noqa: C901` with the reason above them:
 
 ```bash
@@ -270,8 +270,8 @@ python tools/refactor_report.py    # ends with the ledger and each reason
 That ledger **only shrinks**. Adding an entry is a decision to be argued, not a
 workaround — and the reason is the whole value of it: a bare `noqa` says *I gave up*,
 a reason says which rule was weighed and why the plain form won, which is the part a
-later reader cannot reconstruct. `fundamentals.py::derive_metrics` was the fifth and
-was split into five named families rather than excused; that is the pass working.
+later reader cannot reconstruct. `fundamentals.py::derive_metrics` was on this list
+and was split into five named families rather than excused; that is the pass working.
 
 Debt that cannot be paid in this commit goes in `TODO.md` with its evidence, never
 in a lowered standard.
