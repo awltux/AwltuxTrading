@@ -192,6 +192,56 @@ class TestWhatTheStatementsShow:
         assert figures["Revenue"] == ["1,000", "—"], "a component has nothing to compute"
         assert figures["Gross profit"] == ["400", "400"], "a subtotal does"
 
+    def test_an_empty_computed_cell_says_which_kind_of_empty_it_is(
+        self, client, session, stored_period
+    ):
+        """Asked twice: *"the Computed is always empty. Is it just misalignment"*, then *"tell me
+        why some values appear in the calculated column and others don't, even though they are
+        part of the calculation."*
+
+        There are two different facts behind one dash, and both are properties of the ledger
+        rather than of the rendering: a component line is an *input* to the subtotals -- it
+        appears in their workings (12,906 component and 4,302 memorandum lines across the stored
+        periods) and is never a sum itself -- and a subtotal is empty only when none of its
+        components is held, because `ledger._sum` returns None rather than zero for an empty sum
+        (1,279 of 4,780 subtotals on record). So the dash has to say which it is.
+        """
+        soup = BeautifulSoup(
+            client.get(f"/accounts/{stored_period.id}/profit_and_loss").text, "lxml"
+        )
+        cells = {
+            row.select("td")[0].get_text(" ", strip=True): row.select("td")[2]
+            for row in soup.select("table.ledger tbody tr")
+        }
+
+        assert "input line" in cells["Revenue"].select_one(".work[data-work]")["data-work"]
+        assert "input line" in cells["Cost of sales"].select_one(".work")["data-work"]
+
+    def test_a_subtotal_with_nothing_to_add_up_says_so(self, client, session):
+        """The other case, and the one that looked like a bug: a total the filing states that
+        we hold no components for. It is not blank because the arithmetic failed -- there is
+        nothing to add."""
+        period = _store(
+            session,
+            "TEST_US_EQ",
+            make_period("TEST_US_EQ", dt.date(2024, 12, 31), {"total_assets": 850.0}),
+        )
+        session.commit()
+
+        soup = BeautifulSoup(
+            client.get(f"/accounts/{period.id}/balance_sheet").text, "lxml"
+        )
+        row = next(
+            item
+            for item in soup.select("table.ledger tbody tr")
+            if "Total assets" in item.get_text(" ")
+        )
+
+        assert row.select("td")[1].get_text(" ", strip=True) == "850", "the filing states it"
+        dash = row.select("td")[2].select_one(".work[data-work]")
+        assert dash is not None, "the empty cell carries no explanation"
+        assert "none of this line's components are held" in dash["data-work"]
+
     def test_a_disagreeing_subtotal_is_flagged_rather_than_absorbed(
         self, client, session
     ):

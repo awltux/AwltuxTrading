@@ -207,7 +207,11 @@ FIELDS: tuple[Field, ...] = (
         "What this project's arithmetic makes of the component lines it holds.",
         "It uses fewer lines than the filing does, so it will usually differ from "
         "'Stated'. A large difference means the statement is built on a small part of "
-        "the real accounts, which is worth knowing before trusting a ratio from it.",
+        "the real accounts, which is worth knowing before trusting a ratio from it. "
+        "Only the lines that are built from other lines have one -- the subtotals, about "
+        "four on each statement. A component line is an input to those sums rather than a "
+        "sum of its own, so its Computed cell is empty; hover the dash to see which of the "
+        "two it is.",
     ),
     Field(
         "filer_arithmetic",

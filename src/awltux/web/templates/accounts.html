@@ -221,7 +221,17 @@
                same text is also the way into the filing: it opens the 10-K in a new tab, with
                the period and the line in the URL, so a reader can click the figure the filer
                actually tagged and put it on this line. See `filing_picker`. #}
-            {% if line.computed is none %}<span class="muted">—</span>
+            {% if line.computed is none %}{# An empty Computed cell is one of two different
+               facts, and a reader who has asked twice why the column is mostly blank is owed
+               the difference on the cell itself rather than in a heading. A component line is
+               an *input*: the subtotals are built from it, so it appears in their workings,
+               but it is not a sum of anything and has no computed figure of its own -- 12,906
+               component and 4,302 memorandum lines across the stored periods, against 3,501
+               subtotals that do have one. A subtotal is empty only when none of its components
+               is held, because `ledger._sum` returns None rather than zero for an empty sum:
+               1,279 of the 4,780 subtotals on record. Neither is a rendering fault. #}
+              <span class="muted work"
+                    data-work="{% if line.role == 'subtotal' %}Nothing to compute: none of this line's components are held, so there is nothing to add up. The health tab names the residual this leaves.{% else %}Nothing to compute: this is an input line, not a sum of other lines. Its figure is the filing's and it is used in the subtotals above.{% endif %}">—</span>
             {% elif line.agrees is false %}
               <span class="warn">{{ line.computed | number(line.decimals) }}</span>
               {% if filing %}
