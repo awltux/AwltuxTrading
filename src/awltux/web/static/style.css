@@ -538,6 +538,24 @@ footer {
    are looking at. It is in these selector lists rather than in a block of its own so the
    drawing has one definition; only the attribute it reads and the line it draws under
    differ, and those are the two rules after this one. */
+/* ------------------------------------------------------------------ not in the universe
+   Instruments Trading 212 lists that this database does not analyse, offered under a search
+   that the universe cannot answer. The whole point of the block is that a reader must not
+   mistake one for a holding or a recommendation, so it is marked in three places rather than
+   one: an amber rule down the leading cell, a wash under the row, and a chip on the row that
+   says what it is in words.
+
+   The rule is on the *cell*, not on the `tr` the way `tr.held` does it: `table.grid` is
+   `border-collapse: collapse`, where a border on a row is dropped by the browser. A leading
+   cell can carry one, and it is the edge the eye lands on when scanning a column of rows. */
+.outside-universe h2 { border-bottom-color: var(--warn); }
+table.grid.outside tr.outside { background: rgba(227, 179, 65, var(--chip-tint)); }
+table.grid.outside td:first-child { border-left: 3px solid var(--warn); }
+table.grid.outside td.act { text-align: right; }
+/* The two actions are `form.inline` -- the control-inside-a-sentence rule above -- because
+   both change the universe or spend model budget, and a prefetcher must not follow either.
+   No new button styling: the `button` rule at the top of this section is every button. */
+
 .help {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; margin-left: 4px; border-radius: 50%;

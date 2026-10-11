@@ -158,6 +158,14 @@
 
 {# A value the URL asked for that this page cannot honour. Reported rather than
    ignored: the table below is not the one the address bar describes. #}
+{% if added == 'unknown' %}
+  <p class="notice warn">
+    That ticker is not in the stored Trading 212 instrument list, so there is nothing to add.
+    The list is refreshed by the <code>t212_instruments</code> job; a listing created since its
+    last run appears after the next one.
+  </p>
+{% endif %}
+
 {% if filters.ignored %}
   <p class="notice warn">
     <strong>Ignored {{ filters.ignored | length }} filter

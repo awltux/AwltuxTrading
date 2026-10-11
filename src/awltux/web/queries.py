@@ -1810,6 +1810,85 @@ def sector_sentiment(session: Session, *, days: int = 30) -> dict[str, list[dict
     return out
 
 
+#: How many Trading 212 matches to offer for a search the universe does not answer, and how
+#: many to rank before cutting. The first is the reader's attention rather than the query's --
+#: a term like "bank" matches hundreds and the one they want is ranked to the top -- and the
+#: second bounds the sort, since the scan cannot be indexed (it is a `LIKE` over the name).
+OUTSIDE_UNIVERSE_SHOWN = 10
+OUTSIDE_UNIVERSE_SCAN = 500
+
+
+def candidates_outside_universe(
+    session: Session, search: str, *, limit: int = OUTSIDE_UNIVERSE_SHOWN
+) -> dict[str, Any]:
+    """Instruments Trading 212 lists that this database does not analyse.
+
+    Asked for directly: *"If an instrument search (e.g. SCHW) has no results search the
+    trading 212 site to see if there are a match there and display them in the results."*
+
+    **The site's list is already here, so this is not a network call.** `t212_instruments`
+    syncs all ~18,500 rows Trading 212 publishes into `instrument` daily, and the universe is
+    a *selection* of that table (`ingest.universe.refresh_universe`) -- 500 of 18,492 at the
+    time of writing, with `SCHW_US_EQ` ("Charles Schwab", NYSE) among the 17,992 that are
+    stored and not selected. Searching the local copy is fast, works when Trading 212 is
+    unreachable, and cannot spend the metadata rate limit (one request per 50s) inside a page
+    request. The price is a listing created since the last sync: it appears after the next
+    one, which is why the page says where the list came from.
+
+    Returns the matches, how many there are and whether that count hit the scan cap, so a
+    page can say "10 of 34" rather than pretending the ten it shows are all of them. Ranking
+    is by how well the term matches -- an exact ticker, then a ticker that starts with it,
+    then one we can actually price -- because a reader who types `SCHW` wants Schwab and not
+    "Schweizer Electronic".
+    """
+    term = (search or "").strip().lower()
+    if not term:
+        return {"matches": [], "total": 0, "capped": False}
+    pattern = f"%{term}%"
+    rows = list(
+        session.execute(
+            select(Instrument)
+            .where(Instrument.in_universe.is_(False))
+            .where(Instrument.excluded.is_(False))
+            .where(
+                func.lower(Instrument.t212_ticker).like(pattern)
+                | func.lower(Instrument.name).like(pattern)
+                | func.lower(func.coalesce(Instrument.short_name, "")).like(pattern)
+            )
+            .limit(OUTSIDE_UNIVERSE_SCAN)
+        )
+        .scalars()
+        .all()
+    )
+
+    def rank(row: Instrument) -> tuple[int, int, int, float, str]:
+        ticker = (row.t212_ticker or "").lower()
+        return (
+            0 if ticker == term else 1,
+            0 if ticker.startswith(term) else 1,
+            0 if row.yahoo_symbol else 1,
+            -(row.market_cap or 0.0),
+            ticker,
+        )
+
+    rows.sort(key=rank)
+    return {
+        "matches": [
+            {
+                "ticker": row.t212_ticker,
+                "name": row.name,
+                "type": row.instrument_type,
+                "exchange": row.exchange_name,
+                "currency": row.currency_code,
+                "symbol": row.yahoo_symbol,
+            }
+            for row in rows[:limit]
+        ],
+        "total": len(rows),
+        "capped": len(rows) >= OUTSIDE_UNIVERSE_SCAN,
+    }
+
+
 def sector_counts(session: Session) -> list[tuple[str | None, int]]:
     """How many instruments in the universe sit in each sector.
 

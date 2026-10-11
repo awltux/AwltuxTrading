@@ -38,8 +38,14 @@ def _prompt(request: Request, subject_type: str, subject_id: str) -> HTMLRespons
     )
 
 
-def _start(subject_type: str, subject_id: str, prompt: str) -> RedirectResponse:
+def launch(subject_type: str, subject_id: str, prompt: str) -> RedirectResponse:
     """Launch, and send the reader back to the block they pressed the button in.
+
+    Public because two pages start a run on the same subject and both have to say what
+    happened in the same words: this one, where the reader arrives already looking at the
+    instrument, and the universe search, which adds an instrument and starts its first
+    deep-dive in one press. A second copy of the redirect would be a second place for the
+    outcome vocabulary to drift.
 
     The refusal *reason* travels in the query string rather than as a fixed sentence per
     outcome, because there are six of them -- the feature is off, the subject is unknown, a run
@@ -87,9 +93,9 @@ def sector_research_prompt(request: Request, name: str) -> HTMLResponse:
 
 @router.post("/instrument/{ticker}/research")
 def instrument_research(ticker: str, prompt: str = Form("")) -> RedirectResponse:
-    return _start("instrument", ticker, _prompt_or_template("instrument", ticker, prompt))
+    return launch("instrument", ticker, _prompt_or_template("instrument", ticker, prompt))
 
 
 @router.post("/sectors/{name}/research")
 def sector_research(name: str, prompt: str = Form("")) -> RedirectResponse:
-    return _start("sector", name, _prompt_or_template("sector", name, prompt))
+    return launch("sector", name, _prompt_or_template("sector", name, prompt))

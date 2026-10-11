@@ -858,6 +858,30 @@ the stored report (`ResearchReport.result`) and in the document's provenance foo
 does not have to be repeated to check it.
 
 
+### An instrument can be added to the universe from the search, and not taken out again
+
+Added 2026-10-11 with the search block. `POST /instrument/{ticker}/include` sets
+`Instrument.pinned` (`ingest/universe.py::include`), which `refresh_universe` honours before
+every rule -- type, exchange, market cap -- so the instrument stays in the universe for good.
+Nothing clears the flag: there is no unpin route, no CLI verb and no control on the instrument
+page, so the only way back is a SQLite session against the live database.
+
+**The size cap is why this matters rather than being tidiness.** `config.universe.size` is 500,
+and a pinned name outranks every unpinned one, so each instrument added displaces the smallest
+unpinned name at the bottom of the cap (`refresh_universe`: `eligible[: max(config.size, 1)]`).
+Measured in `tests/test_universe_search.py::test_the_pin_is_what_keeps_it_in_the_universe` with
+the cap set to one: a pinned `SCHW_US_EQ` outranks a name carrying a 1e12 market cap. Ten adds
+are ten instruments quietly dropped from the analysis, and the dashboard's count does not move
+to show it.
+
+What it would take: the inverse of `include` -- `universe.remove(session, ticker)` clearing
+`pinned` -- behind a control offered only where the flag is set, and the same care the add takes
+about what it means. Removing is not deleting: the row, its prices, filings and decisions all
+stay, and the next `universe_refresh` re-selects it if its market cap earns a place. The
+decision to record is whether it should also set `excluded`, which is the flag
+`refresh_universe` honours as "never analyse this" -- the add clears it deliberately.
+
+
 ## Operations
 
 ### The balance banner cannot show one key's spend, because nothing records which key paid

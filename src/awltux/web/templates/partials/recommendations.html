@@ -193,4 +193,78 @@
   {% endif %}
 </nav>
 {% endif %}
+
+{# ------------------------------------------------- Trading 212, not in the universe #}
+{# Asked for directly: *"If an instrument search (e.g. SCHW) has no results search the trading
+   212 site to see if there are a match there and display them in the results, but use colour
+   highlighting to make it very clear they are not currently in the instrument universe. If
+   there are results, provide an add button on the instrument that adds it to the local
+   universe. Add an option to do deep research on it as well."*
+
+   The list is `t212_instruments`' own copy of what Trading 212 publishes, searched without
+   the universe selection on top of it -- see `queries.candidates_outside_universe`, which is
+   where the reasons for that (no network call, no rate limit, a sync's worth of lag) are
+   written down. Every row is amber-edged and badged, because the one thing a reader must not
+   misread here is that these are already analysed: they are not, and nothing has priced,
+   valued or decided them. The two buttons are the two things that can be done about that. #}
+{% if outside and outside.matches %}
+<section class="outside-universe" id="outside-universe">
+  <h2>
+    On Trading 212, not in the universe
+    <span class="muted small">
+      {{ outside.total }}{{ '+' if outside.capped else '' }}
+      match{{ '' if outside.total == 1 else 'es' }} for
+      &ldquo;{{ filters.value('q') }}&rdquo;
+    </span>
+  </h2>
+  <p class="muted small">
+    Trading 212 lists these and this database stores them, but no rule selected them, so
+    nothing here has priced, valued or decided them{% if total %}, and they are not in the
+    table above{% endif %}. Adding one pins it: it stays in the universe through the next
+    refresh, which drops the smallest unpinned name to hold the universe at its size.
+    The list is the one Trading 212 published at the last sync.
+  </p>
+  <div class="table-wrap">
+  <table class="grid outside">
+    <thead>
+      <tr>
+        <th>Ticker</th><th>Name</th><th>Type</th><th>Exchange</th>
+        <th>Price source{{ help('price') }}</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in outside.matches %}
+      <tr class="outside">
+        <td><strong>{{ row.ticker }}</strong></td>
+        <td>{{ row.name[:40] }}
+          <span class="muted small">{{ row.currency or '' }}</span></td>
+        <td class="small">{{ row.type or '—' }}</td>
+        <td class="small">{{ row.exchange or '—' }}</td>
+        <td class="small">
+          {% if row.symbol %}{{ row.symbol }}
+          {% else %}<span class="warn" title="No price series can be read without a symbol, so
+            nothing can value it until one is mapped">none yet</span>{% endif %}
+        </td>
+        <td class="act nowrap">
+          <span class="chip warn">not in the universe</span>
+          {# Two forms, one writer. The second is not a shortcut for the first: a newly added
+             instrument has no prices and no filings, so a reader who wants anything out of it
+             has to refresh it or run a deep-dive -- and the deep-dive refreshes first. #}
+          <form method="post" action="/instrument/{{ row.ticker }}/include" class="inline">
+            <button type="submit" class="small">Add to universe</button>
+          </form>
+          <form method="post" action="/instrument/{{ row.ticker }}/include" class="inline"
+                title="Adds it, then starts a deep-dive: one model call over the documents it can
+                       find, running 14-39 minutes, which also refreshes the instrument first">
+            <input type="hidden" name="research" value="1">
+            <button type="submit" class="small">Add and research it</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
 </div>

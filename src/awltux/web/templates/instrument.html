@@ -147,6 +147,18 @@
   </p>
 {% endif %}
 
+{# The search page's "add to the universe" lands here, and the reader has to be told two
+   things: that it worked, and that an instrument in the universe is not yet an instrument
+   with anything in it. It has no prices and no filings until something reads them, and the
+   page below will be full of dashes until then -- which reads as a fault if nobody says so. #}
+{% if added_message == '1' %}
+  <p class="notice ok">
+    Added to the analysed universe, and it stays there through the next universe refresh.
+    Nothing has priced, valued or decided it yet &mdash; press <strong>Refresh now</strong> on
+    the Refresh tab, or start a deep-dive from the Research tab.
+  </p>
+{% endif %}
+
 {% if tab == 'position' %}
 {# --------------------------------------------------------------- position #}
 {# What the account actually holds, as the broker reports it. It sits above the refresh

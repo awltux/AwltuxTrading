@@ -356,6 +356,38 @@ def refresh_universe(session: Session, settings: Settings | None = None) -> dict
     return stats
 
 
+def include(session: Session, ticker: str) -> bool:
+    """Put one instrument into the analysed universe, and keep it there.
+
+    **``pinned`` is the whole mechanism, and it already existed.** :func:`refresh_universe`
+    honours it before any rule -- an instrument with no market cap, an unwanted type or an
+    unconfigured exchange is still eligible when it is pinned -- so this survives the next
+    refresh rather than lasting until it. Nothing set the flag until now: the column, the
+    ranking and the quotes job all read it, and every row in the live database is ``pinned =
+    0``. It is written here rather than in the route so the definition of "in the universe"
+    stays in one module.
+
+    **The cap still applies.** A pinned name outranks every unpinned one, so adding displaces
+    the smallest name at the bottom of ``universe.size`` rather than growing the universe.
+    That is the intended reading of a manual inclusion -- the reader asked for this one -- and
+    it is why the dashboard's count does not move.
+
+    Returns ``False`` for a ticker this database does not hold. That is not "no such
+    instrument": Trading 212's list is synced into ``instrument`` by ``t212_instruments``, so
+    an unknown ticker means the sync has not run since it was listed.
+    """
+    row = session.get(Instrument, ticker)
+    if row is None:
+        return False
+    row.pinned = True
+    row.in_universe = True
+    # An explicit exclusion is a decision not to analyse something, and adding it is a
+    # decision to the contrary. Honouring the older one would make the button do nothing.
+    row.excluded = False
+    session.flush()
+    return True
+
+
 def ticker_venue_summary(session: Session) -> dict[str, int]:
     """Diagnostic: how many instruments parsed to each venue."""
     summary: dict[str, int] = {}

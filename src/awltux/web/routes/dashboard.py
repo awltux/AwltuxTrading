@@ -31,13 +31,14 @@ from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
 from awltux.db import Filing, IngestRun, Instrument, ResearchReport, session_scope
-from awltux.ingest import lease
+from awltux.ingest import lease, universe
 from awltux.ingest.universe import cached_t212_capabilities
 from awltux.research import report as research_report
 from awltux.research import service as research_service
 from awltux.scheduler import scoped
 from awltux.timezones import as_utc
 from awltux.web import filters, queries
+from awltux.web.routes.research import launch as launch_research
 from awltux.web.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,9 @@ def _recommendations_context(request: Request, page: int, per_page: int) -> dict
         context["capabilities"] = (
             cached_t212_capabilities(session) if get_settings().env.t212_configured else None
         )
+    # The outcome of "add to the universe" for a ticker this database does not hold, which is
+    # the one case that lands back here rather than on the instrument page.
+    context["added"] = request.query_params.get("added")
     context["horizons"] = {
         "long_term": get_settings().horizons.long_term,
         "short_term": get_settings().horizons.short_term,
@@ -144,6 +148,11 @@ def _recommendations_region(request: Request, page: int, per_page: int) -> dict[
             limit=per_page,
             offset=(page - 1) * per_page,
         )
+        # What Trading 212 lists under this search and the universe does not hold. Read here
+        # rather than in the page context so the *region* keeps it: a page change fetches
+        # only the region, and an "add this one" block that vanished on page two would read
+        # as a result set that had changed. Free when there is no search term.
+        outside = queries.candidates_outside_universe(session, spec.opt("q") or "")
 
     return {
         "rows": rows,
@@ -153,6 +162,7 @@ def _recommendations_region(request: Request, page: int, per_page: int) -> dict[
         "per_page": per_page,
         "filters": spec,
         "universe_size": size,
+        "outside": outside,
     }
 
 
@@ -342,6 +352,10 @@ def _instrument_context(
         "refresh": refresh_state,
         "refresh_job": scoped.REFRESH_JOB,
         "refresh_message": request.query_params.get("refresh"),
+        # The outcome of the search page's "add to the universe", which lands here because
+        # this is the page about the instrument that was added. A code, not a sentence: a
+        # caller that invents one prints nothing rather than a raw query parameter.
+        "added_message": request.query_params.get("added"),
         # The deep-dive block, and the latest report's executive summary at the top of every
         # tab. Both come from one query that is cheap -- a subject has a handful of reports --
         # so it is not gated behind the Research tab the way the news block is.
@@ -433,6 +447,39 @@ def instrument_refresh(ticker: str) -> RedirectResponse:
         # Back to the tab the button is on, so the outcome it prints is the outcome the
         # reader sees rather than a decision tab they then have to navigate away from.
         url=f"/instrument/{quote(ticker, safe='')}?tab=refresh&refresh={reason}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/instrument/{ticker}/include", include_in_schema=False)
+def include_instrument(ticker: str, research: str = Form("")) -> RedirectResponse:
+    """Add an instrument Trading 212 lists to the universe this app analyses.
+
+    Asked for directly: *"If there are results, provide an add button on the instrument that
+    adds it to the local universe. Add an option to do deep research on it as well."*
+
+    A POST with a 303 back to the instrument page, for the reason
+    :func:`instrument_refresh` gives -- a GET would be followed by any prefetcher, and this
+    changes what the pipeline analyses. ``research`` is the second button on the same form:
+    landing on an instrument with no prices and no filings and being told to press two more
+    things is not the option the reader asked for, so that path adds it and starts its first
+    deep-dive, which refreshes the instrument before it reads anything.
+    """
+    with session_scope() as session:
+        included = universe.include(session, ticker)
+    if not included:
+        # Not "no such company": Trading 212's list is synced into this database daily, so a
+        # ticker that is absent means the sync predates the listing. The dashboard says so.
+        return RedirectResponse(url="/dashboard?added=unknown", status_code=status.HTTP_303_SEE_OTHER)
+    if research:
+        # The same prompt the Research tab would have offered: a deep-dive is the expensive
+        # call, and giving it different wording depending on which button started it would
+        # make the two reports incomparable.
+        return launch_research(
+            "instrument", ticker, research_service.draft_prompt("instrument", ticker) or ""
+        )
+    return RedirectResponse(
+        url=f"/instrument/{quote(ticker, safe='')}?added=1",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
