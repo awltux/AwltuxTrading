@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Remove {{ ticker }} from the universe — {{ app_name }}{% endblock %}
+
+{#
+  Confirming the removal of one instrument from the analysed universe, and the deletion of
+  everything this project collected about it.
+
+  A page of its own rather than a button that acts, because the act is irreversible and its
+  *size* is the thing a reader needs in order to decide: "deletes all data" is not a sentence
+  anybody can weigh, and "four years of prices, 38 filed documents and 61 decisions" is. The
+  counts come from `ingest.universe.footprint`, which is the same list the deletion runs, so
+  this page cannot promise one thing and the delete do another.
+
+  What is *kept* is stated with the same care, because the obvious fear on seeing a page like
+  this is that the company disappears from the app entirely. It does not: the Trading 212
+  listing and the symbol mapping stay, and the instrument can be added again from the search.
+#}
+
+{% block content %}
+<p class="muted small">
+  <a href="/instrument/{{ ticker }}?tab=refresh">&larr; {{ name }}</a>
+</p>
+
+<h1>Remove {{ ticker }} from the universe</h1>
+
+{% if refused or why %}
+  {# Either the page already knows (refused), or a POST arrived that the guard turned back.
+     Both are the same four answers, so they are rendered the same way. #}
+  {% set reason = refused or why %}
+  <p class="notice warn">
+    {% if reason == 'held' %}
+      <strong>Not removed.</strong> This is a position in your account, so the app follows it:
+      the next universe refresh would add it back. Close the position at the broker first.
+    {% elif reason == 'busy' %}
+      <strong>Not removed.</strong> A refresh is running for this instrument and is still
+      writing its rows. Try again once it has finished.
+    {% elif reason == 'not-in-universe' %}
+      <strong>Nothing to remove.</strong> {{ ticker }} is not in the analysed universe.
+    {% else %}
+      <strong>Not removed.</strong> No instrument with the ticker {{ ticker }} is stored.
+    {% endif %}
+  </p>
+  <p><a href="/instrument/{{ ticker }}?tab=refresh">Back to {{ ticker }}</a></p>
+{% else %}
+  <p class="muted small">
+    This cannot be undone, and it is not a blocklist: the analysis stops, the data goes, and
+    the instrument can be added again from the search on the
+    <a href="/dashboard">Recommendations</a> page.
+  </p>
+
+  {% if total %}
+    <h3>Will be deleted</h3>
+    <table class="grid compact">
+      <tbody>
+      {% for label, count in counts.items() %}
+        {% if count %}
+          <tr><td>{{ label }}</td><td class="num">{{ count | number }}</td></tr>
+        {% endif %}
+      {% endfor %}
+      <tr>
+        <td><strong>rows in total</strong></td>
+        <td class="num"><strong>{{ total | number }}</strong></td>
+      </tr>
+      </tbody>
+    </table>
+  {% else %}
+    <p class="notice">
+      Nothing has been collected about {{ ticker }} yet &mdash; no prices, no filings, no
+      decisions &mdash; so removing it only takes it out of the universe.
+    </p>
+  {% endif %}
+
+  <section class="kv">
+    <div>
+      <dt>Kept</dt>
+      <dd>
+        The Trading 212 listing (name, ISIN, exchange, currency) and its resolved price
+        and filing symbols, so adding it again does not start from nothing. Its sector and
+        industry description are kept with them, and are re-checked on the next refresh after
+        it returns.
+      </dd>
+    </div>
+    <div>
+      <dt>Not touched</dt>
+      <dd>
+        News stories (they name other companies too &mdash; only this instrument's appraisals
+        are deleted), your broker's order history for it, and the correction rules learned
+        from its filings, which belong to the filer and to the other listings it may have.
+      </dd>
+    </div>
+  </section>
+
+  <p class="muted small">
+    <a href="/instrument/{{ ticker }}?tab=refresh">&larr; Cancel, keep {{ ticker }}</a>
+  </p>
+
+  <form method="post" action="/instrument/{{ ticker }}/remove">
+    <button type="submit" class="danger">Remove {{ ticker }} and delete its data</button>
+  </form>
+{% endif %}
+{% endblock %}

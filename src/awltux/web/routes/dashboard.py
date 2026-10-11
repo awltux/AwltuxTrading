@@ -101,6 +101,10 @@ def _recommendations_context(request: Request, page: int, per_page: int) -> dict
     # The outcome of "add to the universe" for a ticker this database does not hold, which is
     # the one case that lands back here rather than on the instrument page.
     context["added"] = request.query_params.get("added")
+    # And of a removal, which lands here because the instrument it was about is no longer in
+    # the universe the page describes.
+    context["removed"] = request.query_params.get("removed")
+    context["deleted"] = request.query_params.get("deleted")
     context["horizons"] = {
         "long_term": get_settings().horizons.long_term,
         "short_term": get_settings().horizons.short_term,
@@ -309,6 +313,7 @@ def _instrument_context(
     predictions: list[Any],
     prediction_count: int,
     refresh_state: dict[str, Any] | None,
+    removable: str | None,
     active: str,
     strip: list[dict[str, object]],
     tab_ignored: str | None,
@@ -352,6 +357,10 @@ def _instrument_context(
         "refresh": refresh_state,
         "refresh_job": scoped.REFRESH_JOB,
         "refresh_message": request.query_params.get("refresh"),
+        # Why this instrument cannot be taken out of the universe, or `None` when it can --
+        # see `ingest.universe.removable`. Read only for the Refresh tab, which is the one
+        # that offers the removal, so every other tab carries `None`.
+        "removable": removable,
         # The outcome of the search page's "add to the universe", which lands here because
         # this is the page about the instrument that was added. A code, not a sentence: a
         # caller that invents one prints nothing rather than a raw query parameter.
@@ -413,6 +422,9 @@ def instrument_page(
         # touching this instrument says which step is running.
         refresh_row = lease.current(session, ticker) if active == "refresh" else None
         refresh_state = queries.refresh_state(refresh_row)
+        # Read only on the tab that offers the removal, and from the one function that decides
+        # it -- so the button is never drawn where the POST would refuse.
+        removable = universe.removable(session, ticker) if active == "refresh" else None
 
     return templates.TemplateResponse(
         request,
@@ -425,6 +437,7 @@ def instrument_page(
             predictions=predictions,
             prediction_count=prediction_count,
             refresh_state=refresh_state,
+            removable=removable,
             active=active,
             strip=strip,
             tab_ignored=tab_ignored,
@@ -480,6 +493,70 @@ def include_instrument(ticker: str, research: str = Form("")) -> RedirectRespons
         )
     return RedirectResponse(
         url=f"/instrument/{quote(ticker, safe='')}?added=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.get(
+    "/instrument/{ticker}/remove", response_class=HTMLResponse, include_in_schema=False
+)
+def instrument_remove_page(request: Request, ticker: str) -> HTMLResponse:
+    """The page that confirms taking an instrument out of the universe.
+
+    Asked for directly: *"existing instruments in the universe can be removed using a red
+    confirmation button on the instruments refresh tab. All data held on that instrument will
+    be removed once confirmed."*
+
+    A page rather than a second button on the Refresh tab, for the reason `corrections_form`
+    gives for being a page: what is about to be destroyed has to be *stated* before it is,
+    and a reader who cannot see the size of it cannot decide. The counts come from the same
+    list the deletion runs (`ingest.universe.footprint`), so the page cannot promise one
+    thing and the delete do another.
+    """
+    with session_scope() as session:
+        row = session.get(Instrument, ticker)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"unknown instrument {ticker}")
+        counts = universe.footprint(session, ticker)
+        refused = universe.removable(session, ticker)
+        name = row.name
+
+    return templates.TemplateResponse(
+        request,
+        "instrument_remove.html",
+        {
+            "ticker": ticker,
+            "name": name,
+            "counts": counts,
+            "total": sum(counts.values()),
+            "refused": refused,
+            # A refusal that arrives with the POST rather than from the page, so the page can
+            # say which one it was without keeping state anywhere.
+            "why": request.query_params.get("why"),
+        },
+    )
+
+
+@router.post("/instrument/{ticker}/remove", include_in_schema=False)
+def remove_instrument(ticker: str) -> RedirectResponse:
+    """Take an instrument out of the universe and delete what was collected about it.
+
+    A POST, and the guard is re-checked here even though the page already applied it: the
+    page is a rendering and this is the act, and a hand-made request must not be able to do
+    what the page would not offer.
+    """
+    with session_scope() as session:
+        outcome = universe.remove(session, ticker)
+
+    where = quote(ticker, safe="")
+    if "refused" in outcome:
+        return RedirectResponse(
+            url=f"/instrument/{where}/remove?why={outcome['refused']}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    deleted = sum((outcome.get("removed") or {}).values())
+    return RedirectResponse(
+        url=f"/dashboard?removed={where}&deleted={deleted}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

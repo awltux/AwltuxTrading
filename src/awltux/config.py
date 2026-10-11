@@ -219,6 +219,13 @@ class AppConfig(BaseModel):
 
 
 class UniverseConfig(BaseModel):
+    """How the analysed universe is seeded, and what counts as investable.
+
+    ``size`` is an **initialisation** value, not a cap -- it seeds the universe the first
+    time it is populated and is ignored afterwards, because membership is manual from then
+    on. See ``ingest.universe.refresh_universe`` and `config.yaml`.
+    """
+
     size: int = 500
     exchanges: list[str] = Field(default_factory=lambda: ["LSE", "NASDAQ", "NYSE"])
     min_daily_turnover_gbp: float = 250_000
@@ -959,5 +966,5 @@ def redacted_dump(settings: Settings) -> dict[str, Any]:
         "falai_configured": bool(env.falai_key),
         "embeddings_configured": settings.news.embeddings.configured,
         "engine_priority": settings.decision.engine_priority,
-        "universe_size": settings.universe.size,
+        "universe_initial_size": settings.universe.size,
     }

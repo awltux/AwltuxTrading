@@ -1828,12 +1828,12 @@ def candidates_outside_universe(
 
     **The site's list is already here, so this is not a network call.** `t212_instruments`
     syncs all ~18,500 rows Trading 212 publishes into `instrument` daily, and the universe is
-    a *selection* of that table (`ingest.universe.refresh_universe`) -- 500 of 18,492 at the
-    time of writing, with `SCHW_US_EQ` ("Charles Schwab", NYSE) among the 17,992 that are
-    stored and not selected. Searching the local copy is fast, works when Trading 212 is
-    unreachable, and cannot spend the metadata rate limit (one request per 50s) inside a page
-    request. The price is a listing created since the last sync: it appears after the next
-    one, which is why the page says where the list came from.
+    a set of rows *within* that table -- seeded once at `universe.size` and then added to and
+    removed from by hand (`ingest.universe`) -- so `SCHW_US_EQ` ("Charles Schwab", NYSE) is
+    stored and simply not a member until somebody asks for it. Searching the local copy is
+    fast, works when Trading 212 is unreachable, and cannot spend the metadata rate limit (one
+    request per 50s) inside a page request. The price is a listing created since the last
+    sync: it appears after the next one, which is why the page says where the list came from.
 
     Returns the matches, how many there are and whether that count hit the scan cap, so a
     page can say "10 of 34" rather than pretending the ten it shows are all of them. Ranking

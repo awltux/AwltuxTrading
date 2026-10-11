@@ -193,6 +193,13 @@ button {
 }
 button:hover:not(:disabled) { border-color: #5a6878; }
 button:disabled { opacity: .55; cursor: not-allowed; }
+/* The one destructive button in the interface: taking an instrument out of the universe and
+   deleting what was collected about it. It is the same button underneath with the `--bad`
+   hue on the text and the border, which is the colour this palette already uses for a figure
+   that is wrong rather than for something merely noteworthy -- and it leads to a page that
+   states what will go, so the colour is a warning rather than the confirmation. */
+button.danger { color: var(--bad); border-color: rgba(255, 123, 114, .5); }
+button.danger:hover:not(:disabled) { border-color: var(--bad); background: var(--panel); }
 /* A form that is a control inside a sentence rather than a block of its own -- the
    "read the filing's arithmetic" button sits in the paragraph that explains it. */
 form.inline { display: inline; margin-left: 6px; }

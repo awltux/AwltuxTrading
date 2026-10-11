@@ -218,10 +218,11 @@
     </span>
   </h2>
   <p class="muted small">
-    Trading 212 lists these and this database stores them, but no rule selected them, so
-    nothing here has priced, valued or decided them{% if total %}, and they are not in the
-    table above{% endif %}. Adding one pins it: it stays in the universe through the next
-    refresh, which drops the smallest unpinned name to hold the universe at its size.
+    Trading 212 lists these and this database stores them, but they are not in the analysed
+    universe, so nothing here has priced, valued or decided them{% if total %}, and they are
+    not in the table above{% endif %}. Adding one makes it a member alongside everything else
+    &mdash; the universe's configured size applies only to its first population, so nothing is
+    displaced &mdash; and it stays until you remove it from the instrument's Refresh tab.
     The list is the one Trading 212 published at the last sync.
   </p>
   <div class="table-wrap">

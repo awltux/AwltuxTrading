@@ -270,10 +270,12 @@ FIELDS: tuple[Field, ...] = (
     Field(
         "universe_size",
         "In universe",
-        "How many instruments are being analysed: the shares selected by size and "
-        "liquidity from the full Trading 212 list.",
-        "The other counters are fractions of this one. A small universe makes every "
-        "aggregate noisy, and an empty one explains a blank table.",
+        "How many instruments are being analysed: seeded once from the full Trading 212 list "
+        "at the configured size, and changed by hand since.",
+        "The other counters are fractions of this one. Instruments are added from the search "
+        "on this page and removed from an instrument's Refresh tab, so this is the size of "
+        "the universe rather than a cap on it. A small universe makes every aggregate noisy, "
+        "and an empty one explains a blank table.",
     ),
     Field(
         "mapped",

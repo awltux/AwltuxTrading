@@ -121,7 +121,24 @@ def _t212_instruments(detail: dict[str, Any]) -> str:
 
 
 def _universe_refresh(detail: dict[str, Any]) -> str:
+    """What the run did, in the two modes `refresh_universe` now has.
+
+    A seeding run is measured against what was eligible; a run after that has nothing to
+    report but the positions it picked up, because membership is the reader's and "N of M
+    selected" would describe a screen that no longer runs.
+    """
     selected = _get(detail, "selected")
+    if detail.get("mode") == "manual":
+        added = detail.get("added_held") or []
+        if added:
+            return (
+                f"{_n(len(added))} held position(s) added; "
+                f"{_n(selected)} instruments in the universe"
+            )
+        if not selected:
+            return "the universe is empty and membership is manual -- nothing was selected"
+        return f"membership is manual; nothing changed, {_n(selected)} instruments in the universe"
+
     eligible = _get(detail, "eligible")
     cap = _get(detail, "size_cap")
     if not selected:
@@ -136,7 +153,7 @@ def _universe_refresh(detail: dict[str, Any]) -> str:
     excluded = _reasons(detail.get("filtered_out"))
     if excluded:
         line += f"; excluded: {excluded}"
-    return line
+    return "seeded the universe: " + line
 
 
 def _price_eod(detail: dict[str, Any]) -> str:

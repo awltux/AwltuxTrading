@@ -59,19 +59,33 @@ def universe_is_empty(session) -> bool:
 
 
 def empty_universe_note(session) -> str | None:
-    """Explain a zero-result run, or return ``None`` if the universe is populated."""
+    """Explain a zero-result run, or return ``None`` if the universe is populated.
+
+    Three explanations, because there are three different things to do about it. The third is
+    new with the manual-membership change: once the universe has been populated, running
+    ``universe_refresh`` will *not* fill it again -- an empty universe after initialisation is
+    a reader who removed everything, and sending them to a job that does nothing would read as
+    a broken fix.
+    """
     if not universe_is_empty(session):
         return None
 
     from sqlalchemy import func, select
 
     from awltux.db import Instrument
+    from awltux.ingest.universe import initialisation
 
     total = session.execute(select(func.count()).select_from(Instrument)).scalar_one()
     if int(total or 0) == 0:
         return (
             "nothing to do: no instruments are stored yet. Run the "
             "'t212_instruments' job first (it needs a working Trading 212 API key)."
+        )
+    if initialisation(session) is not None:
+        return (
+            f"nothing to do: {total} instruments are stored but none is in the analysed "
+            "universe, and it has already been populated once -- so it is not re-seeded. "
+            "Add instruments from the search on the Recommendations page."
         )
     return (
         f"nothing to do: {total} instruments are stored but none are in the "
@@ -579,14 +593,18 @@ def _record_capabilities(session, holds_readable: bool, metadata_ok: bool) -> di
 
 
 def refresh_universe() -> JobResult:
-    """Re-select which instruments are actively analysed.
+    """Seed the analysed universe once, or add the positions the account has taken since.
 
-    The ``note`` matters more here than in most jobs. This runs on startup
-    alongside ``t212_instruments``, and on a fresh database it can read the
-    instrument table before that job has committed -- producing a run that selected
-    nothing and looks identical to a legitimate "no instrument qualified". That
-    happened: the container's own run history shows the two jobs starting 2ms
-    apart, the refresh seeing 0 instruments, and the next run selecting 500.
+    The ``note`` matters more here than in most jobs. This runs on startup alongside
+    ``t212_instruments``, and on a fresh database it can read the instrument table before that
+    job has committed -- producing a run that selected nothing and looks identical to a
+    legitimate "no instrument qualified". That happened: the container's own run history shows
+    the two jobs starting 2ms apart, the refresh seeing 0 instruments, and the next run
+    selecting 500.
+
+    Since 2026-10-11 the job has two modes and says which: it *seeds* the universe the first
+    time (the configured size, once) and after that it only adds held positions, because
+    membership is otherwise the reader's -- see ``ingest.universe.refresh_universe``.
     """
     from awltux.ingest.universe import refresh_universe as _refresh
 
@@ -596,6 +614,8 @@ def refresh_universe() -> JobResult:
     stored = stats.get("instruments_stored", 0)
     eligible = stats.get("eligible", 0)
     selected = stats.get("selected", 0)
+    seeded = stats.get("mode") == "initialised"
+    added = stats.get("added_held") or []
 
     note: str | None = None
     if selected == 0:
@@ -605,7 +625,7 @@ def refresh_universe() -> JobResult:
                 "This is expected on a fresh database while t212_instruments is still "
                 "running; re-run once it has finished."
             )
-        elif eligible == 0:
+        elif seeded and eligible == 0:
             filters = stats.get("filtered_out") or {}
             reasons = ", ".join(f"{count} by {name}" for name, count in filters.items() if count)
             note = (
@@ -613,10 +633,22 @@ def refresh_universe() -> JobResult:
                 + (f" ({reasons})" if reasons else "")
                 + ". Check universe.instrument_types and universe.exchanges."
             )
+        else:
+            note = (
+                "the universe is empty and has already been populated once, so nothing was "
+                "re-selected. Add instruments from the search on the Recommendations page."
+            )
+    elif not seeded:
+        note = (
+            "membership is the reader's now: "
+            + (f"{len(added)} held position(s) added. " if added else "nothing changed. ")
+            + "Add instruments from the search on the Recommendations page."
+        )
 
     return JobResult(
         items_seen=eligible,
-        items_written=selected,
+        # On the manual path `selected` is the size of the universe, not work this run did.
+        items_written=len(added) if not seeded else selected,
         note=note,
         detail=stats,
     )

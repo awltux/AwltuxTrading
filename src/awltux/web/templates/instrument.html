@@ -335,6 +335,47 @@
   </form>
 </section>
 
+{# Taking the instrument out of the universe, and everything collected about it with it.
+   On this tab because this is the tab about what the pipeline does with *this* instrument,
+   and deliberately not a bare button: it leads to a page that states what will be destroyed
+   and how much of it, which is the only way a reader can decide. The whole block is absent
+   for an instrument that cannot be removed, and the reason is said in words rather than the
+   button being drawn disabled -- a disabled control explains nothing. #}
+<section class="panel" id="remove">
+  <h2>Remove from the analysed universe</h2>
+  {% if removable == 'held' %}
+    <p class="muted small">
+      This is a position in your account, so it cannot be removed: the app follows what you
+      hold, and the next universe refresh would add it straight back. Close the position at
+      the broker and it becomes removable on the following sync.
+    </p>
+  {% elif removable == 'busy' %}
+    <p class="muted small">
+      A refresh is running for this instrument. Removing it now would delete rows that run is
+      still writing, so wait for it to finish &mdash; this page shows its progress above.
+    </p>
+  {% elif removable == 'not-in-universe' %}
+    <p class="muted small">
+      This instrument is not in the analysed universe, so there is nothing to remove. If you
+      want it analysed, add it from the search on the
+      <a href="/dashboard">Recommendations</a> page.
+    </p>
+  {% elif removable is none %}
+    <p class="muted small">
+      Takes it out of the universe <strong>and deletes everything this project collected about
+      it</strong> &mdash; prices, filed documents, accounting periods, decisions, valuations,
+      news appraisals and research reports. The Trading 212 listing and its symbol mapping
+      stay, so it can be added again from the search. You will see what is there before
+      anything is deleted.
+    </p>
+    <p>
+      <a href="/instrument/{{ ticker }}/remove"><button type="button" class="danger">
+        Remove from the universe&hellip;
+      </button></a>
+    </p>
+  {% endif %}
+</section>
+
 {% elif tab == 'decision' %}
 {# ------------------------------------------------------------------ decision #}
 <h2>Decision</h2>

@@ -112,6 +112,17 @@ def _extension(url: str) -> str:
     return suffix if suffix in {".htm", ".html", ".txt", ".xml"} else ".htm"
 
 
+def instrument_dir(settings: Settings, ticker: str) -> Path:
+    """The directory holding one instrument's filed documents.
+
+    Its own function because two callers need it and they must agree: :func:`document_path`
+    builds a filename inside it, and `ingest.universe.remove` deletes the whole tree when an
+    instrument is taken out of the universe. A second copy of the layout would be a deletion
+    that misses.
+    """
+    return settings.raw_dir / DOCUMENT_DIR / ticker
+
+
 def document_path(settings: Settings, ticker: str, url: str) -> Path:
     """Where a filing's document lives on disk.
 
@@ -121,7 +132,7 @@ def document_path(settings: Settings, ticker: str, url: str) -> Path:
     table does not store the accession separately, and deriving it from the URL is
     reliable because EDGAR's archive path is the accession with the dashes removed.
     """
-    return settings.raw_dir / DOCUMENT_DIR / ticker / f"{_document_key(url)}{_extension(url)}"
+    return instrument_dir(settings, ticker) / f"{_document_key(url)}{_extension(url)}"
 
 
 def _document_key(url: str) -> str:

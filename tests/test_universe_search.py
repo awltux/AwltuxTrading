@@ -15,8 +15,11 @@ Three properties matter, and they are three different kinds of test:
   been priced, valued or decided, so the block is asserted by its class, its chip and its
   wording rather than by "the ticker appears somewhere on the page".
 * **Adding is a promise about the next refresh.** The interesting failure is not the button
-  doing nothing; it is the button working until `refresh_universe` next runs and silently
-  dropping the instrument again.
+  doing nothing; it is the button working and then being quietly undone -- which for an
+  addition means `refresh_universe` dropping the instrument again. It no longer re-selects at
+  all (`tests/test_universe_membership.py` is where that lives), so this file asserts the other
+  half: that adding changes what the reader sees, and that it can be undone from the instrument
+  page.
 """
 
 from __future__ import annotations
@@ -203,10 +206,12 @@ class TestAdding:
         assert row.pinned is True
         assert row.in_universe is True
 
-    def test_the_pin_is_what_keeps_it_in_the_universe(self, session, settings):
-        """The failure this prevents: the button works, and the next `universe_refresh` drops
-        the instrument again because the rule that selects the universe has never heard of it.
-        Measured against a cap of one, with a name large enough to outrank it on market cap.
+    def test_adding_displaces_nothing(self, session, settings):
+        """The failure this prevents used to be the opposite one. `refresh_universe` applied
+        `universe.size` on every run, so a manual addition outranked the smallest unpinned name
+        and pushed it out. It now seeds the universe once and never removes, so an addition is
+        a member alongside everything else -- which is what makes the button mean what it says.
+        The seed size is set to one, so anything that re-applied it would have to drop a name.
         """
         _outside(session)
         session.add(
@@ -235,7 +240,7 @@ class TestAdding:
         session.expire_all()
 
         assert session.get(Instrument, "SCHW_US_EQ").in_universe is True
-        assert session.get(Instrument, "BIG_US_EQ").in_universe is False
+        assert session.get(Instrument, "BIG_US_EQ").in_universe is True, "nothing displaced"
 
     def test_an_unknown_ticker_says_so_rather_than_doing_nothing(self, client, session):
         """Not "no such company": the list is synced daily, so an absent ticker means the sync

@@ -158,6 +158,15 @@
 
 {# A value the URL asked for that this page cannot honour. Reported rather than
    ignored: the table below is not the one the address bar describes. #}
+{% if removed %}
+  <p class="notice">
+    <strong>{{ removed }}</strong> has been removed from the analysed universe{% if deleted %}
+    and {{ deleted }} row{{ '' if deleted == '1' else 's' }} of data collected about it
+    deleted{% endif %}. The Trading 212 listing is kept, so
+    <a href="/dashboard?q={{ removed }}">searching for it</a> offers it again.
+  </p>
+{% endif %}
+
 {% if added == 'unknown' %}
   <p class="notice warn">
     That ticker is not in the stored Trading 212 instrument list, so there is nothing to add.

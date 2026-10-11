@@ -115,7 +115,7 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             id="universe_refresh",
             func=ingest_jobs.refresh_universe,
             interval_seconds=schedule.t212_instruments,
-            description="Re-select the analysed universe by size and liquidity",
+            description="Populate the analysed universe once, then add held positions",
             run_on_start=True,
             depends_on=("t212_instruments",),
             # Deliberately after t212_instruments, which fetches from the network and

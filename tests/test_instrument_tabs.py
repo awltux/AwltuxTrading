@@ -23,7 +23,7 @@ import datetime as dt
 import pytest
 from bs4 import BeautifulSoup
 
-from awltux.db import PriceBar
+from awltux.db import Instrument, PriceBar
 from tests.helpers import make_instrument
 
 
@@ -326,3 +326,110 @@ class TestTheTabsAreWiredToTheirData:
 
     def test_an_unknown_instrument_is_still_a_404_on_every_tab(self, client):
         assert client.get("/instrument/NOPE_US_EQ?tab=news").status_code == 404
+
+
+class TestRemovingFromTheUniverse:
+    """The Refresh tab is where an instrument can be taken out of the universe, and the page
+    it leads to is where the reader sees what that will cost.
+
+    Asked for directly: *"existing instruments in the universe can be removed using a red
+    confirmation button on the instruments refresh tab. All data held on that instrument will
+    be removed once confirmed."* The colour is the stylesheet's `.danger` (the palette's
+    `--bad`); what is asserted here is the wiring -- that the button appears only where the
+    server would allow it, that the confirmation page states the size of the deletion, and that
+    confirming does it.
+    """
+
+    def _refresh_tab(self, client, ticker: str = "TEST_US_EQ"):
+        return BeautifulSoup(client.get(f"/instrument/{ticker}?tab=refresh").text, "lxml")
+
+    def test_the_refresh_tab_offers_the_removal_in_red(self, client, session):
+        _instrument(session)
+        session.commit()
+
+        page = self._refresh_tab(client)
+        block = page.select_one("#remove")
+
+        assert block is not None
+        link = block.select_one("a[href='/instrument/TEST_US_EQ/remove']")
+        assert link is not None, "the way to the confirmation page"
+        assert link.select_one("button.danger") is not None, "and it is the red one"
+
+    def test_a_held_position_is_told_why_instead_of_being_offered_a_button(self, client, session):
+        _instrument(session, is_held=True)
+        session.commit()
+
+        block = self._refresh_tab(client).select_one("#remove")
+
+        assert block.select_one("button") is None, "a disabled button explains nothing"
+        assert "position in your account" in block.get_text(" ")
+
+    def test_another_tab_does_not_read_the_removal_state(self, client, session):
+        """`removable` is read only for the tab that offers it, so the Decision tab renders
+        the same page whether or not this instrument could be removed."""
+        _instrument(session)
+        session.commit()
+
+        page = BeautifulSoup(client.get("/instrument/TEST_US_EQ").text, "lxml")
+
+        assert page.select_one("#remove") is None
+
+    def test_the_confirmation_page_states_what_will_be_deleted(self, client, session):
+        _instrument(session)
+        _bars(session, "TEST_US_EQ", [1.0, 2.0, 3.0])
+        session.commit()
+
+        page = BeautifulSoup(client.get("/instrument/TEST_US_EQ/remove").text, "lxml")
+
+        assert "Remove TEST_US_EQ from the universe" in page.get_text(" ")
+        assert "3" in page.get_text(" "), "the count of price bars"
+        assert "price bars" in page.get_text(" ")
+        assert page.select_one("form[action='/instrument/TEST_US_EQ/remove'] button.danger")
+
+    def test_an_instrument_nothing_is_held_for_says_so(self, client, session):
+        _instrument(session)
+        session.commit()
+
+        page = BeautifulSoup(client.get("/instrument/TEST_US_EQ/remove").text, "lxml")
+
+        assert "Nothing has been collected about TEST_US_EQ yet" in page.get_text(" ")
+
+    def test_a_held_instrument_gets_no_confirm_button(self, client, session):
+        _instrument(session, is_held=True)
+        session.commit()
+
+        page = BeautifulSoup(client.get("/instrument/TEST_US_EQ/remove").text, "lxml")
+
+        assert page.select_one("form[action='/instrument/TEST_US_EQ/remove']") is None
+        assert "Close the position at the broker first" in page.get_text(" ")
+
+    def test_confirming_removes_it_and_says_so_on_the_dashboard(self, client, session):
+        _instrument(session)
+        _bars(session, "TEST_US_EQ", [1.0, 2.0, 3.0])
+        session.commit()
+
+        response = client.post("/instrument/TEST_US_EQ/remove", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert response.headers["location"].startswith("/dashboard?removed=TEST_US_EQ")
+        session.expire_all()
+        assert session.get(Instrument, "TEST_US_EQ").in_universe is False
+        page = client.get(response.headers["location"]).text
+        assert "TEST_US_EQ" in page and "removed from the analysed universe" in page
+
+    def test_a_post_the_page_would_not_offer_is_refused(self, client, session):
+        """The page is a rendering and this is the act: a hand-made request must not be able to
+        do what the page would not offer."""
+        _instrument(session, is_held=True)
+        session.commit()
+
+        response = client.post("/instrument/TEST_US_EQ/remove", follow_redirects=False)
+
+        assert response.headers["location"] == "/instrument/TEST_US_EQ/remove?why=held"
+        session.expire_all()
+        assert session.get(Instrument, "TEST_US_EQ").in_universe is True
+        page = client.get(response.headers["location"]).text
+        assert "Not removed" in page
+
+    def test_an_unknown_instrument_is_a_404(self, client):
+        assert client.get("/instrument/NOPE_US_EQ/remove").status_code == 404

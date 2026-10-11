@@ -518,6 +518,19 @@ def render_xhtml(
     )
 
 
+def subject_dir(settings: Settings, subject_type: str, subject_id: str) -> Path:
+    """The directory holding one subject's reports.
+
+    Its own function because two callers need it and they must agree: :func:`report_path`
+    builds a filename inside it, and `ingest.universe.remove` deletes the whole tree when an
+    instrument leaves the universe. A second copy of the layout would be a deletion that
+    misses.
+    """
+    safe_type = subject_type if subject_type in ("instrument", "sector") else "other"
+    safe_id = "".join(char for char in subject_id if char.isalnum() or char in "-_") or "unknown"
+    return settings.research_dir / safe_type / safe_id
+
+
 def report_path(
     settings: Settings, *, subject_type: str, subject_id: str, report_id: int
 ) -> Path:
@@ -528,9 +541,7 @@ def report_path(
     is also what keeps it out of git: `docs/research/` is a different thing and is asserted to
     be tracked.
     """
-    safe_type = subject_type if subject_type in ("instrument", "sector") else "other"
-    safe_id = "".join(char for char in subject_id if char.isalnum() or char in "-_") or "unknown"
-    return settings.research_dir / safe_type / safe_id / f"{report_id}.xhtml"
+    return subject_dir(settings, subject_type, subject_id) / f"{report_id}.xhtml"
 
 
 def write_report(path: Path, document: str) -> int:

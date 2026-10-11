@@ -32,7 +32,12 @@ app:
 
 # --- universe -----------------------------------------------------------------
 universe:
-  # Target size of the analysed universe (held names + watchlist are always in).
+  # How many instruments the universe is *seeded* with, the first time it is populated.
+  #
+  # It is not a cap. Once seeded, membership is manual: instruments are added from the
+  # search on the Recommendations page and removed from an instrument's Refresh tab, and
+  # `universe_refresh` only adds positions the account has taken since. Raising this
+  # changes nothing on a database that has already been populated.
   size: 500
   exchanges:
     - LSE      # London Stock Exchange (UK)
