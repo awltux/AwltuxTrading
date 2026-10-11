@@ -329,6 +329,10 @@ def _instrument_context(
     return {
         "ticker": ticker,
         "instrument": detail["instrument"],
+        # What Trading 212's metadata says about the listing, for the panel the deep-dive's own
+        # account sits in. Derived from the row rather than stored -- see `queries.listing_about`
+        # for why, and for what that API does and does not know about a company.
+        "about": queries.listing_about(detail["instrument"]),
         "summary": _instrument_summary(detail, chart["history"]),
         "tabs": strip,
         "tab": active,

@@ -7,6 +7,13 @@
    for now: nothing generates them, and a panel that showed an empty table without saying why
    would read as a broken query rather than as work not yet done.
 
+   **Under the deep-dive sits the listing** (`listing_about`, from the Trading 212 metadata the
+   population and refresh jobs write). Before any deep-dive that listing is all there is, and
+   the panel used to answer "no deep-dive yet" to a question -- what am I looking at -- that
+   Trading 212 can partly answer on its own: what it is, where it trades, in what, and what the
+   filings call its industry. It never claims to say what the company *does*, because that API
+   has no description of any kind; the panel says so and points at the deep-dive instead.
+
    It is above the tabs because it is the shortest answer to "what am I looking at", which is
    the question a reader has before any of the tabs. #}
 {% from "partials/_help.html" import help %}
@@ -30,6 +37,8 @@
       {% if business %}
         from <a href="/research/{{ business.report_id }}">the deep-dive</a>
         of {{ business.at | datetime('%Y-%m-%d') }}
+      {% elif about %}
+        from the Trading 212 listing
       {% else %}
         no deep-dive yet
       {% endif %}
@@ -50,6 +59,27 @@
     <p class="muted small">
       A deep-dive is the model's judgement of the whole business, not a price target.
       <a href="{{ research_base }}">All reports for this instrument</a>.
+    </p>
+    {# The extension: the deep-dive answers "what does it do", and the listing still answers
+       "what is it, and where" -- which the model's prose does not replace. #}
+    {% if about %}
+      <p class="muted small">
+        Trading 212 lists it as {{ about.described or about.summary }}
+        {%- if about.identifiers %} &middot; {{ about.identifiers }}{% endif %}
+      </p>
+    {% endif %}
+  {% elif about %}
+    <p>{{ about.summary }}</p>
+    {% if about.identifiers %}<p class="muted small">{{ about.identifiers }}</p>{% endif %}
+    {% if about.classification %}
+      <p class="muted small">Its filings classify it as {{ about.classification }}.</p>
+    {% endif %}
+    {% if about.note %}<p class="muted small">{{ about.note }}</p>{% endif %}
+    <p class="muted">
+      Nothing above says what the company does or how it makes money &mdash; Trading 212
+      publishes no description of any kind, only the facts about the listing.
+      <a href="/instrument/{{ ticker | urlencode }}?tab=research">A deep-dive</a> works that out,
+      and replaces this with its own account.
     </p>
   {% else %}
     <p class="muted">

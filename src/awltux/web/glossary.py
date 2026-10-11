@@ -240,11 +240,13 @@ FIELDS: tuple[Field, ...] = (
         "business_profile",
         "What the business is",
         "The latest deep-dive's account of what the company does, how it makes money and "
-        "what protects it.",
+        "what protects it, over what Trading 212's own listing says about the instrument.",
         "Read out of the stored report rather than copied onto the instrument, so the "
         "sentences a verdict rests on are the ones the report contains and there is one "
-        "place to argue with. A company with no finished deep-dive shows nothing here, "
-        "which is different from a report that had nothing to say.",
+        "place to argue with. A company with no finished deep-dive shows the listing facts "
+        "instead -- what it is, where it trades and what the filings call its industry -- "
+        "and Trading 212 publishes no description of a business at all, so the deep-dive is "
+        "still the only thing here that says what the company does.",
     ),
     Field(
         "levers",
