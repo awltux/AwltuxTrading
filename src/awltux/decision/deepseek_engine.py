@@ -41,6 +41,7 @@ from awltux.llm.deepseek import (
     model_for_purpose,
 )
 from awltux.llm.prompts import UNTRUSTED_CONTENT_RULE, prompt_fingerprint
+from awltux.numbers import as_finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -324,11 +325,8 @@ def parse_answers(raw: Any, questions: dict[str, Any]) -> dict[str, Answer]:
 
 
 def _clamp(value: Any, low: float, high: float | None) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number != number:  # NaN
+    number = as_finite_float(value)
+    if number is None:
         return None
     if high is None:
         return max(low, number)
@@ -348,11 +346,8 @@ def _probabilities(value: Any) -> dict[str, float] | None:
 
     raw: dict[str, float] = {}
     for key, entry in value.items():
-        try:
-            number = float(entry)
-        except (TypeError, ValueError):
-            continue
-        if number != number or number < 0:  # NaN or a nonsensical negative weight
+        number = as_finite_float(entry)
+        if number is None or number < 0:  # unparseable, non-finite, or a negative weight
             continue
         raw[str(key)] = number
 

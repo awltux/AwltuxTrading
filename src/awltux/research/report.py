@@ -37,6 +37,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from awltux.analysis.levers import DEEP_RESEARCH, Exposure, describe, resolve
 from awltux.config import Settings
 from awltux.llm.extractors import ExtractionResult, validate_extraction
+from awltux.numbers import as_finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -197,9 +198,8 @@ def _strings(value: Any) -> list[str]:
 
 
 def _clamp(value: Any, low: float, high: float) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
+    number = as_finite_float(value)
+    if number is None:
         return None
     return min(max(number, low), high)
 

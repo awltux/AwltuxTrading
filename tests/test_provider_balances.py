@@ -52,6 +52,15 @@ class TestParsingDeepSeek:
 
         assert isinstance(balance.amount, float)
 
+    def test_a_json_true_is_not_read_as_one_unit_of_currency(self):
+        """`float(True)` is `1.0`, so a payload that put a boolean where the balance belongs
+        would render as a real amount. "No balance readable" and "one unit left" are opposite
+        conclusions on the credit banner, so the boolean has to read as missing."""
+        payload = _fixture("deepseek_balance.json")["payload"]
+        payload["balance_infos"][0]["total_balance"] = True
+
+        assert balances.parse_deepseek(payload).amount is None
+
     def test_being_cut_off_is_reported_separately_from_the_amount(self):
         """`is_available: false` with a zero balance and a positive balance with
         `is_available: true` are different states, and only one is an outage."""

@@ -34,6 +34,7 @@ from awltux.decision.engine import (
     DecisionEngine,
     DecisionResponse,
 )
+from awltux.numbers import as_finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -70,14 +71,6 @@ def _get(payload: dict[str, Any], *path: str, default: Any = None) -> Any:
     return node
 
 
-def _as_float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if number == number else None
-
-
 class OfflineEngine(DecisionEngine):
     """Threshold rules over the assembled state. No model, no probabilities."""
 
@@ -102,15 +95,15 @@ class OfflineEngine(DecisionEngine):
         news = state.get("recent_news") or []
 
         is_held = bool(instrument.get("is_held"))
-        mos = _as_float(valuation.get("margin_of_safety"))
-        confidence_in_valuation = _as_float(valuation.get("valuation_confidence")) or 0.0
+        mos = as_finite_float(valuation.get("margin_of_safety"))
+        confidence_in_valuation = as_finite_float(valuation.get("valuation_confidence")) or 0.0
         methods = valuation.get("methods_applied") or []
         status = valuation.get("status")
 
         red_flags: list[str] = list(accounts.get("red_flags") or [])
         positives: list[str] = list(accounts.get("positives") or [])
-        instrument_sentiment = _as_float(sentiment.get("instrument_score"))
-        sector_sentiment = _as_float(sentiment.get("sector_score"))
+        instrument_sentiment = as_finite_float(sentiment.get("instrument_score"))
+        sector_sentiment = as_finite_float(sentiment.get("sector_score"))
 
         answers: dict[str, Answer] = {}
         reasons: list[str] = []
@@ -273,7 +266,7 @@ def _quality_score(
     score += min(len(positives), 3)
     score -= min(len(red_flags), 3)
 
-    roce = _as_float(accounts.get("roce"))
+    roce = as_finite_float(accounts.get("roce"))
     if roce is not None:
         if roce >= 0.20:
             score += 1
@@ -286,10 +279,10 @@ def _quality_score(
 def _risk_score(accounts: dict[str, Any]) -> int:
     """0 = minimal balance-sheet risk, 4 = severe."""
     score = 0
-    net_debt_to_ebitda = _as_float(accounts.get("net_debt_to_ebitda"))
-    interest_cover = _as_float(accounts.get("interest_cover"))
-    debt_to_equity = _as_float(accounts.get("debt_to_equity"))
-    net_debt = _as_float(accounts.get("net_debt"))
+    net_debt_to_ebitda = as_finite_float(accounts.get("net_debt_to_ebitda"))
+    interest_cover = as_finite_float(accounts.get("interest_cover"))
+    debt_to_equity = as_finite_float(accounts.get("debt_to_equity"))
+    net_debt = as_finite_float(accounts.get("net_debt"))
 
     if net_debt is not None and net_debt < 0:
         return 0  # net cash
@@ -318,9 +311,9 @@ def _risk_score(accounts: dict[str, Any]) -> int:
 
 
 def _earnings_trend(accounts: dict[str, Any], technical: dict[str, Any]) -> str:
-    margin_trend = _as_float(accounts.get("margin_trend"))
-    growth = _as_float(accounts.get("revenue_growth_latest"))
-    annual_vol = _as_float(technical.get("volatility_annual"))
+    margin_trend = as_finite_float(accounts.get("margin_trend"))
+    growth = as_finite_float(accounts.get("revenue_growth_latest"))
+    annual_vol = as_finite_float(technical.get("volatility_annual"))
 
     if margin_trend is not None and margin_trend < -0.02:
         return "deteriorating"
@@ -344,7 +337,7 @@ def _news_verdict(news: list[dict[str, Any]]) -> str:
         if weight == 0:
             continue
         direction = str(item.get("direction") or "neutral")
-        sentiment = _as_float(item.get("sentiment"))
+        sentiment = as_finite_float(item.get("sentiment"))
         if direction == "positive":
             total += weight
         elif direction == "negative":
@@ -375,7 +368,7 @@ def _sentiment_regime(
     if combined is None:
         # Fall back to price position within the 52-week range, which is a crude
         # but honest proxy for crowd positioning.
-        position = _as_float(technical.get("position_in_52w_range"))
+        position = as_finite_float(technical.get("position_in_52w_range"))
         if position is None:
             return "neutral"
         combined = (position - 0.5) * 2.0
@@ -394,9 +387,9 @@ def _sentiment_regime(
 def _going_concern_evidence(red_flags: list[str], accounts: dict[str, Any]) -> bool:
     if any("going concern" in flag.lower() for flag in red_flags):
         return True
-    net_income = _as_float(accounts.get("net_income"))
+    net_income = as_finite_float(accounts.get("net_income"))
     if net_income is not None and net_income < 0:
-        cover = _as_float(accounts.get("interest_cover"))
+        cover = as_finite_float(accounts.get("interest_cover"))
         if cover is not None and cover < 1.0:
             return True
     return False
@@ -488,21 +481,21 @@ def _setup_score(
     elif trend == "downtrend":
         technical_score -= 2
 
-    momentum = _as_float(technical.get("return_3m"))
+    momentum = as_finite_float(technical.get("return_3m"))
     if momentum is not None:
         if momentum > 0.05:
             technical_score += 1
         elif momentum < -0.05:
             technical_score -= 1
 
-    position = _as_float(technical.get("position_in_52w_range"))
+    position = as_finite_float(technical.get("position_in_52w_range"))
     if position is not None:
         if position > 0.7:
             technical_score += 1  # pushing the top of the range
         elif position < 0.3:
             technical_score -= 1
 
-    volume_trend = _as_float(technical.get("volume_trend"))
+    volume_trend = as_finite_float(technical.get("volume_trend"))
     if volume_trend is not None and volume_trend > 0.2:
         # Confirmation: the move is being participated in rather than drifting.
         technical_score += 1
@@ -540,28 +533,28 @@ def _drawdown_risk(technical: dict[str, Any]) -> int:
     """
     score = 0
 
-    position = _as_float(technical.get("position_in_52w_range"))
+    position = as_finite_float(technical.get("position_in_52w_range"))
     if position is not None:
         if position > 0.97:
             score += 2
         elif position > 0.9:
             score += 1
 
-    rsi = _as_float(technical.get("rsi_14"))
+    rsi = as_finite_float(technical.get("rsi_14"))
     if rsi is not None:
         if rsi > 78:
             score += 2
         elif rsi > 70:
             score += 1
 
-    annual_vol = _as_float(technical.get("volatility_annual"))
+    annual_vol = as_finite_float(technical.get("volatility_annual"))
     if annual_vol is not None:
         if annual_vol > 0.7:
             score += 2
         elif annual_vol > 0.4:
             score += 1
 
-    run = _as_float(technical.get("return_1m"))
+    run = as_finite_float(technical.get("return_1m"))
     if run is not None and run > 0.25:
         score += 1
 
@@ -692,7 +685,7 @@ def _tactical_confidence(technical: dict[str, Any], news: list[dict[str, Any]]) 
         "position_in_52w_range",
         "volume_trend",
     )
-    present = sum(1 for key in inputs if _as_float(technical.get(key)) is not None)
+    present = sum(1 for key in inputs if as_finite_float(technical.get(key)) is not None)
     coverage = present / len(inputs)
 
     # Confidence rises with coverage; news adds a little context but cannot

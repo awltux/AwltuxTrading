@@ -40,6 +40,7 @@ from sqlalchemy import desc, select
 
 from awltux.config import Settings, get_settings
 from awltux.db import AppSetting, utcnow
+from awltux.numbers import as_finite_float
 from awltux.providers.http import HttpClient, ProviderError
 
 logger = logging.getLogger(__name__)
@@ -150,13 +151,16 @@ class Balance:
 
 
 def _number(value: Any) -> float | None:
-    """A provider's amount as a float. Strings are what these APIs actually send."""
-    if isinstance(value, bool) or value is None:
+    """A provider's amount as a float. Strings are what these APIs actually send.
+
+    One rule more than :func:`awltux.numbers.as_finite_float`, and it is kept here because it is
+    about *amounts* rather than about numbers in general: ``float(True)`` is ``1.0``, so a JSON
+    ``true`` where a balance belongs would be read as one unit of currency. A missing amount and
+    an amount of one are opposite conclusions on the banner above.
+    """
+    if isinstance(value, bool):
         return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return as_finite_float(value)
 
 
 def parse_deepseek(payload: Any) -> Balance:

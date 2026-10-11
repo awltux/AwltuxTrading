@@ -31,6 +31,7 @@ from awltux.decision.engine import (
     EngineUnavailable,
 )
 from awltux.decision.questions import QuestionDef
+from awltux.numbers import as_finite_float
 from awltux.providers.http import HttpClient, ProviderError
 
 logger = logging.getLogger(__name__)
@@ -190,7 +191,7 @@ def _parse_answers(raw: Any, questions: dict[str, Any]) -> dict[str, Answer]:
             continue
 
         declared_type = entry.get("type")
-        confidence = _as_float(entry.get("confidence"))
+        confidence = as_finite_float(entry.get("confidence"))
         probabilities = _as_probabilities(entry.get("probabilities"))
 
         if "noul" in entry or declared_type == "noul" or "probability" in entry:
@@ -198,7 +199,7 @@ def _parse_answers(raw: Any, questions: dict[str, Any]) -> dict[str, Answer]:
             answers[name] = Answer(
                 question=name,
                 type="noul",
-                value=_as_float(value),
+                value=as_finite_float(value),
                 probabilities=probabilities,
             )
             continue
@@ -218,7 +219,7 @@ def _parse_answers(raw: Any, questions: dict[str, Any]) -> dict[str, Answer]:
             answers[name] = Answer(
                 question=name,
                 type="score",
-                value=_as_float(entry.get("score")),
+                value=as_finite_float(entry.get("score")),
                 confidence=confidence,
                 probabilities=probabilities,
                 legend=({str(k): str(v) for k, v in legend.items()} if isinstance(legend, dict) else None),
@@ -230,21 +231,12 @@ def _parse_answers(raw: Any, questions: dict[str, Any]) -> dict[str, Answer]:
     return answers
 
 
-def _as_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _as_probabilities(value: Any) -> dict[str, float] | None:
     if not isinstance(value, dict):
         return None
     out: dict[str, float] = {}
     for key, raw in value.items():
-        number = _as_float(raw)
+        number = as_finite_float(raw)
         if number is not None:
             out[str(key)] = number
     return out or None

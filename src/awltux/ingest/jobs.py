@@ -22,6 +22,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 from awltux.config import get_settings
 from awltux.db import session_scope
+from awltux.numbers import as_finite_float
 from awltux.scheduler import progress
 from awltux.scheduler.jobs import JobResult
 
@@ -174,14 +175,6 @@ class _Position:
     currency: str | None
 
 
-def _as_float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if number == number else None  # NaN
-
-
 def _as_datetime(value: Any) -> dt.datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -206,12 +199,12 @@ def _parse_position(payload: dict[str, Any]) -> _Position | None:
     return _Position(
         ticker=str(ticker),
         opened_at=_as_datetime(payload.get("createdAt")),
-        quantity=_as_float(payload.get("quantity")),
-        average_price=_as_float(payload.get("averagePricePaid")),
-        in_pies=_as_float(payload.get("quantityInPies")),
-        cost=_as_float(impact.get("totalCost")),
-        value=_as_float(impact.get("currentValue")),
-        unrealised=_as_float(impact.get("unrealizedProfitLoss")),
+        quantity=as_finite_float(payload.get("quantity")),
+        average_price=as_finite_float(payload.get("averagePricePaid")),
+        in_pies=as_finite_float(payload.get("quantityInPies")),
+        cost=as_finite_float(impact.get("totalCost")),
+        value=as_finite_float(impact.get("currentValue")),
+        unrealised=as_finite_float(impact.get("unrealizedProfitLoss")),
         currency=str(currency) if currency else None,
     )
 
@@ -335,10 +328,10 @@ def _store_order(session, item: dict[str, Any]) -> bool:
     row.strategy = order.get("strategy")
     row.created_at = _as_datetime(order.get("createdAt"))
     row.filled_at = _as_datetime(fill.get("filledAt"))
-    row.filled_quantity = _as_float(fill.get("quantity"))
-    row.fill_price = _as_float(fill.get("price"))
+    row.filled_quantity = as_finite_float(fill.get("quantity"))
+    row.fill_price = as_finite_float(fill.get("price"))
     row.fill_type = fill.get("type")
-    row.net_value = _as_float(impact.get("netValue"))
+    row.net_value = as_finite_float(impact.get("netValue"))
     row.currency = str(currency) if currency else None
     return created
 

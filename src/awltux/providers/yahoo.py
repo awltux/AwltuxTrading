@@ -33,6 +33,7 @@ from typing import Any
 
 from awltux.config import BudgetRule, Settings, get_settings
 from awltux.money import canonical_currency, expected_quote_currency, normalise_money
+from awltux.numbers import as_finite_float
 from awltux.providers.http import BudgetGuard, ProviderError
 
 logger = logging.getLogger(__name__)
@@ -104,16 +105,6 @@ def _clean(value: Any) -> Any:
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return None
     return value
-
-
-def _as_float(value: Any) -> float | None:
-    value = _clean(value)
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _quoted_unit(symbol: str, *, frame_currency: str, stated: str, fallback: str) -> str:
@@ -227,7 +218,7 @@ class YahooProvider:
                     "name": quote.get("longname") or quote.get("shortname"),
                     "exchange": quote.get("exchDisp") or quote.get("exchange"),
                     "quote_type": quote.get("quoteType"),
-                    "score": _as_float(quote.get("score")),
+                    "score": as_finite_float(quote.get("score")),
                 }
             )
         return out
@@ -398,7 +389,7 @@ class YahooProvider:
             columns[str(key).lower()] = column
 
         for index, row in frame.iterrows():
-            close = _as_float(row.get(columns.get("close", "Close")))
+            close = as_finite_float(row.get(columns.get("close", "Close")))
             if close is None:
                 continue
             raw_date = index
@@ -413,7 +404,7 @@ class YahooProvider:
             # iteration's row rather than the loop variable by reference.
             def column(name: str, _row: Any = row) -> float | None:
                 key = columns.get(name)
-                return _as_float(_row.get(key)) if key is not None else None
+                return as_finite_float(_row.get(key)) if key is not None else None
 
             raw_open = column("open")
             raw_high = column("high")
@@ -498,7 +489,7 @@ class YahooProvider:
             fast = ticker.fast_info
             raw_currency = self._infer_currency(symbol, ticker)
 
-            raw_price = _as_float(fast.get("last_price"))
+            raw_price = as_finite_float(fast.get("last_price"))
             if raw_price is None:
                 # Fall back to the most recent daily close.
                 series = self.get_history(symbol, period="5d")
@@ -518,7 +509,7 @@ class YahooProvider:
             assert price is not None
 
             def scaled(key: str) -> float | None:
-                value = _as_float(fast.get(key))
+                value = as_finite_float(fast.get(key))
                 if value is None:
                     return None
                 result = normalise_money(value, raw_currency)
@@ -533,8 +524,8 @@ class YahooProvider:
                 previous_close=scaled("previous_close"),
                 day_high=scaled("day_high"),
                 day_low=scaled("day_low"),
-                volume=_as_float(fast.get("last_volume")),
-                market_cap=_as_float(fast.get("market_cap")),
+                volume=as_finite_float(fast.get("last_volume")),
+                market_cap=as_finite_float(fast.get("market_cap")),
                 fifty_two_week_high=scaled("year_high"),
                 fifty_two_week_low=scaled("year_low"),
             )

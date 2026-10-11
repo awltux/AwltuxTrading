@@ -31,10 +31,11 @@ invisible at runtime, which is why the prompt is *generated* from
 
 from __future__ import annotations
 
-import math
 import re
 from collections.abc import Mapping
 from typing import Any
+
+from awltux.numbers import as_finite_float
 
 #: Income-statement figures.
 INCOME_METRICS: tuple[str, ...] = (
@@ -312,16 +313,10 @@ def value_of(metrics: Mapping[str, Any] | None, key: str) -> float | None:
     perfectly good float as far as Python is concerned, and it propagates through
     a ratio into a ranking without ever raising. A value that cannot be used is
     returned as missing, which the markers treat as a reason to say nothing.
+
+    The rule itself lives in :func:`awltux.numbers.as_finite_float`, which is the
+    one copy of it in the tree rather than the sixth.
     """
     if not metrics:
         return None
-    raw = metrics.get(key)
-    if raw is None:
-        return None
-    try:
-        number = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(number):
-        return None
-    return number
+    return as_finite_float(metrics.get(key))

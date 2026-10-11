@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +28,7 @@ from awltux.analysis.technical import volatility
 from awltux.config import Settings, get_settings
 from awltux.db import Instrument, NewsItem, PriceBar, SentimentSeries, utcnow
 from awltux.db.session import release_write_lock
+from awltux.numbers import as_finite_float
 from awltux.scheduler import progress
 from awltux.timezones import utc_today
 
@@ -145,14 +145,12 @@ def news_sentiment(
     count = 0
 
     for item in items:
-        score = item.provider_sentiment if item.provider_sentiment is not None else item.sentiment_score
+        # The provider's own score wins when it stated one; a zero is a reading, so the test is
+        # against `None` rather than truthiness. The stored score is the fallback.
+        stated = item.provider_sentiment
+        raw = stated if stated is not None else item.sentiment_score
+        score = as_finite_float(raw)
         if score is None:
-            continue
-        try:
-            score = float(score)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(score):
             continue
 
         published = item.published_at

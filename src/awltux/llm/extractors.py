@@ -14,7 +14,6 @@ missing one because it is invisible.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +33,7 @@ from awltux.llm.prompts import (
     prompt_fingerprint,
 )
 from awltux.metrics import EXTRACTABLE_METRICS
+from awltux.numbers import as_finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -162,16 +162,6 @@ class ExtractionResult:
         }
 
 
-def _as_float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(number):
-        return None
-    return number
-
-
 def _event_flags(
     payload: Any,
     flags: tuple[str, ...],
@@ -215,7 +205,7 @@ def _cited_metric(
     if not isinstance(entry, dict):
         discarded.append(f"{name}: malformed entry")
         return None
-    value = _as_float(entry.get("value"))
+    value = as_finite_float(entry.get("value"))
     span = _text(entry.get("span")) or ""
     location = _text(entry.get("location")) or ""
 
@@ -464,7 +454,7 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _clamp(value: Any, low: float, high: float) -> float | None:
-    number = _as_float(value)
+    number = as_finite_float(value)
     if number is None:
         return None
     return max(low, min(high, number))

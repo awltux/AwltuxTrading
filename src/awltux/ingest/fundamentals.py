@@ -31,6 +31,7 @@ from awltux.db import FundamentalPeriod, Instrument, InstrumentAlias, utcnow
 from awltux.db.session import release_write_lock
 from awltux.ingest.blockers import clear_blocker, record_blocker
 from awltux.metrics import CANONICAL_METRICS, OUTFLOW_METRICS  # noqa: F401  (re-exported)
+from awltux.numbers import as_finite_float
 from awltux.providers.companies_house import CompaniesHouseProvider, normalise_company_number
 from awltux.providers.http import ProviderError
 from awltux.providers.yahoo import YahooProvider
@@ -141,17 +142,16 @@ class FundamentalsReport:
 
 
 def _pick(row_map: dict[str, Any], candidates: tuple[str, ...]) -> float | None:
+    """The first candidate label that carries a finite number, or ``None``.
+
+    An absent label and an unparseable one are both skipped rather than ending the
+    search, which is the whole point: a provider renaming one column should fall
+    through to the next spelling, not report the metric as missing.
+    """
     for label in candidates:
-        value = row_map.get(label)
-        if value is None:
-            continue
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            continue
-        if number != number:  # NaN
-            continue
-        return number
+        number = as_finite_float(row_map.get(label))
+        if number is not None:
+            return number
     return None
 
 

@@ -43,6 +43,7 @@ from awltux.config import Settings, get_settings
 from awltux.db import FundamentalPeriod, Instrument, PriceBar, ValuationRun, utcnow
 from awltux.db.session import release_write_lock
 from awltux.ingest.prices import bar_currency
+from awltux.numbers import as_finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -795,9 +796,9 @@ def value_instrument(
         return result
 
     latest_metrics = (periods[-1].metrics if periods else {}) or {}
-    shares = _number(latest_metrics.get("shares_outstanding"))
-    book_value = _number(latest_metrics.get("total_equity"))
-    net_debt = _number(latest_metrics.get("net_debt"))
+    shares = as_finite_float(latest_metrics.get("shares_outstanding"))
+    book_value = as_finite_float(latest_metrics.get("total_equity"))
+    net_debt = as_finite_float(latest_metrics.get("net_debt"))
 
     if not shares or shares <= 0:
         result.status = "insufficient_data"
@@ -948,16 +949,6 @@ def value_instrument(
             )
 
     return result
-
-
-def _number(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
 
 
 def run_valuations(

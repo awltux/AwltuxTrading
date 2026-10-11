@@ -39,6 +39,7 @@ from awltux.llm.prompts import (
     NEWS_SECTOR_INSTRUCTION,
     prompt_fingerprint,
 )
+from awltux.numbers import as_finite_float
 from awltux.providers.news_rss import RawNewsItem
 
 logger = logging.getLogger(__name__)
@@ -106,11 +107,8 @@ _ABSENT = {"", "null", "none", "unknown", "n/a", "not stated", "unspecified"}
 
 
 def _clamp(value: Any, low: float, high: float) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number != number:  # NaN
+    number = as_finite_float(value)
+    if number is None:
         return None
     return max(low, min(high, number))
 
