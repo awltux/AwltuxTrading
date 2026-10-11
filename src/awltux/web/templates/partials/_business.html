@@ -35,7 +35,7 @@
     {% endif %}
     <span class="muted small">
       {% if business %}
-        from <a href="/research/{{ business.report_id }}">the deep-dive</a>
+        from <a href="/research/{{ business.report_id }}" target="_blank" rel="noopener noreferrer">the deep-dive</a>
         of {{ business.at | datetime('%Y-%m-%d') }}
       {% elif about %}
         from the Trading 212 listing

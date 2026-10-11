@@ -155,8 +155,13 @@ class TestTheExecutiveSummary:
 
         for tab in ("decision", "valuation", "price", "reports", "accounts", "news", "position"):
             soup = BeautifulSoup(client.get(f"/instrument/{TICKER}?tab={tab}").text, "lxml")
-            links = [a["href"] for a in soup.select(".business-profile a[href^='/research/']")]
+            anchors = soup.select(".business-profile a[href^='/research/']")
+            links = [a["href"] for a in anchors]
             assert f"/research/{row.id}" in links, tab
+            # The report is a sandboxed document with no link back to the application, so it
+            # opens in its own tab rather than replacing the instrument page -- the rule the
+            # filing "read" link already follows.
+            assert anchors and anchors[0].get("target") == "_blank", tab
 
     def test_the_caveat_about_what_a_deep_dive_is_moved_with_the_description(
         self, client, session
@@ -239,6 +244,7 @@ class TestTheExecutiveSummary:
         block = soup.select_one(".research-summary")
         assert block is not None
         assert block.select_one("a")["href"] == f"/research/{row.id}"
+        assert block.select_one("a").get("target") == "_blank"
 
     def test_a_running_report_is_not_a_summary(self, client, session):
         """The executive summary is the answer of a *finished* run. Showing the previous one
@@ -329,6 +335,7 @@ class TestTheReportList:
 
         link = soup.select_one("#research table a[href^='/research/']")
         assert link is not None and link["href"] == f"/research/{row.id}"
+        assert link.get("target") == "_blank"
 
     def test_a_report_with_no_document_on_disk_is_not_offered_as_readable(
         self, client, session

@@ -94,7 +94,7 @@
           <td class="small muted">{{ report.model or '—' }}</td>
           <td class="small">
             {% if report.has_document %}
-              <a href="/research/{{ report.id }}">read</a>
+              <a href="/research/{{ report.id }}" target="_blank" rel="noopener noreferrer">read</a>
               <span class="muted">({{ report.bytes | number(0) }} bytes)</span>
             {% elif report.error %}
               <span class="muted small">{{ report.error[:120] }}</span>
