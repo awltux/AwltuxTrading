@@ -1693,3 +1693,27 @@ table could only disagree with the filer's own tags, but it is a judgement rathe
 measurement. What would settle it: a count of stored documents that hold both tagged and
 untagged numbers in the same table, which nothing measures today. Two documents of 603 have no
 tags at all and 601 have tags; the mixed case is assumed to be rare and has not been counted.
+
+### A `TypedDict` over the instrument page's context
+
+Added 2026-10-11, from a QA pass that flagged `_instrument_context`
+(`web/routes/dashboard.py`) as a ~40-key untyped dict whose own docstring records the failure
+mode: "a key the route forgets renders as nothing at all, which is how the trades table and the
+event grouping were both lost for a commit each".
+
+It is not made one because the annotation could not be honest. Two groups of keys do not arrive
+as literals -- `**detail["research"]` and `**_lever_context(detail, request)` -- and `detail`
+comes from `queries.instrument_detail`, which returns `dict[str, Any]`. A `TypedDict` would
+therefore have to *declare* keys it cannot *check*, so it would read like a guarantee while
+enforcing nothing. There is also no type checker in the gate (ruff's selected rules are
+`E, F, I, UP, B, SIM, C90`), so even a sound annotation would not fail a build.
+
+What actually guards the failure mode is `tests/test_instrument_tabs.py`, which renders every
+tab and asserts its topic is present. One gap in that guard was closed in the same pass: the
+`research` tab was missing from `test_each_tab_renders_its_own_topic`, and it is the tab whose
+content is one of the two `**`-splats.
+
+The residual cost is small but real: adding a context key means editing one large dict literal
+with no help from the tooling. Revisit if a type checker is ever added to the gate, at which
+point the sound fix is to type `instrument_detail`'s return first, not to annotate the context
+on its own.

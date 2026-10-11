@@ -61,10 +61,12 @@
       <a href="{{ research_base }}">All reports for this instrument</a>.
     </p>
     {# The extension: the deep-dive answers "what does it do", and the listing still answers
-       "what is it, and where" -- which the model's prose does not replace. #}
+       "what is it, and where" -- which the model's prose does not replace. `as_listed` is a
+       complement (`a stock on NYSE traded in USD`) and is never empty, so it needs no fallback
+       here; it must be read after the verb this line supplies. #}
     {% if about %}
       <p class="muted small">
-        Trading 212 lists it as {{ about.described or about.summary }}
+        Trading 212 lists it as {{ about.as_listed }}
         {%- if about.identifiers %} &middot; {{ about.identifiers }}{% endif %}
       </p>
     {% endif %}

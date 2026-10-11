@@ -1,14 +1,20 @@
-"""Shared builders for tests.
+"""Shared builders and doubles for tests.
 
 Plain functions rather than fixtures, because most tests want to construct a
 specific shape of data (a particular instrument, a particular price path) rather
 than receive whatever the fixture happens to provide.
+
+The provider double lives here too rather than in the test module that first
+needed it: a fake reused from another test module makes one feature's tests fail
+when an unrelated feature's fixture changes, and `tests/test_business_panel.py`
+was the only file in the tree importing across test modules.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import math
+from typing import Any
 
 from awltux.db import FundamentalPeriod, Instrument, PriceBar
 
@@ -138,3 +144,79 @@ def trending_closes(
         price *= 1.0 + daily_return + wave
         closes.append(round(price, 4))
     return closes
+
+
+def t212_exchanges() -> list[dict[str, Any]]:
+    """Two exchanges whose *schedule* ids deliberately do not match their ids.
+
+    This is the whole point: if the ids coincided, a wrong join would look right.
+    """
+    return [
+        {
+            "id": 1,
+            "name": "London Stock Exchange",
+            "workingSchedules": [{"id": 101, "timeEvents": []}, {"id": 154, "timeEvents": []}],
+        },
+        {
+            "id": 2,
+            "name": "NASDAQ",
+            "workingSchedules": [{"id": 56, "timeEvents": []}],
+        },
+    ]
+
+
+def t212_instruments() -> list[dict[str, Any]]:
+    """A metadata payload as `/equity/metadata/instruments` sends it.
+
+    Three rows, chosen for the join rather than for their names: two share a schedule
+    (so they must land on one exchange) and one carries no ``extendedHours`` at all.
+    """
+    return [
+        {
+            "ticker": "VODl_EQ",
+            "isin": "GB00BH4HKS39",
+            "name": "Vodafone",
+            "shortName": "VOD",
+            "currencyCode": "GBX",
+            "type": "STOCK",
+            "extendedHours": False,
+            "maxOpenQuantity": 1000.0,
+            "addedOn": "2020-01-01T00:00:00.000+02:00",
+            "workingScheduleId": 101,
+        },
+        {
+            "ticker": "AAPL_US_EQ",
+            "isin": "US0378331005",
+            "name": "Apple",
+            "shortName": "AAPL",
+            "currencyCode": "USD",
+            "type": "STOCK",
+            "extendedHours": True,
+            "maxOpenQuantity": 5000.0,
+            "addedOn": "2020-01-01T00:00:00.000+02:00",
+            "workingScheduleId": 56,
+        },
+        {
+            "ticker": "XNASl_EQ",
+            "isin": "IE00BMFKG444",
+            "name": "Xtrackers NASDAQ 100",
+            "shortName": "XNAS",
+            "currencyCode": "USD",
+            "type": "ETF",
+            "workingScheduleId": 154,
+        },
+    ]
+
+
+class FakeT212:
+    """The two metadata calls the instrument sync makes, with no network behind them."""
+
+    def __init__(self) -> None:
+        self._exchanges = t212_exchanges()
+        self._instruments = t212_instruments()
+
+    def get_exchanges(self):
+        return self._exchanges
+
+    def get_instruments(self):
+        return self._instruments

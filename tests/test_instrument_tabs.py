@@ -118,6 +118,10 @@ class TestTheTabStrip:
             ("reports", "Published reports"),
             ("accounts", "Accounts"),
             ("news", "News"),
+            # The research tab was the one tab missing from this list, and it is the tab whose
+            # content arrives as a `**`-splat of research keys -- so a dropped key would have
+            # rendered as an empty section with nothing to catch it.
+            ("research", 'id="research"'),
             ("position", "Your position"),
             ("refresh", "Refresh this instrument"),
         ],

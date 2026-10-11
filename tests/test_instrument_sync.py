@@ -9,83 +9,12 @@ on 18,483 rows with ``FOREIGN KEY constraint failed``.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 import sqlalchemy as sa
 
 from awltux.db import Exchange, Instrument, session_scope
 from awltux.ingest.universe import _schedule_to_exchange_map, synchronize_instruments
-from tests.helpers import make_instrument
-
-
-def t212_exchanges() -> list[dict[str, Any]]:
-    """Two exchanges whose *schedule* ids deliberately do not match their ids.
-
-    This is the whole point: if the ids coincided, a wrong join would look right.
-    """
-    return [
-        {
-            "id": 1,
-            "name": "London Stock Exchange",
-            "workingSchedules": [{"id": 101, "timeEvents": []}, {"id": 154, "timeEvents": []}],
-        },
-        {
-            "id": 2,
-            "name": "NASDAQ",
-            "workingSchedules": [{"id": 56, "timeEvents": []}],
-        },
-    ]
-
-
-def t212_instruments() -> list[dict[str, Any]]:
-    return [
-        {
-            "ticker": "VODl_EQ",
-            "isin": "GB00BH4HKS39",
-            "name": "Vodafone",
-            "shortName": "VOD",
-            "currencyCode": "GBX",
-            "type": "STOCK",
-            "extendedHours": False,
-            "maxOpenQuantity": 1000.0,
-            "addedOn": "2020-01-01T00:00:00.000+02:00",
-            "workingScheduleId": 101,
-        },
-        {
-            "ticker": "AAPL_US_EQ",
-            "isin": "US0378331005",
-            "name": "Apple",
-            "shortName": "AAPL",
-            "currencyCode": "USD",
-            "type": "STOCK",
-            "extendedHours": True,
-            "maxOpenQuantity": 5000.0,
-            "addedOn": "2020-01-01T00:00:00.000+02:00",
-            "workingScheduleId": 56,
-        },
-        {
-            "ticker": "XNASl_EQ",
-            "isin": "IE00BMFKG444",
-            "name": "Xtrackers NASDAQ 100",
-            "shortName": "XNAS",
-            "currencyCode": "USD",
-            "type": "ETF",
-            "workingScheduleId": 154,
-        },
-    ]
-
-
-class FakeT212:
-    def __init__(self) -> None:
-        self._exchanges = t212_exchanges()
-        self._instruments = t212_instruments()
-
-    def get_exchanges(self):
-        return self._exchanges
-
-    def get_instruments(self):
-        return self._instruments
+from tests.helpers import FakeT212, make_instrument, t212_exchanges
 
 
 class TestScheduleMapping:
