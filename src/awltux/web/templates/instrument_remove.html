@@ -54,12 +54,12 @@
       <tbody>
       {% for label, count in counts.items() %}
         {% if count %}
-          <tr><td>{{ label }}</td><td class="num">{{ count | number }}</td></tr>
+          <tr><td>{{ label }}</td><td class="num">{{ count | number(0) }}</td></tr>
         {% endif %}
       {% endfor %}
       <tr>
         <td><strong>rows in total</strong></td>
-        <td class="num"><strong>{{ total | number }}</strong></td>
+        <td class="num"><strong>{{ total | number(0) }}</strong></td>
       </tr>
       </tbody>
     </table>

@@ -382,8 +382,14 @@ class TestRemovingFromTheUniverse:
         page = BeautifulSoup(client.get("/instrument/TEST_US_EQ/remove").text, "lxml")
 
         assert "Remove TEST_US_EQ from the universe" in page.get_text(" ")
-        assert "3" in page.get_text(" "), "the count of price bars"
-        assert "price bars" in page.get_text(" ")
+        # Whole rows, so the counts print as 3 and 615 rather than 3.00: `number` defaults to
+        # two decimals, which is right for a price and wrong for a row count.
+        rows = {
+            row.select("td")[0].get_text(" ", strip=True): row.select("td")[1].get_text(" ", strip=True)
+            for row in page.select("table tbody tr")
+        }
+        assert rows["price bars"] == "3"
+        assert rows["rows in total"] == "3"
         assert page.select_one("form[action='/instrument/TEST_US_EQ/remove'] button.danger")
 
     def test_an_instrument_nothing_is_held_for_says_so(self, client, session):
