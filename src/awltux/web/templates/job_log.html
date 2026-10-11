@@ -11,16 +11,19 @@
    Only the most recent run is kept, by design: the file is truncated when the next
    run starts, so there is nothing here that can be mistaken for the current run.
 
-   **The way back is the instrument, when the run is about one.** Every scoped refresh
+   **The way back is the subject the run is about, when it has one.** Every scoped refresh
    writes to the same log file under the same job id, so this page used to send a reader
-   who had pressed "Refresh now" on a company back to the Operations list instead. The
-   run row names its target from the moment it starts -- see `JobSpec.target` -- and
-   Operations stays one click away for a reader who came from there. #}
+   who had pressed "Refresh now" on a company back to the Operations list instead; a
+   deep-dive has the same problem, for every instrument *and* every sector it can be asked
+   about. The run row names its target from the moment it starts -- see `JobSpec.target` --
+   and the route turns that into a path, because only it can tell whether the subject is an
+   instrument or a sector. Operations stays one click away for a reader who came from
+   there. #}
 
 {% block content %}
 <p class="muted small">
-  {% if target %}
-    <a href="/instrument/{{ target }}">&larr; {{ target }}</a>
+  {% if target_href %}
+    <a href="{{ target_href }}">&larr; {{ target }}</a>
     <span class="muted">&middot; <a href="/jobs">Operations</a></span>
   {% else %}
     <a href="/jobs">&larr; Operations</a>

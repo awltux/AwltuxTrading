@@ -2147,9 +2147,8 @@ def _target_of(run, leases: list[tuple[Any, Any, str]]) -> str | None:
     lease left to identify it; naming a company from an approximate match would be a wrong
     holding on a page about a company, which is worse than saying nothing.
     """
-    detail = (run.detail or {}) if run is not None else {}
-    target = detail.get("target")
-    if isinstance(target, str) and target:
+    target = _stated_target(run)
+    if target:
         return target
 
     started = as_utc(run.started_at) if run is not None else None
@@ -2163,6 +2162,63 @@ def _target_of(run, leases: list[tuple[Any, Any, str]]) -> str | None:
         and (released is None or released >= started)
     ]
     return max(holding)[1] if holding else None
+
+
+def _stated_target(run) -> str | None:
+    """The target the run recorded when it started, when it is a usable string.
+
+    `JobSpec.target` is written onto the row at `start_run`, so this answers for a run that
+    is still in flight -- which is the only state the log page is ever read in.
+    """
+    detail = (run.detail or {}) if run is not None else {}
+    target = detail.get("target")
+    return target if isinstance(target, str) and target else None
+
+
+def _log_target(session, job_id: str, run) -> tuple[str | None, str | None]:
+    """What a run is about, and where to read about it: ``(name, href)``.
+
+    ``(None, None)`` for the jobs that are about nothing in particular, which is most of them.
+
+    **A deep-dive has the refresh's problem one level up.** The refresh writes every company's
+    log to one file under one job id, so the job id cannot say which company it is showing --
+    the reason `_target_of` exists. A deep-dive is the other job whose log is watched from a
+    page about a single subject, and it writes one file for *every* subject it can be asked
+    about, instrument or sector.
+
+    The run records the subject's id but not its kind, so the kind is read from the subject's
+    own report row. That row is committed before the run's thread starts
+    (`research.service._open_report`), so it is there for the whole time the log is being
+    watched -- unlike `ResearchReport.run_id`, which is attached only after the refresh step
+    has finished, which for a company with filings on file is minutes into the run.
+
+    A subject with no report row gets no link rather than a guessed one: the two paths differ,
+    and naming the wrong one would put a 404 behind a breadcrumb.
+    """
+    if job_id == scoped.REFRESH_JOB:
+        ticker = _target_of(run, _lease_rows(session))
+        if ticker is None:
+            return None, None
+        return ticker, f"/instrument/{quote(ticker, safe='')}"
+
+    if job_id != research_service.RESEARCH_JOB:
+        return None, None
+
+    subject = _stated_target(run)
+    if not subject:
+        return None, None
+    kind = session.execute(
+        select(ResearchReport.subject_type)
+        .where(ResearchReport.subject_id == subject)
+        .order_by(desc(ResearchReport.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    where = quote(subject, safe="")
+    if kind == "sector":
+        return subject, f"/sectors/{where}"
+    if kind == "instrument":
+        return subject, f"/instrument/{where}"
+    return subject, None
 
 
 @router.get("/jobs/{job_id}/log", response_class=HTMLResponse, include_in_schema=False)
@@ -2190,12 +2246,9 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
             .order_by(desc(IngestRun.id))
             .limit(1)
         ).scalar_one_or_none()
-        # What the run is about, when it is about one instrument. A scoped refresh writes
-        # every company's log to the *same* file under the same job id, so the page cannot
-        # know from the job id which one it is showing -- and its back link went to
-        # Operations, which is the wrong place to return to after pressing Refresh on an
-        # instrument. Read while the session is open, like the run itself.
-        target = _target_of(run, _lease_rows(session)) if job_id == scoped.REFRESH_JOB else None
+        # What the run is about, and where to read about it, when it is about one subject at
+        # all. Read while the session is open, like the run itself.
+        target, target_href = _log_target(session, job_id, run)
 
     text, offset, _size = progress.read(job_id, 0)
     # Normalised, because SQLite returns these naive however the column was declared
@@ -2224,6 +2277,7 @@ def job_log_page(request: Request, job_id: str) -> HTMLResponse:
             "elapsed": elapsed,
             "note": detail.get("note") or (run.error if run else None),
             "target": target,
+            "target_href": target_href,
         },
     )
 

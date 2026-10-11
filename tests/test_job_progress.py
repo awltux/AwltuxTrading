@@ -19,6 +19,8 @@ import datetime as dt
 import logging
 import threading
 
+from awltux.db import ResearchReport, session_scope
+from awltux.research import service as research_service
 from awltux.scheduler import progress
 from awltux.scheduler.jobs import JobSpec, execute_job
 
@@ -29,6 +31,29 @@ def _noop() -> None:
 
 def _job(job_id: str = "probe", func=_noop, target: str | None = None) -> JobSpec:
     return JobSpec(id=job_id, func=func, interval_seconds=3600, target=target)
+
+
+def _deep_dive(*, subject_type: str, subject_id: str) -> None:
+    """The ``running`` report row a deep-dive writes before its thread starts.
+
+    In its own `session_scope`, which commits on exit: the log page is served on its own
+    session in another thread, so an uncommitted row is invisible to it. The ``session``
+    fixture is deliberately *not* taken here -- holding it open puts `execute_job`'s own
+    writes on the same connection, where the request thread never sees them, and the page
+    renders "never run" for a run that is right there.
+    """
+    with session_scope() as session:
+        session.add(
+            ResearchReport(
+                subject_type=subject_type,
+                subject_id=subject_id,
+                status="running",
+                title=subject_id,
+                prompt="research it",
+                prompt_sha256="x",
+                bytes=0,
+            )
+        )
 
 
 class TestCapturing:
@@ -407,6 +432,53 @@ class TestThePage:
 
         assert 'href="/jobs"' in body
         assert "/instrument/" not in body
+
+    def test_the_back_link_is_the_instrument_a_deep_dive_is_researching(self, client):
+        """Asked for: following a deep-dive's live log from an instrument gave no way back.
+
+        One log file serves every subject a deep-dive can be about, so the job id cannot say
+        which one is running -- the refresh's problem, one level up. The run records the
+        subject's id when it starts and the *kind* comes from the subject's own report row,
+        which is there before the run's thread starts.
+        """
+        _deep_dive(subject_type="instrument", subject_id="GWW_US_EQ")
+
+        execute_job(
+            JobSpec(
+                id=research_service.RESEARCH_JOB,
+                func=_noop,
+                interval_seconds=3600,
+                target="GWW_US_EQ",
+            )
+        )
+
+        body = client.get(f"/jobs/{research_service.RESEARCH_JOB}/log").text
+
+        assert 'href="/instrument/GWW_US_EQ"' in body
+        assert "for GWW_US_EQ" in body
+        # And Operations stays one click away for a reader who came from there.
+        assert 'href="/jobs"' in body
+
+    def test_a_deep_dive_of_a_sector_returns_to_the_sector(self, client):
+        """The other half of the same job. The two subjects live at different paths, so a
+        page that assumed `/instrument/` would put a 404 behind the breadcrumb on every
+        sector run -- and a sector deep-dive is the only thing the sector page's live log
+        link is ever watching."""
+        _deep_dive(subject_type="sector", subject_id="Energy")
+
+        execute_job(
+            JobSpec(
+                id=research_service.RESEARCH_JOB,
+                func=_noop,
+                interval_seconds=3600,
+                target="Energy",
+            )
+        )
+
+        body = client.get(f"/jobs/{research_service.RESEARCH_JOB}/log").text
+
+        assert 'href="/sectors/Energy"' in body
+        assert 'href="/instrument/Energy"' not in body
 
 class TestWhichInstrumentARunWasAbout:
     """`_target_of`, the rule that decides the way back from a refresh's log.

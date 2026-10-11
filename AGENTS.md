@@ -169,6 +169,14 @@ page — however many times it is flushed, and whichever parent rows exist. The 
 a 404, or an empty table, for a row the test itself can see, which reads as a broken
 route rather than a broken fixture. `TestClient` is not a call into the same thread.
 
+**And do not hold the `session` fixture open around `execute_job`.** The job's own
+`session_scope` writes on the connection that fixture is already holding, so its
+`ingest_run` row is not committed until the fixture commits — and the page a test then
+requests reports the job as *never run*. Measured 2026-10-11: a log-page test taking both
+fixtures rendered "never run" for a run its own session could read; `session.commit()`
+before the request made the same page render it, and seeding in a `session_scope` of the
+test's own with no `session` fixture passed without the extra commit.
+
 ## 4. Code standards
 
 Six properties, each with a live example.
