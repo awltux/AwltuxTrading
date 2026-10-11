@@ -57,6 +57,24 @@ RESEARCH_JOB = "research_report"
 #: What `llm_call.purpose` records, and what :func:`model_for_purpose` routes.
 RESEARCH_PURPOSE = "research"
 
+#: The pipeline stages a finished instrument report invalidates, in the order they must run.
+#:
+#: Both read what `_finish` contributed rather than the document itself. ``valuation``
+#: re-collates the accounts, where a report's cited figures sit as a ``deep_research`` period
+#: ranked below the filer's own tagged data (`analysis/collate.py`); ``decision`` assembles the
+#: state the report is one block of, and would otherwise argue with a judgement the reader paid
+#: for. Nothing else in the pipeline reads a report -- the attention filter and the levers panel
+#: read one at render time -- so this is the whole set, and it is written down rather than
+#: derived because no `JobSpec.depends_on` declares it: research is not a pipeline input, it is
+#: an amendment to one.
+#:
+#: It runs at the end of the research run because nothing else triggers it. `research` writes
+#: the report and returns, and `decision` is on its own interval, so without this the report is
+#: invisible to the decision until the next scheduled pass -- which for a name that is not held
+#: is hours to days. `TODO.md` recorded that gap on 2026-10-09 and named this the first of three
+#: ways to close it.
+RESEARCH_FOLLOW_UP: tuple[str, ...] = ("valuation", "decision")
+
 #: One deep-dive at a time. See the module docstring: the reason is the job log and the bill.
 _permit = threading.Semaphore(1)
 
@@ -332,10 +350,27 @@ def _body(
 
         with _session() as session:
             _finish(session, report_id, result, completion, document, evidence)
+
+        # After the row is closed, so the steps read a finished report rather than one still
+        # marked `running`. Wrapped because the report is stored by now: a follow-up that
+        # cannot run is a delay, not a lost result, and failing the run here would report a
+        # finished deep-dive as a failed one.
+        try:
+            follow_up = _follow_up(subject_type, subject_id)
+        except Exception as exc:  # noqa: BLE001 - the report is already stored
+            logger.exception("deep-dive follow-up failed for %s %s", subject_type, subject_id)
+            follow_up = {"state": "failed", "note": f"{type(exc).__name__}: {exc}"}
+        progress.note(f"follow-up {follow_up['state']}: {follow_up['note']}")
+
+        note = f"{result.verdict} from {len(evidence.documents)} document(s)"
+        # A sector has nothing to re-run, and saying so in the run's own result would be noise
+        # on every sector report; every other outcome is worth the reader's eye.
+        if follow_up["state"] != "not_applicable":
+            note = f"{note}; follow-up {follow_up['note']}"
         return JobResult(
             items_seen=len(evidence.documents) + len(evidence.news.entries),
             items_written=1,
-            note=f"{result.verdict} from {len(evidence.documents)} document(s)",
+            note=note,
         )
     except progress.Stopped:
         with _session() as session:
@@ -414,6 +449,45 @@ def _refresh_state(session: Session, ticker: str, settings: Settings) -> dict | 
         "note": f"refreshed {age:.0f} minutes ago, so it was not refreshed again",
         "finished_at": finished.isoformat(),
     }
+
+
+def _follow_up(subject_type: str, subject_id: str) -> dict:
+    """Re-run the stages a finished report changes, so it counts before the next sweep.
+
+    See :data:`RESEARCH_FOLLOW_UP` for which stages and why. Two refusals, both recorded
+    rather than silent: a sector has no pipeline to re-run, and an instrument whose refresh is
+    already running is left alone -- the lease is the same one every other path takes, and
+    fighting over it would be worse than waiting for the next scheduled pass.
+
+    Never raises: the report is already written and stored by the time this is called, and a
+    follow-up that cannot run is a delay, not a lost result.
+    """
+    from awltux.ingest import refresh
+    from awltux.ingest.lease import acquire, expire_stale
+
+    if subject_type != "instrument":
+        return {"state": "not_applicable", "note": "a sector has no pipeline to re-run"}
+
+    with _session() as session:
+        expire_stale(session)
+        row = acquire(session, subject_id, note="deep-dive follow-up")
+        session.commit()
+        token = row.token if row is not None else None
+
+    if token is None:
+        return {
+            "state": "skipped",
+            "note": "a refresh of this instrument is already running, so the decision "
+            "waits for its next scheduled pass",
+        }
+
+    steps = [step for step in refresh.steps() if step.job in RESEARCH_FOLLOW_UP]
+    names = ", ".join(step.job for step in steps)
+    progress.note(f"the report is in: re-running {names}")
+    outcome = refresh.run_under_lease(subject_id, token, steps_to_run=steps)
+    if "failed" in outcome:
+        return {"state": "failed", "note": str(outcome.get("failed"))}
+    return {"state": "re-ran", "note": f"{names}: {refresh.summary(outcome)}"}
 
 
 def _ask(

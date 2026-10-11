@@ -230,7 +230,12 @@ def run(
     return {"steps_done": len(sequence), "results": results}
 
 
-def run_under_lease(ticker: str, token: str) -> dict[str, object]:
+def run_under_lease(
+    ticker: str,
+    token: str,
+    *,
+    steps_to_run: Sequence[Step] | None = None,
+) -> dict[str, object]:
     """Run the sequence under a lease this caller already holds, then give the lease up.
 
     The one place that does, because the release has to happen on the failure path as well:
@@ -240,6 +245,10 @@ def run_under_lease(ticker: str, token: str) -> dict[str, object]:
     Two callers, and they differ only in how the lease was taken: the web button claims it
     before starting a thread (so pressing the button twice refuses the second), and the
     scheduled held-name sweep claims one per instrument as it reaches it.
+
+    ``steps_to_run`` narrows the sequence, for a caller that knows which stages its own work
+    invalidated rather than wanting all of them -- the deep-dive's follow-up is the only one.
+    The lease, the renewal, the budget and the per-step recording are the same either way.
 
     Returns what :func:`run` produced, or ``{"failed": ...}`` when a step raised out of the
     sequence itself. It does not raise: whether that failure ends the caller's run is the
@@ -252,7 +261,7 @@ def run_under_lease(ticker: str, token: str) -> dict[str, object]:
     failed: str | None = None
     try:
         with session_scope() as session:
-            outcome = run(session, ticker, token=token)
+            outcome = run(session, ticker, token=token, steps_to_run=steps_to_run)
     except Exception as exc:  # noqa: BLE001 - the lease must be released either way
         failed = f"{type(exc).__name__}: {exc}"
         logger.exception("instrument refresh failed for %s", ticker)

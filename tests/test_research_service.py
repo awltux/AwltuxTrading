@@ -187,6 +187,22 @@ def inline(monkeypatch):
     monkeypatch.setattr(service, "threading", types.SimpleNamespace(Thread=InlineThread))
 
 
+def _release(ticker: str, token: str, *, state: str = "done") -> None:
+    """Give the lease up the way `run_under_lease` does.
+
+    Every fake of that function has to, or the lease it took stays `running` and the *next*
+    acquire -- the follow-up's -- is refused. The first version of these tests recorded only
+    the call and left the lease held, so the follow-up was skipped and the assertion that it
+    ran failed with nothing to say about why.
+    """
+    from awltux.db.session import session_scope
+    from awltux.ingest.lease import release
+
+    with session_scope() as scope:
+        release(scope, ticker, token=token, state=state, note="stubbed refresh")
+        scope.commit()
+
+
 @pytest.fixture(autouse=True)
 def _no_real_refresh(monkeypatch):
     """No test in this file may run the real refresh phase: its steps call providers.
@@ -198,15 +214,10 @@ def _no_real_refresh(monkeypatch):
     (`AGENTS.md` §3), and the guard belongs where the reaching happens.
     """
 
-    def fake(ticker, token):
-        from awltux.db.session import session_scope
-        from awltux.ingest.lease import release
-
-        with session_scope() as scope:
-            # The real one gives the lease up when the sequence ends, and the tests that
-            # care about *when* it is released depend on that being true here as well.
-            release(scope, ticker, token=token, state="done", note="stubbed refresh")
-            scope.commit()
+    def fake(ticker, token, *, steps_to_run=None):
+        # The real one gives the lease up when the sequence ends, and the tests that
+        # care about *when* it is released depend on that being true here as well.
+        _release(ticker, token)
         return {"steps_done": 0, "results": []}
 
     monkeypatch.setattr("awltux.ingest.refresh.run_under_lease", fake)
@@ -498,10 +509,16 @@ class TestTheRefreshPhase:
             )
         )
         session.commit()
-        monkeypatch.setattr(
-            "awltux.ingest.refresh.run_under_lease",
-            lambda *_a, **_k: pytest.fail("a four-minute-old refresh must not be repeated"),
-        )
+
+        def fake(ticker, token, *, steps_to_run=None):
+            # The *full* sequence is what must not be repeated. The follow-up narrows to the
+            # two stages the report changes and is a different question.
+            if steps_to_run is None:
+                pytest.fail("a four-minute-old refresh must not be repeated")
+            _release(ticker, token)
+            return {"steps_done": 0, "results": []}
+
+        monkeypatch.setattr("awltux.ingest.refresh.run_under_lease", fake)
 
         _run(session)
 
@@ -524,17 +541,22 @@ class TestTheRefreshPhase:
             )
         )
         session.commit()
-        seen: list[str] = []
+        # True when the caller asked for the whole sequence rather than a subset.
+        seen: list[bool] = []
 
-        def fake_run(ticker, token):
-            seen.append(ticker)
+        def fake_run(ticker, token, *, steps_to_run=None):
+            assert ticker == TICKER
+            seen.append(steps_to_run is None)
+            _release(ticker, token)
             return {"steps_done": 0, "results": []}
 
         monkeypatch.setattr("awltux.ingest.refresh.run_under_lease", fake_run)
 
         _run(session)
 
-        assert seen == [TICKER]
+        # The stale refresh runs in full; the follow-up runs only the stages the finished
+        # report changes. Both take the same lease, one after the other.
+        assert seen == [True, False]
         assert _reports(session)[0].refresh["state"] == "refreshed"
 
     def test_a_running_refresh_is_not_fought_over(self, session, settings, inline, monkeypatch):
@@ -572,7 +594,7 @@ class TestTheRefreshPhase:
         session.commit()
         observed: list[str | None] = []
 
-        def fake_refresh(ticker, token):
+        def fake_refresh(ticker, token, *, steps_to_run=None):
             """The real one releases the lease when the sequence ends; this mimics that."""
             from awltux.db.session import session_scope
             from awltux.ingest.lease import release
@@ -602,7 +624,7 @@ class TestTheRefreshPhase:
         _instrument(session)
         session.commit()
 
-        def fake_refresh(ticker, token):
+        def fake_refresh(ticker, token, *, steps_to_run=None):
             from awltux.db.session import session_scope
             from awltux.ingest.lease import release
 
@@ -619,6 +641,64 @@ class TestTheRefreshPhase:
         assert row.status == "done"
         assert row.refresh["state"] == "failed"
         assert "EDGAR returned 503" in row.refresh["note"]
+
+
+class TestTheFollowUp:
+    """A finished report has to count before the next scheduled pass.
+
+    `decision` is on its own interval and nothing else triggers it: `research` writes the
+    report and returns, so without this the judgement the reader just paid for is invisible to
+    the decision until the job next reaches that instrument. Measured on the live database
+    2026-10-11: report 4 finished at 15:25:49 and the instrument's next decision ran at
+    15:42:06 -- and the two before it, at 15:25:15 and 14:47:54, carried no `deep_research`
+    block at all.
+    """
+
+    def test_the_decision_is_re_run_for_the_instrument_just_researched(
+        self, session, settings, inline, monkeypatch
+    ):
+        _instrument(session)
+        session.commit()
+        # `None` for the full sequence, otherwise the job ids the caller narrowed to.
+        calls: list[list[str] | None] = []
+
+        def fake_refresh(ticker, token, *, steps_to_run=None):
+            calls.append(None if steps_to_run is None else [s.job for s in steps_to_run])
+            _release(ticker, token)
+            return {"steps_done": 0, "results": []}
+
+        monkeypatch.setattr("awltux.ingest.refresh.run_under_lease", fake_refresh)
+
+        _run(session)
+
+        # The pre-refresh runs everything, then the follow-up runs only what the report
+        # changes -- and `valuation` before `decision`, because the decision reads it.
+        assert calls[0] is None
+        assert calls[-1] == ["valuation", "decision"]
+
+    def test_a_follow_up_that_cannot_run_does_not_lose_the_report(
+        self, session, settings, inline, monkeypatch
+    ):
+        """The report is on disk and the row is closed before the follow-up starts. Failing
+        the run here would report a finished deep-dive as a failed one and hide the document
+        it wrote -- which is the reader's actual purchase."""
+        _instrument(session)
+        session.commit()
+
+        def fake_refresh(ticker, token, *, steps_to_run=None):
+            if steps_to_run is not None:
+                raise RuntimeError("the decision engine is unavailable")
+            _release(ticker, token)
+            return {"steps_done": 0, "results": []}
+
+        monkeypatch.setattr("awltux.ingest.refresh.run_under_lease", fake_refresh)
+
+        _run(session)
+
+        row = _reports(session)[0]
+        assert row.status == "done"
+        assert row.raw_path is not None
+        assert row.verdict
 
 
 class TestHousekeeping:
