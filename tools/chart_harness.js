@@ -105,11 +105,12 @@ function makeContext(rootFontPx) {
   return { sandbox, canvas, calls };
 }
 
-function draw(series, dates, markers, rootFontPx) {
+function draw(series, dates, markers, rootFontPx, valuations) {
   const { sandbox, canvas, calls } = makeContext(rootFontPx);
   canvas.dataset.series = JSON.stringify(series);
   canvas.dataset.dates = JSON.stringify(dates || []);
   canvas.dataset.markers = JSON.stringify(markers || []);
+  canvas.dataset.valuations = JSON.stringify(valuations || []);
 
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(SOURCE, "utf8"), sandbox, { filename: SOURCE });
@@ -120,6 +121,17 @@ function draw(series, dates, markers, rootFontPx) {
 const values = (calls, property) =>
   calls.filter((c) => c.name === "set:" + property).map((c) => c.args[0]);
 const texts = (calls) => calls.filter((c) => c.name === "fillText").map((c) => c.args[0]);
+
+/** Every stroked path as `{ from: [x, y], to: [x, y] }`, in draw order. */
+function segments(calls) {
+  const found = [];
+  let from = null;
+  for (const call of calls) {
+    if (call.name === "moveTo") from = call.args;
+    else if (call.name === "lineTo" && from) { found.push({ from, to: call.args }); from = null; }
+  }
+  return found;
+}
 
 let failures = 0;
 
@@ -193,6 +205,66 @@ check("the axis widens to reach a marker outside the stored series", () => {
   const { calls } = draw([1, 2, 3], ["2026-10-01", "2026-10-05"],
     [{ date: "2026-10-05", price: 9.5, letter: "B" }]);
   assert(texts(calls).includes("9.50"), `the top of the axis should reach the paid price, got ${JSON.stringify(texts(calls))}`);
+});
+
+console.log("\n=== the model's fair value, as a step per calculation");
+
+// Five bars, two calculations. The plot is 584px wide with its padding, so bar 1 sits at
+// 154, bar 3 at 446 and the last bar at 592 -- the assertions are about which bar each
+// step *starts and ends on*, which is the whole contract with the server.
+const STEP_DATES = ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"];
+const STEP_PRICES = [10, 11, 12, 11, 13];
+const STEPS = [
+  { date: "2026-10-02", base: 20, low: 18, high: 22 },
+  { date: "2026-10-04", base: 25, low: 21, high: 29 }
+];
+
+check("a step is drawn flat from its own bar to the next calculation", () => {
+  const { calls } = draw(STEP_PRICES, STEP_DATES, [], undefined, STEPS);
+  const flat = segments(calls).filter((s) => s.from[1] === s.to[1] && s.to[0] > s.from[0]);
+  // Three flat lines exist: four grid rules and the two steps. The steps are the ones
+  // that start at a bar the date list names and stop at another one.
+  assert(flat.some((s) => s.from[0] === 154 && s.to[0] === 446),
+    `expected a step from bar 1 to bar 3, got ${JSON.stringify(flat.map((s) => [s.from[0], s.to[0]]))}`);
+  assert(flat.some((s) => s.from[0] === 446 && s.to[0] === 592),
+    `expected the last step to run to the right edge, got ${JSON.stringify(flat.map((s) => [s.from[0], s.to[0]]))}`);
+});
+
+check("the range is a vertical bar at the start of the step", () => {
+  const { calls } = draw(STEP_PRICES, STEP_DATES, [], undefined, STEPS);
+  // The y axis is a vertical line too, at x = pad, so the whiskers are found by the bar
+  // they start on rather than by counting verticals.
+  const bars = segments(calls).filter((s) => s.from[0] === s.to[0] && s.from[1] !== s.to[1]);
+  const at = (px) => bars.filter((s) => s.from[0] === px);
+  assert(at(154).length === 1 && at(446).length === 1,
+    `expected one range bar at each step's start, got ${JSON.stringify(bars)}`);
+
+  const span = (segment) => Math.abs(segment.from[1] - segment.to[1]);
+  assert(span(at(446)[0]) > span(at(154)[0]),
+    "the wider range (21-29) must draw a taller bar than 18-22");
+});
+
+check("the axis widens to reach the fair value", () => {
+  const { calls } = draw(STEP_PRICES, STEP_DATES, [], undefined, STEPS);
+  // The prices run 10-13; the second range reaches 29.
+  assert(texts(calls).includes("29.00"),
+    `the top of the axis should reach the fair value, got ${JSON.stringify(texts(calls))}`);
+});
+
+check("no valuations leaves the chart exactly as it was", () => {
+  const withNone = draw(STEP_PRICES, STEP_DATES, []).calls;
+  const withEmpty = draw(STEP_PRICES, STEP_DATES, [], undefined, []).calls;
+  assert(JSON.stringify(withNone) === JSON.stringify(withEmpty),
+    "an absent and an empty valuation list must draw the same chart");
+  assert(!values(withNone, "strokeStyle").includes(PALETTE["--bad"]),
+    "a rising series with no valuations must not stroke anything in the fair-value red");
+});
+
+check("a step on a bar the chart does not hold is skipped, not misplaced", () => {
+  const { calls } = draw(STEP_PRICES, STEP_DATES, [], undefined,
+    [{ date: "1999-01-01", base: 20, low: 18, high: 22 }]);
+  assert(!texts(calls).includes("22.00") && !texts(calls).includes("18.00"),
+    "an undrawable step must not widen the axis either");
 });
 
 console.log("\n=== the chart reads the stylesheet rather than a literal");

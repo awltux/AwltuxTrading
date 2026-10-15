@@ -15,7 +15,7 @@ import datetime as dt
 import json
 import re
 
-from awltux.db import IngestRun, InstrumentAlias
+from awltux.db import IngestRun, InstrumentAlias, ValuationRun
 from awltux.web import queries
 from tests.helpers import make_bars, make_instrument
 
@@ -176,6 +176,148 @@ class TestTheWaitingNote:
         assert "AIT" in note
 
 
+class TestTheFairValueOverlay:
+    """The model's answer drawn against the price it is an answer about.
+
+    The panel showed the market and nothing else, so the comparison this whole
+    application exists to make was on a different tab. Measured on the live database
+    2026-10-15: 73 instruments held a drawn valuation, and the axis wanted to grow by a
+    median of 2.1x to reach it -- so most of these are about *where* the band lands
+    rather than about it being absent.
+
+    The bars are dated explicitly here. `make_bars` defaults to the last few days before
+    today, and a valuation is a *date* on that axis: a step dated before the window is
+    correctly dropped, so a test that used the default start would be asserting the
+    empty overlay and calling it a pass.
+    """
+
+    #: Bars run 2026-05-01, 05-02, 05-03 -- the dates the valuations below name.
+    START = dt.date(2026, 5, 1)
+
+    @classmethod
+    def _priced(cls, session, closes):
+        session.add_all(make_bars(TICKER, closes, start=cls.START))
+        session.flush()
+
+    @staticmethod
+    def _valuation(session, *, day, low, base, high, status="ok", hour=17):
+        session.add(
+            ValuationRun(
+                instrument_t212_ticker=TICKER,
+                as_of=dt.datetime.fromisoformat(f"{day}T{hour:02d}:00:00+00:00"),
+                fair_value_low=low,
+                fair_value_base=base,
+                fair_value_high=high,
+                status=status,
+            )
+        )
+        session.flush()
+
+    def test_a_step_starts_on_its_own_bar_and_ends_at_the_edge(self, session):
+        _instrument(session)
+        self._priced(session, [100.0, 101.0, 102.0])
+        self._valuation(session, day="2026-05-02", low=90.0, base=110.0, high=130.0)
+        history = queries.price_history(session, TICKER, limit=400)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert [step["date"] for step in overlay.steps] == ["2026-05-02"]
+        assert overlay.steps[0]["base"] == 110.0
+        assert (overlay.steps[0]["low"], overlay.steps[0]["high"]) == (90.0, 130.0)
+        assert overlay.offscale == 0
+
+    def test_the_last_calculation_of_a_bar_is_the_one_that_stands(self, session):
+        """The job runs on an hourly rotation, so a day usually holds several readings.
+
+        Drawing each of them is a smudge at daily resolution: the chart's x axis is the
+        stored bar dates, and 13 calculations of one day share a single pixel column.
+        """
+        _instrument(session)
+        self._priced(session, [100.0, 101.0])
+        self._valuation(session, day="2026-05-02", low=80.0, base=100.0, high=120.0, hour=9)
+        self._valuation(session, day="2026-05-02", low=90.0, base=111.0, high=132.0, hour=17)
+        history = queries.price_history(session, TICKER, limit=400)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert len(overlay.steps) == 1, "one bar, one step"
+        assert overlay.steps[0]["base"] == 111.0, "the later calculation of the day wins"
+
+    def test_a_refused_valuation_is_not_drawn_as_zero(self, session):
+        """``insufficient_data`` is the model declining to answer, not answering zero.
+
+        The row stores no band at all -- `blend` returns ``None`` for the base and 0.0
+        for the range -- so a chart that plotted it would invent the number the model
+        refused to give, at the bottom of the axis where "worthless" lives.
+        """
+        _instrument(session)
+        self._priced(session, [100.0, 101.0])
+        self._valuation(
+            session, day="2026-05-02", low=0.0, base=None, high=0.0, status="insufficient_data"
+        )
+        history = queries.price_history(session, TICKER, limit=400)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert overlay.steps == []
+        assert overlay.offscale == 0, "a refusal is not an off-scale band"
+
+    def test_a_band_below_the_price_is_drawn(self, session):
+        """The ordinary case, and the one a "does it overlap the axis" rule would drop.
+
+        GWW on 2026-10-15: prices 918-1402 against a band of 178-420. That gap -- the
+        market paying four times what the model says the business is worth -- is the
+        single most interesting thing on the chart.
+        """
+        _instrument(session)
+        self._priced(session, [1000.0, 1200.0, 1400.0])
+        self._valuation(session, day="2026-05-02", low=178.0, base=299.0, high=420.0)
+        history = queries.price_history(session, TICKER, limit=400)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert len(overlay.steps) == 1
+        assert overlay.offscale == 0
+
+    def test_a_band_far_past_every_price_is_counted_rather_than_plotted(self, session):
+        """The three live instruments this is for, and the measurement behind the ratio.
+
+        A linear axis holding AAPL's stored base of 2.27e61 against a $343 price is not a
+        chart with an annotation on it: nineteen months of price collapse into the bottom
+        pixel, and the panel goes from working to unreadable. The band is counted, and
+        the template says how many -- a missing red line must never be a mystery.
+        """
+        _instrument(session)
+        self._priced(session, [100.0, 101.0])
+        self._valuation(session, day="2026-05-02", low=9.09e60, base=2.27e61, high=3.64e61)
+        history = queries.price_history(session, TICKER, limit=400)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert overlay.steps == []
+        assert overlay.offscale == 1
+
+    def test_a_valuation_older_than_the_chart_is_left_off_it(self, session):
+        """The left edge is a real boundary: a step there would claim a date it never had."""
+        _instrument(session)
+        self._priced(session, [100.0, 101.0])
+        self._valuation(session, day="2020-01-01", low=90.0, base=110.0, high=130.0)
+        history = queries.price_history(session, TICKER, limit=400)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert overlay.steps == []
+        assert overlay.offscale == 0
+
+    def test_no_bars_means_no_overlay(self, session):
+        _instrument(session)
+
+        overlay = queries.price_valuations(session, TICKER, [])
+
+        assert overlay.steps == []
+        assert overlay.offscale == 0
+
+
 class TestTheInstrumentPage:
     def test_the_chart_attributes_are_parseable_json(self, client, session):
         """The bug that actually blanked the panel on any instrument with prices.
@@ -231,3 +373,60 @@ class TestTheInstrumentPage:
         body = client.get(f"/instrument/{TICKER}?tab=price").text
         assert "Waiting for data" in body
         assert "needs two" in body
+
+    def test_the_fair_value_steps_reach_the_script_as_json(self, client, session):
+        """Single-quoted, like every other attribute here: `tojson` emits raw quotes."""
+        _instrument(session)
+        # Dated, not `make_bars`' default: a valuation is a date on this axis, and one
+        # dated before the first bar is correctly left off the chart entirely.
+        session.add_all(make_bars(TICKER, [100.0, 101.0, 102.0, 103.0], start=dt.date(2026, 5, 1)))
+        session.add(
+            ValuationRun(
+                instrument_t212_ticker=TICKER,
+                as_of=dt.datetime(2026, 5, 3, 17, 0, tzinfo=dt.UTC),
+                fair_value_low=90.0,
+                fair_value_base=110.0,
+                fair_value_high=130.0,
+                status="ok",
+            )
+        )
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
+
+        steps = json.loads(_attribute(body, "data-valuations"))
+        assert steps == [{"date": "2026-05-03", "base": 110.0, "low": 90.0, "high": 130.0}]
+        assert "The red line is the fair value the model calculated" in body
+
+    def test_a_chart_with_no_valuation_says_nothing_about_one(self, client, session):
+        """A key for a line that is not there reads as a line that failed to draw."""
+        _instrument(session)
+        _bars(session, [100.0, 101.0, 102.0, 103.0])
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
+
+        assert json.loads(_attribute(body, "data-valuations")) == []
+        assert "The red line is the fair value" not in body
+
+    def test_an_off_scale_valuation_is_counted_where_the_reader_can_see_it(self, client, session):
+        """The line is missing, so the page has to say why rather than leave a gap."""
+        _instrument(session)
+        session.add_all(make_bars(TICKER, [100.0, 101.0, 102.0, 103.0], start=dt.date(2026, 5, 1)))
+        session.add(
+            ValuationRun(
+                instrument_t212_ticker=TICKER,
+                as_of=dt.datetime(2026, 5, 3, 17, 0, tzinfo=dt.UTC),
+                fair_value_low=9.09e60,
+                fair_value_base=2.27e61,
+                fair_value_high=3.64e61,
+                status="ok",
+            )
+        )
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
+
+        assert json.loads(_attribute(body, "data-valuations")) == []
+        assert "1 valuation is not drawn" in body
+        assert "leave no room for the prices" in body

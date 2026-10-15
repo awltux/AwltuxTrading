@@ -171,18 +171,20 @@ def _recommendations_region(request: Request, page: int, per_page: int) -> dict[
 
 
 def _price_chart(session, ticker: str, detail: dict[str, Any]) -> dict[str, Any]:
-    """The price panel's three facts: the bars, the reader's fills on them, and what it is
-    waiting for.
+    """The price panel's four facts: the bars, the reader's fills on them, what the model
+    thinks they are worth, and what the panel is waiting for.
 
-    One helper because they are one panel and two of them derive from the first -- the
-    markers are placed on the very bars that are plotted, so the chart and the tables below
-    cannot describe different date windows. The waiting sentence is computed here rather
-    than in the template because reaching it is four different reads.
+    One helper because they are one panel and three of them derive from the first -- the
+    markers and the valuation steps are placed on the very bars that are plotted, so the
+    chart and the tables below cannot describe different date windows. The waiting
+    sentence is computed here rather than in the template because reaching it is four
+    different reads.
     """
     history = queries.price_history(session, ticker, limit=400)
     return {
         "history": history,
         "markers": queries.price_markers(history, detail["trades"], detail["instrument"]),
+        "valuations": queries.price_valuations(session, ticker, history),
         "waiting_note": queries.price_history_waiting_note(
             session, ticker, bars=len(history)
         ),
@@ -341,6 +343,7 @@ def _instrument_context(
         "valuation": detail["valuation"],
         "history": chart["history"],
         "markers": chart["markers"],
+        "valuations": chart["valuations"],
         "waiting_note": chart["waiting_note"],
         "filings": detail["filings"],
         "fundamentals": detail["fundamentals"],

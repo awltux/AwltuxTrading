@@ -717,6 +717,7 @@
           data-series='{{ history | map(attribute="close") | list | tojson }}'
           data-dates='{{ history | map(attribute="date") | list | tojson }}'
           data-markers='{{ markers | tojson }}'
+          data-valuations='{{ valuations.steps | tojson }}'
           {% if waiting_note %}title="{{ waiting_note }}"{% endif %}></canvas>
 </div>
 {% if trades or markers %}
@@ -745,6 +746,27 @@
     {%- endif %}
     A marker sits at the price you actually paid or received — not that day's close — on the
     nearest daily bar.
+  </p>
+{% endif %}
+{% if valuations.steps or valuations.offscale %}
+  {#
+    The fair value is a *step*, not a series: the model recalculates it, and the answer
+    stands until the next calculation. Saying that in words matters, because a red line
+    that appears to move continuously would be claiming an estimate this app does not
+    make between runs.
+
+    The off-scale count is not decoration. A band outside the plotted prices is drawn
+    nowhere, and a reader who has been told the model values the company needs to know
+    whether the line is missing because there is no valuation or because there is one
+    the axis cannot hold.
+  #}
+  <p class="muted small">
+    {%- if valuations.steps %}
+      The red line is the fair value the model calculated, held from the day of the calculation until the next one — or to the end of the chart where there is not one. The bar at its start is that calculation's range, low to high.
+    {%- endif %}
+    {%- if valuations.offscale %}
+      {{ valuations.offscale }} valuation{{ '' if valuations.offscale == 1 else 's' }} {{ 'is' if valuations.offscale == 1 else 'are' }} not drawn: {{ 'its' if valuations.offscale == 1 else 'their' }} range is so far from every price here that the line would leave no room for the prices — that is a valuation to look at, not a chart to widen.
+    {%- endif %}
   </p>
 {% endif %}
 {% if history | length >= 2 %}

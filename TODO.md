@@ -20,6 +20,52 @@ the reason, so it is not re-litigated.
 
 ## Bugs
 
+### `residual_income` compounds on a book value it has already grown, so `ok` valuations reach 1e61
+
+Measured 2026-10-15, found while putting the fair value on the price chart: the valuation
+model stores a base value **2.27e61** for `AAPL_US_EQ` against a share price of $342.96, with
+`status='ok'`, `valuation_confidence` 0.70, and the range note. `BUDA_US_EQ` is 1.06e27
+against $7.49 and `AREC_US_EQ` is 9.7e5 against $1.22. Three of the 73 instruments holding a
+drawn valuation on that date.
+
+`analysis/valuation.py::residual_income`, line 461:
+
+```python
+book *= 1.0 + residual / book_value if book_value else 1.0
+```
+
+`residual` is `(year_roe - ke) * book` (line 459), computed on the book value **the loop is
+already growing**, and the growth factor divides by the *original* `book_value`. So the
+factor is `1 + (year_roe - ke) * book / book_value`, which is itself a function of `book`:
+the growth is quadratic in `book`, not linear, and ten years take it to 1e62.
+
+The model output kept in `valuation_run.model_outputs` names the method and its inputs, which
+is how this was found rather than guessed -- AAPL's last `ok` row (id 24914) holds
+
+| method | value | inputs |
+|---|---|---|
+| `dcf` | 96.83 | discount 10.69%, terminal growth 2.5%, FCFF 98,767m |
+| `epv` | 59.26 | normalised earnings 99,445m, ke 10.69% |
+| `residual_income` | **1.21e62** | book 73,733m, starting ROE **1.519**, ke 10.69%, horizon 10 |
+| `dividend_discount` | 12.77 | DPS 1.02, payout 13.7% |
+| `graham` | 28.94 | excluded from the blend by weight |
+
+The ROE is not the error: 112,010m of net income on 73,733m of book really is 152%, and
+`starting_roe` records it faithfully. The arithmetic is. Dividing by `book` instead of
+`book_value` grows the book at the residual *return*, which fades to the cost of equity at
+the horizon; re-run outside the app with the same inputs, AAPL comes out at **$380.18** a
+share against a $342.96 price (the current form reproduces the stored 1.21e62 exactly, which
+is how the reading above was checked) and BUDA at 122.15 against 7.49.
+
+**Not fixed here** because it changes every stored fair value and therefore every decision
+that read one, and `blend` weights this method into the base. The chart feature that found it
+refuses to *draw* a band more than 3x away from every price on the axis
+(`MAX_OFFSCALE_BAND_RATIO`, `web/queries.py`) and says how many it left off, so the panel
+stays readable in the meantime. Two things to check when fixing it: the `model_outputs`
+recorded on the 25,393 stored rows are the evidence of what each method produced, and
+repairing those rows has the same "recompute or re-derive" question
+`repair_scaled_figures` answered for figures.
+
 ### Three LSE shells hold a stored close of ~1e-6, which is not a price either
 
 Measured 2026-10-09 while fixing the unit bug that made `VWRLl_EQ` read 1.41 against a true

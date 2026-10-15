@@ -2350,6 +2350,123 @@ def _bar_on_or_after(
     return last_day
 
 
+#: How far outside the prices a chart covers a fair-value band may sit and still be drawn,
+#: as a multiple of the nearest price. Beyond it the band is counted instead of plotted, and
+#: the count is stated under the chart. See :func:`_band_is_drawable` for the measurement.
+MAX_OFFSCALE_BAND_RATIO = 3.0
+
+
+def _band_is_drawable(
+    low: float, high: float, *, price_low: float, price_high: float
+) -> bool:
+    """Whether this range belongs on a linear axis built from those prices.
+
+    **Not a tidiness rule.** The axis is linear, so a band drawn 2.27e61 against a $343
+    price does not annotate the chart, it *becomes* the chart: nineteen months of price
+    collapse into the bottom pixel. Three of the 73 instruments holding a valuation on
+    2026-10-15 were in that state (AAPL 2.27e61, BUDA 1.06e27, AREC 9.7e5 against $1.18),
+    and the other 70 wanted the axis to grow by a median of 2.1x -- which is readable, and
+    is the whole point of the overlay.
+
+    3x is the model's own vocabulary for "this value and this price are not talking about
+    the same thing": `analysis/valuation.py` already tells the reader to check the inputs
+    when they differ by more than that. The absurd values themselves are a valuation bug
+    rather than a chart problem, and are recorded in `TODO.md`; this keeps them from taking
+    a working panel down while they are fixed.
+    """
+    return (
+        low <= price_high * MAX_OFFSCALE_BAND_RATIO
+        and high >= price_low / MAX_OFFSCALE_BAND_RATIO
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ValuationOverlay:
+    """The model's fair value as a step function, ready to draw.
+
+    ``steps`` is oldest first, one per bar, which is the resolution the chart has: the
+    valuation job runs on an hourly rotation and a held instrument is often valued
+    several times a day, and a day's worth of steps on a daily axis is a smudge. The
+    last calculation of a bar is the one that stands for that bar.
+    """
+
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    #: Bands that exist but are too far from the prices to draw, counted so that a
+    #: missing red line is never a mystery.
+    offscale: int = 0
+
+
+def price_valuations(
+    session: Session, ticker: str, history: list[dict[str, Any]]
+) -> ValuationOverlay:
+    """Where the deterministic valuation model has put this company, over time.
+
+    The chart drew the market and nothing else, so the one comparison the whole
+    application exists to make -- what the shares cost against what the model thinks
+    they are worth -- was on a different tab.
+
+    Each step runs from the bar it was calculated on to the bar of the next one (or the
+    right edge), and the band's low and high are read at its start, so the chart shows
+    both what the model said and how much of that answer is a range.
+
+    ``status == "ok"`` is the filter rather than a null check on the values: an
+    ``insufficient_data`` row is a *refusal* -- too few methods applied -- and it stores
+    no band at all, so a chart that drew one would be inventing the number the model
+    declined to give. Only the four columns read here are selected: ``inputs`` and
+    ``model_outputs`` are the two JSON blobs on this table, and loading a year of them
+    to plot two floats would be the expensive half of nothing.
+    """
+    if not history:
+        return ValuationOverlay()
+    first_day, last_day = history[0]["date"], history[-1]["date"]
+    prices = [bar["close"] for bar in history if bar["close"] is not None]
+    if not prices:
+        return ValuationOverlay()
+    price_low, price_high = min(prices), max(prices)
+
+    rows = session.execute(
+        select(
+            ValuationRun.as_of,
+            ValuationRun.fair_value_low,
+            ValuationRun.fair_value_base,
+            ValuationRun.fair_value_high,
+        )
+        .where(ValuationRun.instrument_t212_ticker == ticker)
+        .where(ValuationRun.status == "ok")
+        .where(ValuationRun.fair_value_base.is_not(None))
+        # A date below the window cannot be drawn on it, and bounding the read here
+        # keeps a year of hourly rows off the page entirely.
+        .where(
+            ValuationRun.as_of
+            >= dt.datetime.fromisoformat(first_day).replace(tzinfo=dt.UTC)
+        )
+        .order_by(ValuationRun.as_of)
+    ).all()
+
+    # One step per bar, keeping the newest calculation that snaps to it -- two
+    # calculations a day apart can land on the same bar when the first is a non-trading
+    # day, and the chart has no way to tell them apart.
+    by_bar: dict[str, dict[str, Any]] = {}
+    offscale = 0
+    for as_of, low, base, high in rows:
+        if low is None or base is None or high is None:
+            continue
+        day = _bar_on_or_after(history, as_of.date(), first_day, last_day)
+        if day is None:
+            continue
+        if not _band_is_drawable(low, high, price_low=price_low, price_high=price_high):
+            offscale += 1
+            continue
+        by_bar[day] = {
+            "date": day,
+            "base": float(base),
+            "low": float(low),
+            "high": float(high),
+        }
+
+    return ValuationOverlay(steps=[by_bar[day] for day in sorted(by_bar)], offscale=offscale)
+
+
 def price_history_waiting_note(session: Session, ticker: str, *, bars: int) -> str | None:
     """What the price panel is waiting for, or ``None`` once it can draw.
 

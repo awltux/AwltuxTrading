@@ -207,11 +207,17 @@
     var series = parseList(canvas.dataset.series);
     var dates = parseList(canvas.dataset.dates);
     var markers = parseList(canvas.dataset.markers);
+    var valuations = parseList(canvas.dataset.valuations);
 
     var line = styleValue("--line");
     var muted = styleValue("--muted");
     var up = styleValue("--good");
     var down = styleValue("--bad");
+    // The fair-value step is the palette's red as well, asked for by name. A marker is
+    // blue precisely to avoid this collision -- red and green already mean "falling" and
+    // "rising" on this chart -- but the reference line is told apart by its *shape*: it
+    // is flat, it has a range whisker at its start, and the key underneath names it.
+    var fair = styleValue("--bad");
 
     var ratio = window.devicePixelRatio || 1;
     var width = canvas.clientWidth || 600;
@@ -265,6 +271,35 @@
       if (price < min) min = price;
       if (price > max) max = price;
     });
+
+    // Only the steps the chart can place: one whose bar the date list does not hold
+    // cannot be drawn, and it must not widen the axis for a line nobody can see.
+    var steps = [];
+    valuations.forEach(function (step) {
+      var start = dates.indexOf(step.date);
+      var base = Number(step.base);
+      if (start < 0 || !isFinite(base)) return;
+      steps.push({ start: start, base: base, low: Number(step.low), high: Number(step.high) });
+    });
+    // Each step runs to the next *drawn* step's bar, or to the right edge where there is
+    // not one. The server sends them oldest first, so the start indices only increase.
+    steps.forEach(function (step, index) {
+      var next = steps[index + 1];
+      step.end = next ? next.start : series.length - 1;
+      if (step.end < step.start) step.end = series.length - 1;
+    });
+
+    // The model's own answer widens the axis for the same reason, and with more force:
+    // a fair value is a claim about what the shares are worth, and a chart that clipped
+    // it would be hiding the disagreement the reader came to see. The server has already
+    // dropped the bands it judged too far away to draw -- see `queries.price_valuations`.
+    steps.forEach(function (step) {
+      [step.low, step.base, step.high].forEach(function (value) {
+        if (!isFinite(value)) return;
+        if (value < min) min = value;
+        if (value > max) max = value;
+      });
+    });
     if (max === min) { max = min + 1; }
 
     function x(i) { return pad + (i / (series.length - 1)) * plotWidth; }
@@ -290,6 +325,31 @@
     ctx.lineTo(x(0), pad + plotHeight);
     ctx.closePath();
     ctx.fill();
+
+    // The model's fair value, as a step rather than a series: the answer stands from the
+    // day it was calculated until the day of the next calculation, or to the right edge
+    // where there is not one. The range is read at the *start* of the step, so the
+    // whisker says how much of that answer is a range and the flat line says what the
+    // base case was. Drawn under the axis labels and the markers, which are the two
+    // things a reader must still be able to read.
+    if (steps.length) {
+      ctx.strokeStyle = fair;
+      ctx.lineWidth = 1.4;
+      steps.forEach(function (step) {
+        var startX = x(step.start);
+        ctx.beginPath();
+        ctx.moveTo(startX, y(step.base));
+        ctx.lineTo(x(step.end), y(step.base));
+        ctx.stroke();
+
+        if (isFinite(step.low) && isFinite(step.high)) {
+          ctx.beginPath();
+          ctx.moveTo(startX, y(step.low));
+          ctx.lineTo(startX, y(step.high));
+          ctx.stroke();
+        }
+      });
+    }
 
     // Axis labels: only the extremes, so the chart stays readable.
     ctx.fillStyle = muted;
