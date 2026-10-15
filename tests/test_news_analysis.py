@@ -277,6 +277,32 @@ class TestRunAnalysis:
         assert report["appraised"] == 3
         assert report["deep_analysed"] == 1
 
+    def test_no_ceiling_is_not_a_ceiling_of_zero(self, session, universe, settings):
+        """A scoped refresh passes ``limit=None``: the ration spreads deep reads across a
+        universe, and one company has nothing to spread it over.
+
+        The check against it was ``deep_analysed >= run.limit``, whose *left* operand is
+        evaluated first -- so ``int >= None`` raised TypeError before ``and analyser is not
+        None`` could short-circuit it, and the whole step failed on every refresh that had a
+        story worth reading. Reported from the Refresh tab: "news_analysis -- TypeError: '>='
+        not supported between instances of 'int' and 'NoneType'", which is why the failure
+        only ever appeared on the instruments that actually had news.
+        """
+        for index in range(3):
+            make_item(
+                session,
+                f"Acme warns on profit number {index}",
+                url=f"https://www.reuters.com/unbounded-{index}",
+            )
+
+        report = news_analysis.analyse_universe(
+            session, settings=settings, analyser=fake_analyser, limit=None
+        )
+
+        assert report["appraised"] == 3
+        # All three, not one: with no ceiling the paid half is not rationed at all.
+        assert report["deep_analysed"] == 3
+
     def test_re_running_does_not_re_appraise_a_fresh_verdict(self, session, universe, settings):
         make_item(session, "Acme warns on profit")
         first = news_analysis.analyse_universe(session, settings=settings, analyser=fake_analyser)

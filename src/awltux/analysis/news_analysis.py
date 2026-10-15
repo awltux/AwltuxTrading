@@ -528,8 +528,26 @@ class _Run:
     held_sectors: set[str]
     stale_before: dt.datetime
     existing: dict[tuple[int, str, str], NewsAnalysis]
-    limit: int
+    #: How many paid reads this run may make, or ``None`` for no ceiling -- see
+    #: :attr:`ration_spent`.
+    limit: int | None
     report: AnalysisReport
+
+    @property
+    def ration_spent(self) -> bool:
+        """Whether the paid half's ration for this run is used up. Never, with no ceiling.
+
+        ``limit`` is ``None`` for a scoped run, and that is not the same as zero: the ration
+        exists to spread a fixed number of deep reads across a universe, and a refresh asking
+        about one company has nothing to spread it over, so its caller passes no ceiling.
+
+        Comparing against an absent ceiling is what broke every scoped refresh that had a
+        story worth reading -- ``int >= None`` raises TypeError, and it was the left operand of
+        an ``and``, so it was evaluated before ``run.analyser is not None`` could short-circuit
+        it. The step died rather than appraising without the paid half, which is why it
+        happened only on the instruments that actually had news.
+        """
+        return self.limit is not None and self.report.deep_analysed >= self.limit
 
 
 def _analyser_for(run: _Run) -> DeepAnalyser | None:
@@ -539,7 +557,7 @@ def _analyser_for(run: _Run) -> DeepAnalyser | None:
     rationed, because an unbounded sweep after a quiet period would run into the
     spend ceiling and leave the rest unappraised with no explanation.
     """
-    if run.report.deep_analysed >= run.limit and run.analyser is not None:
+    if run.ration_spent:
         return None
     return run.analyser
 
@@ -905,7 +923,7 @@ def analyse_universe(
     tickers: list[str] | None = None,
     analyser: DeepAnalyser | None = None,
     days: int = 14,
-    limit: int = 60,
+    limit: int | None = 60,
     refresh_after_days: int = 7,
 ) -> dict[str, Any]:
     """Appraise recent, interesting news for the analysed universe.
@@ -919,6 +937,9 @@ def analyse_universe(
     ``limit`` caps how many model calls one run can make. The callers are scheduled
     jobs with a spend ceiling above them, and an unbounded sweep after a quiet
     period would run into it and leave the rest unappraised with no explanation.
+    ``None`` means no ceiling: that is what a scoped refresh asks for, because the ration
+    spreads deep reads across the universe and a one-company run has nothing to spread it
+    over. See :attr:`_Run.ration_spent` for what comparing against it used to do.
     """
     settings = settings or get_settings()
     report = AnalysisReport()
