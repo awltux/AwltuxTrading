@@ -37,7 +37,11 @@ def quiet_jobs(monkeypatch):
     """
     import awltux.scheduler.service as service_module
 
-    monkeypatch.setattr(service_module, "execute_job", lambda spec: None)
+    # The real signature, ``cause`` included. A job that is owed a catch-up is scheduled with
+    # its cause as a second positional argument (`SchedulerService._job_args`), so a stub
+    # taking only ``spec`` passes while nothing is overdue and raises inside APScheduler the
+    # moment one is -- which is a fact about the run history, not about the code under test.
+    monkeypatch.setattr(service_module, "execute_job", lambda spec, cause=None: None)
 
 
 class TestEveryEnabledJobIsScheduled:
