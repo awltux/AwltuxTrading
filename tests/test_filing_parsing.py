@@ -191,6 +191,53 @@ class TestReadingTheHeldFilings:
         ]
         assert stored.parsed["extraction"]["metrics"]["revenue"]["value"] == 1_000_000.0
 
+    def test_the_summary_is_stored_against_the_row(self, settings, session, monkeypatch):
+        """`decision/service.py::_filing_summary` reads `parsed["summary"]`, and nothing
+        wrote that key -- so the decision state's filing-summary slot was empty on every
+        decision this application has ever made."""
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Revenue 1,000,000</p>")
+        filing = _filing(session, url="https://sec.test/a.htm", raw_path=raw)
+        session.commit()
+        monkeypatch.setattr(parsing, "extract_filing", lambda *a, **k: self._result())
+        monkeypatch.setattr(
+            parsing,
+            "summarise_filing",
+            lambda *a, **k: {"business_summary": "Makes things.", "llm_call_id": 7},
+        )
+
+        parsing.extract_held_filings(session, settings=settings)
+        session.commit()
+
+        stored = session.get(Filing, filing.id)
+        assert stored.parsed["summary"]["business_summary"] == "Makes things."
+
+    def test_a_summary_that_cannot_be_had_does_not_cost_the_extraction(
+        self, settings, session, monkeypatch
+    ):
+        """The figures are what every downstream marker runs on and the narrative is a
+        bonus, so a summariser that raises must not turn a read filing into a failed one --
+        which would also retire it, because only a parsed document is never retried."""
+        _seed(session)
+        raw = _document(settings, "report.htm", "<p>Revenue 1,000,000</p>")
+        filing = _filing(session, url="https://sec.test/a.htm", raw_path=raw)
+        session.commit()
+        monkeypatch.setattr(parsing, "extract_filing", lambda *a, **k: self._result())
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("the summariser exploded")
+
+        monkeypatch.setattr(parsing, "summarise_filing", boom)
+
+        report = parsing.extract_held_filings(session, settings=settings)
+        session.commit()
+
+        assert report["parsed"] == 1
+        stored = session.get(Filing, filing.id)
+        assert stored.status == "parsed"
+        assert stored.parsed["summary"] is None
+        assert stored.parsed["extraction"]["metrics"]["revenue"]["value"] == 1_000_000.0
+
     def test_a_parsed_filing_is_never_read_again(self, settings, session, monkeypatch):
         """One paid call per document: this is a model read over a document that can be
         hundreds of thousands of characters."""

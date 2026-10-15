@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
 from awltux.db import Filing, FundamentalPeriod, Instrument
-from awltux.llm.extractors import extract_filing
+from awltux.llm.extractors import extract_filing, summarise_filing
 from awltux.metrics import NON_MONETARY_METRICS
 from awltux.scheduler import progress
 
@@ -231,8 +231,35 @@ def _read_one(
         session.flush()
         return
 
+    # The analyst-facing summary, read from the same document on the *cheap* model --
+    # `deepseek.model_for_purpose` routes `filing_summary` to `model_bulk`, because the
+    # expensive one is justified only for the full-document extraction. This is what the
+    # decision state's `filing_summary` slot has always expected and nothing ever wrote.
+    summary = _summarise(document, name=name, settings=settings)
+    _record_parsed(session, filing, result, summary=summary, report=report)
+
+
+def _record_parsed(
+    session: Session,
+    filing: Filing,
+    result: Any,
+    *,
+    summary: dict[str, Any] | None,
+    report: dict[str, Any],
+) -> None:
+    """Store what the document said against its row, and count it.
+
+    The status is written in the same statement that stores the payload, which is what lets
+    a reader ask "has this document been read" as one condition rather than as a property of
+    a JSON column -- see `decision.service._last_read_filing` for why the obvious test is
+    wrong.
+    """
     filing.parsed = {
         "extraction": result.as_dict(),
+        # `None` when the summariser is not configured or the call could not be made, which
+        # the decision reads as "nothing to say" -- the same thing it reads for a payload
+        # written before this key existed.
+        "summary": summary,
         "extractor_version": EXTRACTOR_VERSION,
         "llm_call_id": result.llm_call_id,
     }
@@ -245,6 +272,21 @@ def _read_one(
 
     _note_discoveries(session, filing.instrument_t212_ticker, result, report)
     _store_period(session, filing, result, report)
+
+
+def _summarise(document: str, *, name: str, settings: Settings) -> dict[str, Any] | None:
+    """The filing's analyst-facing summary, or ``None`` when it cannot be had.
+
+    Never raises. `summarise_filing` already answers ``None`` for the two failures it
+    expects -- no credential configured, and a budget refusal -- and anything else escaping
+    from here would cost the *extraction*, which has been paid for already and is what every
+    downstream marker runs on. Best-effort by construction rather than by accident.
+    """
+    try:
+        return summarise_filing(document, company_name=name, settings=settings)
+    except Exception:  # noqa: BLE001 - the extraction is already banked
+        logger.exception("filing summary failed for %s", name)
+        return None
 
 
 def _store_period(

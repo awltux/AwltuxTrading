@@ -252,10 +252,30 @@ def _deep_research(session: Session, ticker: str) -> dict[str, Any] | None:
     }
 
 
-def _last_filing(session: Session, ticker: str) -> Filing | None:
+def _last_read_filing(session: Session, ticker: str) -> Filing | None:
+    """The newest filing whose document has actually been read, or ``None``.
+
+    **Read, not merely fetched.** Both things the state takes from a filing -- the cited
+    figures and the summary -- live in ``parsed``, so a row that has only been downloaded
+    contributes nothing while looking exactly like evidence that was considered. Measured
+    2026-10-15: all ten in-universe instruments holding a parsed filing *also* held a newer
+    unparsed one, so every one of them reached the engine with no filing evidence at all and
+    two of the state's narrative slots permanently empty.
+
+    The test is ``status == "parsed"`` and not ``parsed IS NOT NULL``, which does not mean
+    what it looks like: ``Filing.parsed`` is a ``JSON`` column, and SQLAlchemy renders a
+    Python ``None`` as the JSON literal ``null`` rather than as SQL NULL, so every fetched
+    but unread filing would pass that filter. The status is set in the same write that
+    stores the payload, so it says exactly the thing this asks.
+
+    ``None`` is the honest answer while the parse backlog has not reached this instrument;
+    the state then carries no filing block, which is also what a filing-less company looks
+    like.
+    """
     return session.execute(
         select(Filing)
         .where(Filing.instrument_t212_ticker == ticker)
+        .where(Filing.status == "parsed")
         .order_by(desc(Filing.filed_at))
         .limit(1)
     ).scalar_one_or_none()
@@ -380,7 +400,7 @@ def decide_instrument(
         else None
     )
     news = _recent_news(session, instrument.t212_ticker)
-    filing = _last_filing(session, instrument.t212_ticker)
+    filing = _last_read_filing(session, instrument.t212_ticker)
     deep_research = _deep_research(session, instrument.t212_ticker)
 
     valuation = None
@@ -585,17 +605,27 @@ def _extracted_facts(filing: Filing | None) -> dict[str, Any] | None:
 
 
 def _filing_summary(filing: Filing | None) -> str | None:
+    """What the filing summariser said, as one block of text for the prompt.
+
+    Four of the summariser's fields are lists -- the red flags, the positives, the risks,
+    what the document does not say -- and they are joined rather than interpolated: an
+    f-string renders a list as its Python repr, so the engine would be handed
+    ``principal risks: ['a', 'b']`` where the reader of a prompt wants prose.
+    """
     if filing is None or not isinstance(filing.parsed, dict):
         return None
     summary = filing.parsed.get("summary")
-    if isinstance(summary, dict):
-        parts = [
-            f"{key.replace('_', ' ')}: {value}"
-            for key, value in summary.items()
-            if value and key != "llm_call_id"
-        ]
-        return "\n".join(parts)[:4000] or None
-    return str(summary)[:4000] if summary else None
+    if not isinstance(summary, dict):
+        return str(summary)[:4000] if summary else None
+    parts = []
+    for key, value in summary.items():
+        if not value or key == "llm_call_id":
+            continue
+        rendered = (
+            "; ".join(str(item) for item in value) if isinstance(value, list) else str(value)
+        )
+        parts.append(f"{key.replace('_', ' ')}: {rendered}")
+    return "\n".join(parts)[:4000] or None
 
 
 def _narrative(

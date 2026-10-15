@@ -1105,3 +1105,102 @@ class TestUnreadablePortfolio:
         assert verdict.is_suggestion is True
         checks = {check.name: check for check in verdict.checks}
         assert "portfolio_limits" not in checks
+
+
+class TestWhichFilingTheStateReads:
+    """Both things the state takes from a filing -- the cited figures and the summary --
+    live in ``parsed``, so the row it is handed has to be one that has been *read*.
+
+    Found 2026-10-15 while fixing the empty filing summary: all ten in-universe instruments
+    holding a parsed filing also held a newer unparsed one (this year's report, fetched and
+    not yet read), so every one of them reached the engine with `filed_facts` and
+    `filing_summary` both empty -- which is also what a company with no filings looks like.
+    """
+
+    @staticmethod
+    def _filing(session, ticker: str, *, filed_at, parsed=None, url="https://sec.test/a.htm"):
+        from awltux.db import Filing, Instrument
+
+        if session.get(Instrument, ticker) is None:
+            session.add(make_instrument(ticker))
+            session.flush()
+        row = Filing(
+            instrument_t212_ticker=ticker,
+            source="edgar",
+            filing_type="10-K",
+            filed_at=filed_at,
+            url=url,
+            status="parsed" if parsed is not None else "fetched",
+            parsed=parsed,
+        )
+        session.add(row)
+        session.flush()
+        return row
+
+    def test_the_newest_read_filing_is_chosen_over_a_newer_unread_one(self, session):
+        from awltux.decision.service import _last_read_filing
+
+        make = self._filing
+        read = make(
+            session,
+            "FIL_US_EQ",
+            filed_at=dt.datetime(2025, 3, 1, tzinfo=dt.UTC),
+            url="https://sec.test/2025.htm",
+            parsed={"extraction": {"metrics": {}}, "summary": {"business_summary": "Old."}},
+        )
+        make(
+            session,
+            "FIL_US_EQ",
+            filed_at=dt.datetime(2026, 3, 1, tzinfo=dt.UTC),
+            url="https://sec.test/2026.htm",
+            parsed=None,
+        )
+
+        assert _last_read_filing(session, "FIL_US_EQ").id == read.id
+
+    def test_an_instrument_with_nothing_read_yet_has_no_filing(self, session):
+        from awltux.decision.service import _last_read_filing
+
+        self._filing(
+            session, "FIL_US_EQ", filed_at=dt.datetime(2026, 3, 1, tzinfo=dt.UTC), parsed=None
+        )
+
+        assert _last_read_filing(session, "FIL_US_EQ") is None
+
+    def test_list_fields_read_as_prose_rather_than_as_a_python_repr(self, session):
+        """An f-string renders a list as `['a', 'b']`, and that is what the engine would be
+        handed for four of the summariser's fields."""
+        from awltux.decision.service import _filing_summary
+
+        filing = self._filing(
+            session,
+            "FIL_US_EQ",
+            filed_at=dt.datetime(2026, 3, 1, tzinfo=dt.UTC),
+            parsed={
+                "summary": {
+                    "business_summary": "Makes things.",
+                    "principal_risks": ["input costs", "one customer"],
+                    "llm_call_id": 7,
+                }
+            },
+        )
+
+        text = _filing_summary(filing)
+
+        assert "business summary: Makes things." in text
+        assert "principal risks: input costs; one customer" in text
+        assert "[" not in text and "llm_call_id" not in text
+
+    def test_a_filing_read_before_summaries_existed_says_nothing(self, session):
+        """Payloads written before this key existed hold no summary, and a missing one has
+        to read as "nothing to say" rather than raising."""
+        from awltux.decision.service import _filing_summary
+
+        filing = self._filing(
+            session,
+            "FIL_US_EQ",
+            filed_at=dt.datetime(2026, 3, 1, tzinfo=dt.UTC),
+            parsed={"extraction": {"metrics": {}}, "extractor_version": "filing-extraction/v1"},
+        )
+
+        assert _filing_summary(filing) is None
