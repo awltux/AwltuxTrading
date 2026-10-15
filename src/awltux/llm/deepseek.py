@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
 from awltux.db import LLMCall, release_before_network, session_scope
@@ -191,16 +192,33 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int, cached: int
     )
 
 
-def month_to_date_spend() -> float:
-    """Total recorded spend in the current calendar month (UTC)."""
+def month_to_date_spend(session: Session | None = None) -> float:
+    """Total recorded spend in the current calendar month (UTC).
+
+    Takes an optional session so a caller that already holds one can read the same figure
+    without opening a second connection. The credit strip shows this number against the
+    ceiling, and a strip that computed its own version would be free to disagree with the
+    refusal it is there to explain.
+    """
     now = dt.datetime.now(dt.UTC)
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    with session_scope() as session:
-        total = session.execute(
-            select(func.coalesce(func.sum(LLMCall.cost_usd), 0.0))
-            .where(LLMCall.created_at >= start)
-            .where(LLMCall.ok.is_(True))
-        ).scalar_one()
+    if session is not None:
+        return _spend_since(session, start)
+    with session_scope() as scope:
+        return _spend_since(scope, start)
+
+
+def _spend_since(session: Session, start: dt.datetime) -> float:
+    """Recorded cost of the calls that succeeded since ``start``.
+
+    Successful calls only, which is the rule :meth:`DeepSeekClient._check_budget` applies: a
+    call that failed cost nothing, and counting it would spend the ceiling twice.
+    """
+    total = session.execute(
+        select(func.coalesce(func.sum(LLMCall.cost_usd), 0.0))
+        .where(LLMCall.created_at >= start)
+        .where(LLMCall.ok.is_(True))
+    ).scalar_one()
     return float(total or 0.0)
 
 

@@ -38,6 +38,11 @@ def _call(session, *, provider: str, error: str | None, ok: bool, cost: float | 
     session.commit()
 
 
+def _row(status: dict, provider: str) -> dict:
+    """One provider's line out of `provider_status`."""
+    return next(row for row in status["balances"] if row["provider"] == provider)
+
+
 class TestWhatItReports:
     def test_a_balance_is_shown_with_its_currency(self, session, settings):
         _store(session, balances.Balance("deepseek", available=True, amount=21.68, currency="USD"))
@@ -281,6 +286,120 @@ class TestWhatOurOwnCallsShow:
         assert queries.provider_status(session, settings=settings)["warnings"] == []
 
 
+class TestTheAppsOwnCeiling:
+    """The ceiling is ours, and nothing else on the page could report it.
+
+    `llm.monthly_budget_usd` is checked before every DeepSeek call, so at the ceiling that
+    client refuses to make the call at all. The provider is untouched, its balance endpoint
+    still reports money, and the refusal happens before the request so it writes no
+    `llm_call` row either -- every signal the strip had was about the *provider* paying or
+    being unreachable, and this is neither.
+
+    Reported 2026-10-15: refusals kept arriving and the header said nothing was wrong.
+    """
+
+    def test_spend_at_the_ceiling_is_flagged_and_names_whose_limit_it_is(self, session, settings):
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=1.25)
+
+        row = _row(queries.provider_status(session, settings=settings), "deepseek")
+
+        assert row["over_budget"] is True
+        assert row["budget_usd"] == 1.0
+        # The one reading that must not be available: a reader who thinks the provider cut
+        # the account off goes and checks an account that is fine.
+        assert "not blocked anything" in row["budget_note"]
+        assert "not an outage" in row["budget_note"]
+        assert "monthly_budget_usd" in row["budget_note"]
+
+    def test_spend_below_the_ceiling_is_not_flagged(self, session, settings):
+        settings.yaml.llm.monthly_budget_usd = 40.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=1.25)
+
+        row = _row(queries.provider_status(session, settings=settings), "deepseek")
+
+        assert row["over_budget"] is False
+        assert row["budget_note"] is None
+
+    def test_spend_close_to_the_ceiling_warns_before_anything_is_refused(self, session, settings):
+        """Before the cutoff, because at the cutoff it is already too late: the refusal has
+        happened, every model-backed job is on its deterministic fallback, and the run that
+        wanted a judgement did not get one. The warning is only worth anything while there is
+        still a decision to make -- the same argument the provider balance floor makes."""
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=0.96)
+
+        row = _row(queries.provider_status(session, settings=settings), "deepseek")
+
+        assert row["near_budget"] is True
+        assert row["over_budget"] is False
+        assert "Nothing is refused yet" in row["budget_note"]
+
+    def test_spend_far_below_the_ceiling_is_quiet(self, session, settings):
+        """The strip is silent when nothing is wrong, or it is a strip nobody reads."""
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=0.50)
+
+        row = _row(queries.provider_status(session, settings=settings), "deepseek")
+
+        assert row["near_budget"] is False
+        assert row["over_budget"] is False
+        assert row["budget_note"] is None
+
+    def test_the_two_states_do_not_both_apply(self, session, settings):
+        """Red is the stronger claim, and a figure cannot be both."""
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=1.25)
+
+        row = _row(queries.provider_status(session, settings=settings), "deepseek")
+
+        assert row["over_budget"] is True
+        assert row["near_budget"] is False
+
+    def test_a_call_that_failed_does_not_spend_the_ceiling(self, session, settings):
+        """The rule `_check_budget` applies: a call that errored cost nothing, and counting
+        it would spend the ceiling twice."""
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error="boom", ok=False, cost=5.00)
+
+        assert _row(queries.provider_status(session, settings=settings), "deepseek")[
+            "over_budget"
+        ] is False
+
+    def test_a_provider_with_no_ceiling_is_not_flagged_by_one(self, session, settings):
+        """The ceiling is checked for one client. Putting the badge on a provider it does
+        not govern would name the wrong cause, which is the whole failure being fixed."""
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(
+            session,
+            balances.Balance("deepseek", amount=21.68, currency="USD"),
+            balances.Balance("fal", amount=11.10, currency="USD"),
+        )
+        _call(session, provider="deepseek", error=None, ok=True, cost=1.25)
+
+        fal = _row(queries.provider_status(session, settings=settings), "fal")
+
+        assert fal["over_budget"] is False
+        assert fal["budget_usd"] is None
+
+    def test_a_ceiling_of_zero_is_no_ceiling(self, session, settings):
+        """`_check_budget` returns immediately at zero, so nothing is being refused."""
+        settings.yaml.llm.monthly_budget_usd = 0.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=99.00)
+
+        row = _row(queries.provider_status(session, settings=settings), "deepseek")
+
+        assert row["over_budget"] is False
+        assert row["budget_usd"] is None
+
+
 class TestBeforeItHasEverRun:
     def test_nothing_stored_names_both_providers_and_says_why(self, session, settings):
         """The job runs on start, so this is the first seconds of a fresh container --
@@ -325,6 +444,50 @@ class TestTheBannerOnAPage:
         assert "Model provider credit" not in body, "the prose is gone"
         low = body.split("balance low", 1)[1].split("</span>", 1)[0]
         assert "fal" in low and "deepseek" not in low, "the outline is on the short one"
+
+    def test_a_spent_ceiling_is_a_red_figure_that_says_whose_limit_it_is(self, client, session, settings):
+        """The badge and the tooltip, on the page.
+
+        Red rather than amber because the reader's next action is different from the one a
+        low balance asks for: nothing needs topping up, a number in `config.yaml` needs
+        changing. The tooltip is what stops the provider's name beside a red figure reading
+        as "they cut us off".
+        """
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=1.25)
+
+        body = client.get("/dashboard").text
+
+        assert "spent / 30d" in body
+        # The tooltip exists only on the over-budget path, so locating the badge as the span
+        # that precedes the spend figure is the assertion that it landed on *that* figure
+        # rather than on something else red on the page.
+        before = body.split("spent / 30d", 1)[0]
+        assert 'class="bad"' in before[before.rindex("<span") :]
+        assert "not an outage" in body
+        assert "monthly_budget_usd" in body
+
+    def test_a_healthy_ceiling_leaves_the_strip_unalarmed(self, client, session, settings):
+        settings.yaml.llm.monthly_budget_usd = 40.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=1.25)
+
+        body = client.get("/dashboard").text
+
+        assert "not an outage" not in body
+        assert "Nothing is refused yet" not in body
+
+    def test_a_ceiling_that_is_nearly_spent_is_amber_before_it_is_red(self, client, session, settings):
+        settings.yaml.llm.monthly_budget_usd = 1.0
+        _store(session, balances.Balance("deepseek", amount=21.68, currency="USD"))
+        _call(session, provider="deepseek", error=None, ok=True, cost=0.96)
+
+        body = client.get("/dashboard").text
+
+        before = body.split("spent / 30d", 1)[0]
+        assert 'class="warn"' in before[before.rindex("<span") :]
+        assert "Nothing is refused yet" in body
 
     def test_a_full_balance_is_not_outlined(self, client, session, settings):
         settings.yaml.app.balance_warn_below_usd = 5.0

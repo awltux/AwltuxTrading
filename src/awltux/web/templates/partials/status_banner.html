@@ -46,9 +46,18 @@
           {% if row.spent is not none %}
             {# A `~` and a tooltip when the figure came from differencing the provider's own
                balance rather than from a ledger of our calls: it is a floor, and the reason
-               it is a floor is in `row.note`. #}
-            <span class="muted small"
-                  {% if row.spent_source == 'balance_delta' %}title="{{ row.note }}"{% endif %}>
+               it is a floor is in `row.note`.
+
+               **Red when this app's own monthly ceiling is spent, amber when it is nearly
+               spent.** Neither failure produces any other signal: the provider is fine, its
+               balance still reads, and the refusal happens before the call is made so nothing
+               reaches `llm_call` either. This figure is the only place on the page either can
+               show. The tooltip says whose limit it is, because the obvious reading of a red
+               figure beside a provider's name is "they cut us off" -- the one thing that has
+               not happened. #}
+            <span class="{% if row.over_budget %}bad{% elif row.near_budget %}warn{% else %}muted small{% endif %}"
+                  {% if row.budget_note %}title="{{ row.budget_note }}"
+                  {%- elif row.spent_source == 'balance_delta' %}title="{{ row.note }}"{% endif %}>
               &middot; {% if row.spent_source == 'balance_delta' %}~{% endif %}{{ row.spent | money('USD') }} spent / {{ status.window_days }}d
             </span>
           {% endif %}

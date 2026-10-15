@@ -553,7 +553,14 @@ def _payment_failures(session: Session, *, days: int = 7) -> dict[str, str]:
     return found
 
 
-def _credit_warnings(balance: Any, *, failure: str | None, floor: float) -> list[str]:
+def _credit_warnings(
+    balance: Any,
+    *,
+    failure: str | None,
+    floor: float,
+    over_budget: bool = False,
+    near_budget: bool = False,
+) -> list[str]:
     """Every reason this provider deserves a line in the banner, worded for a reader.
 
     Unreadable is deliberately not one of them: several providers cannot be asked at all
@@ -561,6 +568,19 @@ def _credit_warnings(balance: Any, *, failure: str | None, floor: float) -> list
     reads.
     """
     out: list[str] = []
+    if over_budget:
+        # Worded as *ours* every time. The provider is not short of money and has refused
+        # nothing; the ceiling is a setting, and a reader who reads this as an outage will
+        # go and check an account that is fine.
+        out.append(
+            f"{balance.provider} calls are refused by this app's own monthly ceiling, "
+            f"not by the provider"
+        )
+    elif near_budget:
+        out.append(
+            f"{balance.provider} is near this app's own monthly ceiling; calls stop when "
+            f"it is reached, and the stop is a setting rather than the account running out"
+        )
     if balance.available is False:
         out.append(f"{balance.provider} reports it cannot pay; model calls will fail")
     elif balance.amount is not None and balance.amount < floor:
@@ -569,6 +589,140 @@ def _credit_warnings(balance: Any, *, failure: str | None, floor: float) -> list
     if failure:
         out.append(f"{balance.provider} refused a call for payment: {failure}")
     return out
+
+
+#: The provider whose calls the app's own monthly ceiling governs. Named once because the
+#: ceiling is checked in exactly one place (`llm/deepseek.py::DeepSeekClient._check_budget`)
+#: and the strip has to put the badge on the same row.
+BUDGETED_PROVIDER = "deepseek"
+
+
+#: How much of the month's ceiling may be spent before the strip says so.
+#:
+#: **Before 100%, because at 100% it is already too late.** At the ceiling the refusal has
+#: happened: every model-backed job has fallen back to its deterministic rules and the run
+#: that wanted a judgement did not get one. The warning is only worth anything while there is
+#: still a decision to make about it, which is the same argument
+#: `app.balance_warn_below_usd` makes for the provider balance a few lines up.
+BUDGET_WARN_FRACTION = 0.95
+
+
+def _llm_budget(session: Session, settings: Any) -> dict[str, Any]:
+    """The app's own monthly model ceiling, and how much of it is spent.
+
+    **This is a limit this application imposes, not the provider's.** `llm.monthly_budget_usd`
+    is checked before every DeepSeek call, and at the ceiling that client refuses to make the
+    call at all -- so every model-backed job degrades to its deterministic fallback while the
+    provider's account is untouched and its balance endpoint still reports money.
+
+    That is why the strip missed it: every signal it had was about the *provider* paying or
+    being unreachable, and a self-imposed ceiling produces neither. It also writes no
+    `llm_call` row, because the refusal happens before the request, so the call log cannot
+    show it either. The figure here is `deepseek.month_to_date_spend`, which is what
+    `_check_budget` compares, read on the caller's session.
+
+    Two states rather than one: ``over_budget`` is where calls are being refused, and
+    ``near_budget`` is the last chance to raise the ceiling before they are.
+    """
+    ceiling = float(getattr(settings.llm, "monthly_budget_usd", 0.0) or 0.0)
+    if ceiling <= 0:
+        # A ceiling of zero means no ceiling: `_check_budget` returns immediately.
+        return _budget_state()
+
+    from awltux.llm.deepseek import month_to_date_spend
+
+    spent = month_to_date_spend(session)
+    if spent >= ceiling:
+        return _budget_state(
+            ceiling,
+            spent,
+            state="over",
+            note=(
+                f"${spent:,.2f} of this app's own ${ceiling:,.2f} monthly ceiling is spent, so "
+                f"this application is refusing further {BUDGETED_PROVIDER} calls. The provider "
+                f"has not blocked anything -- the balance shown here is real and still "
+                f"spendable. It is a setting, not an outage: raise `llm.monthly_budget_usd` in "
+                f"config/config.yaml to carry on, or wait for the ceiling to reset on the 1st."
+            ),
+        )
+    if spent >= ceiling * BUDGET_WARN_FRACTION:
+        return _budget_state(
+            ceiling,
+            spent,
+            state="near",
+            note=(
+                f"${spent:,.2f} of this app's own ${ceiling:,.2f} monthly ceiling is spent. "
+                f"Nothing is refused yet, but this application stops making "
+                f"{BUDGETED_PROVIDER} calls when it is -- and that is a limit set here, not by "
+                f"the provider, whose balance above is untouched. Raise "
+                f"`llm.monthly_budget_usd` in config/config.yaml to carry on past it."
+            ),
+        )
+    return _budget_state(ceiling, spent)
+
+
+def _budget_state(
+    ceiling: float | None = None,
+    spent: float | None = None,
+    *,
+    state: str = "ok",
+    note: str | None = None,
+) -> dict[str, Any]:
+    """One of the three states, in the shape the row and the warning both read."""
+    return {
+        "ceiling_usd": ceiling,
+        "spent_usd": spent,
+        "state": state,
+        "over_budget": state == "over",
+        "near_budget": state == "near",
+        "note": note,
+    }
+
+
+def _credit_rows(
+    session: Session,
+    balances: list[Any],
+    *,
+    floor: float,
+    budget: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """One row per provider, and every reason that provider deserves a warning.
+
+    Split from `provider_status` because the two halves say different things: this is the
+    per-provider work, and what is left above is the reading and the shape of the answer.
+    """
+    spend, calls = _credit_spend(session)
+    failures = _payment_failures(session)
+    burns = _balance_burns(session, days=CREDIT_WINDOW_DAYS)
+
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for balance in balances:
+        failure = failures.get(balance.provider)
+        # The ceiling governs one provider's calls, so the badge and the warning go on that
+        # row rather than on every provider's -- a red figure beside a provider that has no
+        # ceiling would name the wrong cause.
+        mine = budget if balance.provider == BUDGETED_PROVIDER else None
+        rows.append(
+            _credit_row(
+                balance,
+                ledger_spend=spend.get(balance.provider),
+                calls=calls.get(balance.provider, 0),
+                derived=burns.get(balance.provider),
+                failure=failure,
+                budget=mine,
+            )
+        )
+        warnings.extend(
+            _credit_warnings(
+                balance,
+                failure=failure,
+                floor=floor,
+                over_budget=bool(mine and mine["over_budget"]),
+                near_budget=bool(mine and mine["near_budget"]),
+            )
+        )
+    return rows, warnings
 
 
 def provider_status(session: Session, *, settings: Any = None) -> dict[str, Any]:
@@ -605,24 +759,9 @@ def provider_status(session: Session, *, settings: Any = None) -> dict[str, Any]
             for name in ("deepseek", "fal")
         ]
 
-    spend, calls = _credit_spend(session)
-    failures = _payment_failures(session)
-    burns = _balance_burns(session, days=CREDIT_WINDOW_DAYS)
-
-    rows: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    for balance in balances:
-        failure = failures.get(balance.provider)
-        rows.append(
-            _credit_row(
-                balance,
-                ledger_spend=spend.get(balance.provider),
-                calls=calls.get(balance.provider, 0),
-                derived=burns.get(balance.provider),
-                failure=failure,
-            )
-        )
-        warnings.extend(_credit_warnings(balance, failure=failure, floor=floor))
+    rows, warnings = _credit_rows(
+        session, balances, floor=floor, budget=_llm_budget(session, settings)
+    )
 
     return {
         "balances": rows,
@@ -667,6 +806,7 @@ def _credit_row(
     calls: int,
     derived: Any,
     failure: str | None,
+    budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One provider's line on the strip, with the spend figure and where it came from.
 
@@ -709,6 +849,15 @@ def _credit_row(
         "spent_source": source,
         "calls": calls,
         "payment_failure": failure,
+        # The app's own monthly ceiling, on the row it governs. `over_budget` is the flag the
+        # template colours the spend figure with; `budget_note` is the tooltip, worded here
+        # for the same reason the warnings are -- the template must not decide what the
+        # problem is, and "the provider is out of money" is the wrong reading of this one.
+        "budget_usd": (budget or {}).get("ceiling_usd"),
+        "budget_spent_usd": (budget or {}).get("spent_usd"),
+        "over_budget": bool((budget or {}).get("over_budget")),
+        "near_budget": bool((budget or {}).get("near_budget")),
+        "budget_note": (budget or {}).get("note"),
     }
 
 
