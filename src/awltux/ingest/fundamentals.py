@@ -486,6 +486,12 @@ def _sync_profile(
         assign(instrument)
     if info.get("industry") and not instrument.industry:
         instrument.industry = str(info["industry"])
+    if info.get("longBusinessSummary") and not instrument.business_summary:
+        # Kept as the provider wrote it. Nothing parses this: it is the hover hint on the
+        # recommendations table, and the first description held wins, as with the sector and
+        # industry above -- a company's account of what it does changes rarely, so rewriting
+        # it on every rotation would churn the row for the same words.
+        instrument.business_summary = str(info["longBusinessSummary"])
     if info.get("marketCap"):
         with contextlib.suppress(TypeError, ValueError):
             instrument.market_cap = float(info["marketCap"])

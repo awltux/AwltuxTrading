@@ -55,6 +55,13 @@ from awltux.db.session import RECENCY_FUNCTION
 from awltux.research.report import report_path
 from awltux.timezones import as_utc, format_moment, utc_today
 
+# `shorten` is imported rather than restated so the hover hint's trimming is the same rule
+# the Info page's configuration index uses. `templating` is the one place display formatting
+# lives; importing it here loads the Jinja environment, which the route that calls this
+# module builds anyway.
+from awltux.web.listing import listing_about
+from awltux.web.templating import shorten
+
 SortKey = Literal[
     "composite_score", "short_term_score", "margin_of_safety", "confidence",
     "short_term_confidence", "action", "short_term_action", "name",
@@ -69,6 +76,14 @@ ACTION_ORDER = {
     "sell": 4,
     "avoid": 5,
 }
+
+
+#: How long the instrument link's hover hint may be. A `title` attribute is one line by
+#: construction and a provider's description runs to several sentences, so a tooltip that
+#: long is unreadable -- the whole document is one click away on the instrument page. The cap
+#: is on the assembled hint rather than on the description alone, because the hint is what
+#: the reader actually sees.
+ABOUT_HINT_CHARS = 400
 
 
 @dataclass(slots=True)
@@ -125,6 +140,34 @@ class RecommendationRow:
     #: level. Empty means assessed and clean, not "not assessed" -- see
     #: :func:`awltux.analysis.attention.assess`.
     attention: tuple[Reason, ...] = ()
+    #: The company's own name -- "Charles Schwab". ``name`` above is the *display* name the
+    #: table's column shows, which is the broker's short code where there is one, so it reads
+    #: ``SCHW`` beside a ticker of ``SCHW_US_EQ``. The hover hint wants the readable one.
+    full_name: str = ""
+    #: The listing in one clause -- "a stock on NYSE traded in USD" -- from `web/listing.py`,
+    #: which owns that wording. Empty for a row that knows nothing about its listing.
+    listed_as: str = ""
+    #: What the company does: the newest finished deep-dive that described it, else the
+    #: provider's own summary. Empty when neither exists.
+    overview: str = ""
+
+    @property
+    def about(self) -> str:
+        """The instrument link's hover hint: which company, what it is, and what it does.
+
+        Composed here rather than in the template for the reason the credit warnings are --
+        the page must not decide what is worth saying. Every part but the name is optional,
+        so a row we hold nothing about still names the company instead of rendering an empty
+        tooltip.
+        """
+        parts = [self.full_name or self.name or self.ticker]
+        if self.listed_as:
+            parts.append(self.listed_as)
+        if self.sector:
+            parts.append(f"Industry: {self.sector}")
+        if self.overview:
+            parts.append(self.overview)
+        return shorten(" · ".join(parts), ABOUT_HINT_CHARS)
 
     @property
     def attention_summary(self) -> str:
@@ -252,8 +295,8 @@ def _instruments_in_scope(
     """The instruments the table may show, narrowed by the column filters.
 
     Extracted from :func:`recommendations`, which had grown one branch per filter the
-    page offers on top of the four phases that assemble a row -- and the page has since
-    gained a fifth. The filter set *is* the specification of this table, so the branches
+    page offers on top of the phases that assemble a row -- and those have grown since.
+    The filter set *is* the specification of this table, so the branches
     are not incidental; the point of moving them is that they are all the same kind of
     thing and the assembly below is not.
 
@@ -285,6 +328,45 @@ def _instruments_in_scope(
             | func.lower(Instrument.name).like(pattern)
         )
     return list(session.execute(query).scalars().all())
+
+
+def _business_overviews(session: Session, tickers: list[str]) -> dict[str, str]:
+    """What the newest finished deep-dive says each of these businesses is.
+
+    Batched, because the table asks about every row on the page while `latest_business`
+    answers the same question one ticker at a time. Reduced in Python by reading oldest-first
+    and overwriting -- the pattern `analysis/attention.py` uses for the verdicts it reads.
+
+    **The newest report that said anything wins, not the newest report.** A description of
+    what a company does does not go stale the way a verdict does, so a later report that
+    passed over the business must not erase the account an earlier one gave. That is the one
+    place this deliberately differs from `latest_business`, which returns nothing when the
+    newest report said nothing about the business.
+
+    Only ``result.business.summary`` -- the field the deep-dive prompt defines as "what the
+    company does and how it makes money". The executive summary is not a fallback: it is
+    capped at 250 words and states a verdict and a caveat, which is not an overview of a
+    business.
+    """
+    if not tickers:
+        return {}
+    found: dict[str, str] = {}
+    for ticker, result in session.execute(
+        select(ResearchReport.subject_id, ResearchReport.result)
+        .where(ResearchReport.subject_type == "instrument")
+        .where(ResearchReport.subject_id.in_(tickers))
+        .where(ResearchReport.status == "done")
+        .order_by(ResearchReport.created_at)
+    ).all():
+        if not isinstance(result, dict):
+            continue
+        business = result.get("business")
+        if not isinstance(business, dict):
+            continue
+        text = str(business.get("summary") or "").strip()
+        if text:
+            found[ticker] = text
+    return found
 
 
 # A paged query assembled as labelled phases. Both halves of this are deliberate: the
@@ -376,7 +458,13 @@ def recommendations(
     # find out. Bounded by the instruments already in scope, and four queries behind it.
     assessed = attention_rules.assess(session, tickers=tickers)
 
-    # --- 5. assemble -------------------------------------------------------
+    # --- 5. what each business is, for the instrument link's hover hint ------
+    #
+    # The deep-dive's own account where there is one, and the provider's summary otherwise --
+    # that one is a column on the instrument row already in scope, so it costs nothing here.
+    overviews = _business_overviews(session, tickers)
+
+    # --- 6. assemble -------------------------------------------------------
     result: list[RecommendationRow] = []
     for instrument in instruments:
         decision = decisions.get(instrument.t212_ticker)
@@ -415,6 +503,9 @@ def recommendations(
             gate_reason = decision.gate.get("binding_rule")
 
         answers = (decision.answers or {}) if decision else {}
+        # The listing clause comes from `web/listing.py`, which owns that wording: the table
+        # and the instrument page must not describe a listing differently.
+        listed = listing_about(instrument)
 
         result.append(
             RecommendationRow(
@@ -460,6 +551,13 @@ def recommendations(
                 ),
                 is_held=instrument.is_held,
                 attention=tuple(reasons),
+                full_name=instrument.name or "",
+                listed_as=listed.as_listed if listed else "",
+                overview=(
+                    overviews.get(instrument.t212_ticker)
+                    or instrument.business_summary
+                    or ""
+                ),
             )
         )
 

@@ -240,6 +240,24 @@ def fmt_interval(seconds: Any) -> str:
     return f"{days:.0f}d" if abs(days - round(days)) < 0.05 else f"{days:.1f}d"
 
 
+def shorten(text: Any, limit: int) -> str:
+    """``text`` as one line, trimmed to ``limit`` at a word boundary.
+
+    **One line, because an HTML ``title`` is.** Whitespace is collapsed first so a
+    provider's paragraphs cannot put line breaks inside an attribute, and the cut is taken
+    at a space so a tooltip never ends mid-word -- a trimmed word reads as a typo rather
+    than as a trim.
+
+    Lives here rather than beside either caller because two of them want it: the hover hint
+    on the recommendations table, and the configuration index on the Info page, which shows
+    comment blocks that run to dozens of lines.
+    """
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit].rsplit(" ", 1)[0] + "…"
+
+
 def action_class(action: str | None) -> str:
     """CSS class for an action badge. Unknown actions are visibly unknown."""
     return {

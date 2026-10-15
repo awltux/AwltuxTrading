@@ -64,7 +64,13 @@
     {% set primary = 'short_term' if horizon == 'short_term' else 'long_term' %}
     <tr class="{% if row.conflict %}conflict{% endif %} {% if row.is_held %}held{% endif %}">
       <td>
-        <a href="/instrument/{{ row.ticker }}"><strong>{{ row.ticker }}</strong></a>
+        {# The hover hint: which company, what the instrument is and where it trades, its
+           industry, and what it does. Composed in `queries.RecommendationRow.about` rather
+           than here, so the page does not decide what is worth saying -- and so the same
+           hint serves the dashboard, the fragment and the sector page without a second
+           copy. The company name beside it is not a link, so the hint is on the link only,
+           which is where a reader reaches for the instrument. #}
+        <a href="/instrument/{{ row.ticker }}" title="{{ row.about }}"><strong>{{ row.ticker }}</strong></a>
         <span class="muted small">{{ row.name[:34] }}</span>
         {% if row.is_held %}<span class="chip small held">held</span>{% endif %}
         {# Why this row should not be trusted yet, from `analysis/attention.py`. Shown

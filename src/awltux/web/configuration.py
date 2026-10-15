@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from awltux.config import Settings, get_settings
-from awltux.web.templating import fmt_interval
+from awltux.web.templating import fmt_interval, shorten
 
 #: How much of a comment block to show. Some of them are the record of a measurement and run
 #: to dozens of lines; the table is an index, and the file is where the whole argument is.
@@ -91,18 +91,10 @@ def annotations(path: Path) -> dict[str, str]:
             if hash_mark:
                 text = inline.split("#", 1)[0].strip()
         if text:
-            found[".".join(name for _, name in stack)] = _shorten(text)
+            found[".".join(name for _, name in stack)] = shorten(text, DESCRIPTION_CHARS)
         comments = []
 
     return found
-
-
-def _shorten(text: str) -> str:
-    """The comment, trimmed to a cell's worth at a word boundary."""
-    if len(text) <= DESCRIPTION_CHARS:
-        return text
-    cut = text[:DESCRIPTION_CHARS].rsplit(" ", 1)[0]
-    return f"{cut}…"
 
 
 def _render(value: Any, kind: str) -> str:

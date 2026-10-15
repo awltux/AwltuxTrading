@@ -399,3 +399,47 @@ class TestFailureHandling:
         provider._yf.Ticker = lambda symbol: FakeTicker(symbol, rows=[])
         series = provider.get_history("AAPL")
         assert series.bars == []
+
+
+class TestTheProfilePayload:
+    """`get_profile` trims a heavy payload to the keys this project keeps.
+
+    The company description rides on the same call as the sector and the market cap, so it
+    costs nothing at the provider -- which is the only reason the recommendations table can
+    show one at all.
+    """
+
+    @staticmethod
+    def _instance(monkeypatch, settings, info: dict):
+        class ProfileTicker(FakeTicker):
+            def __init__(self, symbol: str) -> None:
+                super().__init__(symbol)
+                self.info = {"symbol": symbol, **info}
+
+        class FakeYf:
+            Ticker = staticmethod(lambda symbol: ProfileTicker(symbol))
+
+        instance = YahooProvider(settings)
+        monkeypatch.setattr(instance, "_yf", FakeYf)
+        return instance
+
+    def test_the_company_description_is_carried_through(self, monkeypatch, settings):
+        instance = self._instance(
+            monkeypatch, settings, {"longBusinessSummary": "Hint Co makes hints."}
+        )
+
+        assert instance.get_profile("HINT")["longBusinessSummary"] == "Hint Co makes hints."
+
+    def test_keys_the_project_does_not_keep_are_still_dropped(self, monkeypatch, settings):
+        """The trim is the point of the method: `info` is a heavy, slow call and only the
+        keys named in it are kept."""
+        instance = self._instance(
+            monkeypatch,
+            settings,
+            {"longBusinessSummary": "Hint Co makes hints.", "fullTimeEmployees": 12},
+        )
+
+        profile = instance.get_profile("HINT")
+
+        assert "fullTimeEmployees" not in profile
+

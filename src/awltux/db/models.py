@@ -146,6 +146,19 @@ class Instrument(Base, TimestampMixin):
     sector_source: Mapped[str | None] = mapped_column(String(32))
     sic_code: Mapped[str | None] = mapped_column(String(8))
 
+    #: What the company does, in the provider's own words -- Yahoo's
+    #: ``longBusinessSummary``, read by the same profile call that supplies ``sector``.
+    #:
+    #: **A description rather than a figure**, so it is prose and stored as such: nothing
+    #: parses it, scores it or decides anything from it. It exists because the recommendations
+    #: table wants to say what a company is on hover, and Trading 212's metadata carries no
+    #: description of any kind (see ``web/listing.py``).
+    #:
+    #: ``NULL`` is the honest state for the lines the profile has never returned one for --
+    #: many ETFs and some foreign listings have none -- and for a row the rotation has not
+    #: reached yet, which is most of the universe at first.
+    business_summary: Mapped[str | None] = mapped_column(Text)
+
     # --- universe membership -------------------------------------------------
     in_universe: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)

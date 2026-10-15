@@ -537,10 +537,14 @@ class YahooProvider:
 
     # -------------------------------------------------------------- profile
     def get_profile(self, symbol: str) -> dict[str, Any]:
-        """``info`` payload, trimmed to keys the analysis layer actually uses.
+        """``info`` payload, trimmed to the keys this project uses.
 
         ``info`` is a heavy, slow, frequently-throttled call, so callers should
         cache the result aggressively (see ``ingest.fundamentals``).
+
+        ``longBusinessSummary`` is here for display rather than for analysis: it is what
+        the recommendations table shows on hover, and it rides along on a call already
+        being made. Many ETFs and some foreign lines do not carry one.
         """
         self._account()
         try:
@@ -556,6 +560,7 @@ class YahooProvider:
         keys = (
             "symbol", "longName", "shortName", "currency", "financialCurrency",
             "sector", "industry", "country", "exchange", "marketCap",
+            "longBusinessSummary",
             "sharesOutstanding", "floatShares", "trailingPE", "forwardPE",
             "priceToBook", "priceToSalesTrailing12Months", "enterpriseValue",
             "enterpriseToEbitda", "returnOnEquity", "returnOnAssets",

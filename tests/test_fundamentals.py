@@ -15,11 +15,14 @@ from awltux.analysis import ledger
 from awltux.db import FundamentalPeriod
 from awltux.ingest.fundamentals import (
     STATEMENT_LABELS,
+    FundamentalsReport,
+    _sync_profile,
     derive_metrics,
     metrics_from_info,
     metrics_from_statements,
 )
 from awltux.metrics import OUTFLOW_METRICS, STATED_METRICS
+from tests.helpers import make_instrument
 
 
 def _period(**metrics: float) -> FundamentalPeriod:
@@ -286,3 +289,55 @@ class TestInfoFallback:
     def test_unknown_keys_are_ignored_rather_than_stored(self):
         metrics = metrics_from_info({"totalRevenue": 1_000.0, "recommendationKey": "buy"})
         assert set(metrics) == {"revenue"}
+
+
+class TestTheCompanyDescription:
+    """`_sync_profile` keeps Yahoo's description of the business.
+
+    It is the recommendations table's hover hint, and it arrives on the same profile call
+    that supplies the sector -- so the only new thing is where it is kept. A line the
+    provider has no description for keeps ``NULL``, which is the state the hint reads as
+    "nothing held" rather than as an empty description.
+    """
+
+    class _Provider:
+        def __init__(self, info: dict) -> None:
+            self._info = info
+
+        def get_profile(self, symbol: str) -> dict:
+            return self._info
+
+    def _sync(self, session, instrument, info: dict) -> None:
+        _sync_profile(
+            session, instrument, self._Provider(info), FundamentalsReport()
+        )
+
+    def test_it_stores_the_description(self, session):
+        instrument = make_instrument("HINT_US_EQ")
+        session.add(instrument)
+        session.flush()
+
+        self._sync(session, instrument, {"longBusinessSummary": "Hint Co makes hints."})
+
+        assert instrument.business_summary == "Hint Co makes hints."
+
+    def test_the_first_description_held_wins(self, session):
+        """A company's account of what it does changes rarely, so re-writing the row on every
+        rotation would churn it for the same words -- the rule the sector and industry fields
+        beside it already follow."""
+        instrument = make_instrument("HINT_US_EQ", business_summary="The first one.")
+        session.add(instrument)
+        session.flush()
+
+        self._sync(session, instrument, {"longBusinessSummary": "A newer one."})
+
+        assert instrument.business_summary == "The first one."
+
+    def test_a_profile_with_no_description_leaves_the_column_alone(self, session):
+        instrument = make_instrument("HINT_US_EQ")
+        session.add(instrument)
+        session.flush()
+
+        self._sync(session, instrument, {"sector": "Technology"})
+
+        assert instrument.business_summary is None

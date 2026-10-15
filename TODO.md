@@ -20,6 +20,34 @@ the reason, so it is not re-litigated.
 
 ## Bugs
 
+### The decision state's `filing_summary` is always empty, because nothing writes the key it reads
+
+Found 2026-10-15 while looking for a company overview to show on hover in the recommendations
+table, which is also why the overview now comes from Yahoo instead.
+
+`decision/service.py::_filing_summary` reads `filing.parsed.get("summary")`. Nothing writes
+that key. Every `filing.parsed` in the live database holds
+`{extraction, extractor_version, llm_call_id}` -- measured: **0 of 5,067 filings** contain
+`business_summary` anywhere in `parsed`, and only 20 have a `parsed` document at all.
+
+The producer exists and is never called: `llm/extractors.py::summarise_filing` (line 377) is
+defined, has a `SUMMARY_PURPOSE`, a prompt pair (`FILING_SUMMARY_SYSTEM` /
+`FILING_SUMMARY_INSTRUCTION` in `llm/prompts.py`), and **no caller anywhere in `src` or
+`tests`** -- `grep -rn summarise_filing` returns the definition alone.
+
+So the consequence is not a missing feature but a quiet one: `build_state` is handed
+`filing_summary=None` on every decision, the field is dropped first under truncation for no
+reason, and the decision state has never contained the filing summary it was designed around.
+Nothing reports the absence, because an absent narrative field is also what a filing-less
+instrument looks like.
+
+What would settle it: either call `summarise_filing` where the filing is parsed and store its
+result under `parsed["summary"]` (its own line of evidence in the state, at one model call per
+filing), or delete `_filing_summary`, `summarise_filing` and the two prompts, and record that
+the decision reads the filing's figures and the deep-dive's account instead. The second is the
+honest option if nobody wants the first -- dead code that looks like a wired-up feature is
+worse than no feature.
+
 ### Three LSE shells hold a stored close of ~1e-6, which is not a price either
 
 Measured 2026-10-09 while fixing the unit bug that made `VWRLl_EQ` read 1.41 against a true

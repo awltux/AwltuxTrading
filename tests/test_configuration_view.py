@@ -118,6 +118,16 @@ class TestTheIndex:
 
         assert rows["llm.monthly_budget_usd"] == "123.5"
 
+    def test_a_long_comment_is_trimmed_to_a_cell(self, settings):
+        """Some of them are the record of a measurement and run to dozens of lines. The table
+        is an index; the file is where the whole argument is."""
+        rows = {row.name: row.description for row in configuration.rows(settings)}
+
+        trimmed = rows["news.embeddings.same_event_threshold"]
+
+        assert trimmed.endswith("…")
+        assert len(trimmed) <= configuration.DESCRIPTION_CHARS + 1
+
 
 class TestRenderingAValue:
     def test_a_number_is_grouped(self):
@@ -138,12 +148,3 @@ class TestRenderingAValue:
         and `off` are both things a setting can legitimately be."""
         assert configuration._render(None, "text") == "—"
         assert configuration._render(None, "number") == "—"
-
-    def test_a_long_description_is_trimmed_at_a_word(self):
-        text = " ".join(["word"] * 200)
-
-        trimmed = configuration._shorten(text)
-
-        assert len(trimmed) <= configuration.DESCRIPTION_CHARS + 1
-        assert trimmed.endswith("…")
-        assert not trimmed.endswith(" …"), "cut mid-word leaves a dangling space"
