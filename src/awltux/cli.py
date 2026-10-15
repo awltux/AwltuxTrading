@@ -228,6 +228,37 @@ def cmd_repair_scaled(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repair_filing_summaries(args: argparse.Namespace) -> int:
+    """Read the filings that were parsed before anything wrote a summary.
+
+    Its two siblings re-derive what is already recorded and spend nothing. **This one
+    spends**: it is a model call per filing, on the cheap model, over a whole document. So
+    ``--dry-run`` lists the candidates and opens nothing at all, and ``--limit`` is there for
+    a first run that wants to see the cost before paying the rest of it.
+    """
+    from awltux.db.session import session_scope
+    from awltux.ingest import parsing
+
+    with session_scope() as session:
+        report = parsing.repair_filing_summaries(
+            session, dry_run=args.dry_run, limit=args.limit
+        )
+
+    for entry in report["changed"]:
+        print(f"{entry['ticker']} {entry['filing_type']} {entry['filed_at'] or 'undated'}")
+    note = "would be summarised" if args.dry_run else "summarised"
+    line = (
+        f"{report['changed_count']} filing(s) {note}, of {report['checked']} already read"
+        f" ({report['already']} had a summary)"
+    )
+    if report["no_text"]:
+        line += f"; {report['no_text']} could not be read"
+    if report["failed"]:
+        line += f"; {report['failed']} produced nothing and will be retried"
+    print(line)
+    return 0
+
+
 def cmd_repair_price_units(args: argparse.Namespace) -> int:
     """Rewrite stored price bars whose unit contradicts the instrument's own currency.
 
@@ -829,6 +860,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="print what would change and write nothing",
     )
     repair_units.set_defaults(func=cmd_repair_price_units)
+
+    repair_summaries = sub.add_parser(
+        "repair-filing-summaries",
+        help="summarise the filings read before anything wrote a summary",
+    )
+    repair_summaries.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="list the filings that would be read, and call nothing",
+    )
+    repair_summaries.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="stop after this many filings; the default is 0, meaning all of them",
+    )
+    repair_summaries.set_defaults(func=cmd_repair_filing_summaries)
 
     _add_levers_parser(sub)
 

@@ -941,3 +941,124 @@ class TestLearningACaption:
 
         assert report.get("discovered") == 1
         assert "short_term_investments" in metric_fields.names(session)
+
+
+class TestRepairingFilingSummaries:
+    """Filings read before the summariser was wired up hold an extraction and no summary.
+
+    A parsed filing is never read again -- that read is the expensive deep model over a whole
+    document -- so the only way to finish those rows is this: read the document from disk
+    again and ask only the summariser, which runs on the cheap model. Measured 2026-10-15 on
+    the live database: 20 filings were in that state.
+    """
+
+    @staticmethod
+    def _instrument(session) -> None:
+        from awltux.db import Instrument
+
+        if session.get(Instrument, "TEST_US_EQ") is None:
+            _seed(session)
+
+    def _parsed(self, session, settings, *, name="report.htm", parsed=None) -> Filing:
+        """A filing already read, with whatever payload the test wants it to hold."""
+        self._instrument(session)
+        raw = _document(settings, name, "<p>Revenue 1,000,000</p>")
+        filing = _filing(session, url=f"https://sec.test/{name}", raw_path=raw, status="parsed")
+        filing.parsed = parsed if parsed is not None else {"extraction": {"metrics": {}}}
+        session.flush()
+        return filing
+
+    def test_it_summarises_a_filing_that_has_none(self, session, settings, monkeypatch):
+        filing = self._parsed(session, settings)
+        monkeypatch.setattr(
+            parsing,
+            "summarise_filing",
+            lambda *a, **k: {"business_summary": "Makes things.", "llm_call_id": 7},
+        )
+
+        report = parsing.repair_filing_summaries(session, settings=settings)
+
+        assert report["changed_count"] == 1
+        stored = session.get(Filing, filing.id)
+        assert stored.parsed["summary"]["business_summary"] == "Makes things."
+        # And the extraction it already held is untouched: this is not a re-read.
+        assert "extraction" in stored.parsed
+
+    def test_a_filing_that_already_has_a_summary_is_never_read_again(
+        self, session, settings, monkeypatch
+    ):
+        """Which is what makes a second run free, and why the command is safe to repeat."""
+        self._parsed(
+            session,
+            settings,
+            parsed={"extraction": {"metrics": {}}, "summary": {"business_summary": "Already."}},
+        )
+        called: list[int] = []
+        monkeypatch.setattr(parsing, "summarise_filing", lambda *a, **k: called.append(1) or {})
+
+        report = parsing.repair_filing_summaries(session, settings=settings)
+
+        assert report["already"] == 1
+        assert report["changed_count"] == 0
+        assert called == []
+
+    def test_a_dry_run_lists_the_candidates_and_calls_nothing(
+        self, session, settings, monkeypatch
+    ):
+        """The run worth checking first is the expensive one: this repair spends money where
+        its two siblings re-derive what is already recorded."""
+        filing = self._parsed(session, settings)
+        called: list[int] = []
+        monkeypatch.setattr(parsing, "summarise_filing", lambda *a, **k: called.append(1) or {})
+
+        report = parsing.repair_filing_summaries(session, settings=settings, dry_run=True)
+
+        assert report["changed_count"] == 1
+        assert called == []
+        assert "summary" not in session.get(Filing, filing.id).parsed
+
+    def test_a_document_that_cannot_be_read_is_left_alone(self, session, settings, monkeypatch):
+        """No text extractor for the format, or the file is gone. Either way nothing is
+        written and nothing is spent."""
+        filing = self._parsed(session, settings, name="report.pdf")
+        called: list[int] = []
+        monkeypatch.setattr(parsing, "summarise_filing", lambda *a, **k: called.append(1) or {})
+
+        report = parsing.repair_filing_summaries(session, settings=settings)
+
+        assert report["no_text"] == 1
+        assert report["changed_count"] == 0
+        assert called == []
+        assert "summary" not in session.get(Filing, filing.id).parsed
+
+    def test_a_summary_that_comes_back_empty_is_left_for_the_next_run(
+        self, session, settings, monkeypatch
+    ):
+        """No credential, or the budget refused the call. Writing nothing keeps the row a
+        candidate, so a later run retries it rather than recording a permanent blank."""
+        filing = self._parsed(session, settings)
+        monkeypatch.setattr(parsing, "summarise_filing", lambda *a, **k: None)
+
+        report = parsing.repair_filing_summaries(session, settings=settings)
+
+        assert report["failed"] == 1
+        assert report["changed_count"] == 0
+        assert "summary" not in session.get(Filing, filing.id).parsed
+
+    def test_the_limit_counts_filings_that_still_need_work(self, session, settings, monkeypatch):
+        """Not the query's first N: after a first pass the newest parsed filings are the ones
+        already finished, so a limit applied there would spend on nothing."""
+        self._parsed(session, settings, name="a.htm")
+        self._parsed(session, settings, name="b.htm")
+        done: list[int] = []
+        monkeypatch.setattr(
+            parsing,
+            "summarise_filing",
+            lambda *a, **k: done.append(1) or {"business_summary": "x"},
+        )
+
+        report = parsing.repair_filing_summaries(session, settings=settings, limit=1)
+
+        assert report["checked"] == 2
+        assert report["changed_count"] == 1
+        assert len(done) == 1

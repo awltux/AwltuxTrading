@@ -274,16 +274,24 @@ def _record_parsed(
     _store_period(session, filing, result, report)
 
 
-def _summarise(document: str, *, name: str, settings: Settings) -> dict[str, Any] | None:
+def _summarise(
+    document: str, *, name: str, settings: Settings, client: Any = None
+) -> dict[str, Any] | None:
     """The filing's analyst-facing summary, or ``None`` when it cannot be had.
 
     Never raises. `summarise_filing` already answers ``None`` for the two failures it
     expects -- no credential configured, and a budget refusal -- and anything else escaping
     from here would cost the *extraction*, which has been paid for already and is what every
     downstream marker runs on. Best-effort by construction rather than by accident.
+
+    ``client`` is passed on rather than built per call, for the repair below: it reads many
+    filings in one run, and `summarise_filing` would otherwise construct an HTTP client for
+    each of them.
     """
     try:
-        return summarise_filing(document, company_name=name, settings=settings)
+        return summarise_filing(
+            document, company_name=name, settings=settings, client=client
+        )
     except Exception:  # noqa: BLE001 - the extraction is already banked
         logger.exception("filing summary failed for %s", name)
         return None
@@ -511,6 +519,147 @@ def repair_scaled_figures(session: Session, *, dry_run: bool = False) -> dict[st
     return {"checked": len(rows), "changed": changed, "unreadable": unreadable}
 
 
+def repair_filing_summaries(
+    session: Session,
+    *,
+    dry_run: bool = False,
+    limit: int = 0,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Summarise the filings that were read before anything wrote a summary.
+
+    :func:`_read_one` stores the analyst-facing summary against the row it reads, and until
+    2026-10-15 nothing did -- so every filing already marked ``parsed`` holds an extraction
+    and no summary, and there is no way to reach them again. A parsed filing is never
+    re-read, deliberately: that read is the expensive deep model over a whole document.
+
+    **This is the cheap half of that read.** The summary comes from `model_bulk` (see
+    `deepseek.model_for_purpose`), so this reads the document from disk again and asks only
+    the summariser. No extraction, no figures, and nothing else about the row is touched.
+
+    **Nothing is guessed.** A document whose text cannot be read is counted and left alone,
+    and a filing whose summary call returns nothing keeps no summary and is counted, so a
+    re-run retries it. Idempotent: a filing that already has a summary is skipped, which is
+    what makes a second run free.
+
+    ``dry_run`` lists the filings it would read and **calls nothing**, without so much as
+    opening the documents. Unlike the two repairs beside it, this one spends money, so the
+    run worth checking first is the expensive one.
+    """
+    settings = settings or get_settings()
+    pending, already = _filings_without_summaries(session)
+    checked = len(pending) + already
+    if limit:
+        # Applied to what still needs work rather than to the query: the newest parsed
+        # filings are exactly the ones a previous run has already finished.
+        pending = pending[:limit]
+
+    if dry_run:
+        # The documents are not opened either. This answers "what would this cost", and a
+        # document that cannot be read costs nothing -- so counting every candidate
+        # overstates the bill rather than understating it.
+        return _summary_report(checked, [_summary_entry(row) for row in pending], already)
+
+    changed, no_text, failed = _summarise_each(session, pending, settings=settings)
+    session.flush()
+    return _summary_report(checked, changed, already, no_text=no_text, failed=failed)
+
+
+def _filings_without_summaries(session: Session) -> tuple[list[Filing], int]:
+    """Every read filing that carries no summary, and how many already do.
+
+    Selected by ``status`` rather than by ``parsed IS NOT NULL``, which a JSON column makes
+    meaningless -- see `decision.service._last_read_filing` for the measurement. Newest
+    first, because the state reads the newest *read* filing, so those are the rows a decision
+    can actually use.
+    """
+    filings = (
+        session.execute(
+            select(Filing)
+            .where(Filing.status == "parsed")
+            # `IS NULL` first so an undated filing sorts last, then newest first -- the
+            # same idiom `_candidates` uses rather than NULLS LAST, which SQLite only
+            # gained in 3.30.
+            .order_by(Filing.filed_at.is_(None), Filing.filed_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    pending = [filing for filing in filings if not _has_summary(filing)]
+    return pending, len(filings) - len(pending)
+
+
+def _has_summary(filing: Filing) -> bool:
+    """Whether this row already carries a summary."""
+    payload = filing.parsed
+    return bool(isinstance(payload, dict) and payload.get("summary"))
+
+
+def _summarise_each(
+    session: Session, filings: list[Filing], *, settings: Settings
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Summarise every filing given. Returns what was written, unreadable and refused."""
+    from awltux.llm.deepseek import DeepSeekClient
+
+    # One client for the run: `summarise_filing` builds its own when it is not handed one,
+    # and this reads many filings in a row.
+    client = DeepSeekClient(settings)
+    changed: list[dict[str, Any]] = []
+    no_text = 0
+    failed = 0
+
+    for filing in filings:
+        document = document_text(settings.data_dir / (filing.raw_path or ""))
+        if not document:
+            no_text += 1
+            continue
+        summary = _summarise(
+            document,
+            name=_company_name(session, filing.instrument_t212_ticker),
+            settings=settings,
+            client=client,
+        )
+        if not summary:
+            # Nothing is written, so the row stays a candidate and a later run retries it
+            # rather than recording a permanent blank.
+            failed += 1
+            continue
+        # Reassigned rather than mutated: SQLAlchemy tracks a JSON column by identity.
+        filing.parsed = {**filing.parsed, "summary": summary}
+        changed.append(_summary_entry(filing))
+
+    return changed, no_text, failed
+
+
+def _summary_entry(filing: Filing) -> dict[str, Any]:
+    """One filing as the command prints it."""
+    return {
+        "ticker": filing.instrument_t212_ticker,
+        "filing_type": filing.filing_type,
+        "filed_at": filing.filed_at.date().isoformat() if filing.filed_at else None,
+    }
+
+
+def _summary_report(
+    checked: int,
+    changed: list[dict[str, Any]],
+    already: int,
+    *,
+    no_text: int = 0,
+    failed: int = 0,
+) -> dict[str, Any]:
+    """The shape both the dry run and the real run return."""
+    return {
+        "checked": checked,
+        "changed": changed,
+        "changed_count": len(changed),
+        "already": already,
+        "no_text": no_text,
+        "failed": failed,
+        "tickers": sorted({entry["ticker"] for entry in changed}),
+    }
+
+
 def _printed_number(span: str) -> float | None:
     """The first number a span states, or ``None``.
 
@@ -616,6 +765,7 @@ __all__ = [
     "TEXT_SUFFIXES",
     "document_text",
     "extract_held_filings",
+    "repair_filing_summaries",
     "repair_scaled_figures",
     "store_cited_period",
 ]
