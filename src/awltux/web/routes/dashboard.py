@@ -37,7 +37,7 @@ from awltux.research import report as research_report
 from awltux.research import service as research_service
 from awltux.scheduler import scoped
 from awltux.timezones import as_utc
-from awltux.web import filters, listing, queries
+from awltux.web import configuration, filters, listing, queries
 from awltux.web.routes.research import launch as launch_research
 from awltux.web.templating import templates
 
@@ -2762,5 +2762,8 @@ def info_page(request: Request) -> HTMLResponse:
             "revision": _schema_revision(),
             "provenance": _provenance_note(info),
             "environment": environment,
+            # What the app is configured to do, with the reasons the config file gives for
+            # each. Read rather than restated -- see `web/configuration.py`.
+            "configuration": configuration.rows(),
         },
     )

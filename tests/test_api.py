@@ -1333,6 +1333,25 @@ class TestInfoPage:
     def test_the_navigation_links_to_the_info_page(self, client):
         assert 'href="/info"' in client.get("/dashboard").text
 
+    def test_the_page_lists_what_the_app_is_configured_to_do(self, client):
+        """Asked for: a configuration section, with each setting's value and the reason the
+        config file gives for it."""
+        body = client.get("/info").text
+
+        assert "<h2>Configuration</h2>" in body
+        assert "llm.monthly_budget_usd" in body
+        # The description is the file's own comment, not a restatement here.
+        assert "Hard monthly spend ceiling in USD" in body
+
+    def test_a_run_of_the_app_shows_the_value_it_is_running_with(self, client, settings):
+        """The values come from the loaded settings, so a changed setting is what the page
+        reports -- not what the file happened to say at build time."""
+        settings.yaml.llm.monthly_budget_usd = 123.5
+
+        body = client.get("/info").text
+
+        assert "123.5" in body
+
 
 class TestJsonApi:
     def test_recommendations_returns_an_envelope(self, client):

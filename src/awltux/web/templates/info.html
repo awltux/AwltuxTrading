@@ -78,6 +78,45 @@
 </table>
 
 {#
+  What this install is configured to do.
+
+  **The descriptions are `config/config.yaml`'s own comments**, read at render time rather
+  than restated here. A second copy would go stale the first time someone explained a change
+  in the file and not on this page -- the failure every other module in this tree records.
+
+  **The values are the running process's**, not the file's, so a value the environment
+  overrode shows what the app is actually using. That is not academic:
+  `llm.monthly_budget_usd` was raised in `config.py`'s default and changed nothing, because
+  `config.yaml` sets it and the YAML wins.
+
+  Only the keys a reader can act on are listed -- what it spends, what it fetches and how
+  often, what it holds back, and the thresholds that turn evidence into a verdict. The
+  per-endpoint request budgets and the rest of the plumbing stay in the file.
+#}
+<h2>Configuration</h2>
+<table class="grid compact">
+  <thead>
+    <tr><th>Setting</th><th>Value</th><th>What it is for</th></tr>
+  </thead>
+  <tbody>
+  {% for row in configuration %}
+    <tr>
+      <td><code>{{ row.name }}</code></td>
+      <td class="small">{{ row.value }}</td>
+      <td class="small muted">{{ row.description }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="3" class="empty">No configuration was readable.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="muted small">
+  The values are what the running process is using; the descriptions are
+  <code>config/config.yaml</code>'s own comments, trimmed to fit a row. The file is the full
+  reference, including the per-endpoint request budgets this list leaves out.
+</p>
+
+{#
   The rate environment, reported rather than predicted.
 
   A discount rate has to be denominated in the currency of the cash flows it
