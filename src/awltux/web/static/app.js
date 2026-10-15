@@ -146,8 +146,15 @@
     "--muted": "#afb9c6",
     "--good": "#4fd35f",
     "--bad": "#ff7b72",
+    "--warn": "#e3b341",
     "--link": "#8cc8ff"
   };
+
+  //: How far either side of a fair-value range bar its end caps extend, in CSS pixels.
+  //: The bar is 1.4px wide, so a cap of one pixel each way is the shortest mark that
+  //: still reads as an end-stop: it says "the range stops here" without becoming a
+  //: second line, and it is drawn one pixel thick for the same reason.
+  var RANGE_CAP_PX = 1;
 
   // Read once each. `getComputedStyle` forces a style recalculation, and the chart
   // is drawn on every resize tick, so re-reading the same four colours per frame was
@@ -213,11 +220,15 @@
     var muted = styleValue("--muted");
     var up = styleValue("--good");
     var down = styleValue("--bad");
-    // The fair-value step is the palette's red as well, asked for by name. A marker is
-    // blue precisely to avoid this collision -- red and green already mean "falling" and
+    // The fair-value step is the palette's red, asked for by name. A marker is blue
+    // precisely to avoid this collision -- red and green already mean "falling" and
     // "rising" on this chart -- but the reference line is told apart by its *shape*: it
-    // is flat, it has a range whisker at its start, and the key underneath names it.
+    // is flat, it has a range bar at its start, and the key underneath names it.
     var fair = styleValue("--bad");
+    // The range bar is the palette's yellow, which is the same colour the interface uses
+    // for a warning and is the only yellow there is. A second, paler one would be two
+    // yellows the stylesheet cannot tell apart; this is the light one on a dark panel.
+    var range = styleValue("--warn");
 
     var ratio = window.devicePixelRatio || 1;
     var width = canvas.clientWidth || 600;
@@ -328,24 +339,38 @@
 
     // The model's fair value, as a step rather than a series: the answer stands from the
     // day it was calculated until the day of the next calculation, or to the right edge
-    // where there is not one. The range is read at the *start* of the step, so the
-    // whisker says how much of that answer is a range and the flat line says what the
-    // base case was. Drawn under the axis labels and the markers, which are the two
-    // things a reader must still be able to read.
+    // where there is not one. The range is read at the *start* of the step, so the bar
+    // says how much of that answer is a range and the flat line says what the base case
+    // was. Two colours, because they are two different readings: one number, and a span
+    // around it. Drawn under the axis labels and the markers, which are the two things a
+    // reader must still be able to read.
     if (steps.length) {
-      ctx.strokeStyle = fair;
-      ctx.lineWidth = 1.4;
       steps.forEach(function (step) {
         var startX = x(step.start);
+        ctx.strokeStyle = fair;
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.moveTo(startX, y(step.base));
         ctx.lineTo(x(step.end), y(step.base));
         ctx.stroke();
 
         if (isFinite(step.low) && isFinite(step.high)) {
+          var lowY = y(step.low);
+          var highY = y(step.high);
+          ctx.strokeStyle = range;
           ctx.beginPath();
-          ctx.moveTo(startX, y(step.low));
-          ctx.lineTo(startX, y(step.high));
+          ctx.moveTo(startX, lowY);
+          ctx.lineTo(startX, highY);
+          ctx.stroke();
+
+          // The caps, one pixel either side and one pixel thick, so the bar reads as a
+          // bounded interval rather than as a line that happens to stop there.
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(startX - RANGE_CAP_PX, lowY);
+          ctx.lineTo(startX + RANGE_CAP_PX, lowY);
+          ctx.moveTo(startX - RANGE_CAP_PX, highY);
+          ctx.lineTo(startX + RANGE_CAP_PX, highY);
           ctx.stroke();
         }
       });

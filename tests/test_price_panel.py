@@ -396,7 +396,9 @@ class TestTheInstrumentPage:
 
         steps = json.loads(_attribute(body, "data-valuations"))
         assert steps == [{"date": "2026-05-03", "base": 110.0, "low": 90.0, "high": 130.0}]
+        # The key names both marks, because the two colours carry two different readings.
         assert "The red line is the fair value the model calculated" in body
+        assert "pale yellow bar at its start" in body
 
     def test_a_chart_with_no_valuation_says_nothing_about_one(self, client, session):
         """A key for a line that is not there reads as a line that failed to draw."""

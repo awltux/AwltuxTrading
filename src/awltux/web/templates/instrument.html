@@ -762,7 +762,7 @@
   #}
   <p class="muted small">
     {%- if valuations.steps %}
-      The red line is the fair value the model calculated, held from the day of the calculation until the next one — or to the end of the chart where there is not one. The bar at its start is that calculation's range, low to high.
+      The red line is the fair value the model calculated, held from the day of the calculation until the next one — or to the end of the chart where there is not one. The pale yellow bar at its start, capped at both ends, is that calculation's range, low to high.
     {%- endif %}
     {%- if valuations.offscale %}
       {{ valuations.offscale }} valuation{{ '' if valuations.offscale == 1 else 's' }} {{ 'is' if valuations.offscale == 1 else 'are' }} not drawn: {{ 'its' if valuations.offscale == 1 else 'their' }} range is so far from every price here that the line would leave no room for the prices — that is a valuation to look at, not a chart to widen.

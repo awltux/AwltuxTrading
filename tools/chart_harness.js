@@ -28,6 +28,7 @@ const PALETTE = {
   "--muted": "#afb9c6",
   "--good": "#4fd35f",
   "--bad": "#ff7b72",
+  "--warn": "#e3b341",
   "--link": "#8cc8ff"
 };
 const ROOT_FONT_PX = 17;
@@ -232,7 +233,7 @@ check("a step is drawn flat from its own bar to the next calculation", () => {
 
 check("the range is a vertical bar at the start of the step", () => {
   const { calls } = draw(STEP_PRICES, STEP_DATES, [], undefined, STEPS);
-  // The y axis is a vertical line too, at x = pad, so the whiskers are found by the bar
+  // The y axis is a vertical line too, at x = pad, so the bars are found by the bar
   // they start on rather than by counting verticals.
   const bars = segments(calls).filter((s) => s.from[0] === s.to[0] && s.from[1] !== s.to[1]);
   const at = (px) => bars.filter((s) => s.from[0] === px);
@@ -242,6 +243,25 @@ check("the range is a vertical bar at the start of the step", () => {
   const span = (segment) => Math.abs(segment.from[1] - segment.to[1]);
   assert(span(at(446)[0]) > span(at(154)[0]),
     "the wider range (21-29) must draw a taller bar than 18-22");
+});
+
+check("the line is red, the range is yellow, and they are not each other's", () => {
+  const { calls } = draw(STEP_PRICES, STEP_DATES, [], undefined, STEPS);
+  const strokes = values(calls, "strokeStyle");
+  assert(strokes.includes(PALETTE["--bad"]) && strokes.includes(PALETTE["--warn"]),
+    `expected both the fair-value red and the range yellow, got ${JSON.stringify(strokes)}`);
+  assert(PALETTE["--bad"] !== PALETTE["--warn"], "the two readings must not be one colour");
+});
+
+check("the range bar is capped at both ends, one pixel either side", () => {
+  const { calls } = draw(STEP_PRICES, STEP_DATES, [], undefined, STEPS);
+  const caps = segments(calls).filter((s) => s.from[1] === s.to[1] && Math.abs(s.to[0] - s.from[0]) === 2);
+  assert(caps.length === 4, `expected a cap at each end of two ranges, got ${JSON.stringify(caps)}`);
+  assert(caps.every((s) => s.from[0] === 153 || s.from[0] === 445),
+    "a cap belongs at the start of its own step, one pixel left of the bar");
+  // Two per range, at the range's two ends rather than both at one of them.
+  const tops = caps.filter((s) => s.from[0] === 153).map((s) => s.from[1]);
+  assert(new Set(tops).size === 2, "the two caps of one range sit at different heights");
 });
 
 check("the axis widens to reach the fair value", () => {
