@@ -340,7 +340,7 @@ llm:
   enable_prefix_cache_layout: true
   # Hard monthly spend ceiling in USD; the decision layer degrades rather than
   # exceed it. Tracked in the llm_call table.
-  monthly_budget_usd: 25.0
+  monthly_budget_usd: 40.0
   request_timeout_seconds: 180
   max_retries: 3
 
