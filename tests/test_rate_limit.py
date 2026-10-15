@@ -404,6 +404,14 @@ class TestTheProvidersOwnWordForASpentQuota:
             client.request("GET", "/news/all")
 
     def test_the_block_lasts_until_the_end_of_the_day_not_a_retry_interval(self, settings):
+        """Asserted against the day boundary, not against a duration.
+
+        This read `(blocked_until - now) > 3600`, which is a statement about the *clock*:
+        it holds from midnight until 23:00 UTC and fails after that. Measured 2026-10-15 at
+        23:07 UTC, the full suite failed here with 3,147 seconds remaining -- the block was
+        right and the assertion was wrong, and it would have failed every night between
+        23:00 and midnight for a reason nobody could see in the code.
+        """
         import datetime as dt
 
         from awltux.providers.http import ProviderError
@@ -415,8 +423,14 @@ class TestTheProvidersOwnWordForASpentQuota:
         blocked_until = client.budget._state_locked().blocked_until
         now = dt.datetime.now(dt.UTC)
         assert blocked_until is not None
-        # A minute would be a retry interval; this is the rest of the provider's day.
-        assert (blocked_until - now).total_seconds() > 3600
+        # A minute would be a retry interval; this is the rest of the provider's day, so
+        # the block lands on the next UTC midnight however much of today is left. Within a
+        # second of it: the deadline is built by adding a float number of seconds, which
+        # lands 114 microseconds past midnight rather than exactly on it.
+        next_midnight = now.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) + dt.timedelta(days=1)
+        assert abs((blocked_until - next_midnight).total_seconds()) < 1
 
 
 class TestEveryProviderHasABudget:
