@@ -382,7 +382,7 @@ class LLMConfig(BaseModel):
     max_output_tokens: int = 8_000
     temperature: float = 0.0
     enable_prefix_cache_layout: bool = True
-    monthly_budget_usd: float = 25.0
+    monthly_budget_usd: float = 40.0
     request_timeout_seconds: float = 180.0
     max_retries: int = 3
 
