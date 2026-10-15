@@ -486,6 +486,21 @@ footer {
   border-color: var(--line); border-bottom: 1px solid var(--panel);
 }
 
+/* The price chart's date range. Smaller and flatter than the tabs above it: this picks a
+   *range* within one topic, so it must not read as a second row of topics competing with
+   the first. Order is broadest-first, as it was asked for. */
+.chart-windows {
+  display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 8px;
+}
+.chart-windows a {
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted); font-size: 0.85rem;
+}
+.chart-windows a:hover { color: inherit; background: var(--panel-2); }
+.chart-windows a.active {
+  color: inherit; background: var(--panel-2); border-color: var(--muted);
+}
+
 /* The instrument page's summary: identity above, figures in a row, reference detail folded
    away. It replaced a page that opened with nine cells of ISIN and CIK before saying
    anything about the company, so the figures come first and the metadata is a disclosure --

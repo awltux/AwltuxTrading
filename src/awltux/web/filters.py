@@ -524,6 +524,66 @@ def news_window(value: str) -> dt.timedelta | None:
     return NEWS_WINDOW_AGES.get(value)
 
 
+# --------------------------------------------------------------------------- #
+# the price chart's window
+# --------------------------------------------------------------------------- #
+
+#: How far back the price chart draws, keyed by the value each button carries.
+#:
+#: Day counts rather than month arithmetic, because the cutoff is a moment in calendar
+#: time: ``31`` is the honest reading of "1 Month" here, and a reader comparing the
+#: chart against a month of their own calendar is comparing it against the *bars*, which
+#: are trading days and are what the axis is drawn on.
+#:
+#: ``None`` is Max -- everything stored, no cutoff. Measured 2026-10-15, the live
+#: database holds 43 to 513 bars per instrument (456 of 489 hold more than 400), so Max
+#: is about two years and the widest window is still a bounded read.
+#:
+#: **Declared broadest first, which is the order the buttons are drawn.** Every other
+#: ordered set in this module runs narrowest or most severe first; this one is the
+#: reader's own listing of the control, and reordering it silently would be a different
+#: interface from the one that was asked for.
+PRICE_WINDOW_AGES: dict[str, dt.timedelta | None] = {
+    "max": None,
+    "1y": dt.timedelta(days=365),
+    "3m": dt.timedelta(days=92),
+    "1m": dt.timedelta(days=31),
+}
+
+#: What each button says. Taken from the same keys as the ages, so a window cannot be
+#: offered without a name or named without an age.
+PRICE_WINDOW_LABELS: dict[str, str] = {
+    "max": "Max",
+    "1y": "1 year",
+    "3m": "3 Months",
+    "1m": "1 Month",
+}
+
+#: The window the page shows with no ``?window=``, and the one its links omit.
+#:
+#: Max, because it is the whole of what is stored and because it is what the chart drew
+#: before it had a window at all -- a reader who never touches the buttons sees the
+#: closest thing to an unchanged page.
+PRICE_WINDOW_DEFAULT = "max"
+
+
+def price_window(value: str | None) -> tuple[str, dt.timedelta | None, str | None]:
+    """The chosen window as ``(name, age, ignored)``.
+
+    ``age`` is ``None`` for Max, which means "no cutoff" rather than "no window" -- every
+    reading of this table has a window, and the widest one has no end.
+
+    An unusable value falls back to the default and is *returned*, not raised on: the rule
+    `FilterSet.parse` states for a query parameter, so a stale bookmark costs the reader
+    the window and not the page.
+    """
+    if not value:
+        return PRICE_WINDOW_DEFAULT, PRICE_WINDOW_AGES[PRICE_WINDOW_DEFAULT], None
+    if value not in PRICE_WINDOW_AGES:
+        return PRICE_WINDOW_DEFAULT, PRICE_WINDOW_AGES[PRICE_WINDOW_DEFAULT], value
+    return value, PRICE_WINDOW_AGES[value], None
+
+
 def source_options(rows: Sequence[tuple[str, int]]) -> tuple[FilterOption, ...]:
     """Turn ``(source, count)`` rows into dropdown entries, busiest first.
 

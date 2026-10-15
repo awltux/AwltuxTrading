@@ -2239,17 +2239,63 @@ def universe_stats(session: Session) -> dict[str, Any]:
     }
 
 
-def price_history(session: Session, ticker: str, *, limit: int = 400) -> list[dict[str, Any]]:
-    rows = session.execute(
+def price_history(
+    session: Session, ticker: str, *, window: dt.timedelta | None = None
+) -> list[dict[str, Any]]:
+    """Daily bars for the chart, oldest first, optionally only the recent ones.
+
+    ``window`` is measured from the **newest stored bar**, not from today. An instrument
+    whose feed stopped six months ago draws its own last month and says so on the axis,
+    rather than drawing an empty panel -- an empty chart is what "we hold nothing" looks
+    like, and this instrument is one we hold plenty about. It also keeps the windowed
+    query from being a different question from the unwindowed one: "the last month" means
+    the last month *of this line*, whatever date that line happens to end on.
+
+    ``None`` is Max: no cutoff at all. The bar count is bounded by what the fetcher has
+    stored rather than by anything this function decides -- measured 2026-10-15, 43 to
+    513 bars per instrument on the live database.
+
+    The cutoff is **strict**, so a 31-day window on consecutive daily bars holds 31 of
+    them rather than 32: `newest - window` is the first bar *outside* the window. The
+    boundary is stated because it is one line either way and a test that had to derive it
+    would be asserting the reader's guess instead of the rule.
+    """
+    statement = (
         select(PriceBar)
         .where(PriceBar.instrument_t212_ticker == ticker)
         .order_by(desc(PriceBar.date))
-        .limit(limit)
-    ).scalars().all()
+    )
+    if window is not None:
+        newest = session.execute(
+            select(func.max(PriceBar.date)).where(
+                PriceBar.instrument_t212_ticker == ticker
+            )
+        ).scalar_one_or_none()
+        if newest is None:
+            return []
+        statement = statement.where(PriceBar.date > newest - window)
+
+    rows = session.execute(statement).scalars().all()
     return [
         {"date": bar.date.isoformat(), "close": bar.close, "volume": bar.volume}
         for bar in reversed(rows)
     ]
+
+
+def price_bar_count(session: Session, ticker: str) -> int:
+    """How many daily bars are stored, which is not how many the chart draws.
+
+    The details panel's "Price bars" is a fact about the instrument, so it must not follow
+    the chart's window: a reader who selects one month would otherwise read "Price bars:
+    21" as *this is all we hold*, which is the opposite of what the number is for. One
+    count, because the alternative -- reading every bar to count them -- reads the whole
+    series again on a page that already read it.
+    """
+    return session.execute(
+        select(func.count())
+        .select_from(PriceBar)
+        .where(PriceBar.instrument_t212_ticker == ticker)
+    ).scalar_one()
 
 
 #: Bars a line needs. One point is a dot, and a dot is not a trend.

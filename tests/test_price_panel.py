@@ -217,7 +217,7 @@ class TestTheFairValueOverlay:
         _instrument(session)
         self._priced(session, [100.0, 101.0, 102.0])
         self._valuation(session, day="2026-05-02", low=90.0, base=110.0, high=130.0)
-        history = queries.price_history(session, TICKER, limit=400)
+        history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
@@ -236,7 +236,7 @@ class TestTheFairValueOverlay:
         self._priced(session, [100.0, 101.0])
         self._valuation(session, day="2026-05-02", low=80.0, base=100.0, high=120.0, hour=9)
         self._valuation(session, day="2026-05-02", low=90.0, base=111.0, high=132.0, hour=17)
-        history = queries.price_history(session, TICKER, limit=400)
+        history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
@@ -255,7 +255,7 @@ class TestTheFairValueOverlay:
         self._valuation(
             session, day="2026-05-02", low=0.0, base=None, high=0.0, status="insufficient_data"
         )
-        history = queries.price_history(session, TICKER, limit=400)
+        history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
@@ -272,7 +272,7 @@ class TestTheFairValueOverlay:
         _instrument(session)
         self._priced(session, [1000.0, 1200.0, 1400.0])
         self._valuation(session, day="2026-05-02", low=178.0, base=299.0, high=420.0)
-        history = queries.price_history(session, TICKER, limit=400)
+        history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
@@ -290,7 +290,7 @@ class TestTheFairValueOverlay:
         _instrument(session)
         self._priced(session, [100.0, 101.0])
         self._valuation(session, day="2026-05-02", low=9.09e60, base=2.27e61, high=3.64e61)
-        history = queries.price_history(session, TICKER, limit=400)
+        history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
@@ -302,7 +302,7 @@ class TestTheFairValueOverlay:
         _instrument(session)
         self._priced(session, [100.0, 101.0])
         self._valuation(session, day="2020-01-01", low=90.0, base=110.0, high=130.0)
-        history = queries.price_history(session, TICKER, limit=400)
+        history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
@@ -316,6 +316,109 @@ class TestTheFairValueOverlay:
 
         assert overlay.steps == []
         assert overlay.offscale == 0
+
+
+class TestTheChartWindow:
+    """The date range the chart draws, as a query rather than a control.
+
+    Measured 2026-10-15: the live database holds 43 to 513 daily bars per instrument and
+    456 of 489 hold more than 400, so the four windows are four genuinely different
+    pictures -- and the widest one is still a bounded read.
+    """
+
+    @staticmethod
+    def _dated(session, count: int, *, end: dt.date = dt.date(2026, 5, 20)) -> None:
+        """``count`` consecutive daily bars ending on ``end``."""
+        start = end - dt.timedelta(days=count - 1)
+        session.add_all(make_bars(TICKER, [100.0 + index for index in range(count)], start=start))
+        session.flush()
+
+    def test_no_window_is_every_bar_there_is(self, session):
+        _instrument(session)
+        self._dated(session, 40)
+
+        assert len(queries.price_history(session, TICKER)) == 40
+
+    def test_a_window_keeps_the_newest_bars_within_it(self, session):
+        _instrument(session)
+        self._dated(session, 40)
+
+        history = queries.price_history(session, TICKER, window=dt.timedelta(days=10))
+
+        assert len(history) == 10
+        assert history[-1]["date"] == "2026-05-20"
+        assert history[0]["date"] == "2026-05-11"
+
+    def test_the_window_is_measured_from_the_last_bar_not_from_today(self, session):
+        """An instrument whose feed stopped still draws its own last month.
+
+        Measured from today, this one would be an empty panel -- which is what "we hold
+        nothing" looks like, and this instrument is one we hold forty bars about. The
+        axis carries the real dates, so the reader sees where the line ends.
+        """
+        _instrument(session)
+        self._dated(session, 40, end=dt.date(2026, 1, 15))
+
+        history = queries.price_history(session, TICKER, window=dt.timedelta(days=10))
+
+        assert len(history) == 10
+        assert history[-1]["date"] == "2026-01-15"
+
+    def test_an_instrument_with_no_bars_at_all_is_empty_not_an_error(self, session):
+        _instrument(session)
+
+        assert queries.price_history(session, TICKER, window=dt.timedelta(days=31)) == []
+
+    def test_the_stored_count_does_not_follow_the_window(self, session):
+        """`Price bars` in the details panel is a fact about the instrument.
+
+        Read off the windowed history it would say 10 while 40 are held, and a reader who
+        selected one month would take that as everything there is.
+        """
+        _instrument(session)
+        self._dated(session, 40)
+
+        assert queries.price_bar_count(session, TICKER) == 40
+        assert len(queries.price_history(session, TICKER, window=dt.timedelta(days=10))) == 10
+
+
+class TestTheWindowVocabulary:
+    """What `?window=` accepts, and what it does with what it does not."""
+
+    def test_the_four_windows_are_the_four_buttons(self):
+        from awltux.web import filters
+
+        assert list(filters.PRICE_WINDOW_AGES) == ["max", "1y", "3m", "1m"]
+        assert [filters.PRICE_WINDOW_LABELS[name] for name in filters.PRICE_WINDOW_AGES] == [
+            "Max",
+            "1 year",
+            "3 Months",
+            "1 Month",
+        ]
+
+    def test_max_is_no_cutoff_and_the_default(self):
+        from awltux.web import filters
+
+        name, age, ignored = filters.price_window(None)
+
+        assert (name, age, ignored) == (filters.PRICE_WINDOW_DEFAULT, None, None)
+        assert name == "max"
+
+    def test_every_window_but_max_is_an_age(self):
+        from awltux.web import filters
+
+        for name, age in filters.PRICE_WINDOW_AGES.items():
+            assert (age is None) == (name == "max"), name
+
+    def test_a_window_nobody_offers_is_reported_and_the_default_shown(self):
+        """The rule a query parameter gets everywhere else in this app: a stale bookmark
+        costs the reader the window, not the page -- and the page says which it ignored."""
+        from awltux.web import filters
+
+        name, age, ignored = filters.price_window("2y")
+
+        assert (name, age) == (filters.PRICE_WINDOW_DEFAULT, None)
+        assert ignored == "2y"
 
 
 class TestTheInstrumentPage:
@@ -432,3 +535,78 @@ class TestTheInstrumentPage:
         assert json.loads(_attribute(body, "data-valuations")) == []
         assert "1 valuation is not drawn" in body
         assert "leave no room for the prices" in body
+
+    def test_the_four_range_buttons_are_links(self, client, session):
+        """Links, not script: a range is shareable, the back button works, and the whole
+        control survives JavaScript being off -- the same reason the tab strip is links."""
+        _instrument(session)
+        _bars(session, [100.0, 101.0, 102.0, 103.0])
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
+
+        assert 'class="chart-windows"' in body
+        for label in ("Max", "1 year", "3 Months", "1 Month"):
+            assert f">{label}</a>" in body, label
+        assert f'href="/instrument/{TICKER}?tab=price&amp;window=1m">1 Month</a>' in body
+        # The default omits itself from its own link, so a hand-built address stays short.
+        # Not asserted with a closing `>`, because the current window carries its marker.
+        # `&amp;` rather than `&`: Jinja escapes the ampersand in every href on this app.
+        assert f'href="/instrument/{TICKER}?tab=price" class="active"' in body
+        # And exactly one window is marked as the current view, beside the tab strip's own
+        # marker -- the two controls are separate readings and must not share a marker.
+        assert body.count('aria-current="true"') == 1
+        assert body.count('aria-current="page"') == 1
+
+    def test_the_chosen_window_narrows_the_series_on_the_page(self, client, session):
+        _instrument(session)
+        # Forty daily bars ending 2026-05-20, so `?window=1m` (31 days) holds 31 of them.
+        session.add_all(
+            make_bars(
+                TICKER,
+                [100.0 + index for index in range(40)],
+                start=dt.date(2026, 4, 11),
+            )
+        )
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price&window=1m").text
+
+        assert len(json.loads(_attribute(body, "data-series"))) == 31
+        assert f'href="/instrument/{TICKER}?tab=price&amp;window=1m" class="active"' in body
+        # The line under the chart says it is a slice, not everything there is.
+        assert "31 of 40 daily bars" in body
+
+    def test_the_whole_history_says_nothing_about_a_slice(self, client, session):
+        _instrument(session)
+        _bars(session, [100.0, 101.0, 102.0, 103.0])
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price").text
+
+        assert "4 daily bars" in body
+        assert "4 of 4 daily bars" not in body
+
+    def test_the_details_panel_counts_what_is_held_not_what_is_drawn(self, client, session):
+        """`Price bars` is a fact about the instrument, and it is the number that tells the
+        reader the chart is showing a window rather than everything."""
+        _instrument(session)
+        session.add_all(
+            make_bars(TICKER, [100.0 + index for index in range(40)], start=dt.date(2026, 4, 11))
+        )
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price&window=1m").text
+
+        assert "<dt>Price bars</dt><dd>40</dd>" in body
+
+    def test_a_range_nobody_offers_is_reported_rather_than_obeyed(self, client, session):
+        _instrument(session)
+        _bars(session, [100.0, 101.0, 102.0, 103.0])
+        session.commit()
+
+        body = client.get(f"/instrument/{TICKER}?tab=price&window=2y").text
+
+        assert "No price range called" in body
+        assert "<code>2y</code>" in body
+        assert len(json.loads(_attribute(body, "data-series"))) == 4

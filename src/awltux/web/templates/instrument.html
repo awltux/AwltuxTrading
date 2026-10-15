@@ -111,7 +111,9 @@
       <div><dt>SIC</dt><dd>{{ instrument.sic_code or '—' }}</dd></div>
       <div><dt>Companies House</dt><dd>{{ instrument.ch_company_number or '—' }}</dd></div>
       <div><dt>SEC CIK</dt><dd>{{ instrument.sec_cik or '—' }}</dd></div>
-      <div><dt>Price bars</dt><dd>{{ summary.bars }}</dd></div>
+      {# How many bars are *held*, not how many the chart is drawing: a window would
+         otherwise make this read as everything there is. #}
+      <div><dt>Price bars</dt><dd>{{ summary.stored_bars }}</dd></div>
     </section>
   </details>
 </section>
@@ -697,6 +699,28 @@
 {# -------------------------------------------------------------- price chart #}
 <h2>Price history</h2>
 {#
+  The window buttons are links, not script: each one is its own URL, so a range can be
+  linked to, the back button works, and the window survives a reload. They are also what
+  makes the valuation steps legible. The model's stored answers begin 2026-10-05, so on a
+  Max chart they occupy the last few pixels of 513 bars, and on a 1 Month chart roughly a
+  quarter of the width.
+#}
+{% if windows %}
+  <nav class="chart-windows" aria-label="Price history range">
+    {% for item in windows %}
+      <a href="{{ item.url }}"{% if item.active %} class="active" aria-current="true"{% endif %}>{{ item.label }}</a>
+    {% endfor %}
+  </nav>
+{% endif %}
+{% if window_ignored %}
+  {# Reported, never obeyed silently -- the rule `web/filters.py` states for a query
+     parameter, and the same treatment `?tab=` gets above. #}
+  <p class="notice warn">
+    No price range called <code>{{ window_ignored }}</code>, so the whole stored history is
+    shown instead.
+  </p>
+{% endif %}
+{#
   The frame is always drawn, even with nothing to put in it.
 
   This used to be an either/or: a chart, or a bare sentence. An instrument with no
@@ -727,10 +751,12 @@
     one nobody who needs a key can read.
 
     **Counted against the table, not against the dots.** This said "6 bought, 0 sold" -- a
-    count of *markers* wearing the clothes of a statement about the account. The window is
-    the newest 400 daily bars, so a fill older than its first one is not drawn, and on GWW
-    the legend's "0 sold" sat directly above a sale in the table (reported 2026-10-08). A
-    reader cannot tell a marker that is missing from a trade that never happened.
+    count of *markers* wearing the clothes of a statement about the account. A fill older
+    than the chart's first bar is not drawn, and on GWW the legend's "0 sold" sat directly
+    above a sale in the table (reported 2026-10-08). A reader cannot tell a marker that is
+    missing from a trade that never happened. Narrowing the window moves the first bar
+    later and drops more of them, which is why the count is taken from the markers the
+    chart was actually given.
   #}
   <p class="muted small">
     {%- if not trades %}
@@ -771,7 +797,7 @@
 {% endif %}
 {% if history | length >= 2 %}
   <p class="muted small">
-    {{ history | length }} daily bars, {{ history[0].date }} to {{ history[-1].date }}.
+    {{ history | length }}{% if summary.stored_bars > history | length %} of {{ summary.stored_bars }}{% endif %} daily bars, {{ history[0].date }} to {{ history[-1].date }}.
   </p>
 {% else %}
   <p class="muted small">{{ waiting_note }}</p>

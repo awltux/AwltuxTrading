@@ -170,25 +170,61 @@ def _recommendations_region(request: Request, page: int, per_page: int) -> dict[
     }
 
 
-def _price_chart(session, ticker: str, detail: dict[str, Any]) -> dict[str, Any]:
-    """The price panel's four facts: the bars, the reader's fills on them, what the model
-    thinks they are worth, and what the panel is waiting for.
+def _price_chart(
+    session, ticker: str, detail: dict[str, Any], *, window: dt.timedelta | None = None
+) -> dict[str, Any]:
+    """The price panel's facts: the bars, the reader's fills on them, what the model thinks
+    they are worth, how much history is held, and what the panel is waiting for.
 
     One helper because they are one panel and three of them derive from the first -- the
     markers and the valuation steps are placed on the very bars that are plotted, so the
     chart and the tables below cannot describe different date windows. The waiting
     sentence is computed here rather than in the template because reaching it is four
     different reads.
+
+    ``window`` narrows the bars the chart draws, and everything placed on them with it. The
+    **stored count does not follow it**: that number is a fact about the instrument, and it
+    is what tells the reader the window is a window.
     """
-    history = queries.price_history(session, ticker, limit=400)
+    history = queries.price_history(session, ticker, window=window)
     return {
         "history": history,
         "markers": queries.price_markers(history, detail["trades"], detail["instrument"]),
         "valuations": queries.price_valuations(session, ticker, history),
+        "stored_bars": queries.price_bar_count(session, ticker),
         "waiting_note": queries.price_history_waiting_note(
             session, ticker, bars=len(history)
         ),
     }
+
+
+def _price_window(
+    ticker: str, requested: str | None
+) -> tuple[str, dt.timedelta | None, list[dict[str, object]], str | None]:
+    """Resolve the chart's window: the name, the age it means, its buttons, any refusal.
+
+    Kept beside :func:`_instrument_tab` because it is the same shape of decision -- a view
+    selector that lives in the query string, whose buttons are real links and whose
+    unusable value is reported rather than 404ed. The windows themselves are declared in
+    `web/filters.py`, next to the news listing's, so the two vocabularies for "how far
+    back" sit together.
+    """
+    name, age, ignored = filters.price_window(requested)
+    base = f"/instrument/{quote(ticker, safe='')}?tab=price"
+    buttons = [
+        {
+            "name": candidate,
+            "label": filters.PRICE_WINDOW_LABELS[candidate],
+            # The default is omitted from its own link, so the commonest address stays
+            # short and a link carries only what the reader chose.
+            "url": base
+            if candidate == filters.PRICE_WINDOW_DEFAULT
+            else f"{base}&window={candidate}",
+            "active": candidate == name,
+        }
+        for candidate in filters.PRICE_WINDOW_AGES
+    ]
+    return name, age, buttons, ignored
 
 
 #: The instrument page's topics, in the order a reader wants them.
@@ -258,7 +294,7 @@ def _instrument_tab(
 
 
 def _instrument_summary(
-    detail: dict[str, Any], history: list[dict[str, Any]]
+    detail: dict[str, Any], history: list[dict[str, Any]], *, stored: int
 ) -> dict[str, Any]:
     """The handful of figures the top of the page shows on every tab.
 
@@ -269,6 +305,11 @@ def _instrument_summary(
 
     The price comes from the same `history` the chart draws, so the number in the summary
     and the last point of the line cannot disagree -- they are one query.
+
+    ``stored`` is the exception, and it is passed in rather than derived: the details panel
+    reports how many bars are *held*, which is not how many the chart is drawing once a
+    window is selected. Reading that number off `history` would have made it shrink with
+    the window, and "Price bars: 21" reads as "this is all we have".
     """
     close = history[-1]["close"] if history else None
     previous = history[-2]["close"] if len(history) > 1 else None
@@ -280,6 +321,7 @@ def _instrument_summary(
         "close_date": history[-1]["date"] if history else None,
         "change": change,
         "bars": len(history),
+        "stored_bars": stored,
     }
 
 
@@ -319,6 +361,8 @@ def _instrument_context(
     active: str,
     strip: list[dict[str, object]],
     tab_ignored: str | None,
+    windows: list[dict[str, object]],
+    window_ignored: str | None,
 ) -> dict[str, Any]:
     """Everything `instrument.html` reads, assembled in one place.
 
@@ -335,7 +379,7 @@ def _instrument_context(
         # account sits in. Derived from the row rather than stored -- see `listing.listing_about`
         # for why, and for what that API does and does not know about a company.
         "about": listing.listing_about(detail["instrument"]),
-        "summary": _instrument_summary(detail, chart["history"]),
+        "summary": _instrument_summary(detail, chart["history"], stored=chart["stored_bars"]),
         "tabs": strip,
         "tab": active,
         "tab_ignored": tab_ignored,
@@ -344,6 +388,8 @@ def _instrument_context(
         "history": chart["history"],
         "markers": chart["markers"],
         "valuations": chart["valuations"],
+        "windows": windows,
+        "window_ignored": window_ignored,
         "waiting_note": chart["waiting_note"],
         "filings": detail["filings"],
         "fundamentals": detail["fundamentals"],
@@ -399,6 +445,7 @@ def instrument_page(
     request: Request,
     ticker: str,
     tab: str | None = None,
+    window: str | None = None,
     news_page: int = Query(1, ge=1),
 ) -> HTMLResponse:
     """One instrument, summarised at the top and split into tabs below.
@@ -407,9 +454,15 @@ def instrument_page(
     ``INSTRUMENT_TAB_SECTIONS``. ``news_page`` is parsed on every request and read on one of
     them: FastAPI validates it before this runs, and a tab that ignored a malformed page
     number silently would be worse than one that refuses it.
+
+    ``window`` is the price chart's date range, read on every tab because the summary strip's
+    close comes from the same bars even when the chart is not drawn. Its value is resolved
+    rather than validated: an unusable one is reported on the page, exactly as an unusable
+    ``tab`` is.
     """
     active, strip, tab_ignored = _instrument_tab(ticker, tab)
     sections = INSTRUMENT_TAB_SECTIONS.get(active, ())
+    _, window_age, windows, window_ignored = _price_window(ticker, window)
 
     with session_scope() as session:
         detail = queries.instrument_detail(
@@ -417,7 +470,7 @@ def instrument_page(
         )
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown instrument {ticker}")
-        chart = _price_chart(session, ticker, detail)
+        chart = _price_chart(session, ticker, detail, window=window_age)
         # The page used to show only the latest decision, so "what did it say last
         # week, and was it right" had no answer anywhere.
         predictions, prediction_count = (
@@ -448,6 +501,8 @@ def instrument_page(
             active=active,
             strip=strip,
             tab_ignored=tab_ignored,
+            windows=windows,
+            window_ignored=window_ignored,
         ),
     )
 
