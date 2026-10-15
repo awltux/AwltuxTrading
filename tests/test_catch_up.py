@@ -205,6 +205,22 @@ class TestWhatIsOwed:
         now = self._now()
         assert catch_ups([_spec(id="fresh")], {}, now) == []
 
+    def test_a_manual_job_is_not_caught_up(self):
+        """Nothing triggers it, so there is no trigger it could have missed.
+
+        A manual job has ``interval_seconds=None``, which is not an interval at all.
+        Left to reach `catch_up_for` it dies on the comparison; "fixed" there with a
+        default of zero it would instead be treated as an interval of every instant,
+        and **every restart would re-run a repair that spends a model call per
+        filing** -- the one thing manual-only exists to prevent. Measured before the
+        guard existed: the reason this test names the restart and not the schedule.
+        """
+        now = self._now()
+        spec = JobSpec(id="on_demand", func=_noop)
+        assert spec.manual_only, "omitting the interval is what makes it manual-only"
+
+        assert catch_ups([spec], {"on_demand": now - dt.timedelta(days=30)}, now) == []
+
     def test_a_job_inside_its_interval_is_not_caught_up(self):
         now = self._now()
         assert catch_ups([_spec(id="current")], {"current": now - dt.timedelta(minutes=5)}, now) == []

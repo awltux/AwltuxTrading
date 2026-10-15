@@ -63,8 +63,8 @@ def _parse_documents(tickers: list[str] | None = None):
 
     Not a registered job: it is only ever invoked here, because it is the one step whose
     cost is proportional to what the *previous* step just downloaded. Registered, it
-    would need a coverage probe and an interval, and it would then be free to run over
-    the whole backlog on the scheduler's timetable for no stated reason.
+    would need a coverage probe and a place in the schedule, and it would then be free
+    to run over the whole backlog for no stated reason.
     """
     from awltux.db.session import session_scope
     from awltux.ingest.parsing import extract_held_filings

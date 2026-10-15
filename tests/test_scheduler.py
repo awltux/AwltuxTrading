@@ -50,12 +50,19 @@ class TestEveryEnabledJobIsScheduled:
 
         Asserted over the *real* registry rather than a fixture list, so a new job
         that forgets nothing in particular is still covered.
+
+        Manual-only jobs are excluded, and the exclusion is spelled out rather than
+        left to ``enabled``: in this suite every credential is ``None``, so a
+        manual job is registered *disabled* and would pass this assertion by being
+        skipped -- which is the vacuous pass that would let a manual job be
+        accidentally scheduled in production. `test_a_manual_job_is_never_scheduled`
+        is the half that holds without a credential.
         """
         service = SchedulerService(build_job_specs(settings))
         service.start()
         try:
             rows = service.status()
-            enabled = [row for row in rows if row["enabled"]]
+            enabled = [row for row in rows if row["enabled"] and not row["manual_only"]]
             assert len(enabled) > 3, "the registry is too small for this to prove anything"
 
             never = [row["id"] for row in enabled if row["next_run"] is None]
@@ -92,9 +99,46 @@ class TestTheCadence:
         fast = [
             (spec.id, spec.interval_seconds)
             for spec in build_job_specs(settings)
-            if spec.enabled and spec.interval_seconds < MIN_INTERVAL_SECONDS
+            if spec.enabled
+            and spec.interval_seconds is not None
+            and spec.interval_seconds < MIN_INTERVAL_SECONDS
         ]
         assert not fast, f"these run faster than the one-hour floor: {fast}"
+
+    def test_a_manual_job_is_never_scheduled(self, quiet_jobs):
+        """No trigger, no first run, and a run only when the button is pressed.
+
+        Built here rather than read from the registry, because the registry's manual
+        job is disabled in this suite -- every credential is ``None`` -- and an
+        assertion that only holds for a credentialed deployment proves nothing.
+        """
+        spec = JobSpec(id="on_demand", func=_noop)
+        service = SchedulerService([spec])
+        service.start()
+        try:
+            row = service.status()[0]
+            assert row["enabled"] is True, "enabled is what keeps the Run now button live"
+            assert row["manual_only"] is True
+            assert row["interval_seconds"] is None
+            assert row["next_run"] is None, "a manual job was given a schedule"
+            assert row["overdue"] is False
+        finally:
+            service.shutdown(wait=False)
+
+    def test_the_registrys_repair_is_manual_only(self, settings: Settings):
+        """The fact itself, asserted without a credential in sight.
+
+        Its interval is the whole mechanism, and in this suite the job is registered
+        disabled -- so every other assertion about it is skipped, and a change that
+        put it back on a timer would pass the rest of the file.
+        """
+        from awltux.scheduler.registry import build_job_specs
+
+        repair = next(spec for spec in build_job_specs(settings) if spec.id == "filing_summaries")
+        assert repair.manual_only
+        assert repair.interval_seconds is None
+        assert repair.backfill, "an on-demand job must be able to say it has nothing to do"
+        assert repair.requires == ("DEEPSEEK_API_KEY",)
 
     def test_the_first_runs_are_spread_rather_than_simultaneous(self, quiet_jobs):
         """The point of the spread: nineteen hourly jobs must not collide.
@@ -806,6 +850,15 @@ class TestTheOperationsPage:
         assert "10080.0m" not in body
 
         for spec in build_job_specs():
+            # Before the `enabled` skip, deliberately. The one manual job is registered
+            # *disabled* in this suite -- every credential is None -- so a check placed
+            # after that `continue` would never run, and the page could print a blank
+            # interval for it in production without any test noticing.
+            if spec.manual_only:
+                assert "on demand" in body, (
+                    f"{spec.id} has no interval, so the page must say what starts it"
+                )
+                continue
             if not spec.enabled:
                 continue
             expected = fmt_interval(spec.interval_seconds)

@@ -121,6 +121,30 @@ class TestSuccessesAreExplainedToo:
         assert "50 rows pruned" in text
         assert "41 quote" in text
 
+    def test_the_filing_summary_repair_says_how_much_of_the_backlog_it_did(self):
+        text = outcome(
+            job="filing_summaries",
+            detail={
+                "checked": 20,
+                "changed_count": 19,
+                "already": 1,
+                "no_text": 2,
+                "failed": 1,
+            },
+        )
+        assert "19 of 20 read filings summarised" in text
+        assert "2 had no readable document" in text
+        assert "1 produced nothing and will be retried" in text
+
+    def test_the_filing_summary_repair_before_anything_has_been_read(self):
+        """The distinction the probe and this sentence both make: nothing to repair is
+        not the same state as everything repaired, and a run that says nothing is
+        indistinguishable from one that did nothing."""
+        assert "no filing has been read" in outcome(job="filing_summaries", detail={})
+        assert "all 20 read filings already have a summary" in outcome(
+            job="filing_summaries", detail={"checked": 20, "changed_count": 0}
+        )
+
     def test_a_reason_map_is_prose_not_a_dict(self):
         """The first version printed the raw dict into the page."""
         text = outcome(

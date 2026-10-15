@@ -117,7 +117,7 @@ class SchedulerService:
     # ------------------------------------------------------------- registry
     def register(self, spec: JobSpec) -> None:
         self._specs[spec.id] = spec
-        if spec.enabled and self._scheduler.running:
+        if spec.scheduled and self._scheduler.running:
             self._schedule(spec)
 
     def specs(self) -> list[JobSpec]:
@@ -148,13 +148,17 @@ class SchedulerService:
         owed = self.pending_catch_ups()
         owed_by_job = {catch_up.job_id: catch_up for catch_up in owed}
         for spec in self._specs.values():
-            if spec.enabled:
+            # A manual-only job is registered so it can be run from the Operations page,
+            # and registered is all it is: no trigger, no first run, no catch-up. That
+            # is the whole of what makes "only when somebody decides" true.
+            if spec.scheduled:
                 self._schedule(spec, owed_by_job.get(spec.id))
         self._scheduler.start(paused=self._paused)
+        scheduled = [spec for spec in self._specs.values() if spec.scheduled]
         logger.info(
             "scheduler started with %d jobs (%s)",
-            sum(1 for s in self._specs.values() if s.enabled),
-            ", ".join(sorted(s.id for s in self._specs.values() if s.enabled)) or "none",
+            len(scheduled),
+            ", ".join(sorted(s.id for s in scheduled)) or "none",
         )
         if owed:
             # Named in one line, because this is the sentence that says the night off
@@ -361,12 +365,19 @@ class SchedulerService:
         let an hourly job land anywhere between thirty and ninety minutes after the
         last run, and the Operations page prints a schedule that would then be untrue.
         """
+        interval = spec.interval_seconds
+        if interval is None:
+            # A manual-only job has no trigger *by definition* -- "no interval" and "no
+            # timer" are one fact, not two -- so there is nothing to add. Checked here
+            # as well as at the two call sites because this is the function that would
+            # otherwise do arithmetic on `None`.
+            return
         _warn_if_below_the_floor(spec)
         now = dt.datetime.now(dt.UTC)
-        window = min(spec.interval_seconds, FIRST_RUN_SPREAD_SECONDS)
+        window = min(interval, FIRST_RUN_SPREAD_SECONDS)
 
         trigger = IntervalTrigger(
-            seconds=spec.interval_seconds,
+            seconds=interval,
             start_date=now + dt.timedelta(seconds=random.uniform(0, window)),
             timezone="UTC",
         )
@@ -442,6 +453,10 @@ class SchedulerService:
                     "description": spec.description,
                     "interval_seconds": spec.interval_seconds,
                     "enabled": spec.enabled,
+                    # True where `interval_seconds` is None: the page must say "on
+                    # demand" rather than print an interval of nothing, and a reader
+                    # must be able to tell "never fires by itself" from "paused".
+                    "manual_only": spec.manual_only,
                     "paused": self._paused,
                     # The declared pipeline order, so an API consumer does not have
                     # to read the registry to know what must run first.

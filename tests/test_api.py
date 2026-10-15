@@ -1375,6 +1375,12 @@ class TestJsonApi:
         # Credential-gated jobs are visible but disabled, not hidden.
         disabled = {job["id"] for job in body["jobs"] if not job["enabled"]}
         assert "t212_instruments" in disabled
+        # And an on-demand job is visible with no interval at all, rather than with a
+        # made-up one: the flag is what the page renders "on demand" from, and a
+        # consumer that reads only `interval_seconds` must be able to tell the two apart.
+        manual = {job["id"]: job for job in body["jobs"] if job["manual_only"]}
+        assert "filing_summaries" in manual
+        assert manual["filing_summaries"]["interval_seconds"] is None
 
     def test_unknown_job_run_returns_404(self, client):
         assert client.post("/api/jobs/no-such-job/run").status_code == 404

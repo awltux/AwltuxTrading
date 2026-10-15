@@ -638,9 +638,25 @@ def _shareholder_reports(detail: dict[str, Any]) -> str:
     return line
 
 
+def _filing_summaries(detail: dict[str, Any]) -> str:
+    changed = _get(detail, "changed_count")
+    checked = _get(detail, "checked")
+    if not changed:
+        if not checked:
+            return "no filing has been read yet, so there is nothing to summarise"
+        return f"all {_n(checked)} read filings already have a summary"
+    line = f"{_n(changed)} of {_n(checked)} read filings summarised"
+    if detail.get("no_text"):
+        line += f"; {_n(detail['no_text'])} had no readable document"
+    if detail.get("failed"):
+        line += f"; {_n(detail['failed'])} produced nothing and will be retried"
+    return line
+
+
 SUMMARISERS: dict[str, Summariser] = {
     "provider_balance": _provider_balance,
     "shareholder_reports": _shareholder_reports,
+    "filing_summaries": _filing_summaries,
     "macro_rates": _macro_rates,
     "t212_instruments": _t212_instruments,
     "universe_refresh": _universe_refresh,

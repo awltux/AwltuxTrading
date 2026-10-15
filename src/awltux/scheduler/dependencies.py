@@ -652,9 +652,35 @@ def _probe_shareholder_reports(session: Session) -> Coverage:
     )
 
 
+def _probe_filing_summaries(session: Session) -> Coverage:
+    """Read filings with no stored summary, which is what the repair goes back for.
+
+    Counts *filings*, not instruments, because the repair is one bulk-model call per
+    filing and that count is what says what a run would cost -- the question this
+    probe exists to answer, since the job is manual-only and the operator is the one
+    deciding whether to pay it. It shares its definition of "has a summary" with the
+    repair itself, so the button cannot be offered for a backlog that is not there.
+    """
+    from awltux.ingest.parsing import filings_awaiting_summaries
+
+    missing, read = filings_awaiting_summaries(session)
+    if missing:
+        return Coverage.counted(
+            missing,
+            read,
+            f"{missing:,} of {read:,} read filings still have no summary",
+        )
+    if not read:
+        # `missing` is zero here and *also* when everything has one, which are opposite
+        # answers. The reader's question is which, so the sentence says which.
+        return Coverage.counted(0, 0, "no filing has been read yet")
+    return Coverage.counted(0, read, f"all {read:,} read filings have a summary")
+
+
 PROBES = {
     "provider_balance": _probe_provider_balance,
     "shareholder_reports": _probe_shareholder_reports,
+    "filing_summaries": _probe_filing_summaries,
     "macro_rates": _probe_macro_rates,
     "t212_instruments": _probe_t212_instruments,
     "universe_refresh": _probe_universe_refresh,

@@ -350,6 +350,27 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             depends_on=("decision", "price_eod"),
             enabled=True,
         ),
+        # --- repairs ----------------------------------------------------------
+        JobSpec(
+            id="filing_summaries",
+            # `interval_seconds` is omitted, which is what makes this manual-only: no
+            # trigger, nothing to catch up, and a run only when somebody presses it.
+            # Only has work while its coverage probe reports a gap.
+            backfill=True,
+            func=ingest_jobs.repair_filing_summaries_job,
+            description=(
+                "Re-read stored filings that were parsed before anything wrote their "
+                "summary; one bulk-model call per filing, so it runs on demand only"
+            ),
+            # No declared dependency. The rows it reads are written by a step that is
+            # not a registered job (`ingest/refresh.py::_parse_documents`), so naming
+            # one would be a claim about a relationship the pipeline does not have --
+            # and the whole point is that a filing read by an older version, or by the
+            # research path, is reachable whatever else has run. The probe is what
+            # stops a pointless run.
+            enabled=bool(env.deepseek_api_key),
+            requires=("DEEPSEEK_API_KEY",),
+        ),
         # --- housekeeping -----------------------------------------------------
         JobSpec(
             id="retention",

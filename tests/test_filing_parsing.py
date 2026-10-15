@@ -1062,3 +1062,114 @@ class TestRepairingFilingSummaries:
         assert report["checked"] == 2
         assert report["changed_count"] == 1
         assert len(done) == 1
+
+    def test_the_count_and_the_repair_agree_on_who_needs_work(
+        self, session, settings, monkeypatch
+    ):
+        """The probe that offers the button and the repair the button starts share one
+        definition. Two would drift, and the failure is a page that says "all read filings
+        have a summary" while a run would spend money on the ones that do not."""
+        from awltux.ingest.parsing import filings_awaiting_summaries
+
+        self._parsed(session, settings, name="needs.htm")
+        self._parsed(
+            session,
+            settings,
+            name="has.htm",
+            parsed={"extraction": {}, "summary": {"business_summary": "Already."}},
+        )
+        monkeypatch.setattr(parsing, "summarise_filing", lambda *a, **k: {"business_summary": "x"})
+
+        assert filings_awaiting_summaries(session) == (1, 2)
+        report = parsing.repair_filing_summaries(session, settings=settings)
+        assert report["changed_count"] == 1
+        assert filings_awaiting_summaries(session) == (0, 2)
+
+    def test_the_job_runs_the_repair_and_reports_what_it_did(self, session, settings, monkeypatch):
+        """The registered entry point, which is what the Operations button calls.
+
+        Stubbed at ``summarise_filing`` rather than at the client so it exercises the
+        session handling, the counting and the detail the run row stores -- the parts the
+        CLI cannot show and the page reads back.
+        """
+        from awltux.ingest.jobs import repair_filing_summaries_job
+
+        self._parsed(session, settings)
+        monkeypatch.setattr(parsing, "summarise_filing", lambda *a, **k: {"business_summary": "x"})
+        # The job opens its own `session_scope`; this fixture is holding one, so the row
+        # has to be committed for the job's session to see it at all.
+        session.commit()
+
+        result = repair_filing_summaries_job()
+
+        assert result.items_seen == 1
+        assert result.items_written == 1
+        assert result.detail["changed_count"] == 1
+        assert result.detail["already"] == 0
+        # Read back through this session: the job committed its own, and the row a
+        # decision reads has to carry the summary by the time it returns.
+        session.expire_all()
+        stored = session.execute(select(Filing)).scalar_one()
+        assert stored.parsed["summary"]["business_summary"] == "x"
+
+
+class TestWhatTheRepairButtonIsOfferedFor:
+    """The coverage probe for the on-demand repair, exercised where parsed filings can
+    be built. It lives here rather than with the other probe tests for that reason: the
+    claim being checked -- "this many read filings still have no summary" -- is a claim
+    about `parsing`, and only this file knows how to make one.
+
+    Wording matters more than usual here, because the probe is the *only* thing standing
+    between a press of Run now and a model call per filing.
+    """
+
+    @staticmethod
+    def _read(session, settings, *, named: str, summarised: bool) -> Filing:
+        from awltux.db import Instrument
+
+        if session.get(Instrument, "TEST_US_EQ") is None:
+            _seed(session)
+        raw = _document(settings, f"{named}.htm", "<p>Revenue 1,000,000</p>")
+        filing = _filing(
+            session,
+            url=f"https://sec.test/{named}.htm",
+            raw_path=raw,
+            status="parsed",
+        )
+        filing.parsed = {"extraction": {}} | (
+            {"summary": {"business_summary": "Done."}} if summarised else {}
+        )
+        session.flush()
+        return filing
+
+    def test_nothing_read_says_nothing_read(self, session):
+        """Not "all 0 filings have a summary", which is the reassuring answer to a
+        question nobody asked -- an empty table is not a finished repair."""
+        from awltux.scheduler.dependencies import PROBES
+
+        coverage = PROBES["filing_summaries"](session)
+
+        assert coverage.missing == 0
+        assert "no filing has been read" in coverage.reason
+
+    def test_the_count_is_of_filings_that_still_need_one(self, session, settings):
+        from awltux.scheduler.dependencies import PROBES
+
+        self._read(session, settings, named="needs", summarised=False)
+        self._read(session, settings, named="has", summarised=True)
+
+        coverage = PROBES["filing_summaries"](session)
+
+        assert coverage.missing == 1
+        assert coverage.total == 2
+        assert "1 of 2 read filings" in coverage.reason
+
+    def test_a_finished_repair_says_so(self, session, settings):
+        from awltux.scheduler.dependencies import PROBES
+
+        self._read(session, settings, named="has", summarised=True)
+
+        coverage = PROBES["filing_summaries"](session)
+
+        assert coverage.missing == 0
+        assert coverage.reason == "all 1 read filings have a summary"

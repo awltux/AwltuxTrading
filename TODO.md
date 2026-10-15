@@ -426,6 +426,17 @@ show:
   `close_orphaned_runs`, but that writes "the process restarted", which is not what
   happened; the row was closed by hand with the real reason.
 
+**And the on-demand repair makes the bypass its only path.** Added 2026-10-16 with
+`filing_summaries` (`scheduler/registry.py`), a job with no interval at all: every run
+of it is a `run_now` from the Operations button, which posts `wait=True`
+(`web/routes/api.py:395`) and therefore never reaches the executor. So this is no
+longer a state a manual press can accidentally enter -- it is the design, and what it
+overlaps is whatever scheduled job holds the single worker at that moment. Its writes
+are one `llm_call` row plus one `filing.parsed` update per filing, and the `llm_call`
+insert is the write that failed in run 886. Either this entry is dealt with before the
+backlog is worked through, or the repair is run with the scheduler quiet and nothing
+else in flight.
+
 ### Build the accounting-quality markers from `docs/investment-markers.md`
 
 **Mostly done.** Re-measured 2026-10-06: this entry still listed Piotroski, the

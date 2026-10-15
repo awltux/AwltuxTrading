@@ -154,15 +154,17 @@ def catch_ups(
 
     ``run_on_start`` jobs are excluded because they run on every start regardless --
     scheduling them twice would be a second run of the same job at the same second.
-    Disabled jobs are excluded because a paused job is not a missed one.
+    Disabled jobs are excluded because a paused job is not a missed one. Manual-only
+    jobs are excluded because there is no interval to be behind: nothing was owed to a
+    job nobody asked to run, and the ones that spend model calls -- the repairs -- must
+    not be triggered by a restart on the strength of having been run once by hand.
     """
     owed: list[CatchUp] = []
     for spec in specs:
-        if not spec.enabled or spec.run_on_start:
+        interval = spec.interval_seconds
+        if not spec.enabled or spec.run_on_start or interval is None:
             continue
-        found = catch_up_for(
-            spec.id, last_successes.get(spec.id), spec.interval_seconds, now
-        )
+        found = catch_up_for(spec.id, last_successes.get(spec.id), interval, now)
         if found is not None:
             owed.append(found)
     # `sorted` is stable, so jobs due at the same instant stay in registry order --

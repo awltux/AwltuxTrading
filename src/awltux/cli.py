@@ -298,7 +298,12 @@ def cmd_jobs(_args: argparse.Namespace) -> int:
 
     for spec in build_job_specs(get_settings()):
         state = "enabled" if spec.enabled else f"disabled (needs {', '.join(spec.requires)})"
-        print(f"{spec.id:24} every {spec.interval_seconds:>7}s  {state}")
+        cadence = (
+            f"every {spec.interval_seconds:>7}s"
+            if spec.interval_seconds is not None
+            else "on demand"
+        )
+        print(f"{spec.id:24} {cadence:<14}  {state}")
         if spec.description:
             print(f"{'':24} {spec.description}")
     return 0

@@ -2019,6 +2019,31 @@ def resolve_uk_companies_job(tickers: list[str] | None = None) -> JobResult:
     )
 
 
+def repair_filing_summaries_job() -> JobResult:
+    """Give the filings read before anything wrote a summary the summary they owe.
+
+    **The one job here that runs on demand only** (see ``JobSpec.manual_only``). It
+    spends a model call per filing on the bulk model over a whole document, so it has
+    no cadence: a timer would decide for the operator how much of the backlog to pay
+    for. Pressing Run now decides it instead, and ``awltux repair-filing-summaries
+    --dry-run`` prices it before that.
+
+    Idempotent and resumable: a filing that already has a summary is skipped, one whose
+    document cannot be read is left alone, and one whose call returns nothing is left a
+    candidate so the next run retries it rather than recording a permanent blank.
+    """
+    from awltux.ingest.parsing import repair_filing_summaries
+
+    with session_scope() as session:
+        report = repair_filing_summaries(session)
+
+    return JobResult(
+        items_seen=report["checked"],
+        items_written=report["changed_count"],
+        detail=report,
+    )
+
+
 def run_valuations(tickers: list[str] | None = None) -> JobResult:
     """Recompute the deterministic valuation for the universe."""
     from awltux.analysis.valuation import run_valuations as _run

@@ -84,7 +84,9 @@
   Jobs are triggered from here with the same code path the scheduler uses, so a
   manual run is recorded in the history below exactly like an automatic one.
   <strong>Needs first</strong> is the declared pipeline order: those jobs must have
-  run for this one to have anything to work with.
+  run for this one to have anything to work with. A job whose interval reads
+  <strong>on demand</strong> has no trigger at all — nothing but this button starts
+  it, which is how a job that spends budget per item is kept off a timetable.
 </p>
 <table class="grid compact">
   <thead><tr><th>Job</th><th>Description</th><th>Needs first</th><th class="num">Every</th><th>Next run</th><th>Status</th></tr></thead>
@@ -118,7 +120,12 @@
           {% endfor %}
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
-      <td class="num">{{ job.interval_seconds | interval }}</td>
+      <td class="num">
+        {%- if job.manual_only -%}
+          <span class="muted" title="Nothing schedules this job; only the Run now button starts it">on demand</span>
+        {%- else -%}{{ job.interval_seconds | interval }}
+        {%- endif -%}
+      </td>
       {# Behind its interval, not merely "the timestamp has passed": APScheduler moves
          `next_run` forward when a job is queued, so a catch-up waiting behind the
          single worker has a future next run while its data is hours old. Said in words
@@ -132,6 +139,7 @@
       </td>
       <td>
         {% if not job.enabled %}<span class="muted">disabled (missing credential)</span>
+        {% elif job.manual_only %}<span class="muted" title="No trigger: it runs when you press Run now">manual</span>
         {% elif job.paused %}<span class="muted">paused</span>
         {% else %}<span class="good">enabled</span>{% endif %}
       </td>
@@ -146,8 +154,8 @@
 <p class="muted small">
   Measured from the data, not from the run history: a job that has never run and a
   job whose prerequisite has never run look identical in a history and need
-  different actions. Counts are universe coverage — how many instruments are still
-  missing what this job produces.
+  different actions. Counts are coverage in each job's own unit — instruments,
+  filings, stories — and the reading beside them names the unit.
 </p>
 <table class="grid compact">
   <thead><tr><th>Job</th><th>Needs first</th><th class="num">Outstanding</th><th>Reading</th></tr></thead>

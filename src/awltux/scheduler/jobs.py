@@ -46,7 +46,11 @@ class JobSpec:
 
     id: str
     func: JobFunc
-    interval_seconds: int
+    #: How often the scheduler triggers this job, or ``None`` for one it never
+    #: triggers at all. **One fact, declared once**: a manual-only job has no
+    #: interval, so there is nothing for a second ``manual_only`` flag to disagree
+    #: with, and every reader that asks "when does this run" gets the same answer.
+    interval_seconds: int | None = None
     description: str = ""
     # Do not run immediately on startup; a fresh container should come up fast
     # and let the dashboard respond before ingest begins.
@@ -82,6 +86,30 @@ class JobSpec:
     #: out of many is unreadable without it. A scoped refresh writes every instrument's log
     #: to the same file, so the job id alone cannot answer it.
     target: str | None = None
+
+    @property
+    def manual_only(self) -> bool:
+        """Whether this job runs only when a human asks it to.
+
+        A repair is the case: it re-reads a backlog, so it has no cadence to keep and
+        nothing to catch up on. Putting it on a timer would make it spend model calls
+        on the scheduler's timetable for a reason nobody stated -- and *being
+        unschedulable* is what makes "run this when you have decided to" enforceable
+        rather than a convention.
+        """
+        return self.interval_seconds is None
+
+    @property
+    def scheduled(self) -> bool:
+        """Whether the scheduler should put this job on a timer at all.
+
+        The conjunction, named and declared once: it is asked when a spec is registered,
+        when startup sweeps the registry, and when the log line counts what started. A
+        disabled job is one whose credential is missing; a manual-only job is one nobody
+        wants a timer for. Both are absent from the schedule for different reasons, and
+        that is the part a reader needs to see at each of the three sites.
+        """
+        return self.enabled and not self.manual_only
 
 
 def running_jobs(session) -> set[str]:

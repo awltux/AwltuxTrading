@@ -565,6 +565,26 @@ def repair_filing_summaries(
     return _summary_report(checked, changed, already, no_text=no_text, failed=failed)
 
 
+def filings_awaiting_summaries(session: Session) -> tuple[int, int]:
+    """How many read filings have no summary, and how many have been read at all.
+
+    The pair, not the gap: the coverage probe's sentence says how much of the read set
+    is still missing one, and "0 of 0" reads as complete when what it means is that
+    nothing has been read yet.
+
+    Shared with the coverage probe rather than re-derived there, so the Operations page
+    cannot offer the repair for a backlog the repair would not find -- or, worse, claim
+    the backlog is clear while a press of the button spends a model call per filing.
+
+    The summary lives inside the ``parsed`` JSON column, so there is no SQL predicate
+    for it and the rows are loaded and filtered in Python -- which is affordable
+    precisely because only ``parsed`` rows are considered, and that set is bounded by
+    what has been spent on extraction.
+    """
+    pending, already = _filings_without_summaries(session)
+    return len(pending), len(pending) + already
+
+
 def _filings_without_summaries(session: Session) -> tuple[list[Filing], int]:
     """Every read filing that carries no summary, and how many already do.
 
@@ -608,7 +628,12 @@ def _summarise_each(
     no_text = 0
     failed = 0
 
-    for filing in filings:
+    for position, filing in enumerate(filings, start=1):
+        # One model call per filing, so this is a loop an upgrade has to be able to
+        # leave: the checkpoint sits where the previous filing's summary is already
+        # committed (the model client commits at the network boundary) and the next one
+        # has not been read.
+        progress.checkpoint(f"{position} of {len(filings)}: {filing.instrument_t212_ticker}")
         document = document_text(settings.data_dir / (filing.raw_path or ""))
         if not document:
             no_text += 1
@@ -765,6 +790,7 @@ __all__ = [
     "TEXT_SUFFIXES",
     "document_text",
     "extract_held_filings",
+    "filings_awaiting_summaries",
     "repair_filing_summaries",
     "repair_scaled_figures",
     "store_cited_period",
