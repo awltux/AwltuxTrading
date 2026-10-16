@@ -214,16 +214,19 @@ class TestTheFairValueOverlay:
         session.flush()
 
     def test_a_step_starts_on_its_own_bar_and_ends_at_the_edge(self, session):
+        """The band is narrow here because the price range is: an instrument whose prices
+        span 2 units and whose fair value spans 40 is a band the axis cannot hold, which is
+        its own test below."""
         _instrument(session)
         self._priced(session, [100.0, 101.0, 102.0])
-        self._valuation(session, day="2026-05-02", low=90.0, base=110.0, high=130.0)
+        self._valuation(session, day="2026-05-02", low=98.0, base=100.5, high=103.0)
         history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
         assert [step["date"] for step in overlay.steps] == ["2026-05-02"]
-        assert overlay.steps[0]["base"] == 110.0
-        assert (overlay.steps[0]["low"], overlay.steps[0]["high"]) == (90.0, 130.0)
+        assert overlay.steps[0]["base"] == 100.5
+        assert (overlay.steps[0]["low"], overlay.steps[0]["high"]) == (98.0, 103.0)
         assert overlay.offscale == 0
 
     def test_the_last_calculation_of_a_bar_is_the_one_that_stands(self, session):
@@ -234,14 +237,14 @@ class TestTheFairValueOverlay:
         """
         _instrument(session)
         self._priced(session, [100.0, 101.0])
-        self._valuation(session, day="2026-05-02", low=80.0, base=100.0, high=120.0, hour=9)
-        self._valuation(session, day="2026-05-02", low=90.0, base=111.0, high=132.0, hour=17)
+        self._valuation(session, day="2026-05-02", low=99.0, base=100.0, high=102.0, hour=9)
+        self._valuation(session, day="2026-05-02", low=100.0, base=101.0, high=103.0, hour=17)
         history = queries.price_history(session, TICKER)
 
         overlay = queries.price_valuations(session, TICKER, history)
 
         assert len(overlay.steps) == 1, "one bar, one step"
-        assert overlay.steps[0]["base"] == 111.0, "the later calculation of the day wins"
+        assert overlay.steps[0]["base"] == 101.0, "the later calculation of the day wins"
 
     def test_a_refused_valuation_is_not_drawn_as_zero(self, session):
         """``insufficient_data`` is the model declining to answer, not answering zero.
@@ -267,10 +270,10 @@ class TestTheFairValueOverlay:
 
         GWW on 2026-10-15: prices 918-1402 against a band of 178-420. That gap -- the
         market paying four times what the model says the business is worth -- is the
-        single most interesting thing on the chart.
+        single most interesting thing on the chart, and it costs the axis 2.5x to hold it.
         """
         _instrument(session)
-        self._priced(session, [1000.0, 1200.0, 1400.0])
+        self._priced(session, [918.0, 1200.0, 1402.0])
         self._valuation(session, day="2026-05-02", low=178.0, base=299.0, high=420.0)
         history = queries.price_history(session, TICKER)
 
@@ -278,6 +281,75 @@ class TestTheFairValueOverlay:
 
         assert len(overlay.steps) == 1
         assert overlay.offscale == 0
+
+    def test_the_bound_lands_where_it_says_it_does(self, session):
+        """Both sides of it, because a bound only tested from far away is unmeasured.
+
+        Prices span 100 here. A band reaching 190 below them stretches the axis 2.9x and is
+        drawn; one reaching 220 below stretches it 3.2x and is not.
+        """
+        _instrument(session)
+        self._priced(session, [1000.0, 1050.0, 1100.0])
+        self._valuation(session, day="2026-05-01", low=810.0, base=900.0, high=1000.0)
+        self._valuation(session, day="2026-05-02", low=780.0, base=900.0, high=1000.0)
+        history = queries.price_history(session, TICKER)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert [step["date"] for step in overlay.steps] == ["2026-05-01"]
+        assert overlay.offscale == 1
+
+    def test_the_same_band_fits_a_wide_window_and_not_a_narrow_one(self, session):
+        """The behaviour a reader will actually meet, with the live numbers behind it.
+
+        GWW holds 177-420 of fair value against prices that ran 918-1402 over a year and
+        1243-1331 over a month. Over the year the axis grows 2.5x to take the band; over
+        the month it would grow 13x, leaving the price line a flat streak at the top of the
+        plot -- so the step is drawn on Max and left off on 1 Month, where the page says
+        how many and the wider range above shows them.
+
+        It is also what the *first* version of the rule got wrong, measured on the live
+        page: it compared the band's nearest edge to the nearest price, so on the 1-month
+        window a band reaching 405 was refused while one reaching 417 was drawn -- a 3%
+        difference deciding whether a step appears. This pins the axis question instead.
+
+        The prices are laid out over two months so that one valuation is inside both
+        windows: a wide range that ran 918-1402, and a narrow one near the top of it.
+        """
+        _instrument(session)
+        session.add_all(make_bars(TICKER, [918.0, 1100.0, 1402.0], start=dt.date(2026, 5, 1)))
+        session.add_all(make_bars(TICKER, [1243.0, 1290.0, 1331.0], start=dt.date(2026, 10, 1)))
+        self._valuation(session, day="2026-10-02", low=177.0, base=298.0, high=420.0)
+
+        wide = queries.price_history(session, TICKER)
+        assert len(wide) == 6
+        assert len(queries.price_valuations(session, TICKER, wide).steps) == 1
+
+        narrow = queries.price_history(session, TICKER, window=dt.timedelta(days=5))
+        assert [bar["date"] for bar in narrow] == ["2026-10-01", "2026-10-02", "2026-10-03"]
+
+        overlay = queries.price_valuations(session, TICKER, narrow)
+        assert overlay.steps == []
+        assert overlay.offscale == 1
+
+    def test_the_count_is_of_missing_steps_not_of_stored_rows(self, session):
+        """One bar is one missing line, however many times the job valued it that day.
+
+        The job runs hourly, so counting rows made the live page claim "32 valuations are
+        not drawn" where the chart was missing four steps -- eight or nine rows each.
+        """
+        _instrument(session)
+        self._priced(session, [100.0, 101.0])
+        for hour in range(9, 18):
+            self._valuation(
+                session, day="2026-05-02", low=9.09e60, base=2.27e61, high=3.64e61, hour=hour
+            )
+        history = queries.price_history(session, TICKER)
+
+        overlay = queries.price_valuations(session, TICKER, history)
+
+        assert overlay.steps == []
+        assert overlay.offscale == 1, "nine calculations on one bar are one absent line"
 
     def test_a_band_far_past_every_price_is_counted_rather_than_plotted(self, session):
         """The three live instruments this is for, and the measurement behind the ratio.
@@ -487,9 +559,9 @@ class TestTheInstrumentPage:
             ValuationRun(
                 instrument_t212_ticker=TICKER,
                 as_of=dt.datetime(2026, 5, 3, 17, 0, tzinfo=dt.UTC),
-                fair_value_low=90.0,
-                fair_value_base=110.0,
-                fair_value_high=130.0,
+                fair_value_low=98.0,
+                fair_value_base=100.5,
+                fair_value_high=103.0,
                 status="ok",
             )
         )
@@ -498,7 +570,7 @@ class TestTheInstrumentPage:
         body = client.get(f"/instrument/{TICKER}?tab=price").text
 
         steps = json.loads(_attribute(body, "data-valuations"))
-        assert steps == [{"date": "2026-05-03", "base": 110.0, "low": 90.0, "high": 130.0}]
+        assert steps == [{"date": "2026-05-03", "base": 100.5, "low": 98.0, "high": 103.0}]
         # The key names both marks, because the two colours carry two different readings.
         assert "The red line is the fair value the model calculated" in body
         assert "pale yellow bar at its start" in body
@@ -534,7 +606,7 @@ class TestTheInstrumentPage:
 
         assert json.loads(_attribute(body, "data-valuations")) == []
         assert "1 valuation is not drawn" in body
-        assert "leave no room for the prices" in body
+        assert "would stretch the axis so far" in body
 
     def test_the_four_range_buttons_are_links(self, client, session):
         """Links, not script: a range is shareable, the back button works, and the whole

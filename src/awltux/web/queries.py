@@ -2396,34 +2396,51 @@ def _bar_on_or_after(
     return last_day
 
 
-#: How far outside the prices a chart covers a fair-value band may sit and still be drawn,
-#: as a multiple of the nearest price. Beyond it the band is counted instead of plotted, and
-#: the count is stated under the chart. See :func:`_band_is_drawable` for the measurement.
-MAX_OFFSCALE_BAND_RATIO = 3.0
+#: How much wider than the prices a chart covers a fair-value band may make the axis and
+#: still be drawn, as a multiple of the price window's own width. Past it the step is counted
+#: instead of plotted, and the count is stated under the chart. See :func:`_band_fits_axis`
+#: for the measurement and for what the first version of this rule got wrong.
+MAX_BAND_AXIS_GROWTH = 3.0
 
 
-def _band_is_drawable(
+def _band_fits_axis(
     low: float, high: float, *, price_low: float, price_high: float
 ) -> bool:
-    """Whether this range belongs on a linear axis built from those prices.
+    """Whether this range can share a linear axis with those prices.
 
-    **Not a tidiness rule.** The axis is linear, so a band drawn 2.27e61 against a $343
-    price does not annotate the chart, it *becomes* the chart: nineteen months of price
-    collapse into the bottom pixel. Three of the 73 instruments holding a valuation on
-    2026-10-15 were in that state (AAPL 2.27e61, BUDA 1.06e27, AREC 9.7e5 against $1.18),
-    and the other 70 wanted the axis to grow by a median of 2.1x -- which is readable, and
-    is the whole point of the overlay.
+    **The question is the axis, not the distance.** The first version of this compared the
+    band's nearest edge to the nearest price, and the live data showed why that is the wrong
+    test: on GWW's 1-month window the price runs 1243-1331 and the band is 177-418, so an
+    edge at 405 was refused while one at 417 was drawn -- a 3% difference deciding whether a
+    step appears. What actually decides readability is how far the *axis* has to stretch, and
+    that is what this asks.
 
-    3x is the model's own vocabulary for "this value and this price are not talking about
-    the same thing": `analysis/valuation.py` already tells the reader to check the inputs
-    when they differ by more than that. The absurd values themselves are a valuation bug
-    rather than a chart problem, and are recorded in `TODO.md`; this keeps them from taking
-    a working panel down while they are fixed.
+    **Not a tidiness rule.** The axis is linear, so a band drawn 2.27e61 against a $343 price
+    does not annotate the chart, it *becomes* the chart: nineteen months of price collapse
+    into the bottom pixel. Three of the 73 instruments holding a valuation on 2026-10-15 were
+    in that state (AAPL 2.27e61, BUDA 1.06e27, AREC 9.7e5 against $1.18), and the other 70
+    wanted the axis to grow by a median of 2.1x -- which leaves the price line filling half
+    the plot, and is the whole point of the overlay.
+
+    3x is the model's own vocabulary for "this value and this price are not talking about the
+    same thing" -- `analysis/valuation.py` tells the reader to check the inputs when they
+    differ by more than that -- and it is also where the price line stops being a line: at
+    3x it still fills a third of the plot height. The absurd values themselves are a
+    valuation bug rather than a chart problem, recorded in `TODO.md`; this keeps them from
+    taking a working panel down while they are fixed.
+
+    A consequence worth knowing, because a reader will see it: the *same* band is drawn on a
+    wide window and refused on a narrow one. On GWW it stretches the axis 2.5x over a year
+    and 13x over a month, so 1 Month drops the line and says so -- which is honest, and is
+    what the window control is for.
     """
-    return (
-        low <= price_high * MAX_OFFSCALE_BAND_RATIO
-        and high >= price_low / MAX_OFFSCALE_BAND_RATIO
-    )
+    span = price_high - price_low
+    if span <= 0:
+        # One price, or none: there is no axis for a band to fit on, and every band would
+        # divide by it. The chart draws a flat line in that case and needs no overlay.
+        return False
+    widened = max(price_high, high) - min(price_low, low)
+    return widened <= span * MAX_BAND_AXIS_GROWTH
 
 
 @dataclass(frozen=True, slots=True)
@@ -2437,8 +2454,12 @@ class ValuationOverlay:
     """
 
     steps: list[dict[str, Any]] = field(default_factory=list)
-    #: Bands that exist but are too far from the prices to draw, counted so that a
-    #: missing red line is never a mystery.
+    #: **Steps** that exist but do not fit the axis -- one per bar, not one per stored row.
+    #:
+    #: Counted per bar because that is the unit the reader is missing: the valuation job runs
+    #: hourly, so a day whose band does not fit contributes eight or nine rows and *one*
+    #: absent line. Counting rows made the page claim "32 valuations are not drawn" where the
+    #: chart was missing four steps.
     offscale: int = 0
 
 
@@ -2461,6 +2482,10 @@ def price_valuations(
     declined to give. Only the four columns read here are selected: ``inputs`` and
     ``model_outputs`` are the two JSON blobs on this table, and loading a year of them
     to plot two floats would be the expensive half of nothing.
+
+    A band the axis cannot hold is counted in ``offscale`` and left out, because the chart
+    is a price chart and the alternative is a price line flattened by a valuation it is
+    being compared against -- see :func:`_band_fits_axis`.
     """
     if not history:
         return ValuationOverlay()
@@ -2492,16 +2517,16 @@ def price_valuations(
     # One step per bar, keeping the newest calculation that snaps to it -- two
     # calculations a day apart can land on the same bar when the first is a non-trading
     # day, and the chart has no way to tell them apart.
+    #
+    # The band test comes *after* that, not in the loop: which band stands for a bar is the
+    # day's last calculation, so judging each row would let an earlier reading of the same
+    # day be drawn and then be replaced by one that does not fit.
     by_bar: dict[str, dict[str, Any]] = {}
-    offscale = 0
     for as_of, low, base, high in rows:
         if low is None or base is None or high is None:
             continue
         day = _bar_on_or_after(history, as_of.date(), first_day, last_day)
         if day is None:
-            continue
-        if not _band_is_drawable(low, high, price_low=price_low, price_high=price_high):
-            offscale += 1
             continue
         by_bar[day] = {
             "date": day,
@@ -2510,7 +2535,18 @@ def price_valuations(
             "high": float(high),
         }
 
-    return ValuationOverlay(steps=[by_bar[day] for day in sorted(by_bar)], offscale=offscale)
+    steps: list[dict[str, Any]] = []
+    offscale = 0
+    for day in sorted(by_bar):
+        band = by_bar[day]
+        if not _band_fits_axis(
+            band["low"], band["high"], price_low=price_low, price_high=price_high
+        ):
+            offscale += 1
+            continue
+        steps.append(band)
+
+    return ValuationOverlay(steps=steps, offscale=offscale)
 
 
 def price_history_waiting_note(session: Session, ticker: str, *, bars: int) -> str | None:

@@ -59,8 +59,8 @@ is how the reading above was checked) and BUDA at 122.15 against 7.49.
 
 **Not fixed here** because it changes every stored fair value and therefore every decision
 that read one, and `blend` weights this method into the base. The chart feature that found it
-refuses to *draw* a band more than 3x away from every price on the axis
-(`MAX_OFFSCALE_BAND_RATIO`, `web/queries.py`) and says how many it left off, so the panel
+refuses to *draw* a band whose range would stretch the price axis beyond
+`MAX_BAND_AXIS_GROWTH` (`web/queries.py`) and says how many it left off, so the panel
 stays readable in the meantime. Two things to check when fixing it: the `model_outputs`
 recorded on the 25,393 stored rows are the evidence of what each method produced, and
 repairing those rows has the same "recompute or re-derive" question
