@@ -104,10 +104,10 @@ schedule:
   news_finnhub: 3600             # was 20 min
   news_marketaux: 3600           # was 30 min
   news_gdelt: 3600               # was 15 min
-  news_analysis: 86400           # reads the poll's output, so it follows the poll
-  news_relevance: 86400          # ditto
-  news_embeddings: 86400         # ditto
-  sentiment_aggregate: 86400     # ditto
+  news_analysis: 86400           # appraises a story's sources, framing, claims and omissions
+  news_relevance: 86400          # classifies the stories nothing has judged yet
+  news_embeddings: 86400         # vectors the relevant ones, so one event groups as one entry
+  sentiment_aggregate: 86400     # rolls the day's stories into per-stock and per-sector sentiment
   valuation: 86400               # full sweep nightly; event-driven otherwise
   decision: 3600                  # hourly, a rotated slice; was a daily full sweep
   calibration: 86400
