@@ -82,12 +82,32 @@ schedule:
   edgar_submissions: 3600
   edgar_atom_events: 3600        # was 45 SECONDS; the Atom feed holds hours of events
   companies_house: 3600          # was 15 min
-  news_rss: 3600                 # was 5 min
-  news_sectors: 3600             # eleven feeds, same cadence as the instrument poll
+  # The instrument news poll, and the four jobs that read what it stores, are daily.
+  #
+  # Hourly was wrong twice over. A sweep spends the provider's whole daily allowance --
+  # the `rss` budget is 2,000 requests per UTC day and one walk of the universe uses
+  # about that -- so measured 2026-10-16, 129 of the last 133 runs ended with
+  # *stopped: [rss] budget spent* within two seconds. And a run that can fetch takes
+  # longer than an hour: the last successful one walked 21,766 headlines in 102 minutes.
+  #
+  # News is a daily input anyway, so the runs in between had nothing to fetch and
+  # nothing to read. **The rations below did not change and are per run, so they are
+  # now per day**: news.scepticism.max_deep_per_run is 40 model-backed appraisals a day
+  # rather than up to 960. The deterministic half of the appraisal still settles the
+  # whole lookback window each run (7,846 appraisals in one measured run), so raise that
+  # number only if the deep reads fall behind.
+  news_rss: 86400
+  # Eleven feeds rather than one per instrument, and it reads neither the universe nor
+  # the instrument poll's output. Left hourly: it is cheap, and a sector page is then
+  # fresher than a company page rather than tied to a cadence that is not its own.
+  news_sectors: 3600
   news_finnhub: 3600             # was 20 min
   news_marketaux: 3600           # was 30 min
   news_gdelt: 3600               # was 15 min
-  sentiment_aggregate: 3600
+  news_analysis: 86400           # reads the poll's output, so it follows the poll
+  news_relevance: 86400          # ditto
+  news_embeddings: 86400         # ditto
+  sentiment_aggregate: 86400     # ditto
   valuation: 86400               # full sweep nightly; event-driven otherwise
   decision: 3600                  # hourly, a rotated slice; was a daily full sweep
   calibration: 86400

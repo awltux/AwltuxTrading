@@ -1007,7 +1007,8 @@ def analyse_news(tickers: list[str] | None = None) -> JobResult:
     Deliberately a separate job from the poll. The poll is volume work on hundreds
     of loose headlines and has to stay cheap; this is per-story work that costs a
     model call for the stories that warrant one, and mixing the two would put the
-    paid work on the critical path of every five-minute poll.
+    paid work on the critical path of the poll. Both run daily, so "the poll's
+    cadence" here means the same thing it does in `config.yaml`.
     """
     from awltux.analysis.news_analysis import analyse_universe
     from awltux.config import get_settings

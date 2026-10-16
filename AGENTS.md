@@ -104,8 +104,9 @@ the backlog into **one** run.
   Operations page marks a past due time as *overdue* rather than printing a timestamp
   the reader has to compare against a clock.
 
-Measured when this was added: `news_rss` has an hourly interval and had gone 23.7 hours
-without a run, and 8 of 21 registered jobs were past their interval at that instant.
+Measured when this was added: `news_rss` had gone 23.7 hours without a run — it was hourly
+then and is daily now, which makes it the job the mechanism matters most for — and 8 of 21
+registered jobs were past their interval at that instant.
 
 ### What bumps the version
 

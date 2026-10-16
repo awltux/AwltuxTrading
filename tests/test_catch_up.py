@@ -7,9 +7,10 @@ store is in memory, so a trigger due at 02:00 while the machine is off does not 
 daily job's next fire is a day after the machine came back, and a machine that is off
 every night never runs its daily jobs at all.
 
-Measured on the live database before the fix: ``news_rss`` has an hourly interval and
-had gone **23.7 hours** without a run, and **eight of twenty-one** registered jobs were
-past their interval at the same instant.
+Measured on the live database before the fix: ``news_rss`` had gone **23.7 hours** without
+a run -- it ran hourly then and runs daily now, which is the cadence this mechanism exists
+for -- and **eight of twenty-one** registered jobs were past their interval at the same
+instant.
 
 The rule is tested as a pure function first, because on an empty database nearly every
 job is *blocked* rather than idle and a test written against real data would be
@@ -549,10 +550,15 @@ class TestOnStart:
         client fixture leaves it stopped, which is why the first version of this test
         failed with every row rendering `—`. `recorder` replaces the job bodies, so
         starting it reaches no provider.
+
+        The stale row is **two days** old, not the five hours it used to be: that was
+        outside `news_embeddings`' one-hour interval, and it went daily on 2026-10-16, so
+        five hours is now inside the interval and correctly not behind. The two-day figure
+        is what makes the branch render on the cadence the job actually has.
         """
         from awltux.db import IngestRun
 
-        stale = dt.datetime.now(dt.UTC) - dt.timedelta(hours=5)
+        stale = dt.datetime.now(dt.UTC) - dt.timedelta(days=2)
         session.add(
             IngestRun(job="news_embeddings", started_at=stale, finished_at=stale, ok=True)
         )
@@ -565,7 +571,7 @@ class TestOnStart:
         finally:
             scheduler.shutdown(wait=False)
 
-        assert "behind —" in body, "a job five hours past a one-hour interval is behind"
+        assert "behind —" in body, "a job two days past a daily interval is behind"
         assert body.count("behind —") == 1, (
             "only the stale job is behind; the rest ran recently or never ran"
         )

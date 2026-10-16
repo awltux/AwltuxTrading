@@ -288,22 +288,30 @@ class ScheduleConfig(BaseModel):
     edgar_submissions: int = 3_600
     edgar_atom_events: int = 3_600
     companies_house: int = 3_600
-    news_rss: int = 3_600
-    #: The sector poll is eleven feeds, so it can afford to run as often as the
-    #: instrument poll without any rate-limit concern. Kept at the same cadence for the
-    #: simpler reason: a sector page should be as fresh as a company page.
+    #: The instrument news poll, daily, and the four jobs that read what it stores.
+    #:
+    #: It was hourly, and hourly was wrong twice over: a walk of the universe spends the
+    #: provider's whole daily allowance, so most runs could not fetch anything, and a walk
+    #: that *can* fetch takes longer than an hour. `config/config.yaml` carries the
+    #: measurement; the paragraph here is the one thing that is not in that file -- the
+    #: rations downstream are per *run* and so are now per day.
+    news_rss: int = 86_400
+    #: The sector poll is eleven feeds rather than one per instrument, and it does not read
+    #: the universe or the instrument poll's output. Left hourly on purpose: it is cheap,
+    #: and a sector page is then fresher than a company page rather than tied to a cadence
+    #: that has nothing to do with it.
     news_sectors: int = 3_600
     news_finnhub: int = 3_600
     news_marketaux: int = 3_600
     news_gdelt: int = 3_600
-    news_analysis: int = 3_600
-    news_relevance: int = 3_600
-    news_embeddings: int = 3_600
+    news_analysis: int = 86_400
+    news_relevance: int = 86_400
+    news_embeddings: int = 86_400
     symbol_resolution: int = 86_400
     #: The Treasury publishes once per business day, so anything under a few hours
     #: is only useful for picking up a corrected publication.
     macro_rates: int = 21_600
-    sentiment_aggregate: int = 3_600
+    sentiment_aggregate: int = 86_400
     valuation: int = 86_400
     decision: int = 86_400
     calibration: int = 86_400

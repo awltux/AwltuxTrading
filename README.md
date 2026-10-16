@@ -714,7 +714,7 @@ sources cannot support that:
 | Data | Latency |
 |---|---|
 | US filings (SEC EDGAR Atom) | under a minute |
-| News headlines | 1–5 minutes |
+| News headlines | up to a day: the poll is daily, and it was hourly until 2026-10-16 — one sweep of the universe spends the feeds' own daily allowance, so the runs in between had nothing to fetch |
 | Prices | 15-minute delayed, or end-of-day |
 | UK regulatory news | best-effort only — real-time RNS is a paid licence |
 | Everything you **hold** | the whole pipeline — filings, news, valuation, decision — re-run hourly (`held_refresh`), rather than waiting for each stage's own sweep to reach it |

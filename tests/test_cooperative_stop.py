@@ -118,7 +118,8 @@ class TestHowAStoppedRunIsRecorded:
         """`ok` is what catch-up reads. A stopped run has not done its work.
 
         Counting it as successful would silently skip the rest of the job until its
-        next interval, which for `news_rss` is an hour of unwalked universe.
+        next interval -- a day of unwalked universe for the news poll, which is the
+        job that made this visible.
         """
 
         def work() -> None:

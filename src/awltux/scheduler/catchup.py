@@ -7,9 +7,11 @@ from *now*, so a job with a daily interval is next due a day after the process c
 back -- and this process is restarted every morning, because the machine is switched
 off overnight. A daily job on that machine never runs at all.
 
-Measured on the live database before this existed: ``news_rss`` has an hourly interval
-and had not run for **23.7 hours** while the process was up, and **eight of the
-twenty-one** registered jobs were past their interval at the moment of measuring.
+Measured on the live database before this existed: ``news_rss`` -- hourly at the time, and
+daily since 2026-10-16 -- had not run for **23.7 hours** while the process was up, and
+**eight of the twenty-one** registered jobs were past their interval at the moment of
+measuring. The job that prompted this is now on the *other* side of it: a daily poll is
+exactly the case a restart can skip entirely, which is what this catches.
 
 **The run table is the source, not a second one.** ``ingest_run`` already holds a
 durable row per execution and already survives the process -- the drain reads it for

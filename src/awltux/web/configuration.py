@@ -146,6 +146,13 @@ INTERESTING: tuple[tuple[str, str], ...] = (
     ("schedule.valuation", "seconds"),
     ("schedule.decision", "seconds"),
     ("schedule.news_rss", "seconds"),
+    # The four jobs the news poll feeds, listed beside it because the cadence is one
+    # decision rather than five: they read what it stores and have nothing to do on the
+    # runs it cannot fetch on. The values are read out of config.yaml like every other row.
+    ("schedule.news_analysis", "seconds"),
+    ("schedule.news_relevance", "seconds"),
+    ("schedule.news_embeddings", "seconds"),
+    ("schedule.sentiment_aggregate", "seconds"),
     ("schedule.provider_balance", "seconds"),
     ("schedule.retention", "seconds"),
     ("llm.model_bulk", "text"),

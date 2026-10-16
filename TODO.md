@@ -108,9 +108,14 @@ The new budget paces that at one request every five seconds with a 2,000-a-day c
 a full sweep now takes about two hours and competes for the same day's allowance as the
 eleven-sector poll (11 sectors × 2 editions × 24 runs = 528/day). **The ceiling is not what
 starves the sweep** -- one sweep plus the sector poll is 1,528 of 2,000, so both fit. What
-it cannot fund is the *hourly interval*: 24 sweeps a day would want 24,000 requests, so the
-budget funds (2,000 − 528) / 1,000 ≈ **1.5 sweeps a day**, and coverage is that rather than
-hourly.
+it cannot fund is a *sweep an hour*: 24 sweeps a day would want 24,000 requests, while the
+budget funds (2,000 − 528) / 1,000 ≈ **1.5 sweeps a day**.
+
+**That mismatch is now closed from the schedule's side rather than the budget's.** The poll
+and the four jobs downstream of it went daily on 2026-10-16 (`config/config.yaml`), which
+is what the allowance can actually pay for. The ceiling itself is unchanged and remains the
+real constraint (see below), and what that leaves is the volume question this entry is
+about rather than a cadence question.
 
 **Measured 2026-10-08, from the other end of it.** The new hourly `held_refresh` refreshed
 three holdings and every one came back with `news_rss` failed; the lease note is only
@@ -682,9 +687,10 @@ enough to sweep those branches up incidentally, which is why this has never bitt
 
 **The fix has a trap in it.** Widening the probe to count *every* unappraised in-window
 story makes the guard true and useless: the 931 declined stories never acquire appraisals,
-so the job would run every hour for ever, re-examining 7,000 stories to write nothing.
+so the job would run every day for ever, re-examining 7,000 stories to write nothing.
 Counting staleness is the same trap (most of the window is stale by construction, and
-`max_deep_per_run` is 40, so that is 40 model calls an hour). Either **record the decline**
+`max_deep_per_run` is 40 model calls a run -- a day, since the news pipeline went daily on
+2026-10-16). Either **record the decline**
 so the probe can subtract it — an `is_interesting` verdict stored on the row — or accept
 the narrow probe and say so in the probe's reason text. Do not simply widen the count.
 
@@ -997,12 +1003,13 @@ What is left is not about stopping.
 
 `news_analysis` is bounded at `news.scepticism.max_deep_per_run` = **40** model calls, and
 at one call per story that is **14 to 39 minutes** — the three runs on record took 826s,
-1831s and 2351s. `MAX_CONCURRENT_JOBS` is **1**, so while it runs no other job starts: an
-hourly job whose trigger falls inside that window does not queue, it waits for the next
-interval, which is a two-hour gap in prices, news or sentiment for no reason other than
-one job's length. Lowering `max_deep_per_run` is not a fix — 40 stories is already a
-rationed batch and cutting it only grows the backlog — and the per-story work is already
-persisted, so a *stopped* run loses nothing.
+1831s and 2351s. `MAX_CONCURRENT_JOBS` is **1**, so while it runs no other job starts: an hourly job whose
+trigger falls inside that window does not queue, it waits for the next interval, which is a
+two-hour gap in prices for no reason other than one job's length. Lowering
+`max_deep_per_run` is not a fix -- 40 stories is already a rationed batch and cutting it
+only grows the backlog -- and the per-story work is already persisted, so a *stopped* run
+loses nothing. The news jobs themselves are no longer in that gap: they went daily on
+2026-10-16, so this is now about the price and refresh jobs that are still hourly.
 
 That is the thing to decide: whether the answer is a second worker for jobs that make
 model calls rather than CPU (see the entry below for why more CPU cannot help), or a
@@ -1193,42 +1200,44 @@ started", which would keep the first-start behaviour and drop the other 61 runs.
 guard in `scheduler/jobs.py` is where a "ran recently" reason would go, and
 `job_statuses` already knows when each job last succeeded.
 
-### The universe news poll needs hours and never finishes
+### The news poll is bounded by the provider's allowance, not by a budget of its own
+
+**Re-measured 2026-10-16**, and the title this entry used to carry -- "needs hours and
+never finishes" -- is no longer true. It was, while the poll ran hourly against a walk that
+takes about two hours: a run was always cut short by the next trigger and the job went
+**0 successful runs in 25 attempts**. The cadence is daily from that date, which gives one
+run the whole day, and the poll now finishes: **4 successful runs in 133**, the best of them
+run 3075 on 2026-10-16, **21,766 headlines seen and 1,464 stories stored in 102 minutes**.
 
 `ingest_rss_news` (`ingest/news.py:766`) walks every instrument in the universe, up to
 `news.max_items_per_feed_poll` (**50**) headlines each — 500 instruments, so a
-**25,000-item** ceiling — and there is no per-run cap. **There *is* a rotation, and this
-entry wrongly claimed otherwise**: `_instruments_to_poll` orders by
-`Instrument.news_polled_at` (`ingest/news.py:568-610`, migration `0008_news_poll_cursor`)
-with the stamp written per instrument, so a run resumes where the last stopped rather than
-restarting at row 0. Measured 2026-10-06, `news_rss` run #220: **3,033 headlines classified
-in 97 minutes at a flat 31/minute**, with no decline in the 15-minute buckets from start to
-finish (273, 451, 488, 500, 428, 472, 421). At that rate the ceiling is about **13 hours**.
+**25,000-item** ceiling — and there is still no per-run cap of our own. **There *is* a
+rotation**: `_instruments_to_poll` orders by `Instrument.news_polled_at`
+(`ingest/news.py:568-610`, migration `0008_news_poll_cursor`) with the stamp written per
+instrument, so a run resumes where the last stopped rather than restarting at row 0.
 
-`news_rss` has **0 successful runs in 25 attempts** (re-counted 2026-10-08; the entry said
-7), and this is why: a run is a working session long, so every session ends with it still
-going.
+**What ends a run now is the feed budget.** The last 129 runs closed within about two
+seconds of starting with `stopped: [rss] budget spent (2000 per 86400s)` — one sweep spends
+most of the `rss` allowance and the eleven-sector poll spends the rest, so every run after
+the first of the day has nothing to fetch. That is the honest behaviour, and it is also the
+remaining problem: a run stopped by the budget is recorded as *stopped* (`ok = 0`), which is
+the same word a deploy produces, so the Operations page cannot tell the day's news quietly
+ending from an upgrade, and the job does not enter the catch-up history (`AGENTS.md` §1).
 
 **Interrupting it is cheap, and that was worth checking rather than assuming.**
 `release_write_lock` (`db/session.py:161`) *commits*, and this loop calls it after every
-instrument (`news.py:763`); the model client commits at every network boundary too. So
-the 3,033 rows were already durable — confirmed by reading them from a *second*
-connection while the run was still going, which is only possible for committed data. A
-kill loses at most the instrument in flight, and the next run skips everything already
-stored (`url_hash` dedup in `persist_items`). The backlog drains across runs rather than
-being redone.
+instrument (`news.py:763`); the model client commits at every network boundary too. The
+3,033 rows of the 2026-10-06 run were already durable — confirmed by reading them from a
+*second* connection while the run was still going, which is only possible for committed
+data. A kill loses at most the instrument in flight, and the next run skips everything
+already stored (`url_hash` dedup in `persist_items`). The backlog drains across runs rather
+than being redone.
 
-So this is not the usual "killed mid-batch is lost work" case. It is worse in one way
-and better in another: nothing is lost, but nothing completes either, so the job never
-reports success, never enters the catch-up history (`AGENTS.md` §1) and never gets the
-restart resilience every other job now has.
-
-**Next:** the rotation is already there, so what is missing is only the per-run item budget
-— the shape `fundamentals` uses. A poll that stops at, say, 300
-headlines and records where it got to finishes *and reports success*, which is what
-makes it eligible for catch-up. The loop also needs the `progress.note` above it before
-either can be observed.
-
+**Next:** a per-run item budget — the shape `fundamentals` uses — is still what is missing,
+and it is worth more now than it was, because it is the only way a run's length and its
+outcome are decided by this app rather than by the provider's allowance. A poll that stops
+at, say, 300 headlines and records where it got to finishes *and reports success*. The loop
+also needs the `progress.note` above it before either can be observed.
 
 ### The source registry rates 54 of the 1,175 publishers the corpus actually names
 
@@ -1491,15 +1500,24 @@ embedding grouping could not run:
     the newest 15 by id                  0 of 15
     the top 15 by the app's own ranking  1 of 15
 
-**Why the top of the banner is the worst-served part.** `news_embeddings` runs hourly
-(`config.py:265`, `schedule.news_embeddings = 3_600`) and its pending set is
-`relevant IS TRUE`, ordered by **`id DESC`**, `limit=max_per_run` (1000). The ticker picks by
-**materiality x credibility x recency**, which is a different set: a `critical` story stays
-at the top of the banner for hours, while the embedding ration goes on the thousand newest
-relevant stories -- most of them `mild` or `none`, which the materiality floor now excludes
-from the banner entirely. So the allowance is spent where the grouping is not needed.
+**Why the top of the banner is the worst-served part.** `news_embeddings` runs daily
+(`config/config.yaml`, `schedule.news_embeddings: 86400`; 3,600 until 2026-10-16) and its
+pending set is `relevant IS TRUE`, ordered by **`id DESC`**, `limit=max_per_run` (1000). The
+ticker picks by **materiality x credibility x recency**, which is a different set: a
+`critical` story stays at the top of the banner for hours, while the embedding ration goes on
+the thousand newest relevant stories -- most of them `mild` or `none`, which the materiality
+floor now excludes from the banner entirely. So the allowance is spent where the grouping is
+not needed.
 
-The gap is visible in the ids: newest vectorised story 26,201 against newest story 27,231.
+**Re-measured 2026-10-16, and the symptom has largely closed while the cause has not.**
+Newest story 42,213 against newest vectorised 42,191 -- a gap of **22 ids**, and **11
+relevant stories** in the whole corpus without a vector, where the 2026-10-08 measurement
+above found a gap of 1,030. The ration keeps up because the job was running about ten times
+a day at 1,000 stories a run. On the daily cadence that is **1,000 stories a day**, against
+roughly 1,700 ingested a day of which about 600 are relevant -- so it still keeps up, on a
+sixth of the headroom, and the mis-selection is what decides whether it does on the day the
+poll brings in more than usual. The ordering is still worth fixing for that reason rather
+than for the gap it was found through.
 
 **Next:** order the embedding pending set the way the banner ranks -- materiality first, then
 recency -- or embed only stories that clear `ticker_min_materiality`. Both are a change to

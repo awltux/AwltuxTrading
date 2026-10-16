@@ -105,6 +105,27 @@ class TestTheCadence:
         ]
         assert not fast, f"these run faster than the one-hour floor: {fast}"
 
+    def test_the_news_pipeline_is_daily(self, settings: Settings):
+        """The poll and everything that reads it, asserted so it is not quietly undone.
+
+        Measured 2026-10-16, which is what makes this a decision rather than a preference:
+        the poll's own provider allowance is 2,000 requests per UTC day and one walk of the
+        universe spends about that, so **129 of the last 133 runs ended within two seconds
+        with `stopped: [rss] budget spent`**. The runs between had nothing to fetch, and the
+        four jobs downstream had nothing to read, so hourly was 23 no-ops a day either way.
+
+        `news_sectors` is deliberately *not* in this list: it polls eleven feeds, reads
+        neither the universe nor the poll's output, and is cheap. Its cadence is its own.
+        """
+        daily = 86_400
+        intervals = {spec.id: spec.interval_seconds for spec in build_job_specs(settings)}
+
+        for job in ("news_rss", "news_analysis", "news_relevance", "news_embeddings", "sentiment"):
+            assert intervals[job] == daily, (
+                f"{job} runs every {intervals[job]}s: the news pipeline is a daily one, "
+                "because that is what the feeds' daily allowance pays for"
+            )
+
     def test_a_manual_job_is_never_scheduled(self, quiet_jobs):
         """No trigger, no first run, and a run only when the button is pressed.
 
