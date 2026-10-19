@@ -302,8 +302,47 @@ then re-measure the confidence distribution *with* accounts before touching the 
 Raising the floor's headroom without the coverage would only make the two failure modes
 harder to tell apart.
 
-`price_stale` is separate and mechanical: 499 decisions refused for data one hour past a
-36-hour limit, which is a refresh cadence question rather than a judgement.
+`price_stale` is separate from the confidence story and mechanical: 499 decisions refused for
+data one hour past a 36-hour limit.
+
+**Corrected 2026-10-19: this line said that was "a refresh cadence question", and it is not
+-- refreshing cannot clear it.** Reported as *"I just did a refresh on DAC_US_EQ and the long
+term decision still says price_stale"*, and the refresh had done its job: run 3133 re-decided
+DAC at **08:54 UTC** that morning and refused again, on a bar dated **2026-10-16** (Friday)
+and therefore `81.6h` old -- `price data is 3d old (limit for long term is 36h)`. The age is
+measured from **midnight UTC of the newest *daily bar's* date**
+(`decision/service.py:441`), not from when the bar was fetched and not from any quote, and a
+bar for a session cannot exist before that session produces it. So no amount of refreshing
+can move this number.
+
+It is not one instrument either: **13 of the 15 long-term decisions made that Monday morning
+were `price_stale`**, on bars dated 10-16 (7), 10-15 (5) and 10-05 (1). And it is not a rare
+edge, which the hour-by-hour split of the last week shows -- `price_stale` is the binding rule
+for **50-91%** of long-term refusals at every hour from 08:00 to 21:00 UTC, falling to 16-32%
+at 22:00-23:00, which is the window after the US close when the day's bars have just been
+stored:
+
+    08:00  69%   12:00  88%   16:00  77%   20:00  53%
+    09:00  68%   13:00  91%   17:00  78%   21:00  52%
+    10:00  57%   14:00  66%   18:00  61%   22:00  32%
+    11:00  51%   15:00  75%   19:00  56%   23:00  16%
+
+The arithmetic is the reason. A bar dated `D` is under 36 hours old only until **noon UTC on
+`D+1`**, and it is not stored until `D`'s session has closed -- roughly 21:00 UTC for a US
+name. That leaves about **15 fresh hours a day**, and over a weekend none at all: Friday's bar
+passes 36 hours at **Saturday 12:00 UTC** and stays past it until Monday's bar is stored that
+evening. So every long-term decision for a US name on a Monday morning is refused on price,
+however fresh the fetch.
+
+**Next, and it is a decision rather than a bug fix:** which clock should this rule use? The
+bar's date is honest about what the decision actually rests on. The fetch time
+(`price_bar.fetched_at`) would read as fresh when the provider is dead. Trading time would
+need a market calendar. A middling option is a per-horizon limit that accounts for the
+weekend -- the short-term limit is already five days for this reason -- but that is a number
+chosen to make the gate pass, and the entry above is the reason to be careful with those.
+
+The one instrument on a 10-05 bar is a different fault: its feed has stopped rather than being
+weekend-stale, and `price_history_waiting_note` is where that state is visible.
 
 ### The accounts come from `companyfacts`, not from the filing's own XBRL
 
