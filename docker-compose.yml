@@ -30,6 +30,15 @@ services:
       # Port comes from .env so changing it there is enough. `environment`
       # overrides `env_file`, so this must be interpolated rather than hardcoded.
       AWLTUX_PORT: "${AWLTUX_PORT:-8080}"
+      # Two processes in the container, so that the web tier can have several workers.
+      # `awltux/main.py` builds one app per worker and the lifespan starts a scheduler in
+      # each, so with the scheduler owned here four workers would be four job runners -- the
+      # entrypoint starts `awltux schedule` and the web processes *ask* it instead. Unset
+      # AWLTUX_WEB_WORKERS to fall back to a single process.
+      AWLTUX_SCHEDULER_ENABLED: "false"
+      AWLTUX_SCHEDULER_CONTROL_URL: "http://127.0.0.1:${AWLTUX_CONTROL_PORT:-8099}"
+      AWLTUX_CONTROL_PORT: "${AWLTUX_CONTROL_PORT:-8099}"
+      AWLTUX_WEB_WORKERS: "${AWLTUX_WEB_WORKERS:-4}"
     ports:
       # Published on loopback by default: this dashboard shows your holdings and is
       # not authenticated, so it must not be exposed on a network unless you say so.

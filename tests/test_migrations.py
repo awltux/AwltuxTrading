@@ -354,11 +354,31 @@ class TestTheSubjectBackfill:
         If the image stops running ``migrate`` on start, an existing volume
         silently keeps an old schema and the app serves 500s -- which is precisely
         how this went unnoticed the first time.
+
+        Since 2026-10-20 the container runs a supervisor rather than a chained command, so the
+        guard follows the chain the image actually takes: the Dockerfile's CMD names a script,
+        and that script migrates **before** it starts either process. The *order* is the part
+        worth asserting -- a script that migrated after `serve` would have the same failure.
         """
-        dockerfile = __import__("pathlib").Path(__file__).resolve().parent.parent / "Dockerfile"
-        text = dockerfile.read_text(encoding="utf-8")
-        assert "awltux.cli migrate" in text, "the image must migrate on startup"
-        assert "alembic.ini" in text, "the image must ship alembic.ini to migrate"
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parent.parent
+        dockerfile = (repo / "Dockerfile").read_text(encoding="utf-8")
+        assert "alembic.ini" in dockerfile, "the image must ship alembic.ini to migrate"
+
+        script_name = next(
+            (line for line in dockerfile.splitlines() if "entrypoint.sh" in line and "COPY" in line),
+            None,
+        )
+        assert script_name is not None, "the image must copy the supervisor it runs"
+
+        script = (repo / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        migrate_at = script.find("awltux.cli migrate")
+        serve_at = script.find("awltux.cli serve")
+        assert migrate_at != -1, "the container must migrate on startup"
+        assert -1 < migrate_at < serve_at, (
+            "the migration must run before the server starts, or an old volume serves 500s"
+        )
 
     def test_serve_migrates_before_starting_the_server(self, settings, monkeypatch):
         """`serve` used to call only init_db, which creates missing tables and

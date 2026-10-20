@@ -26,11 +26,36 @@ from awltux.db import healthcheck, init_db, reset_engine
 from awltux.logging_setup import configure_logging
 from awltux.providers.http import BudgetGuard
 from awltux.scheduler import SchedulerService
+from awltux.scheduler.control import RemoteScheduler, SchedulerUnavailable
 from awltux.scheduler.registry import build_job_specs
 from awltux.timezones import ZONE_COOKIE, display_zone, resolve_zone
 from awltux.web.cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+
+def _scheduler_for(settings) -> SchedulerService | RemoteScheduler:
+    """The scheduler this process should use: the real one, or a proxy to the other process.
+
+    Three cases, and they are deliberately not inferred from each other:
+
+    * a control URL is configured -> the scheduler runs elsewhere, so proxy to it. This is what
+      the container does, and it is what makes ``--workers`` safe: four web workers each build an
+      app, and none of them starts a job runner.
+    * no control URL -> this process owns it, exactly as before.
+    * a control URL *and* ``scheduler_enabled`` -> refused rather than guessed, because both
+      answers would be a scheduler and the app cannot tell which one the operator meant.
+    """
+    url = settings.env.scheduler_control_url
+    if url and settings.env.scheduler_enabled:
+        raise RuntimeError(
+            "AWLTUX_SCHEDULER_ENABLED is true and AWLTUX_SCHEDULER_CONTROL_URL is set: this "
+            "process would run a scheduler while also asking another one. Set "
+            "AWLTUX_SCHEDULER_ENABLED=false in the web process, or drop the control URL."
+        )
+    if url:
+        return RemoteScheduler(url, settings=settings)
+    return SchedulerService(build_job_specs(settings))
 
 
 @asynccontextmanager
@@ -48,24 +73,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.exception("database initialisation failed -- check the /data volume")
         raise
 
-    scheduler = SchedulerService(build_job_specs(settings))
+    scheduler = _scheduler_for(settings)
     app.state.scheduler = scheduler
     app.state.settings = settings
     # One cache per app rather than per module: the test suite builds an app per test, and a
     # module-level cache would serve one test's page to the next one's request.
     app.state.page_cache = TTLCache()
 
-    _close_interrupted_work()
-
-    if settings.env.scheduler_enabled:
-        try:
-            scheduler.start()
-        except Exception:
-            # A scheduler problem must not stop the dashboard from coming up: the
-            # UI is how the failure gets diagnosed.
-            logger.exception("scheduler failed to start; dashboard remains available")
+    if isinstance(scheduler, RemoteScheduler):
+        # The scheduler is another process: this one serves pages and asks it the questions.
+        # It also does **not** close orphaned run rows -- the scheduler process does that before
+        # it starts (see `awltux.cli.cmd_schedule`), because with several workers each one would
+        # otherwise mark a job the scheduler is *still running* as interrupted at startup.
+        logger.info("scheduler runs as a separate process at %s", scheduler.base_url)
     else:
-        logger.info("scheduler disabled by configuration; no jobs will run")
+        # This process owns the runs, so it owns the sweep that fails the ones a previous
+        # process left open. Before `start()`, or a fresh run could be closed by it.
+        _close_interrupted_work()
+        if settings.env.scheduler_enabled:
+            try:
+                scheduler.start()
+            except Exception:
+                # A scheduler problem must not stop the dashboard from coming up: the
+                # UI is how the failure gets diagnosed.
+                logger.exception("scheduler failed to start; dashboard remains available")
+        else:
+            logger.info("scheduler disabled by configuration; no jobs will run")
 
     try:
         yield
@@ -122,6 +155,20 @@ def create_app() -> FastAPI:
 
     _mount_static(app)
     app.add_middleware(DisplayZoneMiddleware)
+
+    @app.exception_handler(SchedulerUnavailable)
+    async def _scheduler_unavailable(request, exc: SchedulerUnavailable):
+        """503 rather than 500: the answer is true and the fix is visible.
+
+        This is what the routes already returned when no scheduler was configured, so the page
+        and any script reading it see one shape whether the scheduler is absent or unreachable.
+        Only the pages that ask the scheduler are affected -- an instrument page never does, so
+        the dashboard keeps working while the scheduler process is down.
+        """
+        return JSONResponse(
+            status_code=503,
+            content={"detail": str(exc)},
+        )
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:

@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import time
 
 from awltux import __version__
+
+logger = logging.getLogger(__name__)
 
 
 def _configure(level: str) -> None:
@@ -53,13 +56,85 @@ def cmd_serve(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"warning: could not migrate ({exc}); continuing with create_all")
 
+    workers = args.workers if args.workers is not None else settings.env.web_workers
+    if workers > 1 and settings.env.scheduler_enabled and not settings.env.scheduler_control_url:
+        print(
+            f"refusing to serve with {workers} workers: each worker's lifespan would start its "
+            "own scheduler and every job would run once per worker. Run `awltux schedule` "
+            "beside it and set AWLTUX_SCHEDULER_ENABLED=false with "
+            "AWLTUX_SCHEDULER_CONTROL_URL pointing at it -- which is what the container's "
+            "entrypoint does.",
+            file=sys.stderr,
+        )
+        return 2
+
     uvicorn.run(
         "awltux.main:app",
         host=args.host or settings.env.host,
         port=args.port or settings.env.port,
+        workers=workers,
         log_config=None,  # our own redacting logging is already configured
         access_log=False,
     )
+    return 0
+
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    """Run the background scheduler on its own, with a loopback control API.
+
+    The other half of `serve --workers N`: one process owns the jobs, and the web tier asks it
+    what is happening. It is the same ``SchedulerService`` the web app used to own, so the
+    registry, the catch-up sweep, the quiet protocol and the progress logs are unchanged.
+
+    The control port is **loopback only** by default and unauthenticated: it can start jobs that
+    spend provider and model budget, so it must not be published. ``--host`` exists for a
+    two-container deployment on a private network and for the test suite.
+    """
+    import signal
+
+    import uvicorn
+
+    from awltux.config import get_settings
+    from awltux.scheduler.control import create_control_app
+    from awltux.scheduler.registry import build_job_specs
+    from awltux.scheduler.service import SchedulerService
+
+    settings = get_settings()
+    _configure(settings.env.log_level)
+
+    from awltux.main import _close_interrupted_work
+
+    # The scheduler owns the run rows, so it owns the sweep that fails what a previous process
+    # left open -- and it must happen before `start()`, or a fresh run could be closed by it. In
+    # the web processes this deliberately does not happen: with several workers, each one would
+    # mark a job this process is still running as interrupted.
+    _close_interrupted_work()
+
+    service = SchedulerService(build_job_specs(settings))
+    service.start()
+    control = create_control_app(service)
+
+    def stop(_signum, _frame):
+        """Drain, then exit. The container's grace period is the real deadline."""
+        budget = settings.env.shutdown_drain_seconds
+        logger.info("scheduler stopping; draining up to %.0fs", budget)
+        try:
+            if budget > 0:
+                service.drain(timeout=budget)
+        finally:
+            service.shutdown(wait=False)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+
+    uvicorn.run(
+        control,
+        host=args.host,
+        port=args.port or settings.env.control_port,
+        log_config=None,
+        access_log=False,
+    )
+    service.shutdown(wait=False)
     return 0
 
 
@@ -779,7 +854,25 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="run the web app and background scheduler")
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", type=int, default=None)
+    serve.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "uvicorn workers. More than one needs the scheduler in its own process "
+            "(`awltux schedule` plus AWLTUX_SCHEDULER_CONTROL_URL), because every worker's "
+            "lifespan would otherwise start its own scheduler"
+        ),
+    )
     serve.set_defaults(func=cmd_serve)
+
+    schedule = sub.add_parser(
+        "schedule",
+        help="run the background scheduler on its own, serving the control API the web tier uses",
+    )
+    schedule.add_argument("--host", default="127.0.0.1")
+    schedule.add_argument("--port", type=int, default=None)
+    schedule.set_defaults(func=cmd_schedule)
 
     sub.add_parser(
         "init-db", help="create missing tables (fresh installs only)"

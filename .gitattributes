@@ -16,3 +16,8 @@
 # endings on the way in and out, so a CRLF working tree and an LF blob compare equal
 # wherever the check runs.
 * text=auto
+
+# A shell script is run by `/bin/sh` inside the image, and `\r` is not whitespace there:
+# `#!/bin/sh\r` names an interpreter that does not exist and `set -eu\r` is a command that
+# cannot be found. Pinned so a Windows checkout cannot break the container's entrypoint.
+*.sh text eol=lf

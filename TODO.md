@@ -1051,133 +1051,15 @@ loses nothing. The news jobs themselves are no longer in that gap: they went dai
 2026-10-16, so this is now about the price and refresh jobs that are still hourly.
 
 That is the thing to decide: whether the answer is a second worker for jobs that make
-model calls rather than CPU (see the entry below for why more CPU cannot help), or a
-per-run time budget rather than a call budget. Both are bigger than a fix, so this stays
-here with the measurement.
+model calls rather than CPU, or a per-run time budget rather than a call budget. Both are
+bigger than a fix, so this stays here with the measurement. The interpreter a *page* shared
+with a job is no longer the same one -- the scheduler moved into its own process on
+2026-10-20 (see the ten-tabs entry) -- so what is left here is jobs queueing behind each
+other, not pages waiting behind jobs.
 
 **Correcting what the entry this replaces used to claim:** `quiet` *can* report `idle`
 while `decision` or `news_analysis` is running — those two stop on request, as do all six
 jobs that had no boundary before 2026-10-16. The claim that it never could is stale.
-
-### A CPU-bound job still starves the web UI, and one worker only halves it
-
-Capping the job pool at one worker (`MAX_CONCURRENT_JOBS`) stopped five jobs running
-together and took `/dashboard` from 164 seconds to 14. **It is a mitigation, not a
-cure**, and the dose-response is clear enough to say why.
-
-Measured on the live container by loading the same pages at each level:
-
-| jobs running | `/dashboard` | `/jobs` | process CPU |
-|---|---|---|---|
-| none | 0.95s | 0.20s | 0.16% |
-| one (`news_analysis`) | **14.1s** | **31.2s** | 110% |
-| five | **164s** | timed out at 180s | 112% |
-
-One job is enough to hold the process at a full core and take the interface from
-instant to unusable-for-refresh. The container is not short of CPU — 1.1 of 8 cores
-used, no quota set — so this is CPython's GIL: one thread runs Python at a time, and
-the web request thread waits its turn behind a job that does not yield it.
-
-That also answers the obvious guess. **Giving the container more CPU cannot fix
-this**, because the limit is a single interpreter lock, not the number of cores. The
-five-job freeze was the same mechanism with more queueing in front of it.
-
-Two things follow, and they are different sizes of change:
-
-1. **Cheap, and worth doing first:** the heavy jobs are pure-Python loops over a few
-   thousand rows (`valuation`, `price_eod`, `universe_refresh`). Yielding the GIL at
-   a batch boundary — `time.sleep(0)` every N rows — costs nothing and hands the
-   interpreter back often enough for a web request to be served.
-2. **The real fix:** run the web server and the scheduler in separate processes.
-   They have no reason to share an interpreter, and nothing in the API calls into the
-   scheduler's threads. Until that happens, "the dashboard is slow" and "a job is
-   running" are the same statement.
-
-**Until then:** check `/api/quiet` before concluding the interface has broken. It
-answers in under 0.2s even with a job running, which distinguishes "the app is down"
-from "the app is busy" — the distinction missing when this was first reported as a
-freeze.
-
-**See also** *`decision` still sweeps the whole universe, and six jobs have no stopping
-point*: the same single process is why a job that has no boundary to check cannot be
-asked to leave, and one that can be asked still holds the interpreter for the batch it is
-inside. That entry is the job-side half of this one, and the two have different fixes.
-
-**Re-measured 2026-10-11**, reported as "the web interface is very slow to respond", with
-the pauses blamed on *selecting an instrument and clicking the Accounts tab*. Two things
-came out of it, and the second is new.
-
-*The tab is innocent.* `queries.instrument_detail(sections=("fundamentals",))`, which is
-all the Accounts tab fetches, is **5–10 ms**, and `analysis.collate` over the same rows is
-**0.2–0.7 ms** — measured for the six instruments with the most stored periods (GWW and AIT
-13 each, DAC 12, ATMU/MSFT 9), GWW resolving to 4 accounting years. `/instrument/GWW_US_EQ`
-is 0.26 s and `?tab=accounts` **0.19 s** warm. The tab was where the reader happened to be
-standing when the interpreter was busy.
-
-*The contention reproduces, and the shape is now sampled rather than inferred.* Sampling
-`/proc/9/stat` and the page together, 20 windows of 3 s, with a network-bound job
-(`news_sectors`) running:
-
-| process CPU | `/dashboard` | `/api/quiet` |
-|---|---|---|
-| 0.42–0.61 of a core | 0.98–1.55 s | 0.004–0.005 s |
-| 1.08 of a core | 1.84 s | 0.005 s |
-
-and with no requests at all the background job holds only **0.06–0.29 of a core**, which is
-why an idle-looking container is not evidence that nothing is running. The 4–7 s pauses
-were sampled at `docker stats` reading ~100%: the first measurements of the day,
-`/dashboard` **5.85 s** and `/jobs` **4.55 s**, were taken in the minute `price_eod` ended
-(2026-10-10 21:36:20 → 2026-10-11 09:25:07, **11 h 49 m**) with `held_refresh` and
-`news_analysis` starting behind it, and 40 minutes later the same two pages were 0.45 s and
-1.3 s. Trivial requests are served throughout — `/api/quiet` never exceeded 22 ms in 20
-samples — so this is a request that needs a second of interpreter time queued behind a job
-that is holding it, not an event loop that has stopped.
-
-*And the baseline is worth its own entry.* Even idle, `/dashboard` is ~1.2 s, and
-`queries.recommendations()` is **841 ms** of it, apportioned by timing each phase:
-
-| phase | cost |
-|---|---|
-| `_recent_bars()` | **425 ms** |
-| latest decision rows (500 full rows, JSON columns and all) | 217 ms |
-| `attention.assess` (four queries) | 95 ms |
-| latest valuation rows | 38 ms |
-| `_instruments_in_scope` | 9 ms |
-
-`_recent_bars()` ranks **every one of the 236,819 `price_bar` rows** with `row_number()
-over (partition by ticker order by date desc)` to keep `rn <= 2`, and the plan confirms
-`SCAN price_bar ... USE TEMP B-TREE FOR LAST TERM OF ORDER BY`. Narrowing it by ticker
-cannot help — the table holds 488 tickers and every row is one we want — so the *shape* has
-to change: the last two bars per ticker is a per-ticker index seek, not a rank of the
-whole table. The same is true of the 217 ms: the page needs about twenty columns from
-`decision_run` and materialises five hundred whole objects to read them.
-
-**Locks are not the mechanism, and the dates say so.** Asked directly ("could that cause
-it, DB locks?") after the same report. The database is in **WAL** — `PRAGMA
-journal_mode=wal`, read from the live file — which is the mode `db/session.py` chose for
-exactly this reason ("so the scheduler's writes do not block dashboard reads"): a reader
-takes the last committed snapshot and a writer never blocks it. A lock therefore surfaces
-as a **job failing**, not as a slow page, and there are exactly **8** such failures on
-record: `news_rss` 2026-10-05 15:20, `decision` 10-05 15:30, `news_rss` 10-06 22:48,
-`news_relevance` 10-07 20:40, `decision` 10-08 13:29, `instrument_refresh` 10-08 16:39,
-`price_eod` 10-08 16:41 — every one of them the *second writer* losing, on an `INSERT INTO
-news_item` or an `UPDATE`. None since 2026-10-08 16:41, and zero `database is locked` in
-24 h of container logs.
-
-**That era is the "lots of jobs running" one, and it is mostly closed.** Counting runs
-whose interval overlaps another run's: `news_rss` on 2026-10-05 overlapped **12** jobs,
-`price_eod` 11, and the ten worst overlaps are all 2026-10-05 to 10-08.
-`MAX_CONCURRENT_JOBS = 1` (63d2a10, 2026-10-06 16:35) is the mitigation that took
-`/dashboard` from 164 s to 14 s; since 2026-10-09 only 13 runs have overlapped anything,
-nearly all of them sub-second hand-offs between two jobs. **The remaining hole is the
-manual path**, which is already its own entry: `run_now` calls `execute_job` directly and
-never reaches the executor, which is how `decision` still died of a lock on 10-08 while
-overlapping a hand-started `held_refresh`.
-
-What the reader saw at 09:25 that morning was the catch-up burst: `price_eod` ended after
-**11 h 49 m**, and `news_analysis`, `news_embeddings` and `held_refresh` started inside the
-same second behind it, with `news_sectors` three minutes later. Serial, not concurrent —
-one at a time is enough.
 
 ### Ten instrument tabs at once take six seconds, because the work is CPU-bound in one process
 
@@ -1257,6 +1139,30 @@ transport, so it is not uvicorn: at n=8 the statements total **1,010 ms inside S
 6,535 ms wall**, and a `cProfile` attributes 6.7 s to `sqlite3.Cursor.fetchall` — which is the
 GIL wait *after* each C call, not work. So the page is now cheap enough that one interpreter is
 the whole story, and `--workers` with the scheduler split is the remaining fix.
+
+**Option 2 is \`f3db64a\`** — a five-second cache of the rendered page, keyed by
+`(ticker, tab, window, news_page)`, invalidated by the refresh POST and skipped for any URL that
+carries a message. It serves the Back/reload/duplicate-tab case (a 519 ms page became 6 ms on
+the second load); it does nothing for ten *different* tickers, which is why option 3 is the one
+that matters.
+
+**Option 3 is deployed: the scheduler runs as its own process and the web tier runs four
+workers.** `awltux schedule` owns the jobs and serves a loopback control API
+(`scheduler/control.py`); the web workers hold a `RemoteScheduler` that asks it what is
+scheduled, what is running, what is quiet, and to run something now. Every route still calls
+`app.state.scheduler`, which is why the pages, the templates and their tests did not change.
+Ruled out on the way, by measurement rather than reasoning: the pool (a checkout is 1 ms), the
+WAL pragma on connect (1 ms), `busy_timeout`, the ticker's SSE streams, and uvicorn itself (the
+cliff reproduces through ASGI transport). And it is not database locking: the database is WAL, so
+a reader takes a committed snapshot and a writer never blocks it — the eight lock failures on
+record are all 2026-10-05..08, every one a *job* losing to another job.
+
+What that costs, and is worth knowing: `/api/quiet`, **Run now**, pause/resume and the
+Operations page's live state are now calls rather than in-process reads, so anything that asks
+them needs the scheduler process up. A dead scheduler reads as **503** with its reason (mapped
+in `create_app`), and an instrument page never asks, so the dashboard keeps working while no
+jobs run — the failure is visible where it matters and absent where it does not.
+
 
 
 ### `json_each` cannot use an index, so per-instrument news is a table scan

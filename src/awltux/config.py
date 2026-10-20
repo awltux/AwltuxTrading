@@ -58,6 +58,22 @@ class EnvSettings(BaseSettings):
     #: made page-count assertions depend on whether a job happened to have fired.
     #: Explicitly off in the test fixture rather than inferred from the environment.
     scheduler_enabled: bool = True
+    #: Where the scheduler process is, when it is not this one.
+    #:
+    #: Set by the container's entrypoint: the scheduler runs as ``awltux schedule`` and the web
+    #: tier asks it what is happening over loopback. Unset means "this process owns the
+    #: scheduler", which is what a test app, the CLI and a single-process run all want.
+    scheduler_control_url: str | None = None
+    #: The port ``awltux schedule`` answers on. Loopback only -- it can start jobs that spend
+    #: provider and model budget, so it must never be published.
+    control_port: int = 8099
+    #: How many uvicorn workers serve the web tier.
+    #:
+    #: More than one is only safe with the scheduler in its own process (`serve` refuses the
+    #: combination otherwise), and it is the fix for the concurrency cliff: measured 2026-10-20,
+    #: one interpreter serialises concurrent page renders, so seven at once take 6.3 s each and
+    #: static files stay linear.
+    web_workers: int = 1
     #: How long a shutdown gives running jobs to finish before abandoning them.
     #:
     #: Must stay under the container's `stop_grace_period`, or Docker sends SIGKILL

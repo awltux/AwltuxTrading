@@ -103,6 +103,9 @@ COPY --chown=awltux:awltux config /app/config
 # against an existing volume picks up schema changes instead of failing on a
 # renamed or newly added column.
 COPY --chown=awltux:awltux alembic.ini /app/alembic.ini
+# The supervisor for the two processes (scheduler, web tier). See the file for why it is two.
+COPY --chown=awltux:awltux docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod 0755 /app/entrypoint.sh
 
 WORKDIR /app
 USER awltux
@@ -114,7 +117,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${AWLTUX_PORT:-8080}/healthz" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-# Migrate, then serve. The `&&` is deliberate: serving on a schema the code does
-# not expect produces 500s that look like application bugs, which is exactly how
-# the missing migration went unnoticed until the dashboard failed.
-CMD ["sh", "-c", "python -m awltux.cli migrate && python -m awltux.cli serve"]
+# One supervisor, two processes: the scheduler (exactly one) and the web tier (`--workers`).
+# It migrates first, and stops the container if either process dies -- a web tier without a
+# scheduler looks healthy and runs nothing.
+CMD ["/bin/sh", "/app/entrypoint.sh"]
