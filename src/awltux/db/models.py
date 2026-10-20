@@ -1188,6 +1188,20 @@ class LLMCall(Base):
         DateTime(timezone=True), default=utcnow, nullable=False, index=True
     )
 
+    #: The credit strip's two aggregates and the monthly ceiling, all of which sum
+    #: ``cost_usd`` over a date range: one asks per provider over thirty days, the other
+    #: per provider over the month, and ``llm/deepseek.py::_check_budget`` asks the second
+    #: before **every** model call.
+    #:
+    #: Covering, and that is the point. With only the single-column indexes the plans were
+    #: ``SCAN llm_call USING INDEX ix_llm_call_provider`` and ``SEARCH ... (provider=?)``,
+    #: each fetching every row's ``cost_usd`` from the table: measured 2026-10-20 on 47,890
+    #: rows, **102 ms and 105 ms** -- and both run on *every page* through the header's
+    #: credit banner, which was 224 ms of a 290 ms instrument page. Ordered
+    #: ``(provider, created_at, cost_usd)`` so the point query is a seek and the range query
+    #: is an index-only scan whose order already groups.
+    __table_args__ = (Index("ix_llm_call_spend", "provider", "created_at", "cost_usd"),)
+
 
 class ProviderBudget(Base, TimestampMixin):
     """Persisted token-bucket state so rate limits survive a restart."""

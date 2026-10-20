@@ -2385,13 +2385,19 @@ def _bar_on_or_after(
 
     A trade older than the first bar is dropped instead: the left edge is up to 400 bars
     back, and snapping an old buy onto it would park it at a date it was never near.
+
+    ``isoformat`` is computed **once**, not once per bar. It sat inside the loop, and this is
+    called per marker and per valuation step: measured 2026-10-20, one instrument page made
+    **24,937** of those calls through 51 lookups over a 489-bar series, which was 12 ms of a
+    290 ms page for a string that does not change.
     """
-    if day.isoformat() < first_day:
+    day_text = day.isoformat()
+    if day_text < first_day:
         return None
-    if day.isoformat() > last_day:
+    if day_text > last_day:
         return last_day
     for bar in history:
-        if bar["date"] >= day.isoformat():
+        if bar["date"] >= day_text:
             return bar["date"]
     return last_day
 
