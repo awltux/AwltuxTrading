@@ -98,6 +98,21 @@ def _configure_sqlite(dbapi_connection, _connection_record) -> None:
     _register_recency_weight(dbapi_connection)
 
 
+#: Connections kept open per process, and how many may be made on top.
+#:
+#: SQLAlchemy's SQLite default is 5 + 10, which was sized when one process served every page. The
+#: ten-tab burst that prompted the 2026-10-20 performance work opens ten requests at once, and
+#: there are now four web workers plus a scheduler process, each with its own pool -- so 5 warm
+#: connections is fewer than one page load's concurrency.
+#:
+#: **It was not the bottleneck, and this is not a fix for one.** Measured: a checkout is 1 ms and
+#: ten concurrent pages ran on the default pool without queueing. Raising it is defence against
+#: the pool becoming the limit once the web tier is parallel, at the cost of at most 20 idle
+#: connections per process.
+POOL_SIZE = 10
+MAX_OVERFLOW = 10
+
+
 def create_db_engine(settings: Settings | None = None, *, echo: bool = False) -> Engine:
     settings = settings or get_settings()
     settings.ensure_dirs()
@@ -108,6 +123,8 @@ def create_db_engine(settings: Settings | None = None, *, echo: bool = False) ->
         # The scheduler writes from worker threads, so connections are shared.
         connect_args={"check_same_thread": False, "timeout": 15},
         pool_pre_ping=True,
+        pool_size=POOL_SIZE,
+        max_overflow=MAX_OVERFLOW,
     )
     event.listen(engine, "connect", _configure_sqlite)
     return engine

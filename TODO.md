@@ -1053,131 +1053,13 @@ loses nothing. The news jobs themselves are no longer in that gap: they went dai
 That is the thing to decide: whether the answer is a second worker for jobs that make
 model calls rather than CPU, or a per-run time budget rather than a call budget. Both are
 bigger than a fix, so this stays here with the measurement. The interpreter a *page* shared
-with a job is no longer the same one -- the scheduler moved into its own process on
-2026-10-20 (see the ten-tabs entry) -- so what is left here is jobs queueing behind each
-other, not pages waiting behind jobs.
+with a job is no longer the same one -- the scheduler runs in its own process since
+2026-10-20 (`scheduler/control.py`, and `awltux schedule` in the container entrypoint) -- so
+what is left here is jobs queueing behind each other, not pages waiting behind jobs.
 
 **Correcting what the entry this replaces used to claim:** `quiet` *can* report `idle`
 while `decision` or `news_analysis` is running — those two stop on request, as do all six
 jobs that had no boundary before 2026-10-16. The claim that it never could is stale.
-
-### Ten instrument tabs at once take six seconds, because the work is CPU-bound in one process
-
-Reported 2026-10-20 as *"when I try to open multiple windows for 10 or so instruments, the app
-stalls"*. Measured against the running container with ten concurrent `GET`s, and it is **not
-the background job and not the event loop** — the two things the entry above would blame:
-
-    one instrument page, warm            290 ms   (decision tab; 254 price, 354 news)
-    ten pages, concurrent         wall   5.9 s    min 5.3   median 5.7   max 5.9
-    ten pages with the scheduler paused  5.9 s    (same burst, nothing running)
-    ten concurrent /api/quiet    wall    30 ms    20 ms each
-    /api/quiet during the burst            35-53 ms
-
-So ten tabs is **20x one tab**, the *first* of the ten to finish still takes 5.3 s — they queue
-rather than share — and the container reaches **~400% CPU** while it happens. Cheap requests
-stay fast throughout, which rules out a blocked event loop.
-
-Where it goes, measured per request: `instrument_detail` **94 ms** (of which the sections the
-decision tab does not need cost 5-89 ms each), `price_history` 8 ms, `price_valuations` 16 ms,
-`price_bar_count` 1 ms — about **120 ms of queries**, so the other **170 ms is Jinja and
-serialisation** of a page with a summary strip, the business panel, the levers form and a tab
-strip. And the serialisation is the interpreter: ten threads calling `instrument_detail`
-directly take **1,620 ms** against 97 ms for one (16x), while ten threads running a pure-Python
-loop scale the same way (172 ms -> 1,815 ms). Python threads cannot run that work concurrently,
-so the twenty-fold figure is what a GIL-bound page costs at ten-way concurrency, with SQLite's
-own C work showing up as the 400% CPU underneath it.
-
-The options, cheapest first, and none of them free:
-
-1. **Cut the 290 ms.** It is the multiplier on every tab: the render is 170 ms of it and the
-   query layer 120 ms. `recommendations()` on `/dashboard` is **984 ms** for the same reason
-   (measured here again), so the profile-then-trim pass is worth doing on both.
-2. **A short-TTL cache for the page or its context.** These are snapshot views; ten tabs on
-   ten tickers would not share anything, but re-opening the same tab (the browser's Back, a
-   refresh, a duplicated tab) would. A 5-10 s cache keyed by `(ticker, tab)` would not help
-   this report's case at all, which is why it is second.
-3. **Real parallelism, and this is the only thing that fixes ten tabs.** One uvicorn process
-   is one interpreter: `--workers 4` would put ~1 s on the wall clock. **It cannot be switched
-   on as it stands**, because the lifespan starts the scheduler in every worker — four workers
-   is four schedulers running the same jobs. So it needs the split the entry above already
-   argues for: the scheduler in its own process (or container) sharing the volume, and the web
-   tier with `AWLTUX_SCHEDULER_ENABLED=0` and several workers. The cost is that `/api/quiet`,
-   `run_now`, pause/resume and the Operations page's live state are in-process state today, so
-   they would have to read the run table (or a control row) rather than an object — that is the
-   work, not the flag.
-4. **One request instead of ten.** The app has no multi-instrument view, which is why ten tabs
-   is the way to compare ten names. A comparison panel over a chosen set would do it in one
-   request and is the fix that scales with the reader's habit rather than with the CPU.
-   **Deployed 2026-10-20 as `/compare?tickers=A,B,C`** — up to twelve names, in the order given,
-   built from `queries.recommendations(tickers=...)` so it is the table's own rows rather than a
-   second query. A name the universe does not hold is reported instead of dropped; more than
-   twelve is counted rather than silently truncated. It is in the top nav beside
-   Recommendations, which is what makes it discoverable rather than a page nobody finds.
-
-Not the cause, so nobody measures it twice: the ticker's SSE streams (10 tabs, one stream each,
-a threadpool DB query every 2 s — `/partials/news-ticker` is 43 ms), the connection pool
-(5 + 10 overflow, and a checkout measured at **1 ms**), `PRAGMA journal_mode=WAL` on connect
-(**1 ms**) and `busy_timeout`.
-
-**Worked on the same day, in the order above.** Option 1 is in two commits and the profile
-picked both targets, neither of which was the template:
-
-* `fc9557d` — **the credit banner, on every page**, was 224 ms of the 290: `provider_status`
-  aggregates `llm_call` per request, and both aggregates were reading 47,890 rows through a
-  single-column index. `ix_llm_call_spend` and `ix_llm_call_spend_ok` are covering for them
-  (`0029`, `0030`), which took 102 ms → 14 ms and 105.6 ms → 5.8 ms. The month-to-date figure
-  is also what `_check_budget` sums before **every model call**.
-* `df40461` — `recommendations()` decoded **6,743 JSON documents** per page to read a dozen
-  scalars (`load_only` on both selects, 316 ms of `json.loads`), and `_recent_bars()` ranked
-  **241,000** rows with a window function to find 501 pairs (369 ms) where three correlated
-  seeks per instrument answer it in **3.5 ms**.
-
-Measured after both, warm and with nothing running: instrument page **69-87 ms** (was 290),
-`/dashboard` **407 ms** (was 1,511), news tab 169, ticker partial 48. That is the multiplier
-done; the concurrency shape it exposes is the reason option 3 is next rather than option 2.
-
-**And the cliff is sharper than "GIL-bound" suggested.** With the scheduler quiet, the same
-page, as concurrency rises: **n=1 87 ms, n=2 183, n=4 693, n=5 1,956, n=6 3,365, n=7 6,349** —
-each extra concurrent request roughly doubles the wall clock from four on, while static files
-(7 → 38 ms at n=8) and `/api/quiet` (8 → 30 ms) stay linear. Reproduced in-process through ASGI
-transport, so it is not uvicorn: at n=8 the statements total **1,010 ms inside SQLAlchemy of a
-6,535 ms wall**, and a `cProfile` attributes 6.7 s to `sqlite3.Cursor.fetchall` — which is the
-GIL wait *after* each C call, not work. So the page is now cheap enough that one interpreter is
-the whole story, and `--workers` with the scheduler split is the remaining fix.
-
-**Option 2 is \`f3db64a\`** — a five-second cache of the rendered page, keyed by
-`(ticker, tab, window, news_page)`, invalidated by the refresh POST and skipped for any URL that
-carries a message. It serves the Back/reload/duplicate-tab case (a 519 ms page became 6 ms on
-the second load); it does nothing for ten *different* tickers, which is why option 3 is the one
-that matters.
-
-**Option 3 is deployed: the scheduler runs as its own process and the web tier runs four
-workers.** `awltux schedule` owns the jobs and serves a loopback control API
-(`scheduler/control.py`); the web workers hold a `RemoteScheduler` that asks it what is
-scheduled, what is running, what is quiet, and to run something now. Every route still calls
-`app.state.scheduler`, which is why the pages, the templates and their tests did not change.
-Ruled out on the way, by measurement rather than reasoning: the pool (a checkout is 1 ms), the
-WAL pragma on connect (1 ms), `busy_timeout`, the ticker's SSE streams, and uvicorn itself (the
-cliff reproduces through ASGI transport). And it is not database locking: the database is WAL, so
-a reader takes a committed snapshot and a writer never blocks it — the eight lock failures on
-record are all 2026-10-05..08, every one a *job* losing to another job.
-
-What that costs, and is worth knowing: `/api/quiet`, **Run now**, pause/resume and the
-Operations page's live state are now calls rather than in-process reads, so anything that asks
-them needs the scheduler process up. A dead scheduler reads as **503** with its reason (mapped
-in `create_app`), and an instrument page never asks, so the dashboard keeps working while no
-jobs run — the failure is visible where it matters and absent where it does not.
-
-**Measured after the split, with four web workers in the container**: ten *different* instrument
-pages, cold, **877 ms** wall; a second run **260 ms**; a third **140 ms** (median 35 ms) as the
-workers warm and the page cache does its part. Container CPU peaks at **266%** during the burst,
-so the work is genuinely spread. Against **5.9-8.9 s** on one process, that is the fix this entry
-was about. Two caveats worth carrying: the first hit per worker pays template compilation, and a
-running job still competes for cores — the workers are not competing for an interpreter any more,
-which was the thing that could not be fixed in-process.
-
-
-
 
 ### `json_each` cannot use an index, so per-instrument news is a table scan
 

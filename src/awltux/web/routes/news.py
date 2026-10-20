@@ -40,7 +40,17 @@ from awltux.web.templating import templates
 router = APIRouter(tags=["news"])
 
 #: How often the stream looks for new rows.
-POLL_SECONDS = 2.0
+#:
+#: Five seconds rather than two, because each poll is a database round trip held in the
+#: threadpool on behalf of a client that is not doing anything with the answer: the ticker
+#: only needs to know that the banner *has* gone stale, and the reader re-fetches it. Ten open
+#: tabs were ten of these at once, competing with the requests that had to be fast.
+#:
+#: **Five is a display-feed interval, not a latency choice.** It is also the keepalive rate
+#: (see `news_stream`), so a longer one would leave the connection quiet enough for an
+#: intermediary to close it; and it is well under `MAX_IDLE_SECONDS` so an abandoned stream
+#: still ends after a bounded number of polls.
+POLL_SECONDS = 5.0
 #: Stop a stream that nobody is reading, so a dead client cannot leak a task.
 MAX_IDLE_SECONDS = 900.0
 

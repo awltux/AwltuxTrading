@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from awltux import __version__
 from awltux.config import redacted_dump, reload_settings
@@ -32,6 +33,13 @@ from awltux.timezones import ZONE_COOKIE, display_zone, resolve_zone
 from awltux.web.cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+#: Responses below this size are left uncompressed.
+#:
+#: The compression costs CPU and a few dozen bytes of framing, so an answer that is already
+#: small comes out *larger*. 1 kB keeps every JSON API reply and every redirect plain while
+#: still compressing the pages, the chart script and the stylesheet.
+MIN_GZIP_BYTES = 1000
 
 
 def _scheduler_for(settings) -> SchedulerService | RemoteScheduler:
@@ -155,6 +163,12 @@ def create_app() -> FastAPI:
 
     _mount_static(app)
     app.add_middleware(DisplayZoneMiddleware)
+    # Compress on the way out. Added last, so it is the outermost layer and sees every
+    # response -- static files and rendered pages alike. A page here is mostly repeated
+    # markup (the instrument page runs to hundreds of kilobytes of table and tooltip text),
+    # which is what gzip is good at. `text/event-stream` is excluded by the middleware
+    # itself: a compressed event stream cannot be flushed frame by frame.
+    app.add_middleware(GZipMiddleware, minimum_size=MIN_GZIP_BYTES)
 
     @app.exception_handler(SchedulerUnavailable)
     async def _scheduler_unavailable(request, exc: SchedulerUnavailable):
