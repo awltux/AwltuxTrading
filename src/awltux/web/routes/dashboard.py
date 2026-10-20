@@ -644,6 +644,70 @@ def remove_instrument(ticker: str) -> RedirectResponse:
     )
 
 
+#: How many instruments one comparison shows. A comparison of thirty names is a table nobody
+#: reads, and the page exists to make ten legible — so the cap is a judgement, and the count of
+#: what it dropped is printed rather than the list being silently truncated.
+MAX_COMPARE = 12
+
+
+@router.get("/compare", response_class=HTMLResponse, include_in_schema=False)
+def compare_page(request: Request, tickers: str = "") -> HTMLResponse:
+    """Several instruments side by side, in one request.
+
+    Asked for as *"multiple windows for 10 or so instruments"*: the way to compare names was ten
+    tabs, and ten tabs is what made the interface crawl before the web tier had workers. This is
+    the same answer for ten companies in **one** request, built from the same rows the
+    recommendations table reads — so the comparison and the table cannot disagree about what the
+    engine said, and the numbers carry their own provenance (as-of, engine, confidence).
+
+    ``tickers`` is a comma- or space-separated list, in the order the reader gave it, because the
+    order *is* part of the question. A ticker this app does not know is reported rather than
+    dropped: a comparison silently missing a name is worse than one that says it could not find
+    it.
+    """
+    wanted, overflow = _compare_set(tickers)
+    rows: list[queries.RecommendationRow] = []
+    missing: list[str] = []
+    if wanted:
+        with session_scope() as session:
+            found, _ = queries.recommendations(session, tickers=wanted, limit=len(wanted))
+        by_ticker = {row.ticker: row for row in found}
+        for ticker in wanted:
+            row = by_ticker.get(ticker)
+            if row is None:
+                missing.append(ticker)
+            else:
+                rows.append(row)
+
+    return templates.TemplateResponse(
+        request,
+        "compare.html",
+        {
+            "rows": rows,
+            "missing": missing,
+            "overflow": overflow,
+            "raw": tickers,
+            "limit": MAX_COMPARE,
+        },
+    )
+
+
+def _compare_set(raw: str) -> tuple[list[str], int]:
+    """The tickers a comparison is about, and how many were dropped for being past the cap.
+
+    Pure and separate from the query so the parsing rules are testable on their own: commas or
+    whitespace, upper-cased, deduplicated **in the order given**, and capped. The cap is not
+    arbitrary — a comparison of thirty names is a table nobody reads, and the page exists to
+    make ten legible — so the overflow is *counted* rather than silently truncated.
+    """
+    seen: list[str] = []
+    for part in raw.replace(",", " ").split():
+        ticker = part.strip().upper()
+        if ticker and ticker not in seen:
+            seen.append(ticker)
+    return seen[:MAX_COMPARE], max(0, len(seen) - MAX_COMPARE)
+
+
 @router.post("/instrument/{ticker}/levers", include_in_schema=False)
 def add_instrument_lever(
     ticker: str,

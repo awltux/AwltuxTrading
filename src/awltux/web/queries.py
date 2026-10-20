@@ -320,6 +320,7 @@ def _instruments_in_scope(
     sector_unknown: bool = False,
     sector_group: str | None = None,
     search: str | None = None,
+    tickers: Sequence[str] | None = None,
 ) -> list[Instrument]:
     """The instruments the table may show, narrowed by the column filters.
 
@@ -334,12 +335,19 @@ def _instruments_in_scope(
     dashboard's dropdown lists the 148 industry strings a reader can search by name,
     and the sector page is keyed on the eleven that have pages. ``sector_group=UNCLASSIFIED``
     selects the instruments with no group, which is a real population of 185.
+
+    ``tickers`` is the comparison view's filter: an explicit set rather than a predicate, so
+    one request can answer for ten named companies. It is a filter like the others and not a
+    separate query, because a comparison row *is* a recommendation row -- the same numbers the
+    table shows, so the two cannot disagree about what the engine said.
     """
     query = (
         select(Instrument)
         .where(Instrument.in_universe.is_(True))
         .where(Instrument.excluded.is_(False))
     )
+    if tickers is not None:
+        query = query.where(Instrument.t212_ticker.in_(tickers))
     if only_held:
         query = query.where(Instrument.is_held.is_(True))
     if sector_unknown:
@@ -462,6 +470,7 @@ def recommendations(
     only_held: bool = False,
     needs_attention: bool = False,
     search: str | None = None,
+    tickers: Sequence[str] | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> tuple[list[RecommendationRow], int]:
@@ -486,10 +495,13 @@ def recommendations(
         sector_unknown=sector_unknown,
         sector_group=sector_group,
         search=search,
+        tickers=tickers,
     )
     if not instruments:
         return [], 0
-    tickers = [row.t212_ticker for row in instruments]
+    # Named `in_scope` rather than `tickers`: the argument of that name is the *filter*, and
+    # rebinding it here is how the comparison view would silently compare the whole universe.
+    in_scope = [row.t212_ticker for row in instruments]
 
     # --- 2. latest decision and valuation per ticker -----------------------
     #
@@ -516,7 +528,7 @@ def recommendations(
     }
 
     # --- 3. last two bars and latest sentiment, for the tickers in scope ----
-    bars = _recent_bars(session, tickers)
+    bars = _recent_bars(session, in_scope)
     prices: dict[str, tuple[float, dt.date | None]] = {}
     previous: dict[str, float | None] = {}
     for ticker, (close, bar_date, before) in bars.items():
@@ -534,13 +546,13 @@ def recommendations(
     # Always assessed, not only when the filter is on: the row carries its reasons either
     # way, so a reader can see *why* a row is suspect without switching the filter on to
     # find out. Bounded by the instruments already in scope, and four queries behind it.
-    assessed = attention_rules.assess(session, tickers=tickers)
+    assessed = attention_rules.assess(session, tickers=in_scope)
 
     # --- 5. what each business is, for the instrument link's hover hint ------
     #
     # The deep-dive's own account where there is one, and the provider's summary otherwise --
     # that one is a column on the instrument row already in scope, so it costs nothing here.
-    overviews = _business_overviews(session, tickers)
+    overviews = _business_overviews(session, in_scope)
 
     # --- 6. assemble -------------------------------------------------------
     result: list[RecommendationRow] = []

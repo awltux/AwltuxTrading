@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% from "partials/_help.html" import help %}
+{% block title %}Compare — {{ app_name }}{% endblock %}
+
+{#
+  Several instruments side by side, in one request.
+
+  Asked for as the way to stop opening ten tabs: the same numbers the recommendations table and
+  the instrument page show, for the names the reader chose, and in the order they chose. The rows
+  come from `queries.recommendations(tickers=...)` rather than from a second query, so this page
+  cannot disagree with the table about what the engine said — and every figure keeps its
+  provenance: the engine is named, the confidence is shown, and a refused decision says which
+  rule refused it.
+#}
+{% block content %}
+<h1>Compare</h1>
+
+<p class="muted small">
+  Up to {{ limit }} instruments. Separate them with commas or spaces; the order is kept.
+  A name may be given as the Trading 212 ticker (<code>DAC_US_EQ</code>) or anything else
+  trading as that instrument, and unknown names are reported rather than dropped.
+</p>
+
+<form class="filters" method="get" action="/compare"
+      style="display:flex; gap:8px; align-items:end; flex-wrap:wrap; margin-bottom:14px;">
+  <label style="flex:1 1 420px;">
+    Tickers
+    <input type="text" name="tickers" value="{{ raw }}"
+           placeholder="DAC_US_EQ, GWW_US_EQ, MSFT_US_EQ" autofocus>
+  </label>
+  <button type="submit">Compare</button>
+  {% if rows %}
+    <a class="muted small" href="/compare" style="align-self:center;">clear</a>
+  {% endif %}
+</form>
+
+{% if missing %}
+  <p class="notice warn">
+    No instrument in the analysed universe is called
+    {% for ticker in missing %}<code>{{ ticker }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+    The name has to be the Trading 212 ticker exactly — it is what the universe, the prices and
+    the decisions are keyed on.
+  </p>
+{% endif %}
+{% if overflow %}
+  <p class="notice warn">
+    {{ overflow }} more name{{ '' if overflow == 1 else 's' }} were given than this page compares at once. The first {{ limit }} are shown.
+  </p>
+{% endif %}
+
+{% if rows %}
+<div class="table-wrap">
+<table class="grid compact">
+  <thead>
+    <tr>
+      <th>Instrument</th>
+      <th class="num">Price{{ help('price') }}</th>
+      <th class="num">Day</th>
+      <th>Long term</th>
+      <th class="num">L conf.</th>
+      <th>Short term</th>
+      <th class="num">S conf.</th>
+      <th>Suits</th>
+      <th class="num">Fair value</th>
+      <th class="num">Range</th>
+      <th class="num">Margin of safety</th>
+      <th class="num">Sentiment</th>
+      <th>Engine{{ help('engine') }}</th>
+      <th>Updated</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr class="{% if row.conflict %}conflict{% endif %} {% if row.is_held %}held{% endif %}">
+      <td>
+        <a href="/instrument/{{ row.ticker }}?tab=decision" title="{{ row.about }}"><strong>{{ row.ticker }}</strong></a>
+        <span class="muted small">{{ row.name[:30] }}</span>
+        {% if row.is_held %}<span class="chip small held">held</span>{% endif %}
+        {% if row.attention_count %}
+          <span class="chip small warn"
+                title="{{ row.attention_summary }}">{{ row.attention_count }} issue{{ '' if row.attention_count == 1 else 's' }}</span>
+        {% endif %}
+        <br><span class="muted small">{{ row.sector_group or 'unclassified' }}</span>
+      </td>
+      <td class="num">
+        {{ row.price | number(2) }}
+        <span class="muted small">{{ row.currency or '' }}</span>
+      </td>
+      <td class="num {% if row.change_pct and row.change_pct > 0 %}good{% elif row.change_pct %}bad{% endif %}">
+        {{ row.change_pct | pct(1) }}
+      </td>
+      <td class="small">
+        <span class="badge {{ row.action | action_class }}">{{ (row.action or 'no call') | replace('_', ' ') }}</span>
+        {% if row.action and not row.gate_allowed %}
+          <br><span class="muted small" title="{{ row.gate_reason }}">{{ row.gate_reason or 'refused' }}</span>
+        {% elif row.gate_allowed %}
+          <span class="chip small ok">allowed</span>
+        {% endif %}
+      </td>
+      <td class="num">{{ row.confidence | pct0 }}</td>
+      <td class="small">
+        <span class="badge {{ row.short_term_action | action_class }}">{{ (row.short_term_action or 'no call') | replace('_', ' ') }}</span>
+        {% if row.short_term_action and not row.short_term_gate_allowed %}
+          <br><span class="muted small" title="{{ row.short_term_gate_reason }}">{{ row.short_term_gate_reason or 'refused' }}</span>
+        {% elif row.short_term_gate_allowed %}
+          <span class="chip small ok">allowed</span>
+        {% endif %}
+      </td>
+      <td class="num">{{ row.short_term_confidence | pct0 }}</td>
+      <td>
+        {% if row.horizon_fit %}
+          <span class="badge fit-{{ row.horizon_fit }}">{{ row.horizon_fit | replace('_', ' ') }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="num">{{ row.fair_value | money(row.currency) }}</td>
+      <td class="num muted small">
+        {% if row.fair_value_low is not none and row.fair_value_high is not none %}
+          {{ row.fair_value_low | number(2) }}–{{ row.fair_value_high | number(2) }}
+        {% else %}—{% endif %}
+      </td>
+      <td class="num {% if row.margin_of_safety and row.margin_of_safety > 0 %}good{% elif row.margin_of_safety %}bad{% endif %}">
+        {{ row.margin_of_safety | pct(1, false) }}
+      </td>
+      <td class="num">
+        {% if row.sentiment is not none %}{{ row.sentiment | number(2) }}{% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="small">
+        {{ engine_label(row.engine, row.uncalibrated) }}
+        {% if row.conflict %}<span class="chip small warn" title="An action disagrees with the composite of the model's own scores">conflict</span>{% endif %}
+      </td>
+      <td class="small muted" title="Decision {{ row.decision_at | datetime }}">{{ row.decision_at | ago }}</td>
+      <td class="small">
+        {# Removing one name keeps the rest of the set and its order, which is why the link
+           is built from the rows rather than from the raw query string. #}
+        <a class="muted" href="/compare?tickers={{ rows | rejectattr('ticker', 'equalto', row.ticker) | map(attribute='ticker') | join(',') | urlencode }}"
+           title="Remove {{ row.ticker }} from the comparison">✕</a>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<p class="muted small">
+  The margin of safety is the price against the model's own estimate, and the range beside it is
+  the honest part of that estimate. A refused decision says which rule refused it — an instrument
+  whose price data is stale, or whose confidence is below the engine's floor, is refused on that
+  rather than on the verdict.
+</p>
+{% elif not missing %}
+  <p class="muted">
+    Give one or more tickers above to compare them. Each row is the same set of figures the
+    Recommendations table shows, for the names you choose.
+  </p>
+{% endif %}
+{% endblock %}

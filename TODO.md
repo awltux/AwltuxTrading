@@ -1108,6 +1108,11 @@ The options, cheapest first, and none of them free:
 4. **One request instead of ten.** The app has no multi-instrument view, which is why ten tabs
    is the way to compare ten names. A comparison panel over a chosen set would do it in one
    request and is the fix that scales with the reader's habit rather than with the CPU.
+   **Deployed 2026-10-20 as `/compare?tickers=A,B,C`** — up to twelve names, in the order given,
+   built from `queries.recommendations(tickers=...)` so it is the table's own rows rather than a
+   second query. A name the universe does not hold is reported instead of dropped; more than
+   twelve is counted rather than silently truncated. It is in the top nav beside
+   Recommendations, which is what makes it discoverable rather than a page nobody finds.
 
 Not the cause, so nobody measures it twice: the ticker's SSE streams (10 tabs, one stream each,
 a threadpool DB query every 2 s — `/partials/news-ticker` is 43 ms), the connection pool

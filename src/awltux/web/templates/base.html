@@ -29,6 +29,9 @@
     </div>
     <nav>
       <a href="/dashboard" {% if request.url.path == '/dashboard' %}class="active"{% endif %}>Recommendations</a>
+      {# Several instruments side by side, in one request. The alternative was a tab each, and
+         ten tabs is what made the interface crawl before the web tier had workers. #}
+      <a href="/compare" {% if request.url.path == '/compare' %}class="active"{% endif %}>Compare</a>
       <a href="/sectors" {% if request.url.path == '/sectors' %}class="active"{% endif %}>Sectors</a>
       {# What moves a business, and which instruments it moves. Marked active on one lever's
          own page too, for the reason the news entry gives: the reader got there from here. #}
