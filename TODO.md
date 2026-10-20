@@ -1163,6 +1163,15 @@ them needs the scheduler process up. A dead scheduler reads as **503** with its 
 in `create_app`), and an instrument page never asks, so the dashboard keeps working while no
 jobs run — the failure is visible where it matters and absent where it does not.
 
+**Measured after the split, with four web workers in the container**: ten *different* instrument
+pages, cold, **877 ms** wall; a second run **260 ms**; a third **140 ms** (median 35 ms) as the
+workers warm and the page cache does its part. Container CPU peaks at **266%** during the burst,
+so the work is genuinely spread. Against **5.9-8.9 s** on one process, that is the fix this entry
+was about. Two caveats worth carrying: the first hit per worker pays template compilation, and a
+running job still competes for cores — the workers are not competing for an interpreter any more,
+which was the thing that could not be fixed in-process.
+
+
 
 
 ### `json_each` cannot use an index, so per-instrument news is a table scan
