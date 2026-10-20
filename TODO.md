@@ -1179,6 +1179,58 @@ What the reader saw at 09:25 that morning was the catch-up burst: `price_eod` en
 same second behind it, with `news_sectors` three minutes later. Serial, not concurrent —
 one at a time is enough.
 
+### Ten instrument tabs at once take six seconds, because the work is CPU-bound in one process
+
+Reported 2026-10-20 as *"when I try to open multiple windows for 10 or so instruments, the app
+stalls"*. Measured against the running container with ten concurrent `GET`s, and it is **not
+the background job and not the event loop** — the two things the entry above would blame:
+
+    one instrument page, warm            290 ms   (decision tab; 254 price, 354 news)
+    ten pages, concurrent         wall   5.9 s    min 5.3   median 5.7   max 5.9
+    ten pages with the scheduler paused  5.9 s    (same burst, nothing running)
+    ten concurrent /api/quiet    wall    30 ms    20 ms each
+    /api/quiet during the burst            35-53 ms
+
+So ten tabs is **20x one tab**, the *first* of the ten to finish still takes 5.3 s — they queue
+rather than share — and the container reaches **~400% CPU** while it happens. Cheap requests
+stay fast throughout, which rules out a blocked event loop.
+
+Where it goes, measured per request: `instrument_detail` **94 ms** (of which the sections the
+decision tab does not need cost 5-89 ms each), `price_history` 8 ms, `price_valuations` 16 ms,
+`price_bar_count` 1 ms — about **120 ms of queries**, so the other **170 ms is Jinja and
+serialisation** of a page with a summary strip, the business panel, the levers form and a tab
+strip. And the serialisation is the interpreter: ten threads calling `instrument_detail`
+directly take **1,620 ms** against 97 ms for one (16x), while ten threads running a pure-Python
+loop scale the same way (172 ms -> 1,815 ms). Python threads cannot run that work concurrently,
+so the twenty-fold figure is what a GIL-bound page costs at ten-way concurrency, with SQLite's
+own C work showing up as the 400% CPU underneath it.
+
+The options, cheapest first, and none of them free:
+
+1. **Cut the 290 ms.** It is the multiplier on every tab: the render is 170 ms of it and the
+   query layer 120 ms. `recommendations()` on `/dashboard` is **984 ms** for the same reason
+   (measured here again), so the profile-then-trim pass is worth doing on both.
+2. **A short-TTL cache for the page or its context.** These are snapshot views; ten tabs on
+   ten tickers would not share anything, but re-opening the same tab (the browser's Back, a
+   refresh, a duplicated tab) would. A 5-10 s cache keyed by `(ticker, tab)` would not help
+   this report's case at all, which is why it is second.
+3. **Real parallelism, and this is the only thing that fixes ten tabs.** One uvicorn process
+   is one interpreter: `--workers 4` would put ~1 s on the wall clock. **It cannot be switched
+   on as it stands**, because the lifespan starts the scheduler in every worker — four workers
+   is four schedulers running the same jobs. So it needs the split the entry above already
+   argues for: the scheduler in its own process (or container) sharing the volume, and the web
+   tier with `AWLTUX_SCHEDULER_ENABLED=0` and several workers. The cost is that `/api/quiet`,
+   `run_now`, pause/resume and the Operations page's live state are in-process state today, so
+   they would have to read the run table (or a control row) rather than an object — that is the
+   work, not the flag.
+4. **One request instead of ten.** The app has no multi-instrument view, which is why ten tabs
+   is the way to compare ten names. A comparison panel over a chosen set would do it in one
+   request and is the fix that scales with the reader's habit rather than with the CPU.
+
+Not the cause, so nobody measures it twice: the ticker's SSE streams (10 tabs, one stream each,
+a threadpool DB call every 2 s — `/partials/news-ticker` is 43 ms), the connection pool
+(`QueuePool` 5+10 against ten requests), and `busy_timeout`.
+
 ### `json_each` cannot use an index, so per-instrument news is a table scan
 
 The tickers on a news item are a JSON array column, so "stories naming this
