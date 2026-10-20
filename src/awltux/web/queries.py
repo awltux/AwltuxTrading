@@ -9,12 +9,12 @@ because a number without its origin is not usable for a decision.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy import Select, case, desc, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from awltux.analysis import attention as attention_rules
 from awltux.analysis import levers as lever_map
@@ -228,29 +228,58 @@ def _latest_valuation_ids() -> Select:
     return select(func.max(ValuationRun.id)).group_by(ValuationRun.instrument_t212_ticker)
 
 
-def _recent_bars() -> Select:
-    """The last two bars per instrument, from a single table.
+def _recent_bars(
+    session: Session, tickers: Sequence[str]
+) -> dict[str, tuple[float, dt.date | None, float | None]]:
+    """The newest close per instrument, its date, and the close before it.
 
-    Single-table window query, so there is nothing to join ambiguously; the
-    previous close is what makes a one-day change calculable.
+    **Correlated seeks, not a window function.** This ranked every one of the **241,000**
+    ``price_bar`` rows with ``row_number() over (partition by ticker order by date desc)``
+    and filtered to ``rn <= 2`` afterwards, which SQLite cannot stop early: measured
+    2026-10-20, **369 ms** plus a temp B-tree, on the page that also renders five hundred
+    rows. Asking the same question per instrument is three seeks on ``price_bar``'s primary
+    key ``(instrument_t212_ticker, date)``: **3.5 ms** for the same rows.
+
+    The tickers are passed in because the caller has already narrowed them -- the same list
+    the old version filtered against in Python after reading every instrument's bars.
     """
-    ranked = (
-        select(
-            PriceBar.instrument_t212_ticker.label("ticker"),
-            PriceBar.close.label("close"),
-            PriceBar.date.label("bar_date"),
-            func.row_number()
-            .over(
-                partition_by=PriceBar.instrument_t212_ticker,
-                order_by=desc(PriceBar.date),
-            )
-            .label("rn"),
+    newest_close = (
+        select(PriceBar.close)
+        .where(PriceBar.instrument_t212_ticker == Instrument.t212_ticker)
+        .order_by(desc(PriceBar.date))
+        .limit(1)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    newest_date = (
+        select(PriceBar.date)
+        .where(PriceBar.instrument_t212_ticker == Instrument.t212_ticker)
+        .order_by(desc(PriceBar.date))
+        .limit(1)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+    previous_close = (
+        select(PriceBar.close)
+        .where(PriceBar.instrument_t212_ticker == Instrument.t212_ticker)
+        .order_by(desc(PriceBar.date))
+        .limit(1)
+        .offset(1)
+        .correlate(Instrument)
+        .scalar_subquery()
+    )
+
+    if not tickers:
+        return {}
+    rows = session.execute(
+        select(Instrument.t212_ticker, newest_close, newest_date, previous_close).where(
+            Instrument.t212_ticker.in_(tickers)
         )
-        .subquery()
-    )
-    return select(ranked.c.ticker, ranked.c.close, ranked.c.bar_date, ranked.c.rn).where(
-        ranked.c.rn <= 2
-    )
+    ).all()
+    return {
+        ticker: (close, when, previous)
+        for ticker, close, when, previous in rows
+    }
 
 
 def _latest_sentiment() -> Select:
@@ -377,6 +406,46 @@ def _business_overviews(session: Session, tickers: list[str]) -> dict[str, str]:
 # `_instruments_in_scope`, and the assembly loop is flat over instruments already
 # narrowed. If this grows a sixth filter, split the assembly out rather than adding a
 # reason here.
+#: The decision columns the recommendations table reads, declared once for `load_only`.
+#:
+#: **Not an optimisation of the query, an optimisation of the decode.** The table shows about
+#: a dozen scalars, and a `DecisionRun` row also carries the canonical state, the questions and
+#: the evidence as JSON -- 6,743 documents decoded per page, **316 ms** of the page's 1.1 s,
+#: measured 2026-10-20. Listing what is read is what lets the rest stay in the database, and a
+#: field added to `RecommendationRow` from a column not named here is a lazy load per row
+#: rather than a silent zero, so the list has to move with the row.
+_RECOMMENDATION_DECISION_FIELDS = (
+    DecisionRun.instrument_t212_ticker,
+    DecisionRun.long_term_action,
+    DecisionRun.composite_score,
+    DecisionRun.confidence,
+    DecisionRun.gate_allowed,
+    DecisionRun.gate,
+    DecisionRun.short_term_action,
+    DecisionRun.short_term_composite_score,
+    DecisionRun.short_term_confidence,
+    DecisionRun.short_term_gate_allowed,
+    DecisionRun.short_term_gate,
+    DecisionRun.answers,
+    DecisionRun.horizon_fit,
+    DecisionRun.engine,
+    DecisionRun.uncalibrated,
+    DecisionRun.conflict_flag,
+    DecisionRun.created_at,
+)
+
+#: The valuation columns the table reads. Same reason: `inputs` and `model_outputs` are the
+#: two JSON blobs on that table and neither is shown here.
+_RECOMMENDATION_VALUATION_FIELDS = (
+    ValuationRun.instrument_t212_ticker,
+    ValuationRun.fair_value_base,
+    ValuationRun.fair_value_low,
+    ValuationRun.fair_value_high,
+    ValuationRun.margin_of_safety,
+    ValuationRun.as_of,
+)
+
+
 def recommendations(
     session: Session,
     *,
@@ -423,29 +492,38 @@ def recommendations(
     tickers = [row.t212_ticker for row in instruments]
 
     # --- 2. latest decision and valuation per ticker -----------------------
+    #
+    # `load_only` because the table shows about a dozen scalars of each row and the rows
+    # carry the whole decision state, its questions and its evidence as JSON. Hydrating them
+    # to read a score cost **316 ms of `json.loads`** across 6,743 documents on a page whose
+    # table is 1.1 s (measured 2026-10-20). Nothing here touches a deferred column, and
+    # `RecommendationRow` keeps no reference to the row, so nothing can lazily load one later.
     decisions: dict[str, DecisionRun] = {
         row.instrument_t212_ticker: row
         for row in session.execute(
-            select(DecisionRun).where(DecisionRun.id.in_(_latest_decision_ids()))
+            select(DecisionRun)
+            .options(load_only(*_RECOMMENDATION_DECISION_FIELDS))
+            .where(DecisionRun.id.in_(_latest_decision_ids()))
         ).scalars().all()
     }
     valuations: dict[str, ValuationRun] = {
         row.instrument_t212_ticker: row
         for row in session.execute(
-            select(ValuationRun).where(ValuationRun.id.in_(_latest_valuation_ids()))
+            select(ValuationRun)
+            .options(load_only(*_RECOMMENDATION_VALUATION_FIELDS))
+            .where(ValuationRun.id.in_(_latest_valuation_ids()))
         ).scalars().all()
     }
 
     # --- 3. last two bars and latest sentiment, for the tickers in scope ----
-    prices: dict[str, tuple[float | None, dt.date | None]] = {}
+    bars = _recent_bars(session, tickers)
+    prices: dict[str, tuple[float, dt.date | None]] = {}
     previous: dict[str, float | None] = {}
-    for ticker, close, bar_date, rank in session.execute(_recent_bars()).all():
-        if ticker not in tickers:
-            continue
-        if rank == 1:
+    for ticker, (close, bar_date, before) in bars.items():
+        if close is not None:
             prices[ticker] = (close, bar_date)
-        elif rank == 2:
-            previous[ticker] = close
+        if before is not None:
+            previous[ticker] = before
 
     sentiments: dict[str, float] = {
         scope_id: score for scope_id, score in session.execute(_latest_sentiment()).all()

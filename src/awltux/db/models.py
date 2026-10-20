@@ -1200,7 +1200,16 @@ class LLMCall(Base):
     #: credit banner, which was 224 ms of a 290 ms instrument page. Ordered
     #: ``(provider, created_at, cost_usd)`` so the point query is a seek and the range query
     #: is an index-only scan whose order already groups.
-    __table_args__ = (Index("ix_llm_call_spend", "provider", "created_at", "cost_usd"),)
+    #:
+    #: ``ix_llm_call_spend_ok`` is the second half and not a duplicate: ``_spend_since`` sums
+    #: the month across **all** providers and filters ``ok``, which the first index cannot
+    #: cover -- 105.6 ms became 5.8 ms with it. The two cannot be one index: ordered by
+    #: ``provider`` first the month sum is 7.4 ms and the grouped query 36.5 ms; ordered by
+    #: ``created_at`` first the grouped query loses its order and sorts.
+    __table_args__ = (
+        Index("ix_llm_call_spend", "provider", "created_at", "cost_usd"),
+        Index("ix_llm_call_spend_ok", "created_at", "ok", "cost_usd"),
+    )
 
 
 class ProviderBudget(Base, TimestampMixin):
