@@ -1228,8 +1228,36 @@ The options, cheapest first, and none of them free:
    request and is the fix that scales with the reader's habit rather than with the CPU.
 
 Not the cause, so nobody measures it twice: the ticker's SSE streams (10 tabs, one stream each,
-a threadpool DB call every 2 s — `/partials/news-ticker` is 43 ms), the connection pool
-(`QueuePool` 5+10 against ten requests), and `busy_timeout`.
+a threadpool DB query every 2 s — `/partials/news-ticker` is 43 ms), the connection pool
+(5 + 10 overflow, and a checkout measured at **1 ms**), `PRAGMA journal_mode=WAL` on connect
+(**1 ms**) and `busy_timeout`.
+
+**Worked on the same day, in the order above.** Option 1 is in two commits and the profile
+picked both targets, neither of which was the template:
+
+* `fc9557d` — **the credit banner, on every page**, was 224 ms of the 290: `provider_status`
+  aggregates `llm_call` per request, and both aggregates were reading 47,890 rows through a
+  single-column index. `ix_llm_call_spend` and `ix_llm_call_spend_ok` are covering for them
+  (`0029`, `0030`), which took 102 ms → 14 ms and 105.6 ms → 5.8 ms. The month-to-date figure
+  is also what `_check_budget` sums before **every model call**.
+* `df40461` — `recommendations()` decoded **6,743 JSON documents** per page to read a dozen
+  scalars (`load_only` on both selects, 316 ms of `json.loads`), and `_recent_bars()` ranked
+  **241,000** rows with a window function to find 501 pairs (369 ms) where three correlated
+  seeks per instrument answer it in **3.5 ms**.
+
+Measured after both, warm and with nothing running: instrument page **69-87 ms** (was 290),
+`/dashboard` **407 ms** (was 1,511), news tab 169, ticker partial 48. That is the multiplier
+done; the concurrency shape it exposes is the reason option 3 is next rather than option 2.
+
+**And the cliff is sharper than "GIL-bound" suggested.** With the scheduler quiet, the same
+page, as concurrency rises: **n=1 87 ms, n=2 183, n=4 693, n=5 1,956, n=6 3,365, n=7 6,349** —
+each extra concurrent request roughly doubles the wall clock from four on, while static files
+(7 → 38 ms at n=8) and `/api/quiet` (8 → 30 ms) stay linear. Reproduced in-process through ASGI
+transport, so it is not uvicorn: at n=8 the statements total **1,010 ms inside SQLAlchemy of a
+6,535 ms wall**, and a `cProfile` attributes 6.7 s to `sqlite3.Cursor.fetchall` — which is the
+GIL wait *after* each C call, not work. So the page is now cheap enough that one interpreter is
+the whole story, and `--workers` with the scheduler split is the remaining fix.
+
 
 ### `json_each` cannot use an index, so per-instrument news is a table scan
 
