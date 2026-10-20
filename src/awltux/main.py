@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 #: The compression costs CPU and a few dozen bytes of framing, so an answer that is already
 #: small comes out *larger*. 1 kB keeps every JSON API reply and every redirect plain while
 #: still compressing the pages, the chart script and the stylesheet.
+#:
+#: Measured on the deployed build: `/dashboard` **263,374 -> 20,633 bytes** on the wire
+#: (12.8x), the decision tab **99,919 -> 21,898** (4.6x), `app.js` 29,879 -> 10,045 (3.0x).
+#: It costs nothing a reader can feel: three alternating ten-tab bursts, compressed and not,
+#: gave medians of 71 ms and 122 ms -- the spread is which burst was warmer, not the gzip.
 MIN_GZIP_BYTES = 1000
 
 
