@@ -464,6 +464,18 @@ def instrument_page(
     sections = INSTRUMENT_TAB_SECTIONS.get(active, ())
     _, window_age, windows, window_ignored = _price_window(ticker, window)
 
+    # A cache key of only what changes the *body*: the ticker, the tab, the price range and the
+    # news page. Any other parameter is a message the page prints (a refresh outcome, an add
+    # notice, an ignored value), so a URL carrying one is rendered and never stored -- the
+    # alternative is a reader seeing "nothing started" twice.
+    cache = getattr(request.app.state, "page_cache", None)
+    cacheable = set(request.query_params) <= {"tab", "window", "news_page"}
+    key = (ticker, active, window_age, news_page)
+    if cache is not None and cacheable:
+        hit = cache.get(key)
+        if hit is not None:
+            return HTMLResponse(hit)
+
     with session_scope() as session:
         detail = queries.instrument_detail(
             session, ticker, news_page=news_page, sections=sections
@@ -486,38 +498,47 @@ def instrument_page(
         # it -- so the button is never drawn where the POST would refuse.
         removable = universe.removable(session, ticker) if active == "refresh" else None
 
-    return templates.TemplateResponse(
+    context = _instrument_context(
         request,
-        "instrument.html",
-        _instrument_context(
-            request,
-            ticker=ticker,
-            detail=detail,
-            chart=chart,
-            predictions=predictions,
-            prediction_count=prediction_count,
-            refresh_state=refresh_state,
-            removable=removable,
-            active=active,
-            strip=strip,
-            tab_ignored=tab_ignored,
-            windows=windows,
-            window_ignored=window_ignored,
-        ),
+        ticker=ticker,
+        detail=detail,
+        chart=chart,
+        predictions=predictions,
+        prediction_count=prediction_count,
+        refresh_state=refresh_state,
+        removable=removable,
+        active=active,
+        strip=strip,
+        tab_ignored=tab_ignored,
+        windows=windows,
+        window_ignored=window_ignored,
     )
+    # Rendered here rather than through `TemplateResponse` because the cache stores the body,
+    # and a response object is not the thing worth keeping. `TemplateResponse` does exactly this
+    # -- inject the request and render -- so the output is the same page.
+    page = templates.get_template("instrument.html").render(request=request, **context)
+    if cache is not None and cacheable:
+        cache.set(key, page)
+    return HTMLResponse(page)
 
 
 @router.post("/instrument/{ticker}/refresh", include_in_schema=False)
-def instrument_refresh(ticker: str) -> RedirectResponse:
+def instrument_refresh(ticker: str, request: Request) -> RedirectResponse:
     """Force the pipeline stages for one instrument, and return immediately.
 
     A POST rather than a link, and not because of the semantics: a GET would be followed
     by any prefetcher or crawler that happened to see the URL, and this spends provider
     and model budget. The redirect carries the outcome as a query parameter, so the page
     can say why nothing started without keeping state anywhere.
+
+    The ticker's cached pages go, because the reader is about to watch this run's progress
+    on the Refresh tab and a page rendered before the POST would report the previous state.
     """
     outcome = scoped.start(ticker)
     reason = "started" if outcome.ok else "refused"
+    cache = getattr(request.app.state, "page_cache", None)
+    if cache is not None:
+        cache.invalidate((ticker,))
     return RedirectResponse(
         # Back to the tab the button is on, so the outcome it prints is the outcome the
         # reader sees rather than a decision tab they then have to navigate away from.

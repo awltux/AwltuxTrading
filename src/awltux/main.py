@@ -28,6 +28,7 @@ from awltux.providers.http import BudgetGuard
 from awltux.scheduler import SchedulerService
 from awltux.scheduler.registry import build_job_specs
 from awltux.timezones import ZONE_COOKIE, display_zone, resolve_zone
+from awltux.web.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler = SchedulerService(build_job_specs(settings))
     app.state.scheduler = scheduler
     app.state.settings = settings
+    # One cache per app rather than per module: the test suite builds an app per test, and a
+    # module-level cache would serve one test's page to the next one's request.
+    app.state.page_cache = TTLCache()
 
     _close_interrupted_work()
 
