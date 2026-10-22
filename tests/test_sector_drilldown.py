@@ -497,6 +497,128 @@ class TestASectorPage:
         assert 'href="/dashboard?sort=' not in body
 
 
+def sorted_header(html: str) -> str:
+    """The one column the browser will highlight as the current sort."""
+    head = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
+    active = re.findall(r'<a class="sort active"[^>]*>\s*([^<]+)<', head)
+
+    assert len(active) == 1, f"exactly one column is marked sorted, got {active}"
+    return active[0].strip()
+
+
+def table_tickers(html: str) -> list[str]:
+    """The instruments in the table, in the order the table shows it."""
+    body = html.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    return re.findall(r'href="/instrument/([A-Za-z0-9_]+)"', body)
+
+
+#: A coarse sector with nothing else in it, so its page holds only the rows below.
+RANKED = "Industrials"
+
+#: Display name order is the assertion, so the *short* name is what has to differ:
+#: `Instrument.display_name` is `short_name or name`, and `make_instrument` gives every
+#: instrument the short name "Apple".
+RANKED_ROWS = (
+    ("CARR_US_EQ", "Carrier", "Carrier Global"),
+    ("ALLE_US_EQ", "Allegion", "Allegion plc"),
+    ("GE_US_EQ", "GE Aerospace", "General Electric"),
+)
+
+
+@pytest.fixture
+def ranked_sector(session):
+    """Three instruments in one sector whose display names differ.
+
+    The shared `sectors` fixture cannot serve this: every instrument it builds carries the
+    short name "Apple", so every sort key it offers is a tie and *any* order looks correct --
+    which is how a sector page whose sorting was entirely ignored still passed a test that
+    only read its links.
+    """
+    from tests.helpers import make_instrument
+
+    for ticker, short_name, name in RANKED_ROWS:
+        session.add(
+            make_instrument(
+                ticker, short_name=short_name, name=name, sector_group=RANKED, isin=ticker
+            )
+        )
+    session.commit()
+
+
+class TestTheSectorsInstrumentTable:
+    """A column heading on a sector page did nothing at all.
+
+    Reported 2026-10-21 as *"clicking on some headers seems to trigger a filter for another
+    header"*. The heading links were built correctly -- `?sort=sentiment` and so on -- but the
+    route parsed the filter specs from an **empty** mapping and ignored the request's query
+    string, so every click returned the default order with the arrow still on "L score". What
+    the reader saw was the sort applied to the column they had not clicked.
+
+    Measured on the deployed build before the fix: `/sectors/Energy`,
+    `/sectors/Energy?sort=name` and `/sectors/Energy?sort=sentiment` rendered identical ticker
+    sequences, and "L score" was marked active on all three.
+    """
+
+    def page(self, client, **params):
+        query = f"?{urllib.parse.urlencode(params)}" if params else ""
+        return client.get(f"/sectors/{urllib.parse.quote(RANKED, safe='')}{query}").text
+
+    def test_a_heading_sorts_the_sector_by_that_column(self, client, ranked_sector):
+        ascending = table_tickers(self.page(client, sort="name", direction="asc"))
+
+        assert ascending == ["ALLE_US_EQ", "CARR_US_EQ", "GE_US_EQ"], (
+            "by display name: Allegion, Carrier, GE Aerospace"
+        )
+
+    def test_the_direction_flips_the_order(self, client, ranked_sector):
+        ascending = table_tickers(self.page(client, sort="name", direction="asc"))
+        descending = table_tickers(self.page(client, sort="name", direction="desc"))
+
+        assert descending == list(reversed(ascending))
+
+    def test_the_arrow_moves_to_the_column_that_was_clicked(self, client, ranked_sector):
+        """The visible half of the bug: the reader was told a different column was sorted."""
+        assert sorted_header(self.page(client, sort="name")) == "Instrument"
+        assert sorted_header(self.page(client)) == "L score"
+
+    def test_an_unknown_sort_is_refused_and_reported(self, client, ranked_sector):
+        """A stale bookmark must not render an order the address bar does not describe."""
+        body = self.page(client, sort="banana")
+
+        assert "Ignored 1 value" in body
+        assert "sort=banana" in body
+        assert sorted_header(body) == "L score"
+
+    def test_the_table_is_not_swapped_through_the_dashboard_fragment(
+        self, client, ranked_sector
+    ):
+        """A sector page's region is a page, not a fragment.
+
+        `data-partial` is what `app.js` looks for before re-fetching a page change. It was
+        hard-coded on this table, so on a sector with more than 50 instruments the pager
+        fetched `/partials/recommendations?page=2` -- page two of the whole universe -- and
+        replaced the sector's rows with it. Information Technology holds 60 of 500 on the live
+        database, so this was reachable rather than theoretical.
+        """
+        sector_page = self.page(client)
+        dashboard = client.get("/dashboard").text
+
+        assert 'id="recommendations" data-partial=' not in sector_page
+        assert 'id="recommendations" data-partial="/partials/recommendations"' in dashboard
+
+    def test_a_filter_the_page_cannot_apply_is_not_carried_into_its_links(
+        self, client, ranked_sector
+    ):
+        """A link that describes a table which is not on screen is the failure this module
+        exists to prevent: `q=` narrows nothing here, so no heading may preserve it."""
+        body = self.page(client, q="Carrier")
+        head = body.split("</thead>", 1)[0]
+
+        assert "/sectors/Industrials?sort=" in head, "the headings are still links"
+        assert "q=" not in head, "a heading carried an unapplied filter"
+        assert landing(body, "ALLE_US_EQ"), "the unapplied search narrowed the table"
+
+
 class TestTheDrillDownLands:
     def test_it_shows_only_the_selected_sector(self, client, sectors):
         body = client.get(f"/dashboard?{urllib.parse.urlencode({'sector': PLAIN})}").text

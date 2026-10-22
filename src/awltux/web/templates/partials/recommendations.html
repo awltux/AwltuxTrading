@@ -14,12 +14,19 @@
    the markup states where to read from, the script does not build the URL from parts. #}
 {% from "partials/_help.html" import help %}
 {% set list_base = list_base | default('/dashboard') %}
+{# `region_source` is the endpoint the page-change script re-fetches, and it is *absent* on a
+   page that is not a fragment. It used to be hard-coded here, which meant a sector page --
+   which includes this template with its own rows -- had its pager swapped through the
+   dashboard's fragment: clicking "Next" on a sector with 60 instruments replaced it with page
+   two of the whole universe. An empty value emits no attribute, and `app.js` only swaps a
+   region that carries one, so the pager falls back to the navigation the server built. #}
+{% set region_source = region_source | default('/partials/recommendations') %}
 {# Imported *after* the line above, so the macro's shared context already carries
    `list_base` when the headers are rendered. #}
 {% from "partials/_sort.html" import sort_link with context %}
 {% from "partials/_pager.html" import pager_top %}
 
-<div id="recommendations" data-partial="/partials/recommendations">
+<div id="recommendations"{% if region_source %} data-partial="{{ region_source }}"{% endif %}>
 {% if filters.given('sector') %}
   <h2 class="drilldown">
     {{ filters.shown('sector') }}

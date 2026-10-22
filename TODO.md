@@ -66,6 +66,28 @@ recorded on the 25,393 stored rows are the evidence of what each method produced
 repairing those rows has the same "recompute or re-derive" question
 `repair_scaled_figures` answered for figures.
 
+### A page number past the end renders an empty table and says it is page 99 of 6
+
+Found 2026-10-21 while fixing the sector page's dead column headings. Measured on the
+deployed container: `GET /dashboard?page=99` answers 200 with **"Page 99 of 6 (501
+instruments)"**, zero rows, and the *empty-state* paragraph ("No decisions yet for the 501
+instruments in the universe") — so a stale bookmark or a hand-edited URL reads as a fact about
+the data rather than about the URL.
+
+The cause is that the requested page reaches `queries.recommendations` as
+`offset=(page - 1) * per_page`, which is far past the end, and `pages` is computed from the
+`total` that same query returned — nothing clamps one to the other before the rows are read.
+`sector_page` (`web/routes/dashboard.py`) has the same shape and now displays
+`min(page, pages)` while still *querying* the raw page, so the two can disagree on a sector
+with more than one page.
+
+**The fix to weigh**, because there are two honest answers: re-query once at
+`min(page, pages)` when the first read comes back empty, or answer **404/redirect** for a page
+past the end. The first keeps a stale link working; the second stops a page number from ever
+being a lie. Whichever it is, it belongs in one helper beside `_recommendations_region` so the
+dashboard, the fragment and the sector page cannot disagree about it — and
+`tests/test_sector_drilldown.py` now has the fixtures (`ranked_sector`) a paging test needs.
+
 ### Three LSE shells hold a stored close of ~1e-6, which is not a price either
 
 Measured 2026-10-09 while fixing the unit bug that made `VWRLl_EQ` read 1.41 against a true
@@ -198,8 +220,6 @@ per-company coverage exists.
 The two bugs before the above — a cache key that ignored the query string, and a
 `uk_companies` walk that attempted the same eleven instruments on every run — were found
 together in 2026-10-07 and are in the commit log.
-
-### Two direction classes in the stylesheet match no value the column holds
 
 The nine before those — `serve` not migrating, silent DeepSeek truncation, the
 `universe_refresh` startup race, CLI/server write-lock contention, the unhelpful blank

@@ -348,6 +348,22 @@ def _lever_context(detail: dict[str, Any], request: Request) -> dict[str, Any]:
     }
 
 
+def _research_links(base: str, *, return_to: str) -> dict[str, Any]:
+    """Where the deep-dive block posts, and where it sends the reader back to.
+
+    Shared by the instrument and sector pages, which render the same block over the same two
+    routes. Only two things differ, and they are the arguments: the subject's own URL, and how
+    *that* page addresses the block -- the instrument page returns to a tab, the sector page to
+    a fragment. Stating them twice is how one of them silently loses its anchor.
+    """
+    return {
+        "research_action": f"{base}/research",
+        "research_prompt_url": f"{base}/research/prompt",
+        "research_base": f"{base}{return_to}",
+        "research_job": research_service.RESEARCH_JOB,
+    }
+
+
 def _instrument_context(
     request: Request,
     *,
@@ -427,10 +443,7 @@ def _instrument_context(
         **_lever_context(detail, request),
         "subject_type": "instrument",
         "subject_label": f"{detail['instrument'].name} ({ticker})",
-        "research_action": f"/instrument/{quote(ticker, safe='')}/research",
-        "research_prompt_url": f"/instrument/{quote(ticker, safe='')}/research/prompt",
-        "research_base": f"/instrument/{quote(ticker, safe='')}?tab=research",
-        "research_job": research_service.RESEARCH_JOB,
+        **_research_links(f"/instrument/{quote(ticker, safe='')}", return_to="?tab=research"),
         "research_message": request.query_params.get("research"),
         "research_reason": request.query_params.get("why"),
         "horizons": {
@@ -2098,6 +2111,31 @@ def sectors_page(request: Request) -> HTMLResponse:
     )
 
 
+def _sector_facts(session, name: str) -> dict[str, Any]:
+    """Everything a sector page shows beside its instruments, from one session.
+
+    Split out so the route reads as what it *decides* -- which instruments, in what order, on
+    which page -- and this as what the sector *is*. They share a session and nothing more: none
+    of these reads depends on another, and none depends on the reader's sort.
+    """
+    counts = dict(queries.sector_group_counts(session))
+    series = queries.sector_sentiment_series(session, name, days=60)
+    return {
+        "news": queries.sector_news(session, name),
+        "series": series,
+        "latest": series[-1] if series else None,
+        "index": queries.sector_price_index(session, name),
+        "index_basis": queries.sector_index_basis(session, name),
+        "universe_size": queries.universe_size(session),
+        # The count is of *this* sector, and "unclassified" is the absence of one -- so it is
+        # read from the empty column rather than from a name that no instrument carries.
+        "instrument_count": counts.get(
+            name if name != sector_map.UNCLASSIFIED else None, 0
+        ),
+        **queries.research_reports(session, subject_type="sector", subject_id=name),
+    }
+
+
 @router.get("/sectors/{name}", response_class=HTMLResponse, include_in_schema=False)
 def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTMLResponse:
     """One sector: its instruments, its news, and its sentiment.
@@ -2108,6 +2146,12 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
     so sorting and paging behave identically and a click on a column heading re-sorts the
     sector instead of dropping the reader into the whole universe.
 
+    The state the page honours is therefore the *ordering and the page number*
+    (`filters.SECTOR_TABLE_PARAMS`), and it has to be read from the request: the headings emit
+    `?sort=sentiment`, and a route that ignores the query string renders the default order
+    while the arrow stays on the default column, which is what made every heading look like it
+    sorted by the wrong one.
+
     An unknown name is a 404 rather than an empty page: "no such sector" and "a sector
     with nothing in it" are different answers, and the second is already reachable
     through the unclassified bucket.
@@ -2116,20 +2160,21 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
         raise HTTPException(status_code=404, detail="no such sector")
 
     per_page = 50
+    table = filters.FilterSet.parse(
+        filters.recommendation_specs(),
+        filters.sector_table_params(request.query_params),
+    )
     with session_scope() as session:
-        counts = dict(queries.sector_group_counts(session))
         rows, total = queries.recommendations(
             session,
+            sort=table.value("sort"),  # type: ignore[arg-type]
+            direction=table.value("direction"),  # type: ignore[arg-type]
+            horizon=table.value("horizon"),
             sector_group=name,
             limit=per_page,
             offset=(page - 1) * per_page,
         )
-        news = queries.sector_news(session, name)
-        series = queries.sector_sentiment_series(session, name, days=60)
-        index = queries.sector_price_index(session, name)
-        index_basis = queries.sector_index_basis(session, name)
-        size = queries.universe_size(session)
-        deep_dives = queries.research_reports(session, subject_type="sector", subject_id=name)
+        facts = _sector_facts(session, name)
 
     pages = max(1, -(-total // per_page))
     return templates.TemplateResponse(
@@ -2142,27 +2187,24 @@ def sector_page(request: Request, name: str, page: int = Query(1, ge=1)) -> HTML
             "page": min(page, pages),
             "pages": pages,
             "per_page": per_page,
-            "filters": filters.FilterSet.parse(filters.recommendation_specs(), {}),
-            "universe_size": size,
+            "filters": table,
+            "horizon": table.value("horizon"),
+            # The region is a page, not a fragment: nothing fetches it on its own, so the
+            # pager must be a real navigation. See `recommendations.html` -- swapping this
+            # table through `/partials/recommendations` would replace the sector's rows with
+            # the whole universe's, which is a bug that only shows on a sector with more than
+            # one page of instruments.
+            "region_source": None,
             "list_base": f"/sectors/{quote(name, safe='')}",
-            "news": news,
-            "series": series,
-            "index": index,
-            "index_basis": index_basis,
-            "latest": series[-1] if series else None,
-            "instrument_count": counts.get(name if name != sector_map.UNCLASSIFIED else None, 0),
             "is_unclassified": name == sector_map.UNCLASSIFIED,
             # The deep-dive block and the executive summary, the same partial the instrument
             # page uses. A sector's evidence is the news corpus alone, which the block says.
-            **deep_dives,
             "subject_type": "sector",
             "subject_label": f"the {name} sector" if name != sector_map.UNCLASSIFIED else name,
-            "research_action": f"/sectors/{quote(name, safe='')}/research",
-            "research_prompt_url": f"/sectors/{quote(name, safe='')}/research/prompt",
-            "research_base": f"/sectors/{quote(name, safe='')}#research",
-            "research_job": research_service.RESEARCH_JOB,
+            **_research_links(f"/sectors/{quote(name, safe='')}", return_to="#research"),
             "research_message": request.query_params.get("research"),
             "research_reason": request.query_params.get("why"),
+            **facts,
         },
     )
 

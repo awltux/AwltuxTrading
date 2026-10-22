@@ -142,6 +142,17 @@
 {# ---- the instruments ---------------------------------------------------- #}
 <section>
   <h2>Instruments</h2>
+  {# A value the URL asked for that this table cannot honour. Reported rather than dropped:
+     the headings here link `?sort=<column>`, so a stale bookmark can carry a key the query
+     layer has never heard of, and falling back silently would show an order the address bar
+     does not describe. #}
+  {% if filters.ignored %}
+    <p class="notice warn">
+      <strong>Ignored {{ filters.ignored | length }} value{{ '' if filters.ignored | length == 1 else 's' }}</strong>
+      the link did not recognise: {% for bad in filters.ignored %}<code>{{ bad.name }}={{ bad.value }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      The table below is in its default order.
+    </p>
+  {% endif %}
   {# The same template the dashboard renders, so sorting, paging and the empty state
      behave identically -- and `list_base` keeps a column sort on *this* sector rather
      than sending the reader to the whole universe. #}

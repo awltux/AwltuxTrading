@@ -467,6 +467,32 @@ def recommendation_specs(
     )
 
 
+#: The query parameters a sector page's instrument table reads.
+#:
+#: A sector page states *which* instruments it shows in its path and renders no filter bar, so
+#: the only state it can honour is how they are ordered and which page of them is shown. It
+#: used to parse the full spec set from an empty mapping, which is why **every column heading on
+#: a sector page did nothing**: the link carried `?sort=sentiment`, the route never looked, and
+#: the table came back in the default order with the arrow still on "L score" -- a click that
+#: appeared to have sorted by the wrong column. Reported 2026-10-21 as *"clicking on some
+#: headers seems to trigger a filter for another header"*.
+#:
+#: Reading a *named* subset, rather than the whole mapping, is deliberate: `q=` or `action=` on a
+#: sector URL would otherwise be carried by every sort link while the query ignored it, and a
+#: link that describes a table which is not on screen is the failure this module exists to
+#: prevent.
+SECTOR_TABLE_PARAMS = ("sort", "direction", "horizon", "page")
+
+
+def sector_table_params(params: Mapping[str, str]) -> dict[str, str]:
+    """The part of a query string a sector page's table can honour.
+
+    Values are *not* validated here -- :meth:`FilterSet.parse` does that against the specs, and
+    records a value it cannot use so the page can name it.
+    """
+    return {name: params[name] for name in SECTOR_TABLE_PARAMS if name in params}
+
+
 # --------------------------------------------------------------------------- #
 # the news page
 # --------------------------------------------------------------------------- #
