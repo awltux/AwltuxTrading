@@ -536,6 +536,7 @@ def _upsert_period(
     source: str,
     confidence: float,
     metric_sources: dict[str, Any] | None = None,
+    filing_id: int | None = None,
 ) -> FundamentalPeriod | None:
     if period_end is None:
         return None
@@ -557,6 +558,18 @@ def _upsert_period(
             source=source,
         )
         session.add(row)
+
+    # The document these figures were read out of, when the writer read one. It is what lets
+    # the accounts page's SOURCE link the filing itself rather than the provider it came
+    # through (`web/sources.py`), and until 2026-10-23 nothing populated this column: measured,
+    # 0 of 824 stored periods carried one.
+    #
+    # Assigned only by the writer that knows a document, so a later provider re-derive of the
+    # same period cannot clear a filing written by an extraction -- and it overwrites when the
+    # *same* extraction is re-run over a different document, because then it is the document
+    # this row was last read from.
+    if filing_id is not None:
+        row.filing_id = filing_id
 
     # Preserve any metric an LLM extractor sourced from the filed document: a
     # figure with a citation beats a scraped snapshot of the same figure.

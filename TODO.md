@@ -1650,6 +1650,23 @@ line by hand; the page still does not say which source it is measuring.
 
 ## Deliberately not doing
 
+### Backfilling `fundamental_period.filing_id` by matching period ends
+
+Decided 2026-10-23, when the accounts page's SOURCE became a link and the column turned out to be
+empty on every row. `web/sources.py` links a period to its document by `filing_id` when one is
+recorded, and by the SEC accession otherwise; a `llm_extraction` period has neither, because the
+extractor never wrote the column (new rows do -- `ingest/parsing.py::_store_period` passes it).
+
+A backfill is possible and would be a guess: measured on the live database, matching
+`(ticker, period_end)` against `filing` finds **exactly one candidate for 14 of the 22**
+`llm_extraction` periods and none for the other 8. One candidate is not the same as the document
+that was read -- two filings can share a period end (a 10-K and the 8-K that accompanies it) --
+and a wrong provenance link on a page whose whole subject is provenance is worse than a link
+that is missing and says so. The 22 rows keep the sentence that explains why there is no link.
+
+If it is ever worth it, the honest version is a re-read: `llm_extraction` rows can be
+regenerated from their filings, and that path now records `filing_id`.
+
 ### A per-instrument blocker for `edgar_events`
 
 Re-measured 2026-10-16, when blockers were wired into the other five jobs that were

@@ -417,6 +417,22 @@ class TestWritingThePeriod:
         assert period.metrics["revenue"] == 331_839_000_000.0
         assert period.confidence == 0.95
 
+    def test_the_period_records_the_document_it_was_read_out_of(
+        self, session, settings, monkeypatch
+    ):
+        """The accounts page's SOURCE follows this to the filing (`web/sources.py`).
+
+        Measured when it was added, 2026-10-23: **0 of 824** stored periods carried a
+        ``filing_id``, so a figure read out of a document could not be traced to it -- and the
+        page offered no link rather than a guess. The row is written here, by the only pipeline
+        that has one document in hand.
+        """
+        self._run(session, settings, monkeypatch, self._result())
+        session.flush()
+
+        filing_id = session.execute(select(Filing.id)).scalar_one()
+        assert self._period(session).filing_id == filing_id
+
     def test_a_price_per_share_is_not_multiplied_by_the_statements_units(
         self, session, settings, monkeypatch
     ):

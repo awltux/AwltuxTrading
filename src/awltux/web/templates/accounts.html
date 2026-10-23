@@ -47,7 +47,26 @@
 <section class="kv">
   <div><dt>Period end</dt><dd>{{ period.period_end }}</dd></div>
   <div><dt>Basis</dt><dd>{{ period_type }}{% if currency %} · {{ currency }}{% endif %}</dd></div>
-  <div><dt>Source</dt><dd>{{ source }}{% if year and year.government %} <span class="chip">the filer's own accounts</span>{% endif %}</dd></div>
+  {# Where these figures were gathered from, as a link when the origin is known.
+     Asked for 2026-10-23: *"can the SOURCE item be a link to the original website the data was
+     gathered from?"* -- which one it is depends on the source (see `web/sources.py`): the filing
+     itself for a period read out of a document or recoverable by accession, the provider's own
+     page for the scraped sources, and for a source with no recorded origin the bare name with
+     the reason in the tooltip, because a made-up link is worse than none on a page about
+     provenance. #}
+  <div><dt>Source</dt><dd>
+    {%- set origin = origins.get(period.id) -%}
+    {%- if origin and origin.url -%}
+      <a href="{{ origin.url }}"{% if origin.external %} target="_blank" rel="noopener noreferrer"{% endif %}
+         title="{{ origin.note }}">{{ source }}</a>
+      <span class="muted small">{{ origin.site }}</span>
+    {%- elif origin -%}
+      {{ source }} <span class="muted small" title="{{ origin.note }}">{{ origin.site or 'no link' }}</span>
+    {%- else -%}
+      {{ source }}
+    {%- endif %}
+    {% if year and year.government %} <span class="chip">the filer's own accounts</span>{% endif %}
+  </dd></div>
   {% if previous %}
     <div><dt>Comparable</dt><dd>{{ previous.period_end }} ({{ previous.period_type }}, {{ previous.source }})</dd></div>
   {% else %}
@@ -90,7 +109,10 @@
       <tbody>
       {% for row in year.superseded %}
         <tr>
-          <td>{{ row.source }}</td>
+          {# Linked like the chosen source above: this table is where a reader checks what
+             another source said, so "which site said it" belongs here too. #}
+          <td>{% set origin = origins.get(row.period.id) %}{% if origin and origin.url %}<a href="{{ origin.url }}"{% if origin.external %} target="_blank" rel="noopener noreferrer"{% endif %}
+                title="{{ origin.note }}">{{ row.source }}</a>{% else %}{{ row.source }}{% endif %}</td>
           <td class="small">{{ row.period.period_type }}</td>
           <td class="small">{{ row.period.period_end }}</td>
           <td class="num small">{{ (row.period.metrics or {}) | length }}</td>

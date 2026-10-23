@@ -37,7 +37,7 @@ from awltux.research import report as research_report
 from awltux.research import service as research_service
 from awltux.scheduler import scoped
 from awltux.timezones import as_utc
-from awltux.web import configuration, filters, listing, queries
+from awltux.web import configuration, filters, listing, queries, sources
 from awltux.web.routes.research import launch as launch_research
 from awltux.web.templating import templates
 
@@ -910,6 +910,15 @@ def accounts_page(
     # The filing behind these figures, when they are the government's own XBRL and we hold the
     # document: that is what lets the page open it at the line that does not reconcile.
     filing = _filing_target(session, period)
+    # Where each source on this page gathered its figures -- the chosen set of accounts and the
+    # ones it displaced. Read here because it needs the session: the answer for an XBRL period
+    # is a filing row resolved by accession, not a column copied onto the period.
+    year = detail["year"]
+    origins = sources.origins(
+        session,
+        instrument,
+        [period, *[row.period for row in (year.superseded if year else ())]],
+    )
 
     return templates.TemplateResponse(
         request,
@@ -917,7 +926,8 @@ def accounts_page(
         {
             "period": period,
             "previous": previous,
-            "year": detail["year"],
+            "year": year,
+            "origins": origins,
             "instrument": instrument,
             "statement": statement,
             "tabs": _account_tabs(period_id, statement),

@@ -338,7 +338,12 @@ them because it includes lease liabilities, `net_ppe` differs by 2.5x on two and
 
 The Accounts tab lists one row per financial year; a year's page lays out the chosen
 accounts and a "where these figures came from" panel naming each displaced source, why it
-was not used, the figures only it stated, and every disagreement with both values. **Hover a
+was not used, the figures only it stated, and every disagreement with both values. **The
+SOURCE line is a link to where the figures were gathered from** — the filed document when we
+can name it (by a recorded `filing_id`, or by the SEC accession an XBRL period carries), the
+provider's own page for a scraped source, and the instrument's Research tab for this app's own
+deep-dive; a source with no recorded origin says so instead of showing a link it cannot
+justify. **Hover a
 figure in the Computed column** — or an "out by" in the accounting-health table — for the
 calculation behind it: the stated total, every component with its sign, the sum, and the
 lines left out of it. The analysis reads the same collated set, so the page and the verdict

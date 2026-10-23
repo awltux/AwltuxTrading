@@ -301,7 +301,9 @@ def _store_period(
     session: Session, filing: Filing, result: Any, report: dict[str, Any]
 ) -> None:
     """Write one filing's extracted figures as a period. See :func:`store_cited_period`."""
-    store_cited_period(session, filing.instrument_t212_ticker, result, report)
+    store_cited_period(
+        session, filing.instrument_t212_ticker, result, report, filing_id=filing.id
+    )
 
 
 def store_cited_period(
@@ -311,12 +313,18 @@ def store_cited_period(
     report: dict[str, Any] | None = None,
     *,
     source: str = "llm_extraction",
+    filing_id: int | None = None,
 ) -> str:
     """Write cited figures as a `FundamentalPeriod` the analysis can read.
 
     Returns ``stored``, ``unusable`` or ``unscaled`` so the caller can record which of the
     three happened; the counters in ``report`` are the same three outcomes for a job that
     reports in numbers.
+
+    ``filing_id`` is the document the figures were read out of, when the caller read one. It is
+    what the accounts page follows to link a period back to its filing (`web/sources.py`), and
+    passing it is the difference between "these figures came from somewhere" and "these figures
+    came from *this* 10-K". A deep-dive has no single document and passes none.
 
     **The extraction went nowhere before this.** `filing.parsed` held 38-41 cited metrics
     per filing and no period source was `llm_extraction`, so the whole 10-K pipeline was a
@@ -367,6 +375,7 @@ def store_cited_period(
         metrics=metrics,
         source=source,
         confidence=result.confidence,
+        filing_id=filing_id,
         # Stamped with the pipeline that produced them. `ExtractedMetric.as_dict` writes
         # `llm_extraction` because that was the only writer; a deep-dive's spans come from
         # a different call, and a provenance map that named the filing extractor for them
