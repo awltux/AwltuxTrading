@@ -1014,6 +1014,10 @@ class TestOnlyOneJobRunsAtATime:
         service = SchedulerService(specs)
         service.start()
         try:
+            # The dispatcher waits two seconds after start before taking anything (so a
+            # restart's triggers are all queued before the first is chosen); this test is not
+            # about that window.
+            service._armed_at = 0.0
             due = dt.datetime.now(dt.UTC)
             for spec in specs:
                 service._scheduler.modify_job(spec.id, next_run_time=due)

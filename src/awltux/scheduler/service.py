@@ -41,6 +41,16 @@ logger = logging.getLogger(__name__)
 #: `test_scheduler` fails, because a warning in a log nobody reads is not a guard.
 MIN_INTERVAL_SECONDS = 3_600
 
+#: How long the dispatcher waits at startup before taking its first job.
+#:
+#: **A trigger fires a moment after `start()` returns**, and so does a catch-up: without this,
+#: whichever trigger landed first was taken and run before the jobs it depends on had even been
+#: queued. Measured on the deployed build, 2026-10-23: the first cycle after a restart ran
+#: `news_rss` at 17:45:46 and `t212_instruments` at 17:45:54 -- the dependency order the queue
+#: exists to enforce, inverted by eight seconds of arming. Two seconds is enough for every
+#: trigger to have fired (they are sub-millisecond apart) and invisible to a reader.
+STARTUP_GRACE_SECONDS = 2.0
+
 #: How much later in the day each level of the dependency graph fires.
 #:
 #: Every job is daily (2026-10-23), so what used to be a random spread across the hour is now a
@@ -176,6 +186,9 @@ class SchedulerService:
         self._depths: dict[str, int] = {}
         self._dispatcher: threading.Thread | None = None
         self._stopping = False
+        #: No job is handed out before this, so the first cycle's triggers are all in the queue
+        #: before the first one is chosen. See :data:`STARTUP_GRACE_SECONDS`.
+        self._armed_at = 0.0
         #: Jobs executing *right now*, by id. At most one from the dispatcher; `run_now(wait=True)`
         #: adds its own for the length of the call, so the ordering rule can see a manual run.
         self._running: set[str] = set()
@@ -571,6 +584,7 @@ class SchedulerService:
             return
         with self._condition:
             self._stopping = False
+            self._armed_at = time.monotonic() + STARTUP_GRACE_SECONDS
             self._dispatcher = threading.Thread(
                 target=self._dispatch_loop, name="scheduler-dispatch", daemon=True
             )
@@ -622,7 +636,7 @@ class SchedulerService:
         :meth:`_dispatch_loop` because "may anything start now" is a fact about the queue: quiet
         must not lose the work already due, and it must not hand it out either.
         """
-        if self._paused:
+        if self._paused or time.monotonic() < self._armed_at:
             return None
         queued_ids = {item.id for item in self._queue}
         busy = queued_ids | self._running

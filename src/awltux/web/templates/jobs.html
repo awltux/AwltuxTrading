@@ -137,7 +137,10 @@
       <td class="small muted">
         {%- if job.queued -%}
           <span class="chip" title="Due now, waiting for the run in progress or for a job it depends on">queued</span>
-          {{ job.next_run | datetime }}
+          {%- if job.overdue %}
+            <span class="warn" title="Last successful run is more than one interval ago">behind — {{ job.next_run | datetime }}</span>
+          {%- else %} {{ job.next_run | datetime }}
+          {%- endif -%}
         {%- elif not job.next_run -%}—
         {%- elif job.overdue -%}
           <span class="warn" title="Last successful run is more than one interval ago">behind — {{ job.next_run | datetime }}</span>
