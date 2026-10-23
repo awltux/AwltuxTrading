@@ -23,7 +23,6 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import types
 import xml.etree.ElementTree as ElementTree
 
 import pytest
@@ -165,26 +164,23 @@ class StubClient:
         )
 
 
-class InlineThread:
-    """A thread that runs its target now, so a test does not have to wait for one.
+class InlineQueue:
+    """Serve the queue on the caller's thread, so a test does not have to wait for a thread."""
 
-    Replaces the *module's* reference rather than `threading.Thread` itself: patching the
-    real one would reach into pytest's own machinery for the duration of the test.
-    """
-
-    def __init__(self, target=None, args=(), name=None, daemon=None) -> None:
-        self.target = target
-        self.args = args
-        self.name = name
-        self.daemon = daemon
-
-    def start(self) -> None:
-        self.target(*self.args)
+    def __call__(self, *args, **kwargs) -> int:
+        return service.drain_queue()
 
 
 @pytest.fixture
 def inline(monkeypatch):
-    monkeypatch.setattr(service, "threading", types.SimpleNamespace(Thread=InlineThread))
+    """Make a press finish its run before `start` returns.
+
+    Replaces `ensure_consumer` -- the function a press calls to make sure something is serving
+    the queue -- rather than starting the real consumer: a daemon thread polling a temporary
+    database outlives the test that made it, and the ordering assertions below would race it.
+    `drain_queue` is the loop's own body, so what a test exercises is what production runs.
+    """
+    monkeypatch.setattr(service, "ensure_consumer", InlineQueue())
 
 
 def _release(ticker: str, token: str, *, state: str = "done") -> None:
@@ -229,6 +225,20 @@ def _run(session, prompt: str = "Research Test Co", client=None) -> service.Star
         subject_type="instrument",
         subject_id=TICKER,
         prompt=prompt,
+        client=client or StubClient(),
+    )
+
+
+#: Three instruments for the queue tests, so "first pressed, first served" is assertable.
+QUEUE_TICKERS = ("QUEUE1_US_EQ", "QUEUE2_US_EQ", "QUEUE3_US_EQ")
+
+
+def _queued(session, ticker: str = TICKER, client=None) -> service.Started:
+    """Press the button with nothing serving the queue, so the request stays queued."""
+    return service.start(
+        subject_type="instrument",
+        subject_id=ticker,
+        prompt=f"Research {ticker}",
         client=client or StubClient(),
     )
 
@@ -331,6 +341,166 @@ class TestStarting:
         assert started.ok is True
         statuses = sorted(row.status for row in _reports(session))
         assert statuses == ["done", "running"]
+
+
+class TestTheQueue:
+    """A second press is remembered rather than refused.
+
+    Reported 2026-10-21: *"Currently only one Research job can run at once, launching a second
+    Research job fails. Add a queue system for the Research jobs, so they are eventually
+    processed."*
+
+    The application held a process-wide semaphore, so the second press wrote a row, failed it,
+    and told the reader "another deep-dive is already running" -- nothing remembered the
+    request. It is now a ``queued`` row, claimed one at a time.
+
+    Nothing serves the queue in these tests unless they ask it to (the suite disables the
+    consumer, exactly as it disables the scheduler), so a press leaves the state a *second* press
+    really produces in production: a request waiting behind the run in front of it.
+    """
+
+    def test_a_press_while_another_deep_dive_runs_is_queued_not_refused(self, session):
+        _instrument(session)
+        session.add(
+            ResearchReport(
+                subject_type="instrument",
+                subject_id="BUSY_US_EQ",
+                status="running",
+                title="Busy Co (BUSY_US_EQ)",
+                prompt="already going",
+                prompt_sha256="x",
+                started_at=utcnow(),
+            )
+        )
+        session.commit()
+
+        started = _queued(session)
+
+        assert started.ok is True
+        assert started.queued is True
+        row = session.get(ResearchReport, started.report_id)
+        assert row.status == "queued"
+        assert row.started_at is None, "a queued request has not begun"
+
+    def test_the_queue_runs_in_the_order_the_presses_arrived(self, session, monkeypatch):
+        for ticker in QUEUE_TICKERS:
+            _instrument(session, ticker)
+        session.commit()
+
+        presses = [_queued(session, ticker) for ticker in QUEUE_TICKERS]
+        assert [press.queued for press in presses] == [True, True, True]
+
+        served: list[int] = []
+        real = service._run
+
+        def record(report_id: int) -> None:
+            served.append(report_id)
+            real(report_id)
+
+        monkeypatch.setattr(service, "_run", record)
+
+        assert service.drain_queue() == 3
+        session.expire_all()
+
+        assert served == [press.report_id for press in presses], "first pressed, first served"
+        assert [row.status for row in sorted(_reports(session), key=lambda row: row.id)] == [
+            "done",
+            "done",
+            "done",
+        ]
+
+    def test_a_failed_run_does_not_stall_the_queue(self, session):
+        """One broken subject must not hold up every request behind it."""
+        for ticker in QUEUE_TICKERS[:2]:
+            _instrument(session, ticker)
+        session.commit()
+        failing = _queued(
+            session, QUEUE_TICKERS[0], client=StubClient(error=RuntimeError("provider down"))
+        )
+        good = _queued(session, QUEUE_TICKERS[1])
+
+        assert service.drain_queue() == 2
+        session.expire_all()
+
+        assert session.get(ResearchReport, failing.report_id).status == "failed"
+        assert session.get(ResearchReport, good.report_id).status == "done"
+
+    def test_a_second_press_of_a_queued_subject_is_refused(self, session):
+        """One request per subject: queuing twice would pay for the same answer twice."""
+        _instrument(session)
+        session.commit()
+
+        first = _queued(session)
+        second = _queued(session)
+
+        assert first.ok is True and first.queued is True
+        assert second.ok is False
+        assert "already queued" in second.message
+        assert len(_reports(session)) == 1
+
+    def test_a_row_can_only_be_claimed_once(self, session):
+        """The claim is the single slot, and it is one UPDATE rather than a lock."""
+        _instrument(session)
+        session.commit()
+        press = _queued(session)
+
+        assert service._claim_next() == press.report_id
+        assert service._claim_next() is None, "nothing left to claim"
+
+        session.expire_all()
+        row = session.get(ResearchReport, press.report_id)
+        assert row.status == "running"
+        assert row.started_at is not None
+
+    def test_a_run_that_waited_out_a_queue_is_not_stale_when_it_starts(self, session):
+        """Staleness is measured from the claim, not from the request.
+
+        A deep-dive claimed after five hours in the queue is *working*, and a page that printed
+        it as stale would be telling the reader its process had died while the model was
+        answering.
+        """
+        from awltux.web import queries
+
+        _instrument(session)
+        session.add(
+            ResearchReport(
+                subject_type="instrument",
+                subject_id=TICKER,
+                status="queued",
+                title="Test Co (TEST_US_EQ)",
+                prompt="waited a long time",
+                prompt_sha256="x",
+                created_at=utcnow() - dt.timedelta(hours=5),
+            )
+        )
+        session.commit()
+
+        service._claim_next()
+        session.expire_all()
+
+        view = queries.research_reports(session, subject_type="instrument", subject_id=TICKER)
+
+        assert view["reports"][0]["running"] is True
+        assert view["reports"][0]["stale"] is False
+
+    def test_the_page_knows_where_a_request_stands(self, session):
+        """The number printed is the order the claim will run them in."""
+        from awltux.web import queries
+
+        for ticker in QUEUE_TICKERS:
+            _instrument(session, ticker)
+        session.commit()
+        for ticker in QUEUE_TICKERS:
+            _queued(session, ticker)
+
+        session.expire_all()
+
+        def position(ticker: str) -> int | None:
+            return queries.research_reports(
+                session, subject_type="instrument", subject_id=ticker
+            )["research_queued"]
+
+        assert [position(ticker) for ticker in QUEUE_TICKERS] == [1, 2, 3]
 
 
 class TestTheRun:
@@ -745,6 +915,29 @@ class TestHousekeeping:
 
         assert service.close_orphaned_research() == 0
         assert _reports(session)[0].status == "done"
+
+    def test_a_restart_leaves_the_queue_alone(self, session, settings):
+        """A queued row is a request nobody has picked up, not interrupted work.
+
+        Failing it at startup would throw away exactly the presses the queue exists to
+        remember, and a restart is when a queue is most likely to have something in it.
+        """
+        _instrument(session)
+        session.add(
+            ResearchReport(
+                subject_type="instrument",
+                subject_id=TICKER,
+                status="queued",
+                title="Test Co (TEST_US_EQ)",
+                prompt="waiting",
+                prompt_sha256="x",
+                created_at=utcnow(),
+            )
+        )
+        session.commit()
+
+        assert service.close_orphaned_research() == 0
+        assert _reports(session)[0].status == "queued"
 
 
 class TestTheFiguresReachTheAnalysis:

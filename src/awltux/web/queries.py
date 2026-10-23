@@ -1496,17 +1496,26 @@ def _research_row(row: Any, cutoff: dt.datetime) -> dict[str, Any]:
     """One deep-dive as the page reads it.
 
     ``stale`` is decided here rather than in the template because it is date arithmetic: a
-    ``running`` row older than the staleness window is a run whose process went away, and the
-    page shows it as stale rather than as work in progress.
+    ``running`` row whose *run* began before the staleness window is a run whose process went
+    away, and the page shows it as stale rather than as work in progress.
+
+    It is measured from ``started_at`` -- when a consumer claimed the row -- and only falls back
+    to ``created_at`` for the rows written before the queue existed. A queued request can wait
+    behind a long deep-dive, and a run that began five minutes ago is not stale because its
+    *request* is from this morning.
     """
     created = as_utc(row.created_at)
+    started = as_utc(row.started_at)
     running = row.status == "running"
+    since = started or created
     return {
         "id": row.id,
         "status": row.status,
         "running": running,
-        "stale": running and created is not None and created < cutoff,
+        "queued": row.status == "queued",
+        "stale": running and since is not None and since < cutoff,
         "created_at": created,
+        "started_at": started,
         "finished_at": as_utc(row.finished_at),
         "verdict": row.verdict,
         "confidence": row.confidence,
@@ -1577,20 +1586,59 @@ def research_reports(
         .limit(1)
     ).scalar_one_or_none()
 
+    pending = next((row for row in rows if _pending_row(row, cutoff)), None)
+
     return {
         "reports": [_research_row(row, cutoff) for row in rows],
         "latest_report": _research_row(latest, cutoff) | {"exec_summary": latest.exec_summary}
         if latest is not None
         else None,
         # Whether a button press would be refused, so the page can say so before the reader
-        # spends a click and a server round trip finding out. The same test the service
-        # applies: a `running` row that is not stale. A running row is the newest by
-        # construction, so if one exists at all it is inside the window read above.
+        # spends a click and a server round trip finding out. The same rule the service
+        # applies, stated once in `_pending_row` -- a pending row is the newest by construction,
+        # so if one exists at all it is inside the window read above.
         "research_running": any(
-            row.status == "running" and (as_utc(row.created_at) or cutoff) > cutoff
-            for row in rows
+            row.status == "running" and _pending_row(row, cutoff) for row in rows
         ),
+        # Where a waiting request stands, 1 being next. The number the page prints is the order
+        # the consumer will actually run them in, because the claim takes the oldest id.
+        "research_queued": _queue_position(session, pending) if pending is not None else None,
     }
+
+
+def _pending_row(row: Any, cutoff: dt.datetime) -> bool:
+    """Whether this row still holds its subject: queued, or running and not abandoned.
+
+    The same rule ``research.service`` applies before refusing a press, stated here because the
+    page has to say so *before* the reader spends the click -- and if the two disagreed, the page
+    would either hide a button that works or offer one that cannot.
+
+    A queued row always holds its subject, however long it has waited: it is a request, not
+    interrupted work. A running one is measured from ``started_at``, so a run that waited out a
+    long queue and has just begun is not mistaken for one whose process died.
+    """
+    if row.status == "queued":
+        return True
+    if row.status != "running":
+        return False
+    since = as_utc(row.started_at) or as_utc(row.created_at)
+    return since is not None and since > cutoff
+
+
+def _queue_position(session: Session, row: Any) -> int:
+    """How many deep-dives this queued one is behind, itself included.
+
+    Counted by ``id`` rather than by any timestamp: it is monotonic and unambiguous, and it is
+    what the claim orders by -- a count that used a different key could name a position the
+    consumer never puts the run in.
+    """
+    ahead = session.scalar(
+        select(func.count())
+        .select_from(ResearchReport)
+        .where(ResearchReport.status == "queued")
+        .where(ResearchReport.id <= row.id)
+    )
+    return int(ahead or 1)
 
 
 #: The three sentences a deep-dive writes about a business, in the order the page reads them:

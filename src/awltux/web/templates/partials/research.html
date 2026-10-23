@@ -27,6 +27,13 @@
       Deep-dive started. It is running in the background &mdash; the report appears in the list
       below when it finishes, and this page will not update by itself.
     </p>
+  {% elif research_message == 'queued' %}
+    {# One deep-dive runs at a time, so a press is a *request*. Saying "queued" rather than
+       "started" is the honest answer, and the position below says when it is expected to go. #}
+    <p class="notice ok">
+      Deep-dive queued. One runs at a time, so this one starts as soon as the deep-dive ahead of
+      it finishes &mdash; the request is stored, so closing this page does not lose it.
+    </p>
   {% elif research_message == 'refused' %}
     <p class="notice warn">
       Nothing was started{% if research_reason %}: {{ research_reason }}{% endif %}.
@@ -37,6 +44,11 @@
     <p class="notice">
       A deep-dive of this subject is already running. Its report will appear here.
       <a href="/jobs/{{ research_job }}/log">Live log &rarr;</a>
+    </p>
+  {% elif research_queued %}
+    <p class="notice">
+      A deep-dive of this subject is queued{% if research_queued > 1 %} behind {{ research_queued - 1 }} other run{{ '' if research_queued == 2 else 's' }}{% endif %}
+      and starts as soon as the queue reaches it. Nothing else is needed from you.
     </p>
   {% endif %}
 
@@ -74,7 +86,13 @@
         <tr>
           <td class="small">{{ report.created_at | datetime('%Y-%m-%d %H:%M') }}</td>
           <td class="small">
-            {% if report.running and report.stale %}
+            {% if report.queued %}
+              {# Waiting for the consumer, not running and not stuck: the request is stored and
+                 the page says how long it has waited, which is the difference between a queue
+                 and a row nothing will ever pick up. #}
+              <span class="badge"
+                    title="Waiting for the deep-dive ahead of it to finish">queued</span>
+            {% elif report.running and report.stale %}
               {# A run whose process went away leaves `running` behind, and the page says so
                  rather than showing work that is not happening. #}
               <span class="badge warn" title="The process that started this run is gone">stale</span>

@@ -274,7 +274,9 @@ class TestAdding:
     def test_a_refused_deep_dive_still_adds_the_instrument(self, client, session, monkeypatch):
         """The two halves are independent on purpose: the instrument is in the universe either
         way, and the refusal is reported rather than rolled back."""
-        stub = _Start(ok=False, message="another deep-dive is already running")
+        stub = _Start(
+            ok=False, message="no DeepSeek API key is configured, so a run could not read anything"
+        )
         monkeypatch.setattr("awltux.research.service.start", stub)
         _outside(session)
         session.commit()

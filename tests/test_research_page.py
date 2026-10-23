@@ -95,23 +95,31 @@ def _report(
 class _Start:
     """A stand-in for `research.service.start` that records what it was asked to do.
 
-    Stood in for because the real one takes a process-wide permit and starts a thread that
-    would read the live database and call a model. What is under test here is the route: what
-    it passes on, and where it sends the reader afterwards.
+    Stood in for because the real one queues a request and starts the process's queue consumer.
+    What is under test here is the route: what it passes on, and where it sends the reader
+    afterwards -- and whether it tells them the run *started* or is *queued*.
     """
 
-    def __init__(self, ok: bool = True, message: str = "research started") -> None:
+    def __init__(self, ok: bool = True, message: str = "queued", queued: bool = True) -> None:
         self.ok = ok
         self.message = message
+        self.queued = queued
         self.calls: list[dict] = []
 
     def __call__(self, **kwargs) -> Started:
         self.calls.append(kwargs)
-        return Started(self.ok, self.message, 1 if self.ok else None)
+        return Started(self.ok, self.message, 1 if self.ok else None, queued=self.queued)
 
 
 @pytest.fixture
 def started(monkeypatch) -> _Start:
+    stub = _Start(queued=False)
+    monkeypatch.setattr("awltux.research.service.start", stub)
+    return stub
+
+
+@pytest.fixture
+def queued(monkeypatch) -> _Start:
     stub = _Start()
     monkeypatch.setattr("awltux.research.service.start", stub)
     return stub
@@ -451,6 +459,19 @@ class TestTheDialog:
         assert client.get("/sectors/Vibes/research/prompt").status_code == 404
 
 
+class TestTheConsumerStaysOutOfTheTestProcess:
+    def test_the_app_does_not_start_a_queue_consumer(self, client):
+        """The suite disables it, exactly as it disables the scheduler.
+
+        A daemon thread polling the database outlives the test that made it, and by the time it
+        polls again the temporary database has been deleted -- which is a flaky test, not a
+        feature. `conftest.settings` patches `ensure_consumer`; this asserts it still does.
+        """
+        from awltux.research import service
+
+        assert service._consumer_started is False
+
+
 class TestStarting:
     def test_a_submitted_prompt_is_the_one_that_runs(self, client, session, started):
         """The whole point of the dialog: the wording that reaches the run is the wording the
@@ -485,6 +506,51 @@ class TestStarting:
         prompt = started.calls[0]["prompt"]
         assert "Research Test Co (TEST_US_EQ)" in prompt
         assert "How to read the news digest:" in prompt
+
+    def test_a_queued_press_says_queued_in_the_url_and_on_the_page(
+        self, client, session, queued
+    ):
+        """One deep-dive runs at a time, so "started" would be a lie for a request that waits.
+
+        The reader needs to know the difference: a queued request is stored and will run, and
+        closing the page does not lose it.
+        """
+        _instrument(session)
+        session.commit()
+
+        response = client.post(
+            f"/instrument/{TICKER}/research", data={"prompt": "x"}, follow_redirects=False
+        )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/instrument/{TICKER}?tab=research&research=queued"
+
+        page = client.get(response.headers["location"]).text
+        assert "Deep-dive queued" in page
+        assert "closing this page does not lose it" in page
+
+    def test_a_queued_request_is_listed_with_its_place_in_the_queue(self, client, session):
+        """The wait has to be visible: a request that vanished from the page would read as one
+        that was never accepted."""
+        _instrument(session)
+        session.add(
+            ResearchReport(
+                subject_type="instrument",
+                subject_id="OTHER_US_EQ",
+                status="queued",
+                title="Other Co (OTHER_US_EQ)",
+                prompt="ahead of this one",
+                prompt_sha256="x",
+                created_at=utcnow() - dt.timedelta(minutes=1),
+            )
+        )
+        _report(session, status="queued")
+        session.commit()
+
+        text = " ".join(client.get(f"/instrument/{TICKER}?tab=research").text.split())
+
+        assert "queued behind 1 other run" in text
+        assert ">queued</span>" in text, "the list marks the waiting row itself"
 
     def test_a_refusal_says_which_refusal_it_was(self, client, session, refused):
         _instrument(session)

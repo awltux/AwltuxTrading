@@ -47,19 +47,25 @@ def launch(subject_type: str, subject_id: str, prompt: str) -> RedirectResponse:
     deep-dive in one press. A second copy of the redirect would be a second place for the
     outcome vocabulary to drift.
 
+    **Accepted and started are different outcomes, and the page says which.** One deep-dive runs
+    at a time, so a press writes a queued request; whether it began immediately or is waiting
+    behind another run is what the reader needs to know, and it is the difference between
+    ``research=started`` and ``research=queued``.
+
     The refusal *reason* travels in the query string rather than as a fixed sentence per
-    outcome, because there are six of them -- the feature is off, the subject is unknown, a run
-    already holds it, another deep-dive has the single slot, no key is configured, the prompt
-    was empty -- and each is a different thing for the reader to do. It is our own text, and
-    the page escapes it like anything else.
+    outcome, because they are several -- the feature is off, the subject is unknown, this
+    subject already has a run queued or under way, no key is configured, the prompt was empty --
+    and each is a different thing for the reader to do. It is our own text, and the page escapes
+    it like anything else.
     """
     outcome = research.start(subject_type=subject_type, subject_id=subject_id, prompt=prompt)
     where = quote(subject_id, safe="")
-    tail = (
-        "research=started"
-        if outcome.ok
-        else f"research=refused&why={quote(outcome.message)}"
-    )
+    if not outcome.ok:
+        tail = f"research=refused&why={quote(outcome.message)}"
+    elif outcome.queued:
+        tail = "research=queued"
+    else:
+        tail = "research=started"
     if subject_type == "instrument":
         return RedirectResponse(
             url=f"/instrument/{where}?tab=research&{tail}", status_code=status.HTTP_303_SEE_OTHER

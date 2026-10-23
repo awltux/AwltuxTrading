@@ -113,6 +113,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             logger.info("scheduler disabled by configuration; no jobs will run")
 
+    # After the restart sweep, which must not touch a `queued` row. See the helper.
+    _start_research_queue(settings)
+
     try:
         yield
     finally:
@@ -194,6 +197,25 @@ def create_app() -> FastAPI:
         return RedirectResponse(url="/dashboard")
 
     return app
+
+
+def _start_research_queue(settings) -> None:
+    """Serve queued deep-dives from this process.
+
+    The queue is served here rather than by the scheduler: a deep-dive is minutes of one model
+    call and deliberately outside the scheduler's one-worker limit -- it always has been, the
+    button runs it on its own thread -- and what keeps it to one at a time is the *claim* on the
+    report row (``UPDATE ... WHERE status = 'queued'``), not a process's permit. Every web worker
+    starts a consumer and exactly one of them can win any given row, which is what makes four
+    workers safe where the old per-process semaphore was not.
+
+    Idempotent, and called after the restart sweep: that sweep fails runs a dead process left
+    ``running``, and a ``queued`` row is untouched by it -- it is the request this consumer
+    exists to serve.
+    """
+    from awltux.research import service as research_service
+
+    research_service.ensure_consumer(settings)
 
 
 def _close_interrupted_work() -> None:

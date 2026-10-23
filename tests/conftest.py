@@ -178,6 +178,16 @@ def settings(
 
     _patch_get_settings(monkeypatch, resolved)
 
+    # No research queue consumer in the test process, for the same reason
+    # `scheduler_enabled` is false above: the app's lifespan starts a daemon thread that polls
+    # the database, and a test that has finished leaves it reading a file pytest is about to
+    # delete. The queue is served in tests explicitly, through `research.service.drain_queue`
+    # -- the same body the consumer calls in a loop -- which is also what makes a test's
+    # assertions about a *finished* run true.
+    import awltux.research.service as research_service
+
+    monkeypatch.setattr(research_service, "ensure_consumer", lambda *a, **k: None)
+
     reset_engine()
     yield resolved
     reset_engine()

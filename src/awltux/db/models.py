@@ -1343,11 +1343,21 @@ class ResearchReport(Base, TimestampMixin):
     subject_type: Mapped[str] = mapped_column(String(16), index=True)
     subject_id: Mapped[str] = mapped_column(String(96), index=True)
 
-    #: ``running`` holds the subject; the other two do not. A run that dies leaves this at
-    #: ``running``, which ``research.service.close_orphaned_research`` clears at startup --
-    #: and past ``research.stale_minutes`` the page shows it as stale rather than as work
-    #: in progress, so a stuck row is visible either way.
-    status: Mapped[str] = mapped_column(String(16), default="running", index=True)
+    #: ``queued`` waits for the consumer, ``running`` holds the subject, the other two do not.
+    #:
+    #: A press writes ``queued`` rather than ``running``: one deep-dive runs at a time (the
+    #: claim is ``UPDATE ... WHERE status = 'queued'``, see ``research.service``), so a second
+    #: press has somewhere to wait instead of being refused. A run that dies leaves ``running``
+    #: behind, which ``research.service.close_orphaned_research`` clears at startup -- and past
+    #: ``research.stale_minutes`` from ``started_at`` the page shows it as stale rather than as
+    #: work in progress, so a stuck row is visible either way.
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+
+    #: When a consumer claimed the row, as distinct from ``created_at``, which is when the
+    #: reader pressed the button. The difference is the queue: a run can wait behind a
+    #: deep-dive that started an hour ago, and staleness has to be measured from the claim or
+    #: a run that has just begun would be printed as stale because its *request* is old.
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     #: What the list shows: "AAPL_US_EQ — 9 Oct 2026", or the sector's name.
     title: Mapped[str] = mapped_column(String(200))

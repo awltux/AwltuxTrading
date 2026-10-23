@@ -571,8 +571,12 @@ injection surface served from this application's own origin.
 documents. Measured 2026-10-09, a company with two annual reports on file produces
 410,826 characters of evidence — about 120,800 tokens — against a 128,000-token
 context window with a 16,000-token answer requested, so the evidence is trimmed to fit
-and the report's footer lists what was dropped. One deep-dive runs at a time, one per
-subject at a time, and the subject's own row is the guard.
+and the report's footer lists what was dropped. One deep-dive runs at a time, and one per
+subject at a time: a press **queues a request** rather than starting a run, and the queue is
+the report rows themselves — a consumer claims the oldest `queued` one with an `UPDATE ... WHERE
+status = 'queued'`, so however many requests are waiting they run one at a time, in the order
+they were made, and a restart does not lose them. The subject's own row is the guard against
+queuing the same answer twice.
 
 ---
 

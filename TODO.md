@@ -982,6 +982,43 @@ does not have to be repeated to check it.
 
 ## Operations
 
+### `awltux quiet` does not reach a deep-dive, because the stop flag lives in the scheduler process
+
+Found 2026-10-21 while building the research queue, and it is a hole the 2026-10-20 process split
+opened rather than one the queue introduced.
+
+`progress.request_stop()` has exactly two callers -- `scheduler/service.py:246` (the `/quiet`
+handler) and `:344` (shutdown) -- and in the container both run in the **scheduler process**.
+`progress.stop_requested()` is a module-level `threading.Event`, which is per process. A deep-dive
+runs on its own thread in a **web worker** (`research/service.py::_run`), so its
+`progress.checkpoint` calls read an event nothing ever sets: `awltux quiet` waits for the
+scheduler's jobs, reports `idle`, and the deep-dive carries on being killed by the rebuild as
+*interrupted*. Measured on the deployed build: `/api/quiet` is answered by the scheduler process
+(`{"quiet": false, "running": [...]}`) while `docker compose exec awltux ps` shows the run's thread
+in a `serve --workers` worker.
+
+The queue's own gate (`research/service.py::drain_queue` checks `stop_requested()` before starting
+the next request) is therefore exact in a single-process deployment and inert in the container.
+
+**Two honest fixes**, and the choice is about where the flag should live rather than about code:
+point the consumer at the control API's `/status` (it already publishes `stopping`) and have it
+pause claiming while that is true; or make "quiet" a row in the database that every process reads,
+which is the same shape as the research queue's own claim and would cover anything else that runs
+outside the scheduler. Until then, a deep-dive cannot be stopped by a deploy -- only waited out.
+
+### There is no page showing the research queue
+
+Added 2026-10-21, with the queue itself. A queued request is visible where it was made: the
+instrument's Research tab and the sector page each print "queued behind N other runs" for *their*
+subject. What does not exist is the one place a reader who has queued five names needs -- a list
+of what is waiting and in what order -- and the Operations page cannot show one either, because
+the queue is `research_report` rows, not an `ingest_run`.
+
+Cheap to add when it matters: `select * from research_report where status = 'queued' order by id`
+is the whole page, plus the position rule already in `web/queries.py::_queue_position`. Worth
+doing when a reader has more than about three requests waiting, and not before: with two the
+per-subject line is enough.
+
 ### The balance banner cannot show one key's spend, because nothing records which key paid
 
 Asked for 2026-10-09: *"I think the DeepSeek costs are for all keys? It would be preferable

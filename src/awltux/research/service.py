@@ -1,4 +1,4 @@
-"""Running one deep-dive: the guard, the refresh, the model call, the stored report.
+"""Running one deep-dive: the queue, the guard, the refresh, the model call, the report.
 
 **It runs on a thread rather than in the request**, for the reason
 :mod:`awltux.scheduler.scoped` records for a scoped refresh: this makes network calls and
@@ -7,16 +7,28 @@ one the browser or a proxy will abandon, leaving a run the reader believes faile
 through :func:`~awltux.scheduler.jobs.execute_job`, so it appears in the run history with a
 progress log and a close-out line.
 
+**The queue is the report rows themselves, and the claim is the single slot.** A press writes
+a ``queued`` row and returns; a consumer takes the oldest queued row, runs it, and takes the
+next. The claim is ``UPDATE ... WHERE status = 'queued'``, which either changes one row or
+none -- and SQLite serialises writers across processes, so however many consumers exist (four
+web workers, each with one) exactly one can win a given row. One deep-dive at a time, across
+every process sharing the database, with the waiting request visible on the page meanwhile.
+
+That replaces a process-wide semaphore, which was the wrong shape twice over. It **refused**
+the second press instead of remembering it, which is what the reader reported: *"launching a
+second Research job fails"*. And after the 2026-10-20 process split it was one permit **per
+worker**, so it stopped nothing at all -- four presses on four workers could run four
+deep-dives, sharing one job log file and one job id.
+
 **Two guards, and they protect different things.**
 
-* The **subject-level guard** is the report row itself: a ``running`` row for this
-  ``(subject_type, subject_id)`` that is not stale means somebody already paid for this
-  answer and the second press is refused. The row rather than a lock, because the row has to
-  exist anyway -- it is what the list shows while the run is going -- and a second source of
+* The **subject-level guard** is the row itself: a ``queued`` row, or a ``running`` one that is
+  not stale, for this ``(subject_type, subject_id)`` means somebody already paid for this answer
+  (or is about to) and the press is refused. The row rather than a lock, because the row has to
+  exist anyway -- it is what the list shows while the request waits -- and a second source of
   truth for "is this running" is how the two come to disagree.
-* The **process-wide permit** is a single slot. A deep-dive is the most expensive call this
-  application makes, and two at once would both be in the run history under one job id whose
-  progress log is one file, truncated at the start of every run.
+* The **queue claim** keeps the application to one deep-dive at a time, for the reason above:
+  the run history has one id and one log file for this job, truncated at the start of every run.
 
 **The data is refreshed first, and the lease is given up before the model call.** A deep-dive
 is a judgement about what this system holds, so it refreshes the instrument first -- and only
@@ -37,7 +49,7 @@ import logging
 import threading
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from awltux.config import Settings, get_settings
@@ -75,8 +87,28 @@ RESEARCH_PURPOSE = "research"
 #: ways to close it.
 RESEARCH_FOLLOW_UP: tuple[str, ...] = ("valuation", "decision")
 
-#: One deep-dive at a time. See the module docstring: the reason is the job log and the bill.
-_permit = threading.Semaphore(1)
+#: How often a sleeping consumer looks for work queued by another process.
+#:
+#: The press that fills the queue wakes the consumer in the same process, so this is only the
+#: cross-process case: a deep-dive queued by one web worker while another worker's consumer is
+#: asleep. Five seconds is the longest a queued run waits to be noticed, and the cost of
+#: missing it is one `SELECT` of an empty set per sleeping process per interval.
+QUEUE_POLL_SECONDS = 5.0
+
+#: A client handed to :func:`start` for one run, keyed by report id.
+#:
+#: A client is a live object -- its injected double in a test, its rate limiter in production --
+#: so it cannot be stored on the row, and yet the run a caller asked for must use the client the
+#: caller passed. Popped when the run starts, so nothing accumulates. Production passes none:
+#: the run builds its own from the configuration, exactly as a scheduled job would.
+_queued_clients: dict[int, DeepSeekClient] = {}
+
+#: Wakes the consumer of *this process* when a press queues something.
+_wake = threading.Event()
+
+#: Guards :data:`_consumer_started`, which is per process rather than per press.
+_spawn_lock = threading.Lock()
+_consumer_started = False
 
 #: The subjects a deep-dive may be started about.
 SUBJECT_TYPES = ("instrument", "sector")
@@ -86,17 +118,21 @@ class Started:
     """What happened when the Research button was pressed.
 
     ``report_id`` is set when a row was created, which is what the caller redirects to.
-    The refusals are told apart because each is a different thing for the reader to do:
-    already running, not a subject we know, the feature switched off, or another deep-dive
-    holding the single slot.
+    ``queued`` distinguishes "there was a queue in front of it" from "nothing else was running";
+    the run itself is on a thread either way, so this is what the page says rather than what the
+    process did. The refusals are told apart because each is a different thing for the reader to
+    do: this subject already holds a run, not a subject we know, or the feature switched off.
     """
 
-    __slots__ = ("ok", "message", "report_id")
+    __slots__ = ("ok", "message", "report_id", "queued")
 
-    def __init__(self, ok: bool, message: str, report_id: int | None = None) -> None:
+    def __init__(
+        self, ok: bool, message: str, report_id: int | None = None, *, queued: bool = False
+    ) -> None:
         self.ok = ok
         self.message = message
         self.report_id = report_id
+        self.queued = queued
 
 
 def start(
@@ -107,11 +143,16 @@ def start(
     settings: Settings | None = None,
     client: DeepSeekClient | None = None,
 ) -> Started:
-    """Record the report, take a slot, and run the deep-dive on a background thread.
+    """Queue a deep-dive and return immediately.
 
-    Returns immediately with whether it started and, when it did not, why. The prompt is
-    stored exactly as submitted -- edited or not -- because the report has to be arguable
-    and the wording that produced it is half of that argument.
+    Returns whether the request was accepted and, when it was not, why. The prompt is stored
+    exactly as submitted -- edited or not -- because the report has to be arguable and the
+    wording that produced it is half of that argument.
+
+    **Accepted is not started.** The row is written ``queued`` and the consumer picks it up,
+    which is what makes a second press survive the first run instead of being refused. Callers
+    that need the run to have finished -- tests, mostly -- drain the queue themselves; see
+    :func:`drain_queue`.
     """
     settings = settings or get_settings()
     if not settings.research.enabled:
@@ -128,8 +169,9 @@ def start(
         subject = _subject(session, subject_type, subject_id)
         if subject is None:
             return Started(False, f"{subject_id} is not in this database")
-        if _running(session, subject_type, subject_id, settings):
-            return Started(False, "a deep-dive of this subject is already running")
+        held = _pending(session, subject_type, subject_id, settings)
+        if held is not None:
+            return Started(False, _held_message(held))
 
     if client is None and not DeepSeekClient(settings).configured:
         return Started(False, "no DeepSeek API key is configured, so a run could not read anything")
@@ -143,26 +185,115 @@ def start(
             prompt=prompt,
         )
 
-    if not _permit.acquire(blocking=False):
-        with _session() as session:
-            _fail(session, row.id, "another deep-dive is already running")
-        return Started(False, "another deep-dive is already running")
+    if client is not None:
+        _queued_clients[row.id] = client
+    ensure_consumer(settings)
+    return Started(True, "queued", row.id, queued=True)
 
-    thread = threading.Thread(
-        target=_run,
-        args=(row.id, subject_type, subject_id, prompt, client),
-        name=f"research-{subject_id}",
-        daemon=True,
-    )
-    try:
-        thread.start()
-    except Exception:  # noqa: BLE001 - the permit and the row must not be left behind
-        logger.exception("could not start the deep-dive thread for %s", subject_id)
-        _permit.release()
-        with _session() as session:
-            _fail(session, row.id, "the background thread could not be started")
-        return Started(False, "the deep-dive could not be started")
-    return Started(True, "research started", row.id)
+
+def ensure_consumer(settings: Settings | None = None) -> None:
+    """Make sure this process is serving the queue, and nudge it. Idempotent.
+
+    Called at startup and by every press. Idempotent because the consumer is one thread per
+    *process*: what a press needs is the wake, not another consumer, and a second reader of the
+    same rows would only contend for the same claim.
+    """
+    global _consumer_started
+
+    settings = settings or get_settings()
+    if not settings.research.enabled:
+        return
+    with _spawn_lock:
+        if not _consumer_started:
+            thread = threading.Thread(target=_queue_worker, name="research-queue", daemon=True)
+            try:
+                thread.start()
+            except Exception:  # noqa: BLE001 - the row is queued either way, and the next press retries
+                logger.exception("could not start the research queue consumer")
+            else:
+                _consumer_started = True
+                # Logged because "is anything serving the queue?" is the first question when a
+                # request sits at `queued` and nothing happens to it.
+                logger.info("research queue consumer started")
+    _wake.set()
+
+
+def drain_queue(limit: int | None = None) -> int:
+    """Run queued deep-dives on this thread until the queue empties. Returns how many ran.
+
+    The consumer's body, and the seam a test uses: a press enqueues, and this serves the queue
+    synchronously so the assertions can be about a finished run.
+
+    Two reasons to stop with work still queued, both deliberate. **Research switched off** leaves
+    the rows where they are -- they are requests somebody made, and throwing them away because
+    the feature is off would lose them for a configuration change that may be temporary.
+    **A stop request** (``awltux quiet``) is checked between runs: that command asks a *running*
+    deep-dive to leave at its next checkpoint, and starting the next one while the container is
+    being rebuilt is exactly the lost work it exists to prevent.
+    """
+    settings = get_settings()
+    ran = 0
+    while limit is None or ran < limit:
+        if not settings.research.enabled or progress.stop_requested():
+            break
+        report_id = _claim_next()
+        if report_id is None:
+            break
+        _run(report_id)
+        ran += 1
+    return ran
+
+
+def _queue_worker() -> None:
+    """Serve the queue for the life of this process.
+
+    Woken by a press, and by nothing else in this process; the timeout covers a row queued by
+    *another* process, which cannot set this one's event. A run that raises is caught here so a
+    single failure cannot kill the consumer and leave every later request queued for ever.
+    """
+    while True:
+        try:
+            served = drain_queue()
+        except Exception:  # noqa: BLE001 - the consumer must outlive any one run
+            logger.exception("the research queue consumer failed; it will try again")
+            served = 0
+        if served:
+            continue
+        _wake.wait(QUEUE_POLL_SECONDS)
+        _wake.clear()
+
+
+def _claim_next() -> int | None:
+    """Take the oldest queued deep-dive, or ``None`` when the queue is empty.
+
+    **The claim is the single slot.** ``UPDATE ... WHERE status = 'queued'`` changes one row or
+    none, and SQLite serialises writers across processes, so if two consumers read the same
+    candidate only one of them can claim it -- the loser tries again and takes the next. Ordered
+    by ``id``: it is monotonic, unambiguous, and it is the order the page prints the position in.
+
+    ``started_at`` is written here rather than at the press, because this is when the run the
+    reader is waiting for actually begins.
+    """
+    with _session() as session:
+        while True:
+            candidate = session.execute(
+                select(ResearchReport.id)
+                .where(ResearchReport.status == "queued")
+                .order_by(ResearchReport.id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if candidate is None:
+                return None
+            claimed = session.execute(
+                update(ResearchReport)
+                .where(ResearchReport.id == candidate)
+                .where(ResearchReport.status == "queued")
+                .values(status="running", started_at=utcnow())
+            ).rowcount
+            session.commit()
+            if claimed:
+                return candidate
+            # Another process claimed it between the read and the write: take the next one.
 
 
 def draft_prompt(
@@ -227,31 +358,53 @@ def _subject(session: Session, subject_type: str, subject_id: str) -> str | None
     return f"{instrument.name} ({instrument.t212_ticker})"
 
 
-def _running(
+def _pending(
     session: Session, subject_type: str, subject_id: str, settings: Settings
-) -> bool:
-    """Whether a live deep-dive already holds this subject.
+) -> ResearchReport | None:
+    """The row that already holds this subject: queued, or running and not stale.
 
-    A row older than ``research.stale_minutes`` does not: a process killed mid-run leaves
-    ``running`` behind, and refusing every later run until somebody edits the database would
-    make one crash permanent. The stale row is left as it is -- the list shows it as stale,
-    which is the truth -- and the new run takes the subject over.
+    Both refuse a second press, and they are told apart because they are different things to
+    say: a queued request has not begun and *will*, so pressing again would add a duplicate
+    answer nobody asked for once the first arrives.
+
+    A ``running`` row older than ``research.stale_minutes`` does not hold the subject: a process
+    killed mid-run leaves ``running`` behind, and refusing every later run until somebody edits
+    the database would make one crash permanent. The stale row is left as it is -- the list shows
+    it as stale, which is the truth -- and the new run takes the subject over.
     """
     cutoff = utcnow() - dt.timedelta(minutes=settings.research.stale_minutes)
     rows = session.execute(
         select(ResearchReport)
         .where(ResearchReport.subject_type == subject_type)
         .where(ResearchReport.subject_id == subject_id)
-        .where(ResearchReport.status == "running")
+        .where(ResearchReport.status.in_(("queued", "running")))
+        .order_by(ResearchReport.id)
     ).scalars().all()
-    return any(_created_at(row) > cutoff for row in rows)
+    for row in rows:
+        if row.status == "queued":
+            return row
+        if _started_at(row) > cutoff:
+            return row
+    return None
 
 
-def _created_at(row: ResearchReport) -> dt.datetime:
-    """``created_at`` as an aware datetime. SQLite hands it back naive, as everywhere here."""
+def _held_message(row: ResearchReport) -> str:
+    """Why a press was refused, in the words the page prints."""
+    if row.status == "queued":
+        return "a deep-dive of this subject is already queued"
+    return "a deep-dive of this subject is already running"
+
+
+def _started_at(row: ResearchReport) -> dt.datetime:
+    """When this row's run began: the claim, or the request itself for a pre-queue row.
+
+    A row written before the queue existed has no ``started_at``, and its run did begin when it
+    was requested -- so the fallback is the same fact, not a guess. SQLite hands both columns
+    back naive, as everywhere here.
+    """
     from awltux.timezones import as_utc
 
-    return as_utc(row.created_at) or utcnow()
+    return as_utc(row.started_at) or as_utc(row.created_at) or utcnow()
 
 
 def _open_report(
@@ -262,17 +415,17 @@ def _open_report(
     subject: str,
     prompt: str,
 ) -> ResearchReport:
-    """Insert the ``running`` row, and commit it.
+    """Insert the ``queued`` row, and commit it.
 
-    Committed rather than flushed: the run's progress is read by a request on its own
-    session in another thread, so a row that has been flushed is invisible to the page that
-    is about to show it.
+    Committed rather than flushed: the request is read by a consumer in another thread (and, in
+    the container, another process), so a row that has been flushed is invisible to the very
+    thing it is waiting for.
     """
     row = ResearchReport(
         subject_type=subject_type,
         subject_id=subject_id,
         title=subject,
-        status="running",
+        status="queued",
         prompt=prompt,
         prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         inventory=None,
@@ -284,14 +437,21 @@ def _open_report(
     return row
 
 
-def _run(
-    report_id: int,
-    subject_type: str,
-    subject_id: str,
-    prompt: str,
-    client: DeepSeekClient | None,
-) -> None:
-    """The thread body: execute the deep-dive as a job, then give the permit back."""
+def _run(report_id: int) -> None:
+    """Execute one claimed deep-dive as a job.
+
+    The row is re-read rather than passed in: it was claimed by id from another session, and
+    the three things this needs -- subject, prompt, and the client its caller supplied -- are
+    read at the moment they are used, so a consumer serving a row another process queued works
+    the same way as one serving its own.
+    """
+    with _session() as session:
+        row = session.get(ResearchReport, report_id)
+        if row is None:
+            return
+        subject_type, subject_id, prompt = row.subject_type, row.subject_id, row.prompt
+
+    client = _queued_clients.pop(report_id, None)
     spec = JobSpec(
         id=RESEARCH_JOB,
         func=lambda: _body(report_id, subject_type, subject_id, prompt, client),
@@ -300,10 +460,10 @@ def _run(
         description=f"Deep-dive research on {subject_id}",
         target=subject_id,
     )
-    try:
-        execute_job(spec)
-    finally:
-        _permit.release()
+    # `execute_job` records how the run ended -- including a `progress.Stopped`, which it
+    # reports as "stopped" rather than letting it escape -- so the queue loop can carry on to
+    # the next row without a `try` of its own.
+    execute_job(spec)
 
 
 def _body(
@@ -705,6 +865,10 @@ def close_orphaned_research() -> int:
     ``running`` row whose process is gone is not work in progress, it is a run that never
     finished, and leaving it would block the subject until ``research.stale_minutes``
     expired. The error says which of the two it was.
+
+    **A ``queued`` row is left alone, and that is the point of the queue.** It is not interrupted
+    work, it is a request nobody has picked up yet -- failing it at a restart would lose exactly
+    the presses this exists to remember. It is drained by the next consumer to start.
     """
     with _session() as session:
         rows = session.execute(
@@ -721,11 +885,14 @@ def close_orphaned_research() -> int:
 
 
 __all__ = [
+    "QUEUE_POLL_SECONDS",
     "RESEARCH_JOB",
     "RESEARCH_PURPOSE",
     "SUBJECT_TYPES",
     "Started",
     "close_orphaned_research",
+    "drain_queue",
     "draft_prompt",
+    "ensure_consumer",
     "start",
 ]
