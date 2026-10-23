@@ -118,14 +118,13 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
             description="Populate the analysed universe once, then add held positions",
             run_on_start=True,
             depends_on=("t212_instruments",),
-            # Deliberately after t212_instruments, which fetches from the network and
-            # commits at the end. Both used to be scheduled for "now", so on a fresh
-            # database the refresh read the instrument table before that commit and
-            # selected nothing — the container's run history shows them starting 2ms
-            # apart with the refresh seeing 0 instruments. Ordering by delay is a
-            # heuristic rather than a guarantee, which is why the job also explains a
-            # zero result instead of reporting a silent no-op.
-            start_delay_seconds=900,
+            # It used to wait 900 seconds, because both were scheduled for "now" and the
+            # instrument sync commits at the end: on a fresh database this read the table
+            # before that commit and selected nothing, and the container's run history shows
+            # them starting 2ms apart with the refresh seeing 0 instruments. A delay was a
+            # heuristic, and the comment here said so. Since 2026-10-23 the dispatcher holds a
+            # job until every job it declares has finished, so the dependency is the ordering
+            # and the delay is gone.
             enabled=t212_ready,
             requires=("T212_API_KEY", "T212_API_SECRET"),
         ),
