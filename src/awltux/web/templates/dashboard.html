@@ -44,30 +44,18 @@
   </p>
 {% endif %}
 
-{# ------------------------------------------------------------------ horizons #}
-<section class="horizon-bar">
-  <div class="horizon-picker">
-    <span class="muted small">Actionable filter and action column follow:</span>
-    {% for key, definition in horizons.items() %}
-      <a class="{% if filters.value('horizon') == key %}active{% endif %}"
-         href="{{ filters.href('/dashboard', horizon=key, action=None) }}"
-         title="{{ definition.description }}">
-        {{ definition.label }} <span class="muted small">{{ definition.guidance }}</span>
-      </a>
-    {% endfor %}
-  </div>
-</section>
+{# The horizon picker and the "two independent verdicts" note that used to sit here were
+   removed on 2026-10-23, asked for directly: they read as a second pair of "Suits long term" /
+   "Suits short term" buttons, and those -- in the views row below -- are the controls a reader
+   actually filters by.
 
-<p class="notice">
-  <strong>Two independent verdicts.</strong> Long term (12–36 months) is driven by
-  valuation and business quality; short term (5–20 trading days) by trend, momentum
-  and news. They are allowed to disagree — that is the point. Both are shown, and
-  the selected horizon governs which call the filters and badges emphasise.
-  <br>
-  <strong>Short term means a swing on daily bars, not day trading.</strong> There is
-  no supported intraday path: Trading 212 exposes no quote endpoint, and free price
-  feeds are delayed, so anything needing live ticks would be unsafe on this data.
-</p>
+   The `horizon` parameter survives them: it decides which verdict the action column emphasises
+   and which horizon "Actionable only" applies to, so a link that sets it keeps working. There is
+   simply no second row of buttons offering the same two words.
+
+   The one statement in that block that was not about the duplicate controls -- that a short
+   horizon here is a swing on daily bars and not day trading -- moved into the glossary entry
+   beside the Short term column, where "what does Short term mean" is asked. #}
 
 {# A limitation the reader must see, because it changes what the gate can claim. #}
 {% if capabilities and capabilities.portfolio is defined and not capabilities.portfolio %}
@@ -99,7 +87,10 @@
        href="{{ filters.href('/dashboard', view='all') }}">All</a>
     <a class="{% if filters.value('view') == 'suggestions' %}active{% endif %}"
        href="{{ filters.href('/dashboard', view='suggestions') }}"
-       title="Only calls the risk gate allowed on the selected horizon">Actionable only</a>
+       {# "The selected horizon" used to be something the reader chose from a picker; it is now
+          only ever set by the URL, so the tooltip names the horizon it means rather than
+          pointing at a control that is no longer on the page. #}
+       title="Only calls the risk gate allowed on the {{ horizons[filters.value('horizon')].label | lower }} horizon">Actionable only</a>
     <a class="{% if filters.value('view') == 'held' %}active{% endif %}"
        href="{{ filters.href('/dashboard', view='held') }}">My holdings</a>
     <a class="{% if filters.value('horizon_fit') %}active{% endif %}"

@@ -112,6 +112,43 @@ class TestDashboard:
     def test_unknown_instrument_returns_404(self, client):
         assert client.get("/instrument/DOES_NOT_EXIST").status_code == 404
 
+    def test_the_horizon_picker_and_its_note_are_gone(self, client):
+        """Asked for 2026-10-23: *"remove the string 'Actionable filter and action column
+        follow:', the two buttons following it and the explanatory text below the buttons.
+        These seem to duplicate the 'Suits long term' and 'Suits short term' buttons."*
+
+        They did: two rows of buttons whose labels were the same two words. The `horizon`
+        parameter is still honoured from the URL -- it is what the action column emphasises and
+        what "Actionable only" applies to -- so the page keeps the behaviour and loses the
+        second control.
+        """
+        body = client.get("/dashboard").text
+
+        assert "Actionable filter and action column follow" not in body
+        assert "Two independent verdicts" not in body
+        assert 'class="horizon-bar"' not in body, "the picker's own row is gone"
+
+    def test_the_suits_buttons_are_still_there(self, client):
+        """The controls the removed row duplicated, and the ones a reader filters by."""
+        body = client.get("/dashboard").text
+
+        assert "Suits long term" in body
+        assert "Suits short term" in body
+        assert "?horizon_fit=long_term" in body
+        assert "?horizon_fit=short_term" in body
+
+    def test_the_horizon_parameter_still_works_from_a_link(self, client):
+        """It is only ever set by the URL now, so a link that sets it must still be honoured."""
+        body = client.get("/dashboard?horizon=short_term").text
+
+        assert 'name="horizon" value="short_term"' in body, (
+            "the filter form carries the horizon it was given, so a submit does not reset it"
+        )
+        assert "on the short term horizon" in body, (
+            "and the Actionable tooltip names the horizon in force rather than a control that "
+            "is no longer on the page"
+        )
+
 
 class TestTemplatesRenderWithData:
     """Template helpers are only exercised once there are rows to render.

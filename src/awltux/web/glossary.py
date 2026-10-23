@@ -79,7 +79,10 @@ FIELDS: tuple[Field, ...] = (
         "The 5-20 trading day verdict.",
         "Deliberately able to disagree with the long-term column: a share can be a poor "
         "business trading well, or a good one that has run ahead of itself. When the "
-        "two disagree the row is worth reading rather than dismissing.",
+        "two disagree the row is worth reading rather than dismissing. It is a swing on "
+        "daily bars, not day trading: there is no supported intraday path, because "
+        "Trading 212 exposes no quote endpoint and the free price feeds are delayed, so "
+        "anything needing live ticks would be unsafe on this data.",
     ),
     Field(
         "composite_score",
