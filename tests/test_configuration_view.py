@@ -102,12 +102,16 @@ class TestTheIndex:
         assert [path for path, _ in configuration.INTERESTING if path not in described] == []
 
     def test_a_duration_is_shown_as_the_schedule_it_is(self, settings):
-        """`604800` tells a reader nothing; `7d` is the interval they think in."""
+        """`86400` tells a reader nothing; `1d` is the interval they think in.
+
+        Three different keys, all daily since 2026-10-23: the durations are formatted, not
+        copied, so this is also the assertion that the formatter is applied to this column.
+        """
         rows = {row.name: row.value for row in configuration.rows(settings)}
 
         assert rows["schedule.valuation"] == "1d"
-        assert rows["schedule.held_refresh"] == "1h"
-        assert rows["schedule.retention"] == "7d"
+        assert rows["schedule.held_refresh"] == "1d"
+        assert rows["schedule.retention"] == "1d"
 
     def test_the_value_is_the_running_processs_not_the_files(self, settings):
         """This is the distinction that mattered for the budget: `config.py`'s default was

@@ -58,17 +58,17 @@ def _failing_sequence(monkeypatch, calls: list[tuple[str, ...]], *, fails_on: st
 
 
 class TestHowItIsScheduled:
-    def test_it_is_hourly_and_gated_on_the_account_key(self, settings):
+    def test_it_is_daily_and_gated_on_the_account_key(self, settings):
         """`is_held` is set by the positions read inside `t212_instruments`.
 
-        Without a key that can read positions nothing is held, so the job would run hourly
+        Without a key that can read positions nothing is held, so the job would run every day
         and do nothing -- disabled visibly, the way every credential-gated job is.
         """
         from awltux.scheduler.registry import build_job_specs
 
         spec = {row.id: row for row in build_job_specs(settings)}["held_refresh"]
 
-        assert spec.interval_seconds == 3_600
+        assert spec.interval_seconds == 86_400
         assert spec.depends_on == ("t212_instruments",)
         assert spec.enabled is False, "no T212 key is configured in tests"
 

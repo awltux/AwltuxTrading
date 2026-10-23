@@ -725,11 +725,31 @@ sources cannot support that:
 
 | Data | Latency |
 |---|---|
-| US filings (SEC EDGAR Atom) | under a minute |
+| US filings (SEC EDGAR Atom) | up to a day: the feed poll is daily like every other job since 2026-10-23 |
 | News headlines | up to a day: the poll is daily, and it was hourly until 2026-10-16 — one sweep of the universe spends the feeds' own daily allowance, so the runs in between had nothing to fetch |
 | Prices | 15-minute delayed, or end-of-day |
 | UK regulatory news | best-effort only — real-time RNS is a paid licence |
-| Everything you **hold** | the whole pipeline — filings, news, valuation, decision — re-run hourly (`held_refresh`), rather than waiting for each stage's own sweep to reach it |
+| Everything you **hold** | daily (`held_refresh`), and it runs the whole pipeline — filings, news, valuation, decision — for one position at a time rather than waiting for each stage's own sweep to reach it. The instrument page's **Refresh now** is the on-demand path |
+
+**Every job is daily**, and the cycle runs in dependency order: a job whose input another job
+produces waits for that job to finish rather than starting alongside it. See
+[How the day is scheduled](#how-the-day-is-scheduled).
+
+### How the day is scheduled
+
+Every job runs once a day (`config/config.yaml`), and the scheduler **queues** a due run rather
+than starting it:
+
+1. A trigger only enqueues the job — APScheduler is the clock, not the executor.
+2. One dispatcher thread takes the job with the **shallowest dependency depth** whose declared
+   dependencies are neither queued nor running, runs it to completion, and looks again.
+3. A job whose input is still running is **held**, not skipped: prices, then fundamentals, then
+   valuations, then decisions, in that order, however the triggers landed.
+
+A job's phase within the day is derived from its depth — ten minutes per level — so the printed
+schedule reads in pipeline order too. Because there is one run at a time, a long job delays
+everything behind it; that is the price of a dashboard that stays responsive, and it is why the
+Operations page shows what is queued as well as what is running.
 
 ---
 

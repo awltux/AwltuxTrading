@@ -52,37 +52,47 @@ universe:
 
 # --- ingest cadences (seconds unless noted) -----------------------------------
 #
-# ONE HOUR IS THE FLOOR. Nothing in this system needs finer resolution: it is a
-# long-horizon advisory tool, the providers are free tiers with rate limits, and the
-# daily bars it reasons about only change once a day. Several of these were once
-# 45 to 900 seconds, which -- now that the scheduler actually fires them -- would
-# have spent provider quota confirming that nothing had changed.
+# EVERY JOB IS DAILY, asked for directly on 2026-10-23: *"All the jobs can be downgraded
+# to 1d trigger rate."* 86400 everywhere, so one cycle a day.
 #
-# The scheduler randomises each job's first run across the hour (see
-# `scheduler/service.py`), so these do not all fire on the same tick. That is why the
-# values are round: the spread is what stops them colliding, not a hand-picked phase.
+# **The cycle runs in dependency order, and a job waits for what it depends on.** The
+# scheduler no longer fires them independently: each trigger only *queues* the job, and one
+# dispatcher runs the queue shallowest-dependency-first, holding a job until every job it
+# declares has finished (see `scheduler/service.py`). A job's phase inside the day is derived
+# from its depth in that graph -- 600 seconds per level -- so the printed schedule reads in
+# pipeline order and a dependent's trigger never arrives before its input's.
+#
+# ONE HOUR REMAINS THE FLOOR, and it still warns: nothing here needs finer resolution, the
+# providers are free tiers with rate limits, and the daily bars this reasons about only change
+# once a day. `test_scheduler` asserts both the floor and the daily rule over the registry.
+#
+# **A day's ration is a run's ration now.** `decision_rotation_per_day` and
+# `fundamentals_rotation_per_day` were spread across the hourly runs; with one run a day they
+# are what that run does, so a decision sweep is 500 names (about two hours -- the longest job
+# in the schedule) rather than a twenty-fourth of them.
 schedule:
-  t212_instruments: 86400        # daily; T212 rate limit is 1 req / 50s
-  t212_account: 3600
+  t212_instruments: 86400        # T212's own limit is 1 request / 50s, so this is generous
+  t212_account: 86400
   # Every held instrument through the full refresh sequence. About 100 seconds each and a
   # handful of model calls, so this is the setting that decides what a fresh position costs.
-  held_refresh: 3600
-  prices_intraday: 3600          # was 15 min; quotes are a display feed, not an input
+  # The instrument page's own Refresh button is what exists for "now".
+  held_refresh: 86400
+  prices_intraday: 86400         # quotes are a display feed, not an input to a decision
   prices_eod: 86400              # once after the close
   sector_index: 86400            # derived from those bars; more often rewrites the same line
-  quotes_held: 3600              # was 5 min
-  # Instruments rotated through a fundamentals sync each day, divided across the hourly runs.
-  fundamentals_rotation_per_day: 70
-  # The decision sweep is bounded and rotated, for the same reason fundamentals is:
-  # at 4.1 decisions a minute the whole universe in one call is a 110-minute job that
-  # cannot finish inside any interval, and every deploy killed it mid-sweep. Each
-  # hourly run decides the least recently decided names, so a day still covers the
-  # universe. Raising this multiplies the model spend, not just the run length.
+  quotes_held: 86400
+  # Instruments synced through fundamentals each day, which is also what its single run does.
+  fundamentals: 86400            # the sweep's cadence; the rotation below is what it does
+  fundamentals_rotation_per_day: 70   # instruments per run, and therefore per day
+  # The decision sweep, and the same fact: 500 names is about two hours at 4.1 decisions a
+  # minute. It is the longest single run in the schedule, so everything due behind it waits.
+  # Raising this multiplies the model spend, not just the run length.
   decision_rotation_per_day: 500
-  edgar_submissions: 3600
-  edgar_atom_events: 3600        # was 45 SECONDS; the Atom feed holds hours of events
-  companies_house: 3600          # was 15 min
-  # The instrument news poll, and the four jobs that read what it stores, are daily.
+  edgar_submissions: 86400
+  edgar_atom_events: 86400       # was 45 SECONDS once; the Atom feed holds hours of events
+  companies_house: 86400
+  # The instrument news poll, and the four jobs that read what it stores. Already daily before
+  # this change, for a measurement worth keeping:
   #
   # Hourly was wrong twice over. A sweep spends the provider's whole daily allowance --
   # the `rss` budget is 2,000 requests per UTC day and one walk of the universe uses
@@ -90,33 +100,32 @@ schedule:
   # *stopped: [rss] budget spent* within two seconds. And a run that can fetch takes
   # longer than an hour: the last successful one walked 21,766 headlines in 102 minutes.
   #
-  # News is a daily input anyway, so the runs in between had nothing to fetch and
-  # nothing to read. **The rations below did not change and are per run, so they are
-  # now per day**: news.scepticism.max_deep_per_run is 40 model-backed appraisals a day
-  # rather than up to 960. The deterministic half of the appraisal still settles the
-  # whole lookback window each run (7,846 appraisals in one measured run), so raise that
-  # number only if the deep reads fall behind.
+  # **The rations below did not change and are per run, so they are per day**:
+  # news.scepticism.max_deep_per_run is 40 model-backed appraisals a day rather than up to
+  # 960. The deterministic half of the appraisal still settles the whole lookback window each
+  # run (7,846 appraisals in one measured run), so raise that number only if the deep reads
+  # fall behind.
   news_rss: 86400
   # Eleven feeds rather than one per instrument, and it reads neither the universe nor
-  # the instrument poll's output. Left hourly: it is cheap, and a sector page is then
-  # fresher than a company page rather than tied to a cadence that is not its own.
-  news_sectors: 3600
-  news_finnhub: 3600             # was 20 min
-  news_marketaux: 3600           # was 30 min
-  news_gdelt: 3600               # was 15 min
+  # the instrument poll's output. Daily now: it was the last job on an hourly cadence, and
+  # "it is cheap" is a reason to keep running it, not a reason for a cadence of its own.
+  news_sectors: 86400
+  news_finnhub: 86400
+  news_marketaux: 86400
+  news_gdelt: 86400
   news_analysis: 86400           # appraises a story's sources, framing, claims and omissions
   news_relevance: 86400          # classifies the stories nothing has judged yet
   news_embeddings: 86400         # vectors the relevant ones, so one event groups as one entry
   sentiment_aggregate: 86400     # rolls the day's stories into per-stock and per-sector sentiment
   valuation: 86400               # full sweep nightly; event-driven otherwise
-  decision: 3600                  # hourly, a rotated slice; was a daily full sweep
+  decision: 86400                # the daily sweep; the rotation above is what it covers
   calibration: 86400
-  # How often expired rows are pruned.
-  retention: 604800
-  macro_rates: 21600             # Treasury publishes once a business day
-  # Two requests an hour, and the point is to warn before the account empties rather
-  # than after -- at zero the decision engine has already fallen back to the rules.
-  provider_balance: 3600
+  # How often expired rows are pruned. Daily: the retention it enforces is counted in days.
+  retention: 86400
+  macro_rates: 86400             # the Treasury publishes once a business day
+  # Two requests a day. The balance strip prints how old its reading is, and the red badge
+  # marks a breach whenever it is read -- so a daily read reports a fact rather than a timer.
+  provider_balance: 86400
 
 # --- provider rate-limit budgets (requests per window) ------------------------
 # Scopes mirror each provider's own per-endpoint limits, because a single shared

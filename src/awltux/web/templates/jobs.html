@@ -127,11 +127,18 @@
         {%- endif -%}
       </td>
       {# Behind its interval, not merely "the timestamp has passed": APScheduler moves
-         `next_run` forward when a job is queued, so a catch-up waiting behind the
+         `next_run` forward when a job's trigger fires, so a catch-up waiting behind the
          single worker has a future next run while its data is hours old. Said in words
-         because the reader's question is "is this job's data current". #}
+         because the reader's question is "is this job's data current".
+
+         `queued` is the other half of the same question and the state the queue introduced:
+         due now, waiting for the run in progress or for a job it depends on. Without it a job
+         that is about to start looks exactly like one that is not due until tomorrow. #}
       <td class="small muted">
-        {%- if not job.next_run -%}—
+        {%- if job.queued -%}
+          <span class="chip" title="Due now, waiting for the run in progress or for a job it depends on">queued</span>
+          {{ job.next_run | datetime }}
+        {%- elif not job.next_run -%}—
         {%- elif job.overdue -%}
           <span class="warn" title="Last successful run is more than one interval ago">behind — {{ job.next_run | datetime }}</span>
         {%- else -%}{{ job.next_run | datetime }}

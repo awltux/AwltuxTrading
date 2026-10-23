@@ -199,17 +199,19 @@ class TestTheRequestItself:
         started again, and that one would stop every job at its first checkpoint while
         reporting itself healthy.
         """
-        service = SchedulerService.__new__(SchedulerService)
-        service._quiet_since = None
-        service._paused = False
-        service._specs = {}
+        # Built through `__init__` and then given an inert scheduler: the service now owns a
+        # queue and a dispatcher thread, and hand-setting a few attributes is how this test
+        # broke when the dispatcher was added.
+        service = SchedulerService()
         service._scheduler = _InertScheduler()
         monkeypatch.setattr(service, "pending_catch_ups", lambda: [])
         progress.request_stop()
 
         service.start()
-
-        assert progress.stop_requested() is False
+        try:
+            assert progress.stop_requested() is False
+        finally:
+            service.shutdown(wait=False)
 
 
 class TestTheLoopsThatCouldNotBeLeft:

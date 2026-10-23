@@ -168,11 +168,11 @@ def build_job_specs(settings: Settings | None = None) -> list[JobSpec]:
         # --- fundamentals & filings -----------------------------------------
         JobSpec(
             id="fundamentals",
-            # Runs hourly and refreshes a slice of the universe each time, so the
-            # per-day rotation is spread evenly instead of firing once and
-            # hammering the provider for 500 symbols in a single pass.
+            # One run a day, over the day's whole rotation. It used to be a hardcoded hour
+            # with the rotation spread across the day; the cadence is a setting now because
+            # there is nothing left to spread.
             func=ingest_jobs.sync_fundamentals_job,
-            interval_seconds=3600,
+            interval_seconds=schedule.fundamentals,
             description="Rotating fundamentals refresh, rationed to the free tier",
             depends_on=("universe_refresh",),
             enabled=True,

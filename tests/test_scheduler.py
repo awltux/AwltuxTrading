@@ -161,67 +161,86 @@ class TestTheCadence:
         assert repair.backfill, "an on-demand job must be able to say it has nothing to do"
         assert repair.requires == ("DEEPSEEK_API_KEY",)
 
-    def test_the_first_runs_are_spread_rather_than_simultaneous(self, quiet_jobs):
-        """The point of the spread: nineteen hourly jobs must not collide.
+    def test_every_scheduled_job_runs_daily(self, settings: Settings):
+        """Asked for 2026-10-23: *"All the jobs can be downgraded to 1d trigger rate."*
 
-        Measured over the real registry, because the failure is a property of the set
-        -- any single job looks fine on its own.
+        Asserted over the real registry, so a job added later at an hourly cadence fails here
+        rather than quietly running 24 times when the rest of the pipeline runs once. The
+        manual-only repair is excluded by `scheduled`: it has no cadence at all, by design.
         """
-        service = SchedulerService(build_job_specs())
-        service.start()
-        try:
-            runs = [
-                row["next_run"]
-                for row in service.status()
-                if row["enabled"] and row["next_run"] is not None
-            ]
-        finally:
-            service.shutdown(wait=False)
+        daily = 86_400
+        offenders = [
+            (spec.id, spec.interval_seconds)
+            for spec in build_job_specs(settings)
+            if spec.scheduled and spec.interval_seconds != daily
+        ]
+        assert not offenders, f"these do not run once a day: {offenders}"
 
-        assert len(runs) >= 10, "too few jobs to judge a spread"
-        assert len(set(runs)) == len(runs), (
-            "two jobs share a first run; the spread is not being applied"
+    def test_every_dependency_sits_shallower_than_its_dependent(self, settings: Settings):
+        """The schedule's phase is derived from this, so it is the ordering property itself.
+
+        Asserted on depths rather than on `next_run`, because a `run_on_start` job fires during
+        `start()` and its next run is then a whole day out -- comparing live next-run times
+        between a job that has already run and one that has not says nothing about order.
+        """
+        from awltux.scheduler.service import dependency_depth
+
+        specs = build_job_specs(settings)
+        depths = dependency_depth(specs)
+        by_id = {spec.id: spec for spec in specs}
+        wrong = [
+            (spec.id, dep)
+            for spec in specs
+            for dep in spec.depends_on
+            if dep in by_id and depths[dep] >= depths[spec.id]
+        ]
+
+        assert not wrong, f"these are not scheduled after the jobs they depend on: {wrong}"
+        assert max(depths.values()) >= 2, "the registry is too flat to prove anything"
+
+    def test_the_phase_is_a_few_minutes_per_level(self, quiet_jobs):
+        """Wide enough to order the schedule, narrow enough to stay inside the day."""
+        from awltux.scheduler.service import DEPTH_PHASE_SECONDS, dependency_depth
+
+        depths = dependency_depth(build_job_specs())
+        assert max(depths.values()) >= 2, "the registry has no depth to test the phase with"
+        assert 60 <= DEPTH_PHASE_SECONDS <= 3_600
+        assert max(depths.values()) * DEPTH_PHASE_SECONDS < 86_400 / 2, (
+            "the deepest job would start more than half a day after the shallowest"
         )
-
-        times = sorted(dt.datetime.fromisoformat(value) for value in runs)
-        span = (times[-1] - times[0]).total_seconds()
-        assert span > 60, f"the whole schedule starts within {span:.0f}s of itself"
-
-    def test_the_spread_is_not_the_only_thing_keeping_them_apart(self, quiet_jobs):
-        """A job with a long interval still waits at most an hour for its first run,
-        so a fresh container converges rather than trickling in over a week."""
-        from awltux.scheduler.service import FIRST_RUN_SPREAD_SECONDS
-
-        spec = JobSpec(id="daily", func=_noop, interval_seconds=86400)
-        service = SchedulerService([spec])
-        before = dt.datetime.now(dt.UTC)
-        service.start()
-        try:
-            next_run = dt.datetime.fromisoformat(service.status()[0]["next_run"])
-        finally:
-            service.shutdown(wait=False)
-
-        assert (next_run - before).total_seconds() <= FIRST_RUN_SPREAD_SECONDS + 5
 
 
 class TestWhenAJobFirstRuns:
-    def test_without_run_on_start_the_first_run_is_inside_the_spread(self, quiet_jobs):
-        """It does not fire at "now", and it does not wait a whole interval.
-
-        The first run lands somewhere in the spread window and every run after it is
-        one interval on, which is what keeps the printed schedule true.
+    def test_without_run_on_start_the_first_run_is_one_phase_away(self, quiet_jobs):
+        """It does not fire at "now" when it sits below something, and it does not wait a
+        whole interval either: a job's first run is its dependency depth times the phase.
         """
-        spec = JobSpec(id="later", func=_noop, interval_seconds=600)
-        service = SchedulerService([spec])
+        from awltux.scheduler.service import DEPTH_PHASE_SECONDS
+
         before = dt.datetime.now(dt.UTC)
+        spec = JobSpec(id="later", func=_noop, interval_seconds=86_400)
+        root = JobSpec(id="root", func=_noop, interval_seconds=86_400)
+        service = SchedulerService([root, spec])
         service.start()
         try:
-            next_run = dt.datetime.fromisoformat(service.status()[0]["next_run"])
+            first = dt.datetime.fromisoformat(service.status()[0]["next_run"])
         finally:
             service.shutdown(wait=False)
 
-        waited = (next_run - before).total_seconds()
-        assert 0 < waited <= 600, f"expected a spread first run, got {waited:.0f}s"
+        # `later` has no dependency, so it is depth 0 like `root`: it fires at once.
+        assert (first - before).total_seconds() <= 5
+
+        depth_two = JobSpec(id="later", func=_noop, interval_seconds=86_400, depends_on=("root",))
+        service = SchedulerService([root, depth_two])
+        started = dt.datetime.now(dt.UTC)
+        service.start()
+        try:
+            row = next(row for row in service.status() if row["id"] == "later")
+            waited = (dt.datetime.fromisoformat(row["next_run"]) - started).total_seconds()
+        finally:
+            service.shutdown(wait=False)
+
+        assert DEPTH_PHASE_SECONDS - 5 <= waited <= DEPTH_PHASE_SECONDS + 5
 
     def test_run_on_start_fires_without_waiting_its_interval(self, monkeypatch):
         """Asserted by observing the run, not the clock.
@@ -235,7 +254,9 @@ class TestWhenAJobFirstRuns:
         import awltux.scheduler.service as service_module
 
         ran: list[str] = []
-        monkeypatch.setattr(service_module, "execute_job", lambda spec: ran.append(spec.id))
+        monkeypatch.setattr(
+            service_module, "execute_job", lambda spec, cause=None: ran.append(spec.id)
+        )
 
         spec = JobSpec(id="now", func=_noop, interval_seconds=86400, run_on_start=True)
         service = SchedulerService([spec])
@@ -795,6 +816,155 @@ class TestTheElapsedLabel:
         assert cli._elapsed(2351) == "39m11s"
 
 
+class TestTheQueue:
+    """A trigger queues a job; one dispatcher runs the queue in dependency order.
+
+    Asked for 2026-10-23, with the daily cadence: *"the triggers should happen in dependency
+    order and wait for the dependency to finish first."* These are the rules that make that
+    true, tested against the queue and the picker directly rather than by waiting on threads:
+    the ordering is a decision about the set of runnable jobs, and it is deterministic.
+    """
+
+    def _service(self, *specs, monkeypatch=None) -> SchedulerService:
+        service = SchedulerService(list(specs))
+        # No scheduler, no dispatcher: the queue is what is under test, and `_take_runnable`
+        # is the whole decision. `start()` would also schedule triggers and start a thread.
+        service._depths = __import__(
+            "awltux.scheduler.service", fromlist=["dependency_depth"]
+        ).dependency_depth(list(specs))
+        return service
+
+    def test_a_dependency_is_taken_before_its_dependent(self):
+        """Even when the dependent's trigger fired first."""
+        root = JobSpec(id="root", func=_noop, interval_seconds=86_400)
+        child = JobSpec(
+            id="child", func=_noop, interval_seconds=86_400, depends_on=("root",)
+        )
+        service = self._service(root, child)
+
+        service._enqueue(child, "fired first")
+        service._enqueue(root, "fired second")
+
+        assert service.queued() == ["root", "child"]
+        assert service._take_runnable().id == "root"
+        assert service._take_runnable().id == "child"
+
+    def test_a_job_waits_while_the_job_it_reads_is_running(self):
+        """The wait itself: not skipped, not started -- held until the input finishes."""
+        root = JobSpec(id="root", func=_noop, interval_seconds=86_400)
+        child = JobSpec(
+            id="child", func=_noop, interval_seconds=86_400, depends_on=("root",)
+        )
+        service = self._service(root, child)
+        service._enqueue(child, None)
+
+        service._running.add("root")  # a run of the dependency, in flight
+        assert service._take_runnable() is None, "the child started under its dependency"
+
+        service._running.discard("root")
+        assert service._take_runnable().id == "child"
+
+    def test_a_chain_runs_root_first_even_when_the_tail_fired_first(self):
+        """Depth orders the whole chain, not just one link: a grandchild cannot overtake."""
+        root = JobSpec(id="root", func=_noop, interval_seconds=86_400)
+        child = JobSpec(
+            id="child", func=_noop, interval_seconds=86_400, depends_on=("root",)
+        )
+        grandchild = JobSpec(
+            id="grandchild", func=_noop, interval_seconds=86_400, depends_on=("child",)
+        )
+        service = self._service(root, child, grandchild)
+
+        for spec in (grandchild, child, root):
+            service._enqueue(spec, None)
+
+        assert service.queued() == ["root", "child", "grandchild"]
+        assert [service._take_runnable().id for _ in range(3)] == [
+            "root",
+            "child",
+            "grandchild",
+        ]
+
+    def test_an_unrelated_job_runs_while_one_waits(self):
+        """Waiting must not stop the queue: everything that can start, does."""
+        root = JobSpec(id="root", func=_noop, interval_seconds=86_400)
+        child = JobSpec(
+            id="child", func=_noop, interval_seconds=86_400, depends_on=("root",)
+        )
+        other = JobSpec(id="other", func=_noop, interval_seconds=86_400)
+        service = self._service(root, child, other)
+        service._enqueue(child, None)
+        service._enqueue(other, None)
+
+        assert service._take_runnable().id == "other"
+        assert service.queued() == ["child"], "the child is still held, not dropped"
+
+    def test_a_job_is_queued_once_however_often_it_fires(self):
+        """What `max_instances=1` and `coalesce` meant when the executor decided it."""
+        spec = JobSpec(id="daily", func=_noop, interval_seconds=86_400)
+        service = self._service(spec)
+
+        service._enqueue(spec, None)
+        service._enqueue(spec, None)
+
+        assert service.queued() == ["daily"]
+
+    def test_a_paused_scheduler_does_not_queue_and_holds_what_it_has(self):
+        """Quiet stops new work and keeps the work already due, rather than losing it."""
+        spec = JobSpec(id="daily", func=_noop, interval_seconds=86_400)
+        service = self._service(spec)
+        service._enqueue(spec, None)
+
+        service._paused = True
+
+        assert service._take_runnable() is None, "a paused queue handed out a job"
+        assert service.queued() == ["daily"], "the due run was dropped by the pause"
+
+    def test_quieting_reports_what_is_waiting(self):
+        spec = JobSpec(id="daily", func=_noop, interval_seconds=86_400)
+        service = self._service(spec)
+        service._enqueue(spec, None)
+
+        assert service.quiet_status()["queued"] == ["daily"]
+
+    def test_a_job_that_depends_on_an_unregistered_job_is_not_held(self):
+        """The registry gates jobs on credentials: a dependency that is not registered cannot
+        run, so holding its dependents would hold them for ever."""
+        child = JobSpec(
+            id="child", func=_noop, interval_seconds=86_400, depends_on=("absent",)
+        )
+        service = self._service(child)
+        service._enqueue(child, None)
+
+        assert service._take_runnable().id == "child"
+
+    def test_the_dispatcher_runs_the_queue_in_order(self, monkeypatch):
+        """End to end through the thread, because the loop is what wires the picker to a run."""
+        import time
+
+        import awltux.scheduler.service as service_module
+
+        ran: list[str] = []
+        monkeypatch.setattr(
+            service_module, "execute_job", lambda spec, cause=None: ran.append(spec.id)
+        )
+
+        root = JobSpec(id="root", func=_noop)
+        child = JobSpec(id="child", func=_noop, depends_on=("root",))
+        service = SchedulerService([root, child])
+        service._start_dispatcher()
+        try:
+            service._enqueue(child, None)
+            service._enqueue(root, None)
+            deadline = time.monotonic() + 5
+            while len(ran) < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+        finally:
+            service.shutdown(wait=False)
+
+        assert ran == ["root", "child"]
+
+
 class TestOnlyOneJobRunsAtATime:
     """The pool is bounded, because an unbounded one starves the dashboard.
 
@@ -815,6 +985,9 @@ class TestOnlyOneJobRunsAtATime:
         attribute: the executor is APScheduler's, wrapped, and the attribute holding
         the worker count has changed name between versions. What matters is how many
         jobs run together, so that is what is measured.
+
+        Since 2026-10-23 the serialisation is the dispatcher's: triggers enqueue and one thread
+        runs the queue, which is also what makes the dependency ordering possible.
         """
         import threading
         import time
@@ -825,7 +998,7 @@ class TestOnlyOneJobRunsAtATime:
         lock = threading.Lock()
         state = {"running": 0, "peak": 0}
 
-        def probe(_spec) -> None:
+        def probe(_spec, _cause=None) -> None:
             with lock:
                 state["running"] += 1
                 state["peak"] = max(state["peak"], state["running"])

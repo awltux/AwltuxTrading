@@ -251,30 +251,33 @@ class UniverseConfig(BaseModel):
 class ScheduleConfig(BaseModel):
     """How often each job runs, in seconds.
 
-    **One hour is the floor, and these defaults are the last line of defence for
-    it.** Nothing here needs finer resolution -- the providers are free tiers with
-    rate limits, and the daily bars the model reasons about change once a day -- so a
-    job asking to run faster is a mistake rather than a preference. `test_scheduler`
-    asserts the floor against the built registry, so a default changed here to
-    something sub-hourly fails rather than quietly spending quota.
+    **Every job is daily, asked for directly on 2026-10-23**: *"All the jobs can be downgraded
+    to 1d trigger rate."* One cycle a day, run in dependency order by the scheduler (see
+    `scheduler/service.py`), so a job whose input is produced by another runs after it.
+
+    The floor is still an hour -- nothing here needs finer resolution, the providers are free
+    tiers with rate limits, and the daily bars the model reasons about change once a day -- but
+    `test_scheduler` now also asserts the product rule over the registry: nothing scheduled runs
+    more often than once a day.
+
+    **A day's ration is a run's ration now.** `decision_rotation_per_day` and
+    `fundamentals_rotation_per_day` are named per day because that is what they are; with one
+    run a day they are also what that run does, so a decision run still covers 500 names (about
+    two hours) rather than a ninth of them.
     """
 
     t212_instruments: int = 86_400
-    #: Trading 212's order history. Hourly: a handful of orders a day, the endpoint's own
-    #: limit is 20 requests a minute, and an incremental run reads one page and stops at
-    #: the newest order it already holds.
-    t212_orders: int = 3_600
-    t212_account: int = 3_600
+    #: Trading 212's order history. One page of orders a day is enough: an incremental run
+    #: reads one page and stops at the newest order it already holds.
+    t212_orders: int = 86_400
+    t212_account: int = 86_400
     #: How often every *held* instrument is put through the full refresh sequence.
     #:
     #: One instrument's refresh costs about 100 seconds and a handful of model calls, so this
-    #: is the setting that decides what keeping a position current costs. At an hour it is
-    #: the floor (`test_scheduler` asserts nothing runs faster) and it re-runs the same
-    #: probes the universe-wide jobs run -- the point is that for these instruments the
-    #: answer is fresh rather than up to a day old, which is what the instrument page's own
-    #: Refresh button exists for.
-    held_refresh: int = 3_600
-    prices_intraday: int = 3_600
+    #: is the setting that decides what keeping a position current costs. Daily now, like
+    #: everything else; the instrument page's own Refresh button is what exists for "now".
+    held_refresh: int = 86_400
+    prices_intraday: int = 86_400
     prices_eod: int = 86_400
     #: How often each sector's price index is rebuilt. Daily, and declared separately from
     #: `prices_eod` so the two can be moved apart: the index is derived from the end-of-day
@@ -292,18 +295,21 @@ class ScheduleConfig(BaseModel):
     #: provider search and the search endpoint is rate-limited like everything else,
     #: so a backlog drains over several runs rather than in one burst.
     symbol_resolution_per_run: int = 120
-    quotes_held: int = 3_600
+    quotes_held: int = 86_400
     fundamentals_rotation_per_day: int = 70
-    #: Instruments the decision job decides in one day, divided across its hourly runs.
+    #: The fundamentals sweep's own cadence, declared beside the job that reads it. It used
+    #: to be a hardcoded hour in the registry because the rotation was spread across the day;
+    #: with one run a day there is nothing to spread.
+    fundamentals: int = 86_400
+    #: Instruments the decision job decides in one run, which is now one day.
     #:
-    #: Measured 2026-10-07: a decision takes about 4.1 per minute, so the whole 500-name
-    #: universe in one call is a **110-minute** job that cannot finish inside a daily
-    #: interval and is killed by every deploy. The rotation is by *least recently
-    #: decided*, so a bounded run still reaches the whole universe over a day.
+    #: Measured 2026-10-07: a decision takes about 4.1 per minute, so 500 names is a
+    #: **two-hour** run. That is the longest single job in the schedule, and it is why the
+    #: dispatcher waits rather than skips: everything downstream of it is due while it runs.
     decision_rotation_per_day: int = 500
-    edgar_submissions: int = 3_600
-    edgar_atom_events: int = 3_600
-    companies_house: int = 3_600
+    edgar_submissions: int = 86_400
+    edgar_atom_events: int = 86_400
+    companies_house: int = 86_400
     #: The instrument news poll, daily, and the four jobs that read what it stores.
     #:
     #: It was hourly, and hourly was wrong twice over: a walk of the universe spends the
@@ -313,29 +319,30 @@ class ScheduleConfig(BaseModel):
     #: rations downstream are per *run* and so are now per day.
     news_rss: int = 86_400
     #: The sector poll is eleven feeds rather than one per instrument, and it does not read
-    #: the universe or the instrument poll's output. Left hourly on purpose: it is cheap,
-    #: and a sector page is then fresher than a company page rather than tied to a cadence
-    #: that has nothing to do with it.
-    news_sectors: int = 3_600
-    news_finnhub: int = 3_600
-    news_marketaux: int = 3_600
-    news_gdelt: int = 3_600
+    #: the universe or the instrument poll's output. Daily like everything else; it was left
+    #: hourly until 2026-10-23 because it is cheap, which is a reason to run it, not a reason
+    #: for a cadence of its own.
+    news_sectors: int = 86_400
+    news_finnhub: int = 86_400
+    news_marketaux: int = 86_400
+    news_gdelt: int = 86_400
     news_analysis: int = 86_400
     news_relevance: int = 86_400
     news_embeddings: int = 86_400
     symbol_resolution: int = 86_400
-    #: The Treasury publishes once per business day, so anything under a few hours
-    #: is only useful for picking up a corrected publication.
-    macro_rates: int = 21_600
+    #: The Treasury publishes once per business day, so a daily read is the publication rate.
+    macro_rates: int = 86_400
     sentiment_aggregate: int = 86_400
     valuation: int = 86_400
     decision: int = 86_400
     calibration: int = 86_400
-    retention: int = 604_800
-    #: How often the provider balances are refreshed. Hourly: it is two requests, and the
-    #: point of the number is to warn *before* the account empties, which a daily check
-    #: can miss by most of a day's spend.
-    provider_balance: int = 3_600
+    #: How often expired rows are pruned. Daily: it is a `DELETE` over two tables and the
+    #: retention it enforces is counted in days and weeks.
+    retention: int = 86_400
+    #: How often the provider balances are refreshed. Daily now, so the warning it exists for
+    #: can arrive most of a day after the spend -- the balance strip's age is printed beside
+    #: the figure, and the red badge marks a breach whenever it is read.
+    provider_balance: int = 86_400
 
 
 class BudgetRule(BaseModel):
