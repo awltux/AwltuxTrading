@@ -21,6 +21,36 @@
   {% if instrument.is_held %}<span class="chip held">held</span>{% endif %}
 </h1>
 
+{# ------------------------------------------------- the two actions, from any tab #}
+{# Asked for 2026-10-23: *"Add a Refresh and Research button to the instrument header, so I don't
+   have to open the equivalent tabs to press the buttons. The primary buttons can stay in the
+   tabs."* So these are the same two actions rather than replacements -- the Refresh panel and the
+   Research block keep their own controls and the prose that says what each costs, and these are
+   the shortcuts a reader who already knows.
+
+   **Refresh keeps the reader where they are.** The form carries the current tab, and the route
+   returns to it with the outcome, which is printed just below (see `partials/_refresh_notice.html`).
+   Pressing Refresh from the Decision tab must not throw away the receipt being read.
+
+   **Research opens the prompt dialog here.** The prompt is the thing a deep-dive needs a person
+   to approve, so it cannot be a bare POST; the dialog is the same one the Research tab shows,
+   from `partials/_research_dialog.html`, and submitting it lands on the Research tab where the
+   reports are listed. #}
+<div class="instrument-actions">
+  <form method="post" action="/instrument/{{ ticker | urlencode }}/refresh">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <button type="submit" {% if refresh and refresh.running %}disabled{% endif %}>
+      {% if refresh and refresh.running %}Refreshing&hellip;{% else %}Refresh now{% endif %}
+    </button>
+  </form>
+  <button type="button" class="research-open" data-dialog="header-research-dialog">Research</button>
+</div>
+
+{% if tab != 'refresh' %}{% include "partials/_refresh_notice.html" %}{% endif %}
+
+{% set dialog_id = 'header-research-dialog' %}
+{% include "partials/_research_dialog.html" %}
+
 <section class="instrument-summary">
   <div class="summary-figures">
     <div class="stat">
@@ -156,8 +186,8 @@
 {% if added_message == '1' %}
   <p class="notice ok">
     Added to the analysed universe, and it stays there through the next universe refresh.
-    Nothing has priced, valued or decided it yet &mdash; press <strong>Refresh now</strong> on
-    the Refresh tab, or start a deep-dive from the Research tab.
+    Nothing has priced, valued or decided it yet &mdash; press <strong>Refresh now</strong> at
+    the top of this page, which runs the stages here rather than waiting for the next sweep.
   </p>
 {% endif %}
 
@@ -286,13 +316,7 @@
     act rather than something the page does on load.
   </p>
 
-  {% if refresh_message == 'started' %}
-    <p class="notice ok">Refresh started. It is running in the background &mdash;
-      this page will not update by itself.</p>
-  {% elif refresh_message == 'refused' %}
-    <p class="notice warn">Nothing was started: a refresh is already running, either for
-      this instrument or for another one. Only one runs at a time.</p>
-  {% endif %}
+  {% include "partials/_refresh_notice.html" %}
 
   {% if refresh %}
     <p>
@@ -377,6 +401,10 @@
     </p>
   {% endif %}
 </section>
+
+{% elif tab == 'levers' %}
+{# -------------------------------------------------------------------- levers #}
+{% include "partials/_levers.html" %}
 
 {% elif tab == 'decision' %}
 {# ------------------------------------------------------------------ decision #}

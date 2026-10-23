@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 
 import pytest
+from bs4 import BeautifulSoup
 from sqlalchemy import select
 
 from awltux.analysis import levers
@@ -536,17 +537,41 @@ class TestRecordingFromThePage:
             reason="earns in dollars, reports in pounds",
         )
         session.commit()
-        response = client.get("/instrument/FORMl_EQ")
+        response = client.get("/instrument/FORMl_EQ?tab=levers")
         assert response.status_code == 200
         assert "Exchange rates" in response.text
         assert "earns in dollars, reports in pounds" in response.text
+
+    def test_the_list_is_on_its_own_tab_and_not_above_the_tabs(self, client, session, page_instrument):
+        """Asked for 2026-10-23: *"Move the instruments 'levers' list into its own tab."*
+
+        It was in the panel above the tab strip, so it appeared on every visit to every tab; the
+        description above the tabs is a summary and this is a list of records.
+        """
+        levers.record(
+            session,
+            page_instrument,
+            [levers.Exposure("exchange_rates", levers.MIXED, levers.PRIMARY)],
+            reason="earns in dollars, reports in pounds",
+        )
+        session.commit()
+
+        on_levers = BeautifulSoup(client.get("/instrument/FORMl_EQ?tab=levers").text, "lxml")
+        assert on_levers.select_one("#levers") is not None
+
+        on_decision = BeautifulSoup(client.get("/instrument/FORMl_EQ?tab=decision").text, "lxml")
+        assert on_decision.select_one("#levers") is None
+        assert on_decision.select_one(".business-profile") is not None, (
+            "the description is still above the tabs; only the list moved"
+        )
+        assert "earns in dollars, reports in pounds" not in on_decision.get_text(" ")
 
     def test_the_instrument_page_says_when_nothing_is_recorded(
         self, client, session, page_instrument
     ):
         """An empty panel would read as a broken query. "Nobody has written it down" and
         "nothing moves this business" are different claims and the page makes the first."""
-        response = client.get("/instrument/FORMl_EQ")
+        response = client.get("/instrument/FORMl_EQ?tab=levers")
         assert "Nothing is recorded against this business" in response.text
 
     def test_forgetting_from_the_page_removes_the_row(self, client, session, page_instrument):

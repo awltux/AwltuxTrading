@@ -1,0 +1,26 @@
+{# The deep-dive prompt dialog: the box the reader edits, and the two buttons that end it.
+
+   Its own file because there are two of them now -- the one inside the Research block, and the
+   one the instrument header opens so a deep-dive can be started without visiting the tab. They
+   must ask the same question of the same endpoint, and two copies of this form is exactly how
+   the header's copy would come to post to a different place or lose the prompt URL.
+
+   `dialog_id` is a parameter rather than a constant because two elements cannot share an id, and
+   the button that opens one names it (`data-dialog`, wired in `app.js`). The prompt box is
+   matched by *class* for the same reason.
+
+   The prompt is fetched when the dialog opens, not rendered with the page: building it reads the
+   held annual reports to work out the scope, which measured 8.4 seconds for a company with two
+   10-Ks on file. #}
+<dialog id="{{ dialog_id | default('research-dialog') }}" class="research-dialog">
+  <form method="post" action="{{ research_action }}">
+    <h3>Research {{ subject_label }}</h3>
+    <div class="research-prompt-holder" data-prompt-url="{{ research_prompt_url }}">
+      <p class="muted small">Working out what this run will read&hellip;</p>
+    </div>
+    <menu class="dialog-actions">
+      <button type="button" class="research-cancel">Cancel</button>
+      <button type="submit">Start the deep-dive</button>
+    </menu>
+  </form>
+</dialog>

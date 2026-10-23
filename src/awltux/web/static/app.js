@@ -627,6 +627,11 @@
   // `<dialog>` rather than a hand-rolled overlay, so Escape, focus trapping and the backdrop
   // are the browser's job. The fallback for no JavaScript is in the template: a plain form
   // that starts the run with the template prompt, which is the one thing that still works.
+  //
+  // **The button names its dialog** (`data-dialog`), because there are two of them since
+  // 2026-10-23: the one inside the Research block, and the one the instrument header opens so a
+  // deep-dive can be started without visiting the tab. Looking for the closest `#research` panel
+  // found only the first, and the header's button is not inside one.
 
   function wireResearchDialog() {
     var openers = document.querySelectorAll(".research-open");
@@ -634,11 +639,11 @@
 
     openers.forEach(function (opener) {
       opener.addEventListener("click", function () {
-        var panel = opener.closest("#research");
-        var dialog = panel && panel.querySelector("dialog.research-dialog");
+        var id = opener.dataset.dialog;
+        var dialog = id ? document.getElementById(id) : null;
         if (!dialog) return;
 
-        loadPrompt(dialog, dialog.querySelector("#research-prompt-holder"));
+        loadPrompt(dialog, dialog.querySelector(".research-prompt-holder"));
         dialog.showModal();
       });
     });

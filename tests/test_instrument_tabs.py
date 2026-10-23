@@ -74,6 +74,7 @@ class TestTheTabStrip:
             "Accounts",
             "News",
             "Research",
+            "Levers",
             "Position",
             "Refresh",
         ]
@@ -122,6 +123,9 @@ class TestTheTabStrip:
             # content arrives as a `**`-splat of research keys -- so a dropped key would have
             # rendered as an empty section with nothing to catch it.
             ("research", 'id="research"'),
+            # The levers list moved out of the panel above the tabs on 2026-10-23, so this is
+            # the assertion that it arrived here rather than disappearing.
+            ("levers", 'id="levers"'),
             ("position", "Your position"),
             ("refresh", "Refresh this instrument"),
         ],

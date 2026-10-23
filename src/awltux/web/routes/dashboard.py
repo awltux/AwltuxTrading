@@ -244,6 +244,11 @@ INSTRUMENT_TABS: tuple[tuple[str, str], ...] = (
     ("accounts", "Accounts"),
     ("news", "News"),
     ("research", "Research"),
+    # What moves the business. Its own tab from 2026-10-23 (asked for directly), because it is a
+    # list of records that grows, not a summary: it sat under the business description above the
+    # tabs and so appeared on every visit to every tab. Next to Research because both are about
+    # the business rather than about a number.
+    ("levers", "Levers"),
     ("position", "Position"),
     ("refresh", "Refresh"),
 )
@@ -326,15 +331,18 @@ def _instrument_summary(
 
 
 def _lever_context(detail: dict[str, Any], request: Request) -> dict[str, Any]:
-    """The business description, the recorded exposures, and the vocabulary the form offers.
+    """The recorded exposures and the vocabulary the form offers -- the Levers tab's block.
 
-    The vocabulary travels with the exposures because the form on this page is the way a lever
+    The vocabulary travels with the exposures because the form on that tab is the way a lever
     is recorded: a page that could show a lever but not name one would send the reader to a
     shell to write one down. The outcome note is looked up here rather than in the template so
     that a code a caller invented prints nothing instead of a raw query parameter.
+
+    **Read only when the Levers tab is rendered.** It moved out of the panel above the tabs on
+    2026-10-23, and the description that stayed there does not use any of this -- so the other
+    nine tabs would otherwise pay for the query and the vocabulary build to print nothing.
     """
     return {
-        "business": detail["business"],
         "levers": detail["levers"],
         "levers_recorded": detail["levers_recorded"],
         "lever_note": LEVER_NOTES.get(request.query_params.get("levers") or ""),
@@ -438,9 +446,12 @@ def _instrument_context(
         # tab. Both come from one query that is cheap -- a subject has a handful of reports --
         # so it is not gated behind the Research tab the way the news block is.
         **detail["research"],
-        # What the business is and what moves it, in one block: the panel needs the recorded
-        # exposures *and* the whole vocabulary, because its form is how a lever is recorded.
-        **_lever_context(detail, request),
+        # What the business is, in the panel above the tabs: the latest finished deep-dive's own
+        # account of it, or the listing's facts when no deep-dive has run.
+        "business": detail["business"],
+        # What moves it is its own tab now, so the exposures and their vocabulary are read only
+        # for that tab -- see `_lever_context`.
+        **(_lever_context(detail, request) if active == "levers" else {}),
         "subject_type": "instrument",
         "subject_label": f"{detail['instrument'].name} ({ticker})",
         **_research_links(f"/instrument/{quote(ticker, safe='')}", return_to="?tab=research"),
@@ -504,8 +515,11 @@ def instrument_page(
             else ([], 0)
         )
         # The lease doubles as the refresh's progress: the same row that stops a sweep
-        # touching this instrument says which step is running.
-        refresh_row = lease.current(session, ticker) if active == "refresh" else None
+        # touching this instrument says which step is running. Read on **every** tab since
+        # 2026-10-23: the instrument header offers Refresh everywhere, and a header that said
+        # "Refresh now" while a refresh was already running would offer a button the route then
+        # refuses. It is one primary-key read, which is why it can move off the Refresh tab.
+        refresh_row = lease.current(session, ticker)
         refresh_state = queries.refresh_state(refresh_row)
         # Read only on the tab that offers the removal, and from the one function that decides
         # it -- so the button is never drawn where the POST would refuse.
@@ -536,7 +550,9 @@ def instrument_page(
 
 
 @router.post("/instrument/{ticker}/refresh", include_in_schema=False)
-def instrument_refresh(ticker: str, request: Request) -> RedirectResponse:
+def instrument_refresh(
+    ticker: str, request: Request, tab: str = Form("refresh")
+) -> RedirectResponse:
     """Force the pipeline stages for one instrument, and return immediately.
 
     A POST rather than a link, and not because of the semantics: a GET would be followed
@@ -544,18 +560,23 @@ def instrument_refresh(ticker: str, request: Request) -> RedirectResponse:
     and model budget. The redirect carries the outcome as a query parameter, so the page
     can say why nothing started without keeping state anywhere.
 
-    The ticker's cached pages go, because the reader is about to watch this run's progress
-    on the Refresh tab and a page rendered before the POST would report the previous state.
+    ``tab`` is where the button was pressed, and the reader goes back there with the outcome
+    printed above the tabs (`partials/_refresh_notice.html`). Since 2026-10-23 the instrument
+    header offers this button on **every** tab, and sending a reader who pressed it from the
+    Decision tab to the Refresh tab would throw away the receipt they were reading. An unknown
+    value falls back to the Refresh tab, which is where the progress is.
+
+    The ticker's cached pages go, because a page rendered before the POST would report the
+    previous refresh state.
     """
     outcome = scoped.start(ticker)
     reason = "started" if outcome.ok else "refused"
     cache = getattr(request.app.state, "page_cache", None)
     if cache is not None:
         cache.invalidate((ticker,))
+    back = tab if tab in INSTRUMENT_TAB_NAMES else "refresh"
     return RedirectResponse(
-        # Back to the tab the button is on, so the outcome it prints is the outcome the
-        # reader sees rather than a decision tab they then have to navigate away from.
-        url=f"/instrument/{quote(ticker, safe='')}?tab=refresh&refresh={reason}",
+        url=_instrument_tab_url(ticker, back, refresh=reason),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

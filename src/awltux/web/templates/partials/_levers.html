@@ -1,0 +1,117 @@
+{# What moves this business: the exposures recorded against it, and the form that records one.
+
+   Its own tab from 2026-10-23, asked for directly: *"Move the instruments 'levers' list into its
+   own tab."* It lived under the business description above the tabs, which put a table on every
+   visit to every tab -- and the two halves are different things: the description is one summary
+   of the company, while this is a list of records that grows each time somebody writes one down.
+
+   The forms carry the tab in a hidden field, so recording or removing a lever returns here
+   (`_instrument_tab_url` is where that is honoured) rather than to the default tab. #}
+{% from "partials/_help.html" import help %}
+<section class="panel" id="levers">
+  <h2>What moves it{{ help('levers') }}</h2>
+
+  {% if lever_note %}
+    {# The outcome of a form on this page. The sentence is chosen from a fixed table in the
+       route, so nothing a reader typed is echoed back as page text. #}
+    <p class="notice">{{ lever_note }}</p>
+  {% endif %}
+
+  {% if levers %}
+    <table class="grid compact">
+      <thead>
+        <tr>
+          <th>Lever</th>
+          <th>When it rises</th>
+          <th>Strength</th>
+          <th>Why</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in levers %}
+        {# The group travels as a word, not an icon, and the hover carries the channel on the
+           *lever's* name so a reader can check they filed the right one without leaving the
+           page. On the group label it would have explained the wrong thing. #}
+        <tr>
+          <td>
+            <a href="/levers/{{ row.lever | urlencode }}" title="{{ row.channel }}"><strong>{{ row.label }}</strong></a>
+            <span class="muted small">{{ row.group_label }}</span>
+          </td>
+          <td>{{ row.direction_label }}</td>
+          <td class="muted small">{{ row.strength_label }}</td>
+          <td>
+            {{ row.reason }}
+            {% if row.source and row.source != 'manual' %}
+              <span class="muted small">({{ row.source }})</span>
+            {% endif %}
+          </td>
+          <td>
+            {# A POST rather than a link, for the reason every other write here is: a GET would
+               be followed by any prefetcher that saw the URL and would change stored state. #}
+            <form method="post" action="/instrument/{{ ticker | urlencode }}/levers/{{ row.lever | urlencode }}/forget" class="inline">
+              <input type="hidden" name="tab" value="{{ tab }}">
+              <button type="submit" class="small">remove</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">
+      Nothing is recorded against this business. That is <em>not</em> the same as "nothing moves
+      it" &mdash; it means nobody has written the exposures down, and none are generated.
+    </p>
+  {% endif %}
+
+  <details{% if not levers %} open{% endif %}>
+    <summary>Record a lever</summary>
+    <form method="post" action="/instrument/{{ ticker | urlencode }}/levers">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <label>Lever
+        <select name="lever" required>
+          {% for group in lever_groups %}
+            <optgroup label="{{ lever_group_labels[group] }}">
+            {% for choice in lever_choices if choice.group == group %}
+              <option value="{{ choice.key }}" title="{{ choice.channel }}">{{ choice.label }}</option>
+            {% endfor %}
+            </optgroup>
+          {% endfor %}
+        </select>
+      </label>
+      <label>When the lever rises{{ help('lever_direction') }}
+        <select name="direction">
+          {% for direction in lever_directions %}
+            <option value="{{ direction }}"{% if direction == 'unknown' %} selected{% endif %}>{{ lever_direction_labels[direction] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Strength
+        <select name="strength">
+          {% for strength in lever_strengths %}
+            <option value="{{ strength }}">{{ lever_strength_labels[strength] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Why
+        <input type="text" name="reason" size="60"
+               placeholder="the evidence, in your own words — stored verbatim">
+      </label>
+      <button type="submit">Record it</button>
+    </form>
+    <p class="muted small">
+      Recording a lever again replaces the earlier judgement of the same lever rather than
+      adding a second one. The direction is read <em>against a rise</em> in the lever, which is
+      what makes a bank, a housebuilder and a utility comparable on the
+      <a href="/levers">levers page</a>.
+    </p>
+  </details>
+
+  {% if levers %}
+    <p class="muted small">
+      <a href="/levers">All levers</a> &mdash; and on each one, every instrument recorded
+      against it. This is the list to read when a mover like rates or inflation changes.
+    </p>
+  {% endif %}
+</section>

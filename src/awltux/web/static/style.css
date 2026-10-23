@@ -520,6 +520,14 @@ footer {
 .instrument-details > summary { cursor: pointer; }
 .instrument-details .kv { margin-top: 10px; }
 
+/* The two things a reader does to an instrument, from any tab: refresh it, or start a
+   deep-dive. Beside each other and left-aligned under the name, because they are the same
+   weight -- the tabs below them are navigation, and an action that looked like a tab would
+   read as a third kind of control. */
+.instrument-actions {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 0;
+}
+
 /* A ledger: stated and computed side by side, so the residual is visible rather than
    folded into the printed figure. The subtotal row is the one a reader scans for. */
 .ledger tr.subtotal td { border-top: 1px solid var(--line); font-weight: 600; }

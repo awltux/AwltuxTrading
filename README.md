@@ -582,9 +582,10 @@ queuing the same answer twice.
 
 ## Levers: what moves a business
 
-A deep-dive answers whether the *business* is worth owning. Two shorter answers sit above
-the tabs on every instrument page, because they are what a reader wants before choosing a
-tab: **what the company is**, and **what moves it**.
+A deep-dive answers whether the *business* is worth owning. **What the company is** sits above
+the tabs on every instrument page, because it is what a reader wants before choosing a tab; the
+exposures recorded against it — **what moves it** — are a list that grows, and have had their own
+tab since 2026-10-23.
 
 **What the business is** is the latest finished deep-dive's own account — what it does, how
 it makes money, the advantage it believes it has, who it competes with. It is read out of the
@@ -619,7 +620,8 @@ One row per instrument and lever, upserted: recording again replaces the judgeme
 appending a second opinion, because the question is what the exposure *is*. Table
 `instrument_lever`, owned by `analysis/levers.py`.
 
-**Recording one.** On the instrument page, under *What moves it*, or:
+**Recording one.** On the instrument page's **Levers** tab (its own tab since 2026-10-23; the
+list used to sit under the business description above the tabs), or:
 
 ```bash
 awltux levers list
@@ -691,7 +693,7 @@ zone so that failure is visible rather than silent.
 | Page | What it shows |
 |---|---|
 | **Recommendations** | Sortable table with **both verdicts side by side**, plus a `Suits` column showing which horizon the evidence actually supports. Filters follow a selected horizon. Views for *actionable only*, *my holdings*, and *suits long/short term* |
-| **Instrument** | Decision receipt with **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, **one set of accounts per financial year**, news, and — above the tabs — **what the business is and what moves it**, both from the latest deep-dive. **Refresh now** runs the pipeline stages for this company alone — prices, filings, statements, the annual reports and what they disclose, news, sentiment, valuation, and a fresh decision — so a call can be checked against data the sweeps have not reached yet. **Research** runs a one-off deep-dive of the business and keeps the report, listed under the tab |
+| **Instrument** | Tabs for each topic — Decision, Valuation, Price history, Published reports, Accounts, News, Research, **Levers**, Position, Refresh — with **what the business is** above them and **Refresh now** / **Research** in the header on every tab, so neither needs its tab opened. The Decision receipt has **a card per horizon**: verdict, composite, confidence, gate checks, and the tactical setup/drawdown scores. Plus fair-value range, per-method breakdown, model answers with probabilities, narrative, filings, **one set of accounts per financial year** and news. **Refresh now** runs the pipeline stages for this company alone — prices, filings, statements, the annual reports and what they disclose, news, sentiment, valuation, and a fresh decision — so a call can be checked against data the sweeps have not reached yet. **Research** runs a one-off deep-dive of the business and keeps the report, listed under the tab |
 | **Sectors** | A sector's own **equal-weighted price index** (each instrument rebased to 100, so a 3,000p share and a £30 one contribute the same), its sentiment heatmap, drill-down to constituents, and the same **Research** block, with the latest executive summary above it |
 | **Calibration** | Per-horizon tabs; realised hit rate and return by confidence and by engine; high-confidence misses |
 | **Research** | The deep-dive queue: what is waiting and in what order it will be served, the run in progress with its live log, and the last few finished reports. A press on **Research** at an instrument or a sector writes a request here rather than starting a run, because one deep-dive runs at a time |

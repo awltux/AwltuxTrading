@@ -1,0 +1,19 @@
+{# What just happened to a refresh, in one place because two surfaces ask.
+
+   The Refresh tab renders this above its own button, and the instrument header renders it on
+   every *other* tab -- the header's Refresh button stays where the reader is, so the outcome has
+   to be printable there. `_instrument_refresh` puts the outcome in the query string and
+   `instrument_refresh` returns to the tab it was pressed on.
+
+   The sentences are fixed rather than echoed: nothing a caller puts in the query string becomes
+   page text. #}
+{% if refresh_message == 'started' %}
+  <p class="notice ok">
+    Refresh started. It is running in the background &mdash; this page will not update by itself.
+  </p>
+{% elif refresh_message == 'refused' %}
+  <p class="notice warn">
+    Nothing was started: a refresh is already running, either for this instrument or for another
+    one. Only one runs at a time.
+  </p>
+{% endif %}

@@ -372,13 +372,19 @@ class TestTheReportList:
 
 class TestTheDialog:
     def test_the_button_carries_the_prompt_url(self, client, session):
+        """Two dialogs share this form's shape, so the prompt box is matched by class.
+
+        Since 2026-10-23 the instrument header opens one too, from
+        `partials/_research_dialog.html` -- and two elements cannot share an id, which is why
+        neither the dialog nor its prompt box is one any more.
+        """
         _instrument(session)
         session.commit()
 
         soup = BeautifulSoup(client.get(f"/instrument/{TICKER}?tab=research").text, "lxml")
-        holder = soup.select_one("#research-prompt-holder")
+        holder = soup.select_one("#research .research-prompt-holder")
 
-        assert soup.select_one(".research-open") is not None
+        assert soup.select_one("#research .research-open") is not None
         assert holder["data-prompt-url"] == f"/instrument/{TICKER}/research/prompt"
 
     def test_the_prompt_fragment_is_the_template_plus_the_scope(self, client, session):
@@ -604,7 +610,7 @@ class TestStarting:
 
         assert "Margins are compressing." in body, "the sector's own summary, at the top"
         assert soup.select_one("#research .research-open") is not None
-        assert soup.select_one("#research-prompt-holder")["data-prompt-url"] == (
+        assert soup.select_one("#research .research-prompt-holder")["data-prompt-url"] == (
             f"/sectors/{SECTOR}/research/prompt"
         )
 

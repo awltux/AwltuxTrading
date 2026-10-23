@@ -53,28 +53,20 @@
     </p>
   {% endif %}
 
-  <button type="button" class="research-open">Research</button>
+  <button type="button" class="research-open" data-dialog="research-dialog">Research</button>
 
   {# Without JavaScript the dialog cannot be filled, so the reader gets the one thing that
-     still works: start it with the template exactly as it is. #}
+     still works: start it with the template exactly as it is. A `noscript` block is not a
+     fallback for the header's copy -- the instrument header has no such form, so a reader with
+     JavaScript off uses this one, which is why the block keeps its own button. #}
   <noscript>
     <form method="post" action="{{ research_action }}">
       <button type="submit">Start a deep-dive with the default prompt</button>
     </form>
   </noscript>
 
-  <dialog id="research-dialog" class="research-dialog">
-    <form method="post" action="{{ research_action }}">
-      <h3>Research {{ subject_label }}</h3>
-      <div id="research-prompt-holder" data-prompt-url="{{ research_prompt_url }}">
-        <p class="muted small">Working out what this run will read&hellip;</p>
-      </div>
-      <menu class="dialog-actions">
-        <button type="button" class="research-cancel">Cancel</button>
-        <button type="submit">Start the deep-dive</button>
-      </menu>
-    </form>
-  </dialog>
+  {% set dialog_id = 'research-dialog' %}
+  {% include "partials/_research_dialog.html" %}
 
   <h3>Reports</h3>
   {% if reports %}
