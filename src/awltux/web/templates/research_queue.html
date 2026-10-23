@@ -1,0 +1,143 @@
+{# The research queue: what is waiting, what is running, what just finished.
+
+   Asked for 2026-10-21: *"Add a page listing the queue"*, after the queue itself went in. A
+   queued request was visible only where it was made -- the instrument's Research tab and the
+   sector page printed their own subject's position -- so a reader with five names waiting had
+   no list of them anywhere.
+
+   The order is the answer, not decoration: `queries.research_queue` enumerates the queued rows
+   by `id`, which is exactly what the consumer's claim orders by, so the number in the first
+   column is the number it will actually be served at. #}
+{% extends "base.html" %}
+{% block title %}Research queue — {{ app_name }}{% endblock %}
+
+{# The status of one deep-dive, in the words the subject pages already use, so a row does not
+   mean something different on this page from what it means on the page it links to. #}
+{% macro status_cell(row) %}
+  {%- if row.queued -%}
+    <span class="badge" title="Waiting for the deep-dive ahead of it to finish">queued</span>
+  {%- elif row.running and row.stale -%}
+    <span class="badge warn" title="The process that started this run is gone">stale</span>
+  {%- elif row.running -%}
+    <span class="badge ok">running</span>
+  {%- elif row.status == 'failed' -%}
+    <span class="badge bad" {% if row.error %}title="{{ row.error }}"{% endif %}>failed</span>
+  {%- else -%}
+    <span class="badge good">done</span>
+  {%- endif -%}
+{% endmacro %}
+
+{% block content %}
+<h1>
+  Research queue
+  <span class="muted small">{{ queued | length }} waiting</span>
+</h1>
+<p class="muted small">
+  One deep-dive runs at a time. A press writes a request rather than starting a run, so a second
+  press is remembered rather than refused &mdash; the list below is that request, and the queue
+  serves it in the order it was made. Nothing here spends anything until its turn.
+</p>
+
+{% if running %}
+<h2>Running now</h2>
+<div class="table-wrap">
+<table class="grid compact">
+  <thead>
+    <tr><th>Subject</th><th>Started</th><th>Status</th><th>Log</th></tr>
+  </thead>
+  <tbody>
+  {% for row in running %}
+    <tr>
+      <td><a href="{{ row.url }}">{{ row.title }}</a></td>
+      {# An age rather than a timestamp, with the zone-labelled instant on hover: a working
+         list is read for "how long has this been going", and the exact minute is one hover
+         away. `age` never falls back to a bare date, which would repeat the instant beside it. #}
+      <td class="small muted" title="{{ row.started_at | datetime }}">
+        {{ row.started_at | age }}
+      </td>
+      <td class="small">{{ status_cell(row) }}</td>
+      <td class="small">
+        {# The log is per job id and holds the run in progress, which is why this link is here
+           and not on a queued row: a request that has not begun has nothing to show. #}
+        <a href="/jobs/{{ research_job }}/log">Live log &rarr;</a>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+<h2>Waiting</h2>
+{% if queued %}
+<div class="table-wrap">
+<table class="grid compact">
+  <thead>
+    <tr><th class="num">#</th><th>Subject</th><th>Requested</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+  {% for row in queued %}
+    <tr>
+      <td class="num">{{ row.position }}</td>
+      <td><a href="{{ row.url }}">{{ row.title }}</a></td>
+      {# How long the *request* has waited, which is the number a reader is really asking
+         about: the run has not started, so it has no age of its own yet. #}
+      <td class="small muted" title="{{ row.created_at | datetime }}">
+        {{ row.created_at | age }}
+      </td>
+      <td class="small">{{ status_cell(row) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">
+  Nothing is waiting. A press on <strong>Research</strong> at an instrument or a sector appears
+  here until its turn comes, including across a restart &mdash; the request is a stored row, not
+  a thread.
+</p>
+{% endif %}
+
+<h2>Recently finished</h2>
+{% if recent %}
+<div class="table-wrap">
+<table class="grid compact">
+  <thead>
+    <tr><th>Subject</th><th>When</th><th>Status</th><th>Verdict</th><th>Report</th></tr>
+  </thead>
+  <tbody>
+  {% for row in recent %}
+    <tr>
+      <td><a href="{{ row.url }}">{{ row.title }}</a></td>
+      <td class="small muted" title="{{ row.finished_at | datetime }}">
+        {{ row.finished_at | age }}
+      </td>
+      <td class="small">{{ status_cell(row) }}</td>
+      <td class="small">
+        {% if row.verdict %}
+          <span class="badge {{ row.verdict | verdict_class }}">{{ row.verdict | replace('_', ' ') }}</span>
+        {% else %}&mdash;{% endif %}
+      </td>
+      <td class="small">
+        {% if row.has_document %}
+          <a href="/research/{{ row.id }}" target="_blank" rel="noopener noreferrer">read</a>
+        {% elif row.error %}
+          <span class="muted small">{{ row.error[:120] }}</span>
+        {% else %}
+          <span class="muted small">not written</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted small">
+  The last few only, newest first. Each subject's own page lists its whole history &mdash; the
+  queue is a working list, not an archive.
+</p>
+{% else %}
+<p class="muted">No deep-dive has finished yet.</p>
+{% endif %}
+{% endblock %}

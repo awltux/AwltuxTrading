@@ -20,10 +20,48 @@ from urllib.parse import quote
 from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from awltux.db import session_scope
 from awltux.research import service as research
+from awltux.web import queries
 from awltux.web.templating import templates
 
 router = APIRouter(tags=["research"], include_in_schema=False)
+
+
+def _subject_url(row: dict) -> str:
+    """Where a queue entry's subject lives: its own page, on the block the button is on."""
+    where = quote(row["subject_id"], safe="")
+    if row["subject_type"] == "instrument":
+        return f"/instrument/{where}?tab=research"
+    return f"/sectors/{where}#research"
+
+
+@router.get("/research", response_class=HTMLResponse)
+def research_queue_page(request: Request) -> HTMLResponse:
+    """Everything waiting for the deep-dive consumer, what is running, and what just finished.
+
+    A page rather than a section on Operations, because the queue is not a job: a deep-dive is
+    started by a person from an instrument or a sector, it runs outside the scheduler's one-worker
+    limit, and its progress belongs beside the reports rather than beside the timers. The
+    Operations page keeps the log link, which is where a *running* deep-dive is watched.
+
+    The links are built here rather than in `queries`, which decides what is in the database and
+    knows nothing about addresses.
+    """
+    with session_scope() as session:
+        queue = queries.research_queue(session)
+
+    for row in queue["queued"] + queue["running"] + queue["recent"]:
+        row["url"] = _subject_url(row)
+
+    return templates.TemplateResponse(
+        request,
+        "research_queue.html",
+        {
+            **queue,
+            "research_job": research.RESEARCH_JOB,
+        },
+    )
 
 
 def _prompt(request: Request, subject_type: str, subject_id: str) -> HTMLResponse:

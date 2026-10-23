@@ -1514,6 +1514,12 @@ def _research_row(row: Any, cutoff: dt.datetime) -> dict[str, Any]:
         "running": running,
         "queued": row.status == "queued",
         "stale": running and since is not None and since < cutoff,
+        # What this run is *about*, so a page that lists rows rather than one subject can say
+        # which. On a subject's own page these repeat what the page title already says, and the
+        # queue page is the reader that needs them.
+        "subject_type": row.subject_type,
+        "subject_id": row.subject_id,
+        "title": row.title,
         "created_at": created,
         "started_at": started,
         "finished_at": as_utc(row.finished_at),
@@ -1639,6 +1645,59 @@ def _queue_position(session: Session, row: Any) -> int:
         .where(ResearchReport.id <= row.id)
     )
     return int(ahead or 1)
+
+
+def research_queue(
+    session: Session, *, recent: int = 10, stale_minutes: int = 180
+) -> dict[str, Any]:
+    """What is waiting for the deep-dive consumer, what is running, and what just finished.
+
+    The queue is the report rows themselves (`research.service`): a press writes ``queued`` and
+    the consumer claims the oldest ``id``, so enumerating the queued rows in id order *is* the
+    order they will be served in -- one query for the whole page rather than a count per row, and
+    the same key `_queue_position` counts on, so the two cannot disagree.
+
+    ``running`` is a list although the claim keeps it to one row: a row left ``running`` by a
+    process that died is still a row, and a page that hid it would leave the reader wondering why
+    nothing is moving.
+
+    ``recent`` is here so the page is worth opening when the queue is empty, which is most of the
+    time -- "nothing is waiting" and "nothing has ever run" are different answers, and only the
+    second is a problem.
+    """
+    cutoff = utcnow() - dt.timedelta(minutes=stale_minutes)
+
+    queued = list(
+        session.execute(
+            select(ResearchReport)
+            .where(ResearchReport.status == "queued")
+            .order_by(ResearchReport.id)
+        ).scalars().all()
+    )
+    running = list(
+        session.execute(
+            select(ResearchReport)
+            .where(ResearchReport.status == "running")
+            .order_by(ResearchReport.id)
+        ).scalars().all()
+    )
+    finished = list(
+        session.execute(
+            select(ResearchReport)
+            .where(ResearchReport.status.in_(("done", "failed")))
+            .order_by(desc(ResearchReport.created_at), desc(ResearchReport.id))
+            .limit(recent)
+        ).scalars().all()
+    )
+
+    return {
+        "queued": [
+            _research_row(row, cutoff) | {"position": position}
+            for position, row in enumerate(queued, start=1)
+        ],
+        "running": [_research_row(row, cutoff) for row in running],
+        "recent": [_research_row(row, cutoff) for row in finished],
+    }
 
 
 #: The three sentences a deep-dive writes about a business, in the order the page reads them:

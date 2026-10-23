@@ -1006,19 +1006,6 @@ pause claiming while that is true; or make "quiet" a row in the database that ev
 which is the same shape as the research queue's own claim and would cover anything else that runs
 outside the scheduler. Until then, a deep-dive cannot be stopped by a deploy -- only waited out.
 
-### There is no page showing the research queue
-
-Added 2026-10-21, with the queue itself. A queued request is visible where it was made: the
-instrument's Research tab and the sector page each print "queued behind N other runs" for *their*
-subject. What does not exist is the one place a reader who has queued five names needs -- a list
-of what is waiting and in what order -- and the Operations page cannot show one either, because
-the queue is `research_report` rows, not an `ingest_run`.
-
-Cheap to add when it matters: `select * from research_report where status = 'queued' order by id`
-is the whole page, plus the position rule already in `web/queries.py::_queue_position`. Worth
-doing when a reader has more than about three requests waiting, and not before: with two the
-per-subject line is enough.
-
 ### The balance banner cannot show one key's spend, because nothing records which key paid
 
 Asked for 2026-10-09: *"I think the DeepSeek costs are for all keys? It would be preferable

@@ -518,7 +518,7 @@ class TestTemplatesRenderWithData:
             assert response.status_code == 200, horizon
 
     def test_other_pages_render(self, client):
-        for path in ("/sectors", "/calibration", "/jobs", "/info"):
+        for path in ("/sectors", "/calibration", "/jobs", "/research", "/info"):
             response = client.get(path)
             assert response.status_code == 200, path
 
