@@ -273,6 +273,12 @@ def _claim_next() -> int | None:
 
     ``started_at`` is written here rather than at the press, because this is when the run the
     reader is waiting for actually begins.
+
+    **It returns the id, not the row.** The Core ``UPDATE`` does not refresh this session's copy
+    of the row -- measured against the deployed schema, the claim wrote ``started_at`` and the
+    in-session object still read ``None`` -- and every reader of the row wants what the database
+    stored. :func:`_run` therefore re-reads it, which also means a consumer serving a row another
+    process queued sees the same values as one serving its own.
     """
     with _session() as session:
         while True:
