@@ -562,6 +562,28 @@ class SchedulerService:
             return
         _warn_if_below_the_floor(spec)
         now = dt.datetime.now(dt.UTC)
+
+        self._scheduler.add_job(
+            # The trigger *queues*; the dispatcher runs. See the module docstring.
+            self._enqueue,
+            trigger=self._trigger_for(spec, now),
+            args=self._job_args(spec, owed),
+            id=spec.id,
+            name=spec.description or spec.id,
+            replace_existing=True,
+            max_instances=spec.max_instances,
+            **(self._first_run(spec, owed, now) if first_run else {}),
+        )
+
+    def _trigger_for(self, spec: JobSpec, now: dt.datetime):
+        """The interval trigger this job runs on: the daily anchor plus its dependency depth.
+
+        Shared by :meth:`_schedule` (add) and :meth:`_reanchor` (reschedule), because the two
+        must agree about when the job is next due -- and because `add_job` with
+        ``replace_existing=True`` keeps the *old* next run time (APScheduler preserves it), so
+        re-anchoring has to go through ``reschedule_job`` with this trigger.
+        """
+        interval = spec.interval_seconds or 0
         offset = min(
             self._depths.get(spec.id, 0) * DEPTH_PHASE_SECONDS,
             # Half the interval, so a job whose depth would push its first run past its own
@@ -578,24 +600,7 @@ class SchedulerService:
             if interval >= 86_400
             else now + dt.timedelta(seconds=max(offset, 1))
         )
-
-        trigger = IntervalTrigger(
-            seconds=interval,
-            start_date=start,
-            timezone="UTC",
-        )
-
-        self._scheduler.add_job(
-            # The trigger *queues*; the dispatcher runs. See the module docstring.
-            self._enqueue,
-            trigger=trigger,
-            args=self._job_args(spec, owed),
-            id=spec.id,
-            name=spec.description or spec.id,
-            replace_existing=True,
-            max_instances=spec.max_instances,
-            **(self._first_run(spec, owed, now) if first_run else {}),
-        )
+        return IntervalTrigger(seconds=interval, start_date=start, timezone="UTC")
 
     @staticmethod
     def _first_run(spec: JobSpec, owed: CatchUp | None, now: dt.datetime) -> dict[str, Any]:
@@ -728,10 +733,20 @@ class SchedulerService:
         spec = self._specs.get(job_id)
         if spec is None or not spec.scheduled:
             return
-        # Not a first run: `run_on_start` and a catch-up both override `next_run_time` to
-        # *now*, and re-applying that after the job has just run is a hot loop -- measured, it
-        # fired 75 times in a second.
-        self._schedule(spec, first_run=False)
+        # `reschedule_job`, not `add_job(replace_existing=True)`: APScheduler *preserves* the
+        # existing next-run time when it replaces a job, which is the opposite of what this is
+        # for. Measured on the deployed build -- `news_rss` caught up at 09:59 and `sector_index`
+        # started at 11:08 stayed on those times for the following day despite the rebuild.
+        try:
+            self._scheduler.reschedule_job(
+                spec.id, trigger=self._trigger_for(spec, dt.datetime.now(dt.UTC))
+            )
+        except Exception:  # pragma: no cover - the job is gone; add it back whole
+            logger.exception("could not re-anchor %s; rescheduling it from scratch", job_id)
+            # Not a first run: `run_on_start` and a catch-up both override `next_run_time` to
+            # *now*, and re-applying that after the job has just run is a hot loop -- measured,
+            # it fired 75 times in a second.
+            self._schedule(spec, first_run=False)
 
     def _take_runnable(self) -> _Queued | None:
         """Remove and return the next job that may start. Holds the condition.

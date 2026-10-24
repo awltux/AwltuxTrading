@@ -177,12 +177,13 @@ class TestTheSchedulerUsesIt:
         assert abs((dt.datetime.fromisoformat(after) - anchor).total_seconds()) <= 1
 
     def test_a_run_puts_the_job_back_on_the_anchor(self, settings, monkeypatch):
-        """A trigger advances from when it last fired, so a catch-up would drag it off the time.
+        """A trigger advances from when it last fired, so an off-anchor run drags it away.
 
         Measured on the deployed build the first time the anchor went in: `news_rss` was caught
-        up at 09:59 and `macro_rates` started at 10:47, and both were then scheduled a day on
-        from *that* instant rather than from 06:00. `_reanchor` rebuilds the trigger after every
-        run, so the daily time stays the daily time.
+        up at 09:59 and `sector_index` started at 11:08, and both were then scheduled a day on
+        from *that* instant rather than from 06:00. The trigger is forced off-anchor here for the
+        same reason -- `add_job(replace_existing=True)` *preserves* the next run time, so only a
+        genuine reschedule puts it back.
         """
         import time
 
@@ -199,8 +200,8 @@ class TestTheSchedulerUsesIt:
         service.start()
         try:
             service._armed_at = 0.0
-            # A catch-up, as the scheduler makes it: due now, whatever the anchor says.
-            service._enqueue(service._specs["j"], "catching up")
+            # A catch-up: due now, whatever the anchor says, as the scheduler makes one.
+            service._scheduler.modify_job("j", next_run_time=dt.datetime.now(dt.UTC))
             deadline = time.monotonic() + 5
             while not ran and time.monotonic() < deadline:
                 time.sleep(0.02)
