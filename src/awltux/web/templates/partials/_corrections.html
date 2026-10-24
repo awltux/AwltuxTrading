@@ -172,18 +172,27 @@
          figure it printed. A Yahoo statement tags nothing, so the caption is the identity a line can
          have; choosing one brings it in with the source's own figure already read. This is the list
          that a fixed chart could not offer, and it is the reason 38,688,000 of operating expense was
-         missing from a statement that printed a residual against it. #}
-      <p class="muted small">
-        <strong>Captions this source states that no line here carries</strong>, and the figure it
-        printed. Choosing one adds the line with that figure, under a heading you choose:
-        {% for statement, rows in source_lines.items() %}
-          <br><span class="muted">{{ statement | replace('_', ' ') }}</span>:
-          {% for row in rows %}
-            <a href="/accounts/{{ period.id }}/corrections/new?statement={{ statement }}&amp;metric={{ row.key | urlencode }}">{{ row.label }}</a>
-            <span class="muted">({{ row.value | number(0) }})</span>{% if not loop.last %},{% endif %}
+         missing from a statement that printed a residual against it.
+
+         Folded, and with the count in the summary, because a provider states every caption it
+         computes -- 79 for one utility's year, ratios and alternative names for totals among them.
+         The reader came for one of them, and the list should not be the last thing between them and
+         the accounts. #}
+      <details class="accounts-corrections">
+        <summary class="muted small">
+          <strong>{{ source_lines.values() | map('length') | sum }} captions this source states
+          that no line here carries</strong> — choose one to add it with the source's own figure
+        </summary>
+        <p class="muted small">
+          {% for statement, rows in source_lines.items() %}
+            <br><span class="muted">{{ statement | replace('_', ' ') }}</span>:
+            {% for row in rows %}
+              <a href="/accounts/{{ period.id }}/corrections/new?statement={{ statement }}&amp;metric={{ row.key | urlencode }}">{{ row.label }}</a>
+              <span class="muted">({{ row.value | number(0) }})</span>{% if not loop.last %},{% endif %}
+            {% endfor %}
           {% endfor %}
-        {% endfor %}
-      </p>
+        </p>
+      </details>
     {% endif %}
   </details>
 {% endif %}
