@@ -71,6 +71,10 @@ universe:
 # are what that run does, so a decision sweep is 500 names (about two hours -- the longest job
 # in the schedule) rather than a twenty-fourth of them.
 schedule:
+  # When the daily cycle starts, as a 24-hour time in `app.timezone` (Europe/London above).
+  # This is the *default*: the Operations page can change it, and the change is kept in the
+  # database rather than here.
+  daily_at: "06:00"
   t212_instruments: 86400        # T212's own limit is 1 request / 50s, so this is generous
   t212_account: 86400
   # Every held instrument through the full refresh sequence. About 100 seconds each and a

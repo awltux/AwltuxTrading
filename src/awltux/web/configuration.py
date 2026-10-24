@@ -138,6 +138,9 @@ INTERESTING: tuple[tuple[str, str], ...] = (
     ("universe.exchanges", "list"),
     ("universe.instrument_types", "list"),
     ("universe.min_daily_turnover_gbp", "number"),
+    # The daily cycle's start, as a time rather than a duration, so the Info page prints it as
+    # written and the Operations page is where it is edited.
+    ("schedule.daily_at", "text"),
     ("schedule.t212_instruments", "seconds"),
     ("schedule.held_refresh", "seconds"),
     ("schedule.prices_eod", "seconds"),

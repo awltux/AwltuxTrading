@@ -737,19 +737,26 @@ produces waits for that job to finish rather than starting alongside it. See
 
 ### How the day is scheduled
 
-Every job runs once a day (`config/config.yaml`), and the scheduler **queues** a due run rather
-than starting it:
+Every job runs once a day (`config/config.yaml`), starting at **`schedule.daily_at`** — 06:00 by
+default, read in `app.timezone` — and the scheduler **queues** a due run rather than starting it:
 
-1. A trigger only enqueues the job — APScheduler is the clock, not the executor.
-2. One dispatcher thread takes the job with the **shallowest dependency depth** whose declared
+1. Each job's trigger is the daily anchor plus its dependency depth, so the day's cycle is
+   ordered by construction: prices before fundamentals before valuations before decisions.
+2. A trigger only enqueues the job — APScheduler is the clock, not the executor.
+3. One dispatcher thread takes the job with the **shallowest dependency depth** whose declared
    dependencies are neither queued nor running, runs it to completion, and looks again.
-3. A job whose input is still running is **held**, not skipped: prices, then fundamentals, then
-   valuations, then decisions, in that order, however the triggers landed.
+4. A job whose input is still running is **held**, not skipped.
 
-A job's phase within the day is derived from its depth — ten minutes per level — so the printed
-schedule reads in pipeline order too. Because there is one run at a time, a long job delays
-everything behind it; that is the price of a dashboard that stays responsive, and it is why the
-Operations page shows what is queued as well as what is running.
+**The time is editable on the Operations page**, as a 24-hour field: the value is stored in the
+database (so it survives a restart without editing a file baked into the image), the scheduler
+re-reads it within a minute, and an unusable value changes nothing and says so. Because there is
+one run at a time, a long job delays everything behind it; the Operations page shows what is
+queued as well as what is running.
+
+**A missed cycle is not a lost one.** If nothing was running at 06:00, the next start finds every
+job more than a day past its last success and runs it — in dependency order, through the queue.
+A restart *after* the cycle has run does nothing: a job inside its day waits for tomorrow's
+anchor.
 
 ---
 

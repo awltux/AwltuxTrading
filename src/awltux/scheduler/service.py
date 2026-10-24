@@ -25,6 +25,7 @@ from typing import Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from awltux import schedule_time
 from awltux.scheduler import progress
 from awltux.scheduler.catchup import CatchUp, catch_ups, next_run_time_for
 from awltux.scheduler.jobs import JobSpec, execute_job, last_successful_runs
@@ -40,6 +41,14 @@ logger = logging.getLogger(__name__)
 #: quietly run every 45 seconds. `_schedule` warns when a spec breaks it and
 #: `test_scheduler` fails, because a warning in a log nobody reads is not a guard.
 MIN_INTERVAL_SECONDS = 3_600
+
+#: How often the dispatcher re-reads the daily trigger time, in seconds.
+#:
+#: The value lives in the database because the Operations page can change it, and the page runs
+#: in a *different process* from the scheduler -- so there is nothing to call and the scheduler
+#: has to look. Twenty seconds is well under the resolution of a daily cycle and one primary-key
+#: read every twenty seconds is nothing.
+SCHEDULE_RECHECK_SECONDS = 20.0
 
 #: How long the dispatcher waits at startup before taking its first job.
 #:
@@ -162,7 +171,9 @@ class _Queued:
 class SchedulerService:
     """Thin wrapper over APScheduler with a job registry and manual triggers."""
 
-    def __init__(self, specs: list[JobSpec] | None = None) -> None:
+    def __init__(
+        self, specs: list[JobSpec] | None = None, *, settings: Any = None
+    ) -> None:
         self._scheduler = BackgroundScheduler(
             timezone="UTC",
             # One worker. See MAX_CONCURRENT_JOBS: the pool is the thing that was
@@ -192,6 +203,15 @@ class SchedulerService:
         #: Jobs executing *right now*, by id. At most one from the dispatcher; `run_now(wait=True)`
         #: adds its own for the length of the call, so the ordering rule can see a manual run.
         self._running: set[str] = set()
+        # The daily cycle's start, and the zone it is written in. Read once at `start()` and
+        # re-read every SCHEDULE_RECHECK_SECONDS so a change made on the Operations page takes
+        # effect without a restart -- see `_maybe_reschedule`.
+        self._settings = settings
+        self._daily_at = ""
+        self._zone = dt.UTC
+        self._next_recheck = 0.0
+        #: What the triggers were last built around, so a change can be noticed.
+        self._scheduled_with = ""
         if specs:
             for spec in specs:
                 self.register(spec)
@@ -228,6 +248,8 @@ class SchedulerService:
         # persisted.
         progress.clear_stop()
         self._depths = dependency_depth(list(self._specs.values()))
+        self._read_schedule_time()
+        self._scheduled_with = self._daily_at
         self._start_dispatcher()
         # Read once, before anything is scheduled: the answer is a fact about how long
         # the process was away, and a job that fires during this loop would otherwise
@@ -243,8 +265,10 @@ class SchedulerService:
         self._scheduler.start(paused=self._paused)
         scheduled = [spec for spec in self._specs.values() if spec.scheduled]
         logger.info(
-            "scheduler started with %d jobs (%s)",
+            "scheduler started with %d jobs, daily at %s %s (%s)",
             len(scheduled),
+            self._daily_at,
+            self._zone.key,
             ", ".join(sorted(s.id for s in scheduled)) or "none",
         )
         if owed:
@@ -258,6 +282,55 @@ class SchedulerService:
                     f"{catch_up.job_id} ({catch_up.missed} missed)" for catch_up in owed
                 ),
             )
+
+    # ----------------------------------------------------------- the daily time
+    def _read_schedule_time(self) -> None:
+        """Take the time of day in force, and the zone it is written in.
+
+        The override the Operations page writes wins over `config/config.yaml`, and the zone is
+        the *installation's* (`app.timezone`) rather than the reader's cookie: a schedule is a
+        property of this deployment, and a page opened in another zone must not move it.
+        """
+        settings = self._settings
+        if settings is None:
+            from awltux.config import get_settings
+
+            settings = get_settings()
+        self._settings = settings
+        self._daily_at = schedule_time.effective(settings)
+        self._zone = schedule_time.zone_for(settings)
+
+    def _maybe_reschedule(self) -> None:
+        """Rebuild the triggers if the daily time was changed on another process.
+
+        The Operations page writes the value to the database, and the scheduler is a *different
+        process* -- so nothing can call into it. Re-reading on a timer is the honest alternative:
+        at most `SCHEDULE_RECHECK_SECONDS` after a change, every trigger is rebuilt against the
+        new anchor (`replace_existing=True`), and the change is logged because a schedule that
+        moved without saying so is exactly the kind of silent behaviour this tree avoids.
+        """
+        self._next_recheck = time.monotonic() + SCHEDULE_RECHECK_SECONDS
+        try:
+            self._read_schedule_time()
+        except Exception:  # pragma: no cover - a bad setting must not stop the clock
+            logger.exception("could not re-read the daily trigger time; keeping %s", self._daily_at)
+            return
+        if self._daily_at == self._scheduled_with:
+            return
+        logger.info(
+            "daily trigger time changed from %s to %s; rebuilding %d trigger(s)",
+            self._scheduled_with,
+            self._daily_at,
+            sum(1 for spec in self._specs.values() if spec.scheduled),
+        )
+        self._scheduled_with = self._daily_at
+        for spec in self._specs.values():
+            if spec.scheduled:
+                self._schedule(spec)
+
+    def scheduled_daily_at(self) -> str:
+        """The time the triggers are currently built around, for the page and the log."""
+        return self._scheduled_with
 
     def pending_catch_ups(self, now: dt.datetime | None = None) -> list[CatchUp]:
         """What is owed to each job after the process was not running.
@@ -468,13 +541,15 @@ class SchedulerService:
         interval trigger compute the first fire time, which is what "every 45
         seconds" is supposed to mean; :meth:`_first_run` says which case applies.
 
-        The first run of a job that is not run-on-start is placed by its **dependency depth**:
-        a job with no dependencies starts at the top of the cycle, its dependents ten minutes
-        later (:data:`DEPTH_PHASE_SECONDS`), and so on. It used to be a random spread across the
-        hour, which kept nineteen hourly jobs off the same tick; with one daily cycle and a
-        dispatcher, "the same tick" costs nothing -- they queue -- and the order they run in is
-        the thing that matters. The phase is applied once, as the trigger's start date, so the
-        Operations page prints a schedule that stays true.
+        **The daily cycle is anchored to a time of day**, not to the process. Every job fires at
+        the configured `schedule.daily_at` (06:00 by default, in `app.timezone`) offset by its
+        dependency depth: a job with no dependencies starts at the anchor, its dependents ten
+        minutes later (:data:`DEPTH_PHASE_SECONDS`), and so on. The value can be changed from the
+        Operations page, and :meth:`_maybe_reschedule` rebuilds these triggers when it is.
+
+        It used to be an interval from *now* with a random spread across the hour, which meant the
+        cycle drifted to whenever the process last started. With a daily cadence that is the wrong
+        thing to anchor: a restart at noon would move the "daily" run to noon.
         """
         interval = spec.interval_seconds
         if interval is None:
@@ -485,22 +560,19 @@ class SchedulerService:
             return
         _warn_if_below_the_floor(spec)
         now = dt.datetime.now(dt.UTC)
-        phase = min(
-            # **One second, not zero.** APScheduler treats a start date at or before "now" as a
-            # whole interval already elapsed, so a phase of zero would give a depth-0 job its
-            # first run *tomorrow*. One second keeps the bootstrap behaviour the spread had:
-            # a fresh container starts its cycle now and the deeper jobs follow it in order.
-            1 + self._depths.get(spec.id, 0) * DEPTH_PHASE_SECONDS,
+        offset = min(
+            self._depths.get(spec.id, 0) * DEPTH_PHASE_SECONDS,
             # Half the interval, so a job whose depth would push its first run past its own
             # cadence still fires inside it. Only reachable for a sub-daily interval, which the
             # registry no longer has, but a phase longer than the interval would silently shift
             # the whole schedule.
-            max(interval // 2, 1),
+            max(interval // 2, 0),
         )
+        anchor = schedule_time.next_anchor(now, self._daily_at, self._zone)
 
         trigger = IntervalTrigger(
             seconds=interval,
-            start_date=now + dt.timedelta(seconds=phase),
+            start_date=anchor + dt.timedelta(seconds=offset),
             timezone="UTC",
         )
 
@@ -610,6 +682,10 @@ class SchedulerService:
                 while item is None:
                     if self._stopping:
                         return
+                    if time.monotonic() >= self._next_recheck:
+                        # Outside the lock would be tidier, but the rebuild has to be serialised
+                        # against a pick, and a pick is the only thing that reads `_daily_at`.
+                        self._maybe_reschedule()
                     if not self._paused:
                         item = self._take_runnable()
                     if item is None:

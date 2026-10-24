@@ -19,7 +19,7 @@ from fastapi import APIRouter, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import desc, select
 
-from awltux import __version__, version
+from awltux import __version__, schedule_time, version
 from awltux import metrics as metrics_module
 from awltux.analysis import adopted as adopted_map
 from awltux.analysis import corrections as corrections_rules
@@ -2657,6 +2657,10 @@ def jobs_page(
             "run_page": run_page,
             "run_pages": pages,
             "run_per_page": run_per_page,
+            # The daily trigger time, as a 24-hour value the form can populate, plus what it
+            # will do next so a reader can check the change took: the anchor is a wall clock,
+            # and this is the instant it means.
+            **_daily_time_context(request),
             "filters": {
                 "job": run_job or "",
                 "since": run_since or "",
@@ -2665,6 +2669,72 @@ def jobs_page(
             },
         },
     )
+
+
+#: What the Operations page says after a daily-time change, keyed by a code rather than by
+#: whatever the reader typed: the sentence is chosen from this table, so nothing echoed back
+#: becomes page text.
+SCHEDULE_NOTES: dict[str, str] = {
+    "saved": "Daily trigger time saved. The scheduler picks it up within a minute; the cycle "
+    "runs every job once, in dependency order, starting at that time.",
+    "bad": "Nothing was changed: a trigger time has to be a 24-hour time like 06:00.",
+    "reset": "Back to the configured default.",
+}
+
+
+def _daily_time_context(request: Request) -> dict[str, Any]:
+    """The daily trigger time as the Operations page shows it: in force, configured, next.
+
+    Read here rather than off the scheduler object, because the value lives in the database
+    precisely so the page and the scheduler process can both see it -- `schedule_time.effective`
+    is the one reader, so the two cannot disagree about which value is in force.
+    """
+    settings = get_settings()
+    with session_scope() as session:
+        daily_at = schedule_time.effective(settings, session=session)
+    zone = schedule_time.zone_for(settings)
+    return {
+        "daily_at": daily_at,
+        "configured_daily_at": schedule_time.normalise(settings.schedule.daily_at),
+        "daily_zone": zone.key,
+        "next_cycle": schedule_time.next_anchor(dt.datetime.now(dt.UTC), daily_at, zone),
+        "schedule_message": SCHEDULE_NOTES.get(request.query_params.get("schedule") or ""),
+    }
+
+
+@router.post("/jobs/daily-at", include_in_schema=False)
+def set_daily_at(daily_at: str = Form("")) -> RedirectResponse:
+    """Save the daily trigger time, and come back to the page that offers it.
+
+    A POST rather than a link for the reason every write here is: a prefetcher following a GET
+    would change the schedule. The value is validated by ``schedule_time.set_stored`` -- the
+    same function the config validator uses -- and an unusable one changes nothing and is
+    reported, because a schedule is not a thing to guess at.
+
+    The scheduler runs in another process and re-reads the value within
+    ``SCHEDULE_RECHECK_SECONDS``; there is deliberately no call into it, so a failed delivery
+    cannot leave the page reporting a change that did not happen.
+    """
+    with session_scope() as session:
+        try:
+            schedule_time.set_stored(session, daily_at)
+        except ValueError:
+            outcome = "bad"
+        else:
+            outcome = "saved"
+            session.commit()
+    return RedirectResponse(
+        url=f"/jobs?schedule={outcome}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post("/jobs/daily-at/reset", include_in_schema=False)
+def reset_daily_at() -> RedirectResponse:
+    """Drop the override, so the value in ``config.yaml`` applies again."""
+    with session_scope() as session:
+        schedule_time.clear_stored(session)
+        session.commit()
+    return RedirectResponse(url="/jobs?schedule=reset", status_code=status.HTTP_303_SEE_OTHER)
 
 
 def _schema_revision() -> str | None:

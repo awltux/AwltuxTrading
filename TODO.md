@@ -982,29 +982,6 @@ does not have to be repeated to check it.
 
 ## Operations
 
-### Every restart re-runs the whole day's cycle, because the daily phase is anchored to it
-
-Discovered 2026-10-23, when every job became daily. The scheduler places each job's first run
-at `now + depth × 600s` (`scheduler/service.py::_schedule`), so a restart *re-anchors* the day:
-the depth-0 jobs fire immediately and the rest follow in dependency order, whatever they ran an
-hour before. Observed on the deployed container: after a redeploy at 16:48 the whole pipeline
-queued within 30 minutes (`macro_rates`, `provider_balance`, `t212_instruments`, `t212_orders`,
-`news_sectors`, `retention`, then `universe_refresh`, `price_eod`, `filings_edgar`, `news_rss`,
-…), and the dispatcher ran them one at a time for the rest of the evening.
-
-This is **not new** -- the old first-run spread did the same within an hour -- but with hourly
-jobs it cost a slice and with daily jobs it costs the day's whole ration, including
-`decision_rotation_per_day` (500 model calls) and `news_rss` (the feeds' whole daily allowance,
-~2 hours). It is worth deciding because deploys are frequent here: six in one afternoon on
-2026-10-23.
-
-**The fix is to anchor the phase to the history rather than to the process.** Catch-up already
-knows each job's last success (`scheduler/catchup.py`); the same fact gives "next due = last
-success + interval, snapped to the phase" -- so a job that ran two hours ago waits twenty-two,
-and a restart changes nothing. What needs care: a *fresh* database has no history, so depth-0
-jobs still have to fire at once (the bootstrap `run_on_start` set), and the Operations page's
-`next run` column would then print a real time rather than "now".
-
 ### `awltux quiet` does not reach a deep-dive, because the stop flag lives in the scheduler process
 
 Found 2026-10-21 while building the research queue, and it is a hole the 2026-10-20 process split

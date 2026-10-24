@@ -20,6 +20,59 @@
 {% block content %}
 <h1>Operations</h1>
 
+{# ---- the daily trigger time -------------------------------------------------- #}
+{# Asked for 2026-10-23: *"Add a validated time 24hr input field to the Operations page for the
+   daily trigger time. Populate with the default trigger time. Set default trigger time as 06:00.
+   Ensure the trigger is caught up if the app wasnt running at the trigger time and the event
+   wasnt fired."*
+
+   A `time` input carries a 24-hour value regardless of how the browser renders it, and its
+   `step` is a minute because a schedule finer than that has no meaning here. The page validates
+   for the browser's benefit; the server validates for real (`schedule_time.set_stored`), and an
+   unusable value changes nothing and says so.
+
+   The value is the *effective* one -- an override set here, else `schedule.daily_at` from
+   config.yaml -- so the field always shows what the scheduler will actually do. #}
+<section class="panel" id="schedule-time">
+  <h2>Daily trigger time</h2>
+  <p class="muted small">
+    Every job runs once a day, starting at this time{% if daily_zone %}
+    in <strong>{{ daily_zone }}</strong>{% endif %}. A job waits for whatever it depends on, so
+    the cycle runs in pipeline order from here &mdash; ten minutes more per level of the graph,
+    and one job at a time. A cycle missed because nothing was running is caught up on the next
+    start.
+  </p>
+  <form method="post" action="/jobs/daily-at" class="filters">
+    <label>Trigger at
+      <input type="time" name="daily_at" value="{{ daily_at }}" required step="60"
+             aria-label="Daily trigger time, 24-hour">
+    </label>
+    <button type="submit">Save</button>
+    {% if daily_at == configured_daily_at %}
+      <span class="muted small">the configured default</span>
+    {% endif %}
+  </form>
+  {# The reset is a second form, not a control inside the first: nested forms are invalid HTML
+     and a browser would submit the wrong one. #}
+  {% if daily_at != configured_daily_at %}
+    <p class="muted small">
+      Overriding the configured {{ configured_daily_at }}.
+      <form method="post" action="/jobs/daily-at/reset" class="inline">
+        <button type="submit" class="small">use the default</button>
+      </form>
+    </p>
+  {% endif %}
+  <p class="muted small">
+    Next cycle: <strong>{{ next_cycle | datetime('%Y-%m-%d %H:%M') }}</strong>.
+    Changing this takes effect within a minute; a job already running is not interrupted.
+  </p>
+  {% if schedule_message %}
+    <p class="notice{% if request.query_params.get('schedule') == 'bad' %} warn{% endif %}">
+      {{ schedule_message }}
+    </p>
+  {% endif %}
+</section>
+
 {% if quiet and quiet.quiet %}
 <p class="notice">
   <strong>Quieted{% if quiet.quiet_since %} since {{ quiet.quiet_since | datetime }}{% endif %}.</strong>

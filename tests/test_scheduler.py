@@ -211,36 +211,56 @@ class TestTheCadence:
 
 
 class TestWhenAJobFirstRuns:
-    def test_without_run_on_start_the_first_run_is_one_phase_away(self, quiet_jobs):
-        """It does not fire at "now" when it sits below something, and it does not wait a
-        whole interval either: a job's first run is its dependency depth times the phase.
+    def test_the_first_run_is_the_daily_anchor_plus_its_depth(self, quiet_jobs, settings):
+        """The cycle is anchored to a time of day, not to when the process started.
+
+        Asked for 2026-10-23: *"Add a validated time 24hr input field to the Operations page for
+        the daily trigger time ... Set default trigger time as 06:00."* A restart at noon must
+        leave "daily at 06:00" at 06:00, which an interval-from-now cannot express.
         """
+        from awltux import schedule_time
         from awltux.scheduler.service import DEPTH_PHASE_SECONDS
 
-        before = dt.datetime.now(dt.UTC)
-        spec = JobSpec(id="later", func=_noop, interval_seconds=86_400)
         root = JobSpec(id="root", func=_noop, interval_seconds=86_400)
-        service = SchedulerService([root, spec])
+        deep = JobSpec(id="deep", func=_noop, interval_seconds=86_400, depends_on=("root",))
+        service = SchedulerService([root, deep], settings=settings)
+        before = dt.datetime.now(dt.UTC)
         service.start()
         try:
-            first = dt.datetime.fromisoformat(service.status()[0]["next_run"])
+            rows = {row["id"]: row for row in service.status()}
+            anchor = schedule_time.next_anchor(
+                before, service.scheduled_daily_at(), schedule_time.zone_for(settings)
+            )
+            root_at = dt.datetime.fromisoformat(rows["root"]["next_run"])
+            deep_at = dt.datetime.fromisoformat(rows["deep"]["next_run"])
         finally:
             service.shutdown(wait=False)
 
-        # `later` has no dependency, so it is depth 0 like `root`: it fires at once.
-        assert (first - before).total_seconds() <= 5
+        assert abs((root_at - anchor).total_seconds()) <= 1, (
+            "a job with no dependencies starts the cycle"
+        )
+        assert abs((deep_at - anchor).total_seconds() - DEPTH_PHASE_SECONDS) <= 1, (
+            "its dependent starts one phase later"
+        )
 
-        depth_two = JobSpec(id="later", func=_noop, interval_seconds=86_400, depends_on=("root",))
-        service = SchedulerService([root, depth_two])
-        started = dt.datetime.now(dt.UTC)
-        service.start()
+    def test_a_job_scheduled_before_its_anchor_waits_for_it(self, quiet_jobs, settings):
+        """Started at 03:00 with a 06:00 anchor, the cycle runs in three hours, not now."""
+        from awltux import schedule_time
+
+        service = SchedulerService([JobSpec(id="j", func=_noop, interval_seconds=86_400)],
+                                   settings=settings)
+        now = dt.datetime.now(dt.UTC)
+        anchor = schedule_time.next_anchor(
+            now, schedule_time.effective(settings), schedule_time.zone_for(settings)
+        )
         try:
-            row = next(row for row in service.status() if row["id"] == "later")
-            waited = (dt.datetime.fromisoformat(row["next_run"]) - started).total_seconds()
+            service.start()
+            next_run = dt.datetime.fromisoformat(service.status()[0]["next_run"])
         finally:
             service.shutdown(wait=False)
 
-        assert DEPTH_PHASE_SECONDS - 5 <= waited <= DEPTH_PHASE_SECONDS + 5
+        assert 0 < (next_run - now).total_seconds() <= 86_400 + 1
+        assert abs((next_run - anchor).total_seconds()) <= 1
 
     def test_run_on_start_fires_without_waiting_its_interval(self, monkeypatch):
         """Asserted by observing the run, not the clock.

@@ -17,7 +17,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # --------------------------------------------------------------------------- #
@@ -266,6 +273,19 @@ class ScheduleConfig(BaseModel):
     two hours) rather than a ninth of them.
     """
 
+    #: When the daily cycle starts, as ``HH:MM`` in ``app.timezone``.
+    #:
+    #: Every job is daily, and this is the one time of day they are all anchored to: a job with
+    #: no dependencies runs at this instant, its dependents ten minutes later per level of the
+    #: graph (see `scheduler/service.py`). The Operations page can override it, and the override
+    #: is stored in `app_setting` rather than here -- this value is the default the page starts
+    #: from (`awltux/schedule_time.py`).
+    #:
+    #: A time of day rather than an interval, because "run the day's pipeline at six in the
+    #: morning" is what a reader means and "every 86400 seconds from whenever the process
+    #: started" is what the interval could express -- the second drifts with every restart.
+    daily_at: str = "06:00"
+
     t212_instruments: int = 86_400
     #: Trading 212's order history. One page of orders a day is enough: an incremental run
     #: reads one page and stops at the newest order it already holds.
@@ -343,6 +363,19 @@ class ScheduleConfig(BaseModel):
     #: can arrive most of a day after the spend -- the balance strip's age is printed beside
     #: the figure, and the red badge marks a breach whenever it is read.
     provider_balance: int = 86_400
+
+    @field_validator("daily_at")
+    @classmethod
+    def _daily_at_is_a_time(cls, value: str) -> str:
+        """Refuse anything but a 24-hour time, at load rather than at the first trigger.
+
+        One rule, shared with the Operations form and the stored override -- see
+        `awltux/schedule_time.py`. A bad value in the file should stop the process from
+        starting with a schedule nobody can reason about, which a Pydantic error does.
+        """
+        from awltux import schedule_time
+
+        return schedule_time.normalise(value)
 
 
 class BudgetRule(BaseModel):
