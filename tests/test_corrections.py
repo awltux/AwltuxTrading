@@ -129,6 +129,97 @@ def _row(session, period_id: int) -> FundamentalPeriod:
 # --------------------------------------------------------------------------- #
 
 
+class TestTheFilerKey:
+    """What a correction is recorded against, when the company has no SEC CIK.
+
+    Found on `JELl_EQ` (Jersey Electricity): the page offered `Other Operating Expenses` from the
+    source's own payload, and every submission was refused with `no-filer` because the instrument
+    has no CIK -- and no Companies House number either. Measured the same day: 60 of the 183
+    instruments with stored periods have no SEC CIK.
+    """
+
+    def test_a_cik_is_kept_bare_so_existing_records_still_read(self):
+        """The records already in `app_setting` are keyed by the CIK itself. A prefixed CIK would
+        orphan every one of them, and nothing about the fix needs that.
+        """
+        assert corrections.filer_key(cik=CIK, ticker="TEST_US_EQ") == CIK
+        assert corrections.key(CIK) == f"account_correction:{CIK}"
+        assert not corrections.is_instrument_key(CIK)
+
+    def test_with_no_cik_the_instrument_is_the_filer(self):
+        assert corrections.filer_key(cik=None, ticker="JELl_EQ") == "t212:JELl_EQ"
+        assert corrections.is_instrument_key("t212:JELl_EQ")
+
+    def test_the_page_is_told_which_of_the_two_it_is(self):
+        assert CIK in corrections.filer_label(CIK)
+        assert "JELl_EQ" in corrections.filer_label("t212:JELl_EQ")
+
+    def test_a_cik_scopes_every_instrument_that_shares_it(self, session):
+        """Unchanged behaviour, and the reason the CIK is worth keeping: one company can be listed
+        on two venues, and "every period this filer has" is all of them.
+        """
+        # The instruments first: a period's ticker is a foreign key, so the row has to exist.
+        session.add(make_instrument("AAA_US_EQ", sec_cik=CIK))
+        session.add(make_instrument("BBB_US_EQ", sec_cik=CIK))
+        session.add(make_instrument("CCC_US_EQ", sec_cik=None))
+        session.flush()
+        session.add_all(
+            [
+                _period("AAA_US_EQ", dt.date(2024, 12, 31)),
+                _period("BBB_US_EQ", dt.date(2023, 12, 31)),
+                _period("CCC_US_EQ", dt.date(2022, 12, 31)),
+            ]
+        )
+        session.commit()
+
+        assert {row.instrument_t212_ticker for row in corrections.filer_periods(session, CIK)} == {
+            "AAA_US_EQ",
+            "BBB_US_EQ",
+        }
+
+    def test_an_instrument_key_scopes_that_instrument_only(self, session):
+        session.add(make_instrument("JELl_EQ", sec_cik=None))
+        session.add(make_instrument("OTHER_US_EQ", sec_cik=None))
+        session.flush()
+        session.add_all(
+            [
+                _period("JELl_EQ", dt.date(2024, 9, 30)),
+                _period("JELl_EQ", dt.date(2025, 9, 30)),
+                _period("OTHER_US_EQ", dt.date(2025, 9, 30)),
+            ]
+        )
+        session.commit()
+
+        rows = corrections.filer_periods(session, "t212:JELl_EQ")
+
+        assert [row.period_end for row in rows] == [
+            dt.date(2024, 9, 30),
+            dt.date(2025, 9, 30),
+        ]
+
+    def test_rules_survive_a_round_trip_under_an_instrument_key(self, session):
+        rules = corrections.Rules()
+        corrections.learn_line(
+            rules,
+            "src:other-operating-expenses",
+            label="Other Operating Expenses",
+            statement="profit_and_loss",
+            section="Operating expenses",
+        )
+        corrections.save_filer(session, "t212:JELl_EQ", rules)
+        session.commit()
+
+        loaded = corrections.load_filer(session, "t212:JELl_EQ")
+
+        assert loaded.lines["src:other-operating-expenses"].section == "Operating expenses"
+        assert session.get(AppSetting, corrections.key("t212:JELl_EQ")) is not None
+
+    def test_no_key_at_all_is_no_rules_rather_than_an_error(self, session):
+        assert corrections.load_filer(session, None) == corrections.Rules()
+        assert corrections.filer_periods(session, None) == []
+
+
+
 class TestApplyingACorrection:
     """`apply` is pure and is the only place the arithmetic of correcting lives."""
 
@@ -330,11 +421,15 @@ class TestTheConfirmPage:
         assert "us-gaap:Revenues" in body
         assert "0000320193-24-000123" in body
 
-    def test_the_filer_wide_scope_is_offered_only_where_there_is_a_filer(
+    def test_the_wider_scope_is_offered_on_every_period_and_says_what_it_is_recorded_against(
         self, client, session
     ):
-        """A removal recorded against a CIK this period does not have would have nothing to
-        apply to, so the tick is not shown and the removal is made for this period alone."""
+        """It used to be offered only where the instrument had an SEC CIK, which left 60 of the 183
+        instruments with stored accounts unable to carry a rule at all -- and left a reader on one
+        of them able to remove a line for one year only, without being told why. The scope is the
+        CIK where there is one and the instrument where there is not, so the tick is always shown
+        and the page names the record it makes.
+        """
         with_filer = _store(
             session, "WITH_US_EQ", _period("WITH_US_EQ", dt.date(2024, 12, 31))
         )
@@ -346,12 +441,17 @@ class TestTheConfirmPage:
         )
         session.commit()
 
-        assert "every period this filer has" in client.get(
+        named = client.get(
             f"/accounts/{with_filer.id}/corrections/new?remove=revenue"
         ).text
-        assert "every period this filer has" not in client.get(
+        instrument = client.get(
             f"/accounts/{without.id}/corrections/new?remove=revenue"
         ).text
+
+        assert "every period this filer has" in named
+        assert CIK in named
+        assert "every period this filer has" in instrument
+        assert "WITHOUT_US_EQ" in instrument, "the page names the instrument it records against"
 
     def test_a_line_that_is_already_removed_says_so_instead_of_offering_it_again(        self, client, session, two_years
     ):
@@ -468,11 +568,19 @@ class TestTheSideOfTheLine:
         key = "us-gaap:ContractWithCustomerLiabilityCurrent"
         assert row.metric_sources[key]["side"] == "credit"
 
-    def test_the_form_asks_for_a_line_to_create_and_states_a_line_the_chart_has(
+    def test_the_form_asks_for_the_side_and_says_a_chart_line_ignores_it(
         self, client, session, two_years
     ):
-        """The affordance and the arithmetic have to agree: a control that is recorded and then
-        ignored by everything that reads the accounts is worse than no control."""
+        """The control and the arithmetic have to agree, and hiding the control is not agreement.
+
+        The side is asked for every line because the reader can change the dropdown to a caption
+        this project's chart does not carry -- a ``src:`` or ``new:`` option -- and that caption is
+        the one the side decides. What the page must not do is let a reader believe a chart line's
+        side is theirs: the ledger posts it where the chart posts it, and the text beside the radios
+        says so. Measured on `JELl_EQ`, where choosing "Other Operating Expenses" from the dropdown
+        took the *preselected chart line's* hidden side and added the expense instead of deducting
+        it.
+        """
         on_a_chart_line = BeautifulSoup(
             client.get(
                 f"/accounts/{two_years.id}/corrections/new",
@@ -481,16 +589,16 @@ class TestTheSideOfTheLine:
             "lxml",
         )
 
-        assert on_a_chart_line.select("input[type=radio][name=side]") == []
-        assert on_a_chart_line.select_one("input[type=hidden][name=side]")["value"] == "credit"
-        assert "posted where the chart posts it" in on_a_chart_line.get_text(" ")
+        radios = on_a_chart_line.select("input[type=radio][name=side]")
+        assert [radio["value"] for radio in radios] == list(corrections.SIDES)
+        assert on_a_chart_line.select_one("input[type=hidden][name=side]") is None
+        assert "posted on the side the chart gives it" in on_a_chart_line.get_text(" ")
 
-    def test_pressing_add_a_line_on_a_heading_does_not_ask_for_a_side_either(
+    def test_pressing_add_a_line_on_a_heading_asks_for_the_side_too(
         self, client, session, two_years
     ):
         """The other way into this form, and the one with nothing preselected: it opens on the
-        heading's own first line, so the side is the chart's there too. This is the path the
-        reader took -- *"selecting the debit/credit selectors when configuring the add line"*."""
+        heading's own first line, and the reader may still choose a caption from the dropdown."""
         form = BeautifulSoup(
             client.get(
                 f"/accounts/{two_years.id}/corrections/new",
@@ -500,8 +608,7 @@ class TestTheSideOfTheLine:
         )
 
         assert form.select_one("select[name=metric] option[selected]")["value"] == "revenue"
-        assert form.select("input[type=radio][name=side]") == []
-        assert form.select_one("input[type=hidden][name=side]")["value"] == "credit"
+        assert len(form.select("input[type=radio][name=side]")) == len(corrections.SIDES)
 
     def test_the_form_asks_when_the_line_is_the_filing_s_own(self, client, session, two_years):
         form = BeautifulSoup(
@@ -521,6 +628,10 @@ class TestTheSideOfTheLine:
         radios = form.select("input[type=radio][name=side]")
         assert [radio["value"] for radio in radios] == list(corrections.SIDES)
         assert form.select_one("input[type=hidden][name=side]") is None
+        # And the heading is asked for on every path now, not only for a caption to create.
+        assert form.select_one("select[name=section] option[selected]")["value"] == (
+            "Current liabilities"
+        )
 
 
 class TestRemovingALine:
@@ -834,17 +945,14 @@ class TestFilerWideRemovals:
 
         assert "no-rule" in response.headers["location"]
 
-    def test_a_filer_without_a_cik_falls_back_to_a_removal_for_this_period(
-        self, client, session
-    ):
-        """Rather than dropping the correction on the floor because the wider scope it asked
-        for is not available."""
-        period = _store(
-            session,
-            "TEST_US_EQ",
-            _period("TEST_US_EQ", dt.date(2024, 12, 31)),
-            cik=None,
-        )
+    def test_an_instrument_without_a_cik_carries_the_wider_scope_itself(self, client, session):
+        """It used to fall back to this period alone, silently. Now the instrument is the filer key,
+        so the rule is recorded and reaches the company's other years -- and the page says which
+        name it went under, because it is not a CIK.
+        """
+        older = _period("TEST_US_EQ", dt.date(2023, 12, 31), {**FIGURES, "inventory": 90.0})
+        newer = _period("TEST_US_EQ", dt.date(2024, 12, 31))
+        period = _store(session, "TEST_US_EQ", older, newer, cik=None)
         session.commit()
 
         response = client.post(
@@ -853,8 +961,13 @@ class TestFilerWideRemovals:
             follow_redirects=False,
         )
 
-        assert "corrections=removed#" in response.headers["location"]
-        assert "inventory" not in _row(session, period.id).metrics
+        assert "corrections=removed-filer#" in response.headers["location"]
+        session.expire_all()
+        stored = session.get(AppSetting, corrections.key("t212:TEST_US_EQ"))
+        assert stored is not None and "inventory" in stored.value["removed"]
+        assert {row.period_end for row in corrections.filer_periods(
+            session, "t212:TEST_US_EQ"
+        )} == {dt.date(2023, 12, 31), dt.date(2024, 12, 31)}
 
 
 class TestOneLineOneDecision:

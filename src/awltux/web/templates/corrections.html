@@ -67,7 +67,7 @@
         <textarea id="reason" name="reason" rows="2" cols="60"
                   placeholder="e.g. the extractor read the lease liability as other liabilities"></textarea>
       </p>
-      {% if cik %}
+      {% if filer %}
         <p>
           <label>
             <input type="checkbox" name="scope" value="filer">
@@ -76,8 +76,10 @@
         </p>
         <p class="muted small">
           A line that is not one of this company's accounts is usually not one of its accounts
-          in any year, so the wider scope is offered. It is recorded against the filer's CIK
-          <code>{{ cik }}</code> and can be undone from any of its periods.
+          in any year, so the wider scope is offered. It is recorded against
+          {# Every period has a filer key now -- the SEC's CIK, or the instrument for a company
+             the SEC does not register -- so the wider scope is offered on every page. #}
+          <strong>{{ filer_label }}</strong> and can be undone from any of its periods.
         </p>
       {% endif %}
       <button type="submit">Take the line out</button>
@@ -175,65 +177,56 @@
       {% endif %}
     </p>
 
+    <p>
+      <label for="section">Which heading does it belong under?</label><br>
+      <select id="section" name="section">
+        {% for title in sections %}
+          <option value="{{ title }}"
+                  {% if title == section %}selected{% endif %}>{{ title }}</option>
+        {% endfor %}
+      </select>
+      <span class="muted small">
+        Asked for every line, and used by the two that are not already one of these accounts: a
+        caption the source states, and one read out of a filing. A line created here is remembered
+        for <strong>every period this company files</strong> under this heading, and a figure put on
+        it is counted in whatever that heading is added up into. Where the heading is added up into
+        nothing, the line is printed there and the statement says so — which is a real answer, not a
+        failure: some sources state a total that already includes the line, and adding it again
+        would count it twice. Move a line with <em>move</em> on the accounts page to change where it
+        is printed or what it is counted in.
+      </span>
+    </p>
     {% if new_line %}
-      <p>
-        <label for="section">If that line is new, which heading does it belong under?</label><br>
-        <select id="section" name="section">
-          {% for title in sections %}
-            <option value="{{ title }}"
-                    {% if title == new_line.section %}selected{% endif %}>{{ title }}</option>
-          {% endfor %}
-        </select>
-        <input type="hidden" name="caption" value="{{ new_line.caption }}">
-        <span class="muted small">
-          The line is remembered for <strong>every period this company files</strong>, under this
-          heading, and a figure put on it is added to that heading's total. Where the heading is
-          added up into nothing, the line is printed there and the statement says so — which is a
-          real answer, not a failure: some sources state a total that already includes the line, and
-          adding it again would count it twice. Move a line with <em>move</em> on the accounts page
-          to change where it is printed or what it is counted in.
-        </span>
-      </p>
+      <input type="hidden" name="caption" value="{{ new_line.caption }}">
     {% endif %}
 
     <p>
       <label for="value">Figure</label><br>
-      <input id="value" name="value" inputmode="decimal" required value="{{ value }}"
+      <input id="value" name="value" inputmode="decimal" value="{{ value }}"
              placeholder="1234.5, or (1234.5) for a credit">
       <span class="muted small">
         Thousands separators, a currency symbol and a figure in parentheses — a filing's way of
-        printing a negative — are all understood.
+        printing a negative — are all understood. <strong>Leave it empty for a caption the source
+        states</strong>: that figure is already stored, and choosing the caption is choosing it.
       </span>
     </p>
 
     <p>
-      {% if fixed_side %}
-        {# Not asked for a line the chart already carries: the ledger posts it on the side its own
-           line carries, so a choice here would be recorded and then ignored by every reader of
-           the accounts. Said rather than hidden, because a reader who expected to decide deserves
-           to know that the chart decided. #}
-        Side: <strong>{{ fixed_side }}</strong>
-        <input type="hidden" name="side" value="{{ fixed_side }}">
-        <span class="muted small">
-          This is one of the chart's own lines, and it is posted where the chart posts it. A line
-          created from the filing's caption is the one that has to be told which side it belongs
-          on.
-        </span>
-      {% else %}
-        Side:
-        {% for side in sides %}
-          <label><input type="radio" name="side" value="{{ side }}"
-                        {% if loop.first %}checked{% endif %}> {{ side }}</label>
-        {% endfor %}
-        <span class="muted small">
-          The side the line is posted on, kept with the correction. What moves the total is the
-          <strong>figure's own sign</strong>: a deduction the filing prints as
-          <code>(63,061)</code> belongs on a line as a negative, and a figure clicked out of a
-          filing arrives with the sign the filing printed. A filing that presents its expenses as
-          plain positive numbers needs the minus typed into the figure above — this form reads
-          <code>(1234.5)</code> as negative, which is the same convention.
-        </span>
-      {% endif %}
+      Side:
+      {% for side in sides %}
+        <label><input type="radio" name="side" value="{{ side }}"
+                      {% if loop.first %}checked{% endif %}> {{ side }}</label>
+      {% endfor %}
+      <span class="muted small">
+        Asked for every line, and honoured for the one being created: a line this project's chart
+        already carries is posted on the side the chart gives it and the ledger sums it there
+        whatever is chosen here. For a caption the source states, the side is the
+        <strong>direction</strong> — a provider prints an expense as a plain positive figure, so a
+        debit is what deducts it, and the figure is stored with the sign that implies. A figure
+        entered here is otherwise read as its own sign: a deduction the filing prints as
+        <code>(63,061)</code> belongs on a line as a negative, and a figure clicked out of a filing
+        arrives with the sign the filing printed.
+      </span>
     </p>
 
     <p>

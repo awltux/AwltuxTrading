@@ -1067,17 +1067,19 @@ def _corrected_accounts(
     is. It is popped out of the context by the caller, because no template needs the object
     itself -- the panel reads the rows.
     """
-    cik = instrument.sec_cik if instrument is not None else None
-    rules = corrections_rules.load_filer(session, cik)
+    filer = _filer_for(period, instrument)
+    rules = corrections_rules.load_filer(session, filer)
     record = corrections_rules.load_period(period)
     offerable, superseded = _learned_lines(rules, period)
     built = corrections_rules.build_layout(rules, record)
     return {
         "corrections": corrections_rules.corrections_for(period, rules),
         "correction_note": CORRECTION_NOTES.get(outcome or ""),
-        # Offered only where there is a filer to offer it for: a removal recorded against a CIK
-        # that this period does not have would have nothing to apply to.
-        "cik": cik,
+        # The name a correction is recorded against, and it in words. Every period has one -- see
+        # `filer_key` -- so the wider scope is offered everywhere rather than only for a company
+        # the SEC registers.
+        "filer": filer,
+        "filer_label": corrections_rules.filer_label(filer),
         "learned_lines": [line.as_dict() | {"metric": line.metric} for line in offerable],
         "superseded_lines": [line.as_dict() | {"metric": line.metric} for line in superseded],
         # The captions this period's source states that no canonical line claims. Offered as lines
@@ -1438,10 +1440,6 @@ CORRECTION_NOTES: dict[str, str] = {
         "That is not a heading this statement prints, and a line under no heading is a line "
         "nothing shows, so nothing was changed."
     ),
-    "no-filer": (
-        "A line belongs to the company that filed it and this period has no filer recorded, so "
-        "nothing was changed."
-    ),
     "bad-value": "That is not a figure, so nothing was changed.",
     "moved": "The line was moved, and every total it feeds was recomputed.",
     "moved-filer": (
@@ -1516,6 +1514,20 @@ def _accounts_detail(session: Any, period_id: int) -> dict[str, Any]:
     if detail is None:
         raise HTTPException(status_code=404, detail=f"no accounts stored as {period_id}")
     return detail
+
+
+def _filer_for(period: Any, instrument: Any) -> str:
+    """The name this period's corrections are recorded against.
+
+    The SEC's CIK where the instrument has one, and the instrument otherwise -- because a third of
+    the instruments with stored accounts have no CIK, and a page that offers a line and then
+    refuses to record it is worse than one that never offered it. See
+    `analysis/corrections.py::filer_key` for why the fallback is the instrument.
+    """
+    return corrections_rules.filer_key(
+        cik=instrument.sec_cik if instrument is not None else None,
+        ticker=period.instrument_t212_ticker,
+    )
 
 
 def _correction_tab(statement: str | None) -> str:
@@ -1612,25 +1624,34 @@ def corrections_form(
     heading the reader is working in, and the addition teaches that line to the filer for its
     later periods.
 
-    **Whether the side is asked depends on the line.** Which way a figure moves the total is
-    decided by the *line*: the chart's own lines are posted on the side the chart gives them, and
-    the ledger sums them with that weight whatever the form says, so a line the chart carries
-    shows its side rather than offering a choice that would be ignored. For a line created from
-    the filing's caption nothing else knows, so the reader is asked.
+    **Whether the side is asked depends on the line**, and the form now always asks. A line the
+    chart carries is posted on the side the chart gives it and the ledger sums it with that weight
+    whatever the form says -- so the choice is recorded for the chart's lines and honoured only for
+    a caption the reader is creating. Saying that beside the radios is better than hiding them: a
+    reader who selects one of the source's captions needs them, and the page cannot know which
+    option they will pick without a script.
+
+    **The heading is always asked for the same reason.** A caption selected in the picker is a line
+    of the accounts the reader is placing, and where it is placed is the question -- leaving the
+    form to fall back to the first heading put a caption under "Revenue" whenever it was chosen
+    from the dropdown rather than arrived at from the heading's own link.
     """
     tab = _correction_tab(statement)
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
-        cik = instrument.sec_cik if instrument is not None else None
+        filer = _filer_for(period, instrument)
         target = _removal_target(
-            period, remove, corrections_rules.load_period(period), corrections_rules.load_filer(session, cik)
+            period,
+            remove,
+            corrections_rules.load_period(period),
+            corrections_rules.load_filer(session, filer),
         )
         opened = _prefill(
             period,
             tab,
             session=session,
-            cik=cik,
+            filer=filer,
             metric=metric,
             value=value,
             tag=tag,
@@ -1640,11 +1661,14 @@ def corrections_form(
         context = {
             "period": period,
             "instrument": instrument,
-            "cik": cik,
+            "filer": filer,
+            "filer_label": corrections_rules.filer_label(filer),
             "statement": tab,
             "mode": "remove" if target else "add",
             "target": target,
-            "section": section or "",
+            # The heading the form opens on: the one the reader was working in, or the one an
+            # offered caption was learned under, or the statement's first.
+            "section": opened.section,
             "groups": opened.groups,
             "learned": opened.learned,
             "new_line": opened.new_line,
@@ -1661,14 +1685,6 @@ def corrections_form(
             ),
             "held": set(period.metrics or {}),
             "sides": corrections_rules.SIDES,
-            # A line the chart carries has its side already, and the ledger posts it there
-            # whatever the form says -- so the form stops asking. Empty for a line to create,
-            # which is the one case the reader has to decide.
-            "fixed_side": (
-                ""
-                if opened.chosen.startswith(NEW_LINE_PREFIX) or opened.chosen not in ledger.BY_KEY
-                else ledger.BY_KEY[opened.chosen].side
-            ),
             "chosen": opened.chosen,
             "value": opened.value,
             "tag": tag,
@@ -1687,12 +1703,13 @@ def corrections_form(
 class _Prefill:
     """What the add-a-line form opens on, worked out once instead of in the template.
 
-    Which line is being edited decides more than what is highlighted -- whether the side is asked
-    for, whether the figure box arrives full, and which heading a new line is offered under -- and
-    one rule in two places is how a form and the record it posts come to disagree.
+    Which line is being edited decides more than what is highlighted -- the figure the box arrives
+    holding, the heading it will be placed under, and whether it is a line to create -- and one rule
+    in two places is how a form and the record it posts come to disagree.
     """
 
     chosen: str
+    section: str
     value: str
     groups: list[dict[str, Any]]
     learned: list[Any]
@@ -1706,7 +1723,7 @@ def _prefill(
     tab: str,
     *,
     session: Any,
-    cik: str | None,
+    filer: str,
     metric: str | None,
     value: str,
     tag: str,
@@ -1724,33 +1741,44 @@ def _prefill(
       had to type a figure for;
     * **nothing at all**, when the reader pressed *add a line* on a heading, so the form opens on
       the first line of that heading.
+
+    The heading it opens on is settled here too: the one the reader is working in when the link
+    carried one, else the one a caption was learned under, else the statement's first -- because
+    the form asks for it unconditionally and a select has to open on something.
     """
-    rules = corrections_rules.load_filer(session, cik)
+    rules = corrections_rules.load_filer(session, filer)
     placement = corrections_rules.build_layout(rules, corrections_rules.load_period(period))
     groups = _line_choices(placement, tab)
     learned = [line for line in rules.lines.values() if line.statement == tab]
     headings = list(placement.sections(tab))
+    first = headings[0] if headings else ""
+    # The heading the reader was working in, when the link carried one -- else the statement's first.
+    working = _heading_in(section, headings) or first
     mapped = _metric_for_tag(tag, period)
-    new_line = _offered_line(
-        caption, tag, section=section, headings=headings, known=learned, mapped=mapped
-    )
     offered = _source_choices(period).get(tab, [])
     source_line = _source_offer(metric, offered)
     if source_line is not None:
         return _Prefill(
             chosen=str(source_line["option"]),
+            section=working,
             value=value or _sum_text_for_form(source_line.get("value")),
             groups=groups,
             learned=learned,
             headings=headings,
             offered=offered,
-            new_line=source_line,
+            new_line=dict(source_line, section=working),
         )
+    new_line = _offered_line(
+        caption, tag, section=section, headings=headings, known=learned, mapped=mapped
+    )
     chosen = _preselected(
         mapped=mapped, tag=tag, learned=learned, new_line=new_line, metric=metric
     )
     return _Prefill(
         chosen=chosen or _default_line(groups, section),
+        # A caption to create carries the heading it was offered under, which is the one the reader
+        # was working in when they clicked the link.
+        section=(new_line or {}).get("section") or working,
         value=value,
         groups=groups,
         learned=learned,
@@ -1758,6 +1786,11 @@ def _prefill(
         offered=offered,
         new_line=new_line,
     )
+
+
+def _heading_in(section: str | None, headings: list[str]) -> str:
+    """``section`` when it is a heading the statement prints, else nothing."""
+    return section if section in headings else ""
 
 
 def _source_offer(metric: str | None, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1951,16 +1984,14 @@ def remove_corrected_line(
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
-        cik = instrument.sec_cik if instrument is not None else None
-        rules = corrections_rules.load_filer(session, cik)
+        filer = _filer_for(period, instrument)
+        rules = corrections_rules.load_filer(session, filer)
         record = corrections_rules.load_period(period)
         if metric not in ledger.BY_KEY and corrections_rules.known_line(rules, metric) is None:
             # A line the filer taught the page is a line of the accounts too, and the ledger
             # offers the same remove link beside it.
             return _correction_redirect(period_id, statement, "no-line")
-        # A filer-wide scope needs a filer to record it against; without one the correction is
-        # still made, for this period only, rather than dropped on the floor.
-        filer_wide = scope == "filer" and bool(cik)
+        filer_wide = scope == "filer"
         if metric in record.removed or metric in rules.removed:
             outcome = "already-removed"
         else:
@@ -1972,11 +2003,11 @@ def remove_corrected_line(
                 rules=rules,
             )
             if filer_wide:
-                corrections_rules.save_filer(session, cik, rules)
+                corrections_rules.save_filer(session, filer, rules)
                 # The other periods of this filer read their own rows, so the rule has to reach
                 # them now rather than at each one's next sync -- otherwise two periods of the
                 # same company would disagree on screen about the same line.
-                corrections_rules.reapply_filer(session, cik, rules)
+                corrections_rules.reapply_filer(session, filer, rules)
             outcome = "removed-filer" if filer_wide else "removed"
     return _correction_redirect(period_id, statement, outcome)
 
@@ -2020,8 +2051,8 @@ def add_corrected_line(
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
-        cik = instrument.sec_cik if instrument is not None else None
-        rules = corrections_rules.load_filer(session, cik)
+        filer = _filer_for(period, instrument)
+        rules = corrections_rules.load_filer(session, filer)
         resolved = _requested_add(
             period,
             tab,
@@ -2032,7 +2063,6 @@ def add_corrected_line(
             section=section,
             side=side,
             rules=rules,
-            cik=cik,
         )
         if resolved.refusal:
             return _correction_redirect(period_id, statement, resolved.refusal)
@@ -2047,7 +2077,7 @@ def add_corrected_line(
         # here was recorded and then ignored by everything that reads the accounts -- the live
         # row read "revenue ... debit" while the chart posts revenue as a credit. Reported
         # 2026-10-10: *"selecting the debit/credit selectors when configuring the add line
-        # doesn't seem to do anything"*. The form no longer asks for those lines either.
+        # doesn't seem to do anything"*.
         posted_side = side if metric not in ledger.BY_KEY else ledger.BY_KEY[metric].side
         corrections_rules.add(
             period,
@@ -2070,7 +2100,7 @@ def add_corrected_line(
                 side=side,
                 tag=learned["tag"],
             )
-            corrections_rules.save_filer(session, cik or "", rules)
+            corrections_rules.save_filer(session, filer, rules)
     return _correction_redirect(period_id, statement, "added-line" if learned else "added")
 
 
@@ -2097,7 +2127,6 @@ def _requested_add(
     section: str,
     side: str,
     rules: Any,
-    cik: str | None,
 ) -> _Requested:
     """Which line a submission is for, from the three ways a form can name one.
 
@@ -2119,7 +2148,6 @@ def _requested_add(
             caption=caption,
             section=section,
             headings=headings,
-            cik=cik,
         )
         if refusal or line is None:
             return _Requested(refusal=refusal or "no-line")
@@ -2149,7 +2177,6 @@ def _requested_add(
             caption=caption,
             section=section,
             headings=headings,
-            cik=cik,
         )
         if refusal or line is None:
             return _Requested(refusal=refusal or "no-line")
@@ -2173,7 +2200,6 @@ def _requested_source_line(
     caption: str,
     section: str,
     headings: list[str],
-    cik: str | None,
 ) -> tuple[dict[str, Any] | None, str]:
     """The line a ``src:`` submission asks to create, or the reason it cannot be.
 
@@ -2196,11 +2222,12 @@ def _requested_source_line(
         # is not the one on the page.
         return None, "no-line"
     label = (caption or str(row.get("label") or "") or metric).strip()
-    heading = section if section in headings else (headings[0] if headings else "")
-    if not heading:
+    # **The heading the form posted is the one used.** It used to fall back to the statement's
+    # first heading when none was given, which is how a caption chosen from the dropdown landed
+    # under "Revenue": the form only asked for a heading on one of the three ways in.
+    if section not in headings:
         return None, "no-section"
-    if not cik:
-        return None, "no-filer"
+    heading = section
     return (
         {
             "metric": metric,
@@ -2221,25 +2248,22 @@ def _requested_line(
     caption: str,
     section: str,
     headings: list[str],
-    cik: str | None,
 ) -> tuple[dict[str, Any] | None, str]:
     """The line a ``new:`` submission asks to create, or the reason it cannot be.
 
     Returns the record to learn and an outcome code -- ``""`` when it is a line to create, else
     the same code the redirect carries, so the rule and the message cannot drift apart.
 
-    Three refusals, each for a different reason: no tag to name the line by, no heading the
-    statement prints (a line nothing shows), and no filer to record it against -- a line is a
-    statement about the company, and one stored on a single period would silently not survive to
-    the next.
+    Two refusals, each for a different reason: no tag to name the line by, and no heading the
+    statement prints (a line nothing shows). It used to refuse a third time -- no filer to record
+    the line against -- which made every instrument without an SEC CIK unable to create one; the
+    instrument is the filer key now, so there is always somewhere to record it.
     """
     tag = tag or metric[len(NEW_LINE_PREFIX) :]
     if not tag or not caption.strip():
         return None, "no-line"
     if section not in headings:
         return None, "no-section"
-    if not cik:
-        return None, "no-filer"
     return {"metric": tag, "tag": tag, "label": caption.strip(), "section": section}, ""
 
 
@@ -2268,15 +2292,16 @@ def move_form(
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
-        cik = instrument.sec_cik if instrument is not None else None
-        rules = corrections_rules.load_filer(session, cik)
+        filer = _filer_for(period, instrument)
+        rules = corrections_rules.load_filer(session, filer)
         record = corrections_rules.load_period(period)
         placed = corrections_rules.build_layout(rules, record)
         target = _placement_target(period, placed, metric)
         context = {
             "period": period,
             "instrument": instrument,
-            "cik": cik,
+            "filer": filer,
+            "filer_label": corrections_rules.filer_label(filer),
             "statement": tab,
             "target": target,
             # Every heading the statement prints, so a line can be moved to any of them, plus the
@@ -2335,8 +2360,8 @@ def move_corrected_line(
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
-        cik = instrument.sec_cik if instrument is not None else None
-        rules = corrections_rules.load_filer(session, cik)
+        filer = _filer_for(period, instrument)
+        rules = corrections_rules.load_filer(session, filer)
         record = corrections_rules.load_period(period)
         placed = corrections_rules.build_layout(rules, record)
         if placed.placement(metric) is None:
@@ -2346,11 +2371,11 @@ def move_corrected_line(
         feeds = _counted_in(tab, heading, counted, placed.placement(metric))
         if feeds is None:
             return _correction_redirect(period_id, statement, "no-line")
-        if scope == "filer" and cik:
+        if scope == "filer":
             corrections_rules.move_line(
                 rules, metric, section=heading, label=label.strip(), feeds=feeds
             )
-            corrections_rules.save_filer(session, cik, rules)
+            corrections_rules.save_filer(session, filer, rules)
             outcome = "moved-filer"
         else:
             corrections_rules.move_line(
@@ -2400,13 +2425,13 @@ def unmove_corrected_line(
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
-        cik = instrument.sec_cik if instrument is not None else None
-        rules = corrections_rules.load_filer(session, cik)
+        filer = _filer_for(period, instrument)
+        rules = corrections_rules.load_filer(session, filer)
         record = corrections_rules.load_period(period)
-        if scope == "filer" and cik:
+        if scope == "filer":
             changed = corrections_rules.forget_move(rules, metric)
             if changed:
-                corrections_rules.save_filer(session, cik, rules)
+                corrections_rules.save_filer(session, filer, rules)
             outcome = "unmoved" if changed else "nothing-to-unmove"
         else:
             changed = corrections_rules.forget_move(record, metric)
@@ -2431,14 +2456,11 @@ def forget_learned_line(
     """
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
-        filer = detail["instrument"]
-        cik = filer.sec_cik if filer is not None else None
-        if not cik:
-            return _correction_redirect(period_id, statement, "no-rule")
-        rules = corrections_rules.load_filer(session, cik)
+        filer = _filer_for(detail["period"], detail["instrument"])
+        rules = corrections_rules.load_filer(session, filer)
         if not corrections_rules.forget_line(rules, metric):
             return _correction_redirect(period_id, statement, "no-line")
-        corrections_rules.save_filer(session, cik, rules)
+        corrections_rules.save_filer(session, filer, rules)
     return _correction_redirect(period_id, statement, "line-forgotten")
 
 
@@ -2457,15 +2479,12 @@ def forget_correction_rule(
     """
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
-        filer = detail["instrument"]
-        cik = filer.sec_cik if filer is not None else None
-        if not cik:
-            return _correction_redirect(period_id, statement, "no-rule")
-        rules = corrections_rules.load_filer(session, cik)
+        filer = _filer_for(detail["period"], detail["instrument"])
+        rules = corrections_rules.load_filer(session, filer)
         if not corrections_rules.forget_rule(rules, metric):
             return _correction_redirect(period_id, statement, "no-rule")
-        corrections_rules.save_filer(session, cik, rules)
-        corrections_rules.reapply_filer(session, cik, rules, restoring=metric)
+        corrections_rules.save_filer(session, filer, rules)
+        corrections_rules.reapply_filer(session, filer, rules, restoring=metric)
     return _correction_redirect(period_id, statement, "rule-forgotten")
 
 
@@ -2481,8 +2500,7 @@ def forget_corrected_line(
     with session_scope() as session:
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
-        cik = instrument.sec_cik if instrument is not None else None
-        rules = corrections_rules.load_filer(session, cik)
+        rules = corrections_rules.load_filer(session, _filer_for(period, instrument))
         outcome = (
             "forgotten"
             if corrections_rules.forget(period, metric, rules=rules)

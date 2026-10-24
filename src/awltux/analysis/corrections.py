@@ -28,6 +28,16 @@ filer has, which is what the confirmation page's tick records in ``app_setting``
 belongs to the period it was stated for, so the value is recorded on the row and only the
 tag-to-line mapping is worth carrying to other periods -- and that mapping arrives with the
 filing picker, because until values can be clicked from a filing there is no tag to map.
+
+**A filer is whoever's accounts these are, and a CIK is not always how to name one.** The wider
+scope was recorded against the SEC's CIK, which made it -- and a learned line, and a move --
+impossible for any company the SEC does not register. Measured 2026-10-25 on `JELl_EQ` (Jersey
+Electricity): the caption `Other Operating Expenses` was offered on the page from the source's own
+payload, the reader chose it, and every attempt refused with `no-filer` because the instrument has
+**no CIK and no Companies House number**. That is not an edge case: 60 of the 183 instruments with
+stored periods have no SEC CIK, so a third of the accounts this page can show could not be
+corrected by line at all. :func:`filer_key` therefore falls back to the instrument -- see the
+assumption recorded there.
 """
 
 from __future__ import annotations
@@ -45,6 +55,15 @@ from awltux.metrics import DERIVED_METRICS, value_of
 #: One `app_setting` row per filer, holding the rules that apply to every period it filed.
 SETTING_PREFIX = "account_correction:"
 
+#: How a filer that the SEC does not register is named: its instrument.
+#:
+#: A period is stored against a T212 ticker, so the instrument is the one identity every stored
+#: set of accounts has. The alternative candidates were weighed and refused: a Companies House
+#: number exists for 58 of the 60 CIK-less instruments but nothing in this codebase groups periods
+#: by it, and `JELl_EQ` -- the case that found this -- has neither a CIK nor a CH number. Adding the
+#: grouping would be new machinery for a case that instrument scope already answers.
+INSTRUMENT_PREFIX = "t212:"
+
 #: The provenance `source` for a figure a person put there. Named rather than left empty so
 #: the accounts page can mark it and a reader can tell it from an extractor's figure.
 MANUAL = "manual"
@@ -59,8 +78,35 @@ SIDES = (DEBIT, CREDIT)
 NO_REASON = "no reason given"
 
 
-def key(cik: str) -> str:
-    return f"{SETTING_PREFIX}{str(cik).strip()}"
+def key(filer: str) -> str:
+    """The `app_setting` key a filer's rules are stored under."""
+    return f"{SETTING_PREFIX}{str(filer).strip()}"
+
+
+def filer_key(*, cik: str | None, ticker: str) -> str:
+    """The name a filer's records are stored under: its SEC CIK, or the instrument.
+
+    The CIK is kept **bare**, exactly as it always was, so every record already in ``app_setting``
+    goes on being read and written without a migration -- and so the CIK scope still spans every
+    instrument that shares it, which is what "every period this filer has" means for an SEC filer.
+
+    With no CIK the instrument is the scope. It is the honest one rather than a compromise: two
+    listings of one company cannot be shown to be one company from the data held, and the
+    instrument is what a period is stored against.
+    """
+    return str(cik).strip() if cik else f"{INSTRUMENT_PREFIX}{ticker}"
+
+
+def is_instrument_key(filer: str) -> bool:
+    """Whether this key names an instrument rather than a filer the SEC registers."""
+    return str(filer).startswith(INSTRUMENT_PREFIX)
+
+
+def filer_label(filer: str) -> str:
+    """The key said in words, for the page that offers the wider scope."""
+    if is_instrument_key(filer):
+        return f"this instrument ({filer[len(INSTRUMENT_PREFIX):]}) — every period it has"
+    return f"the filer's SEC CIK {filer}"
 
 
 def link_target(value: str) -> str:
@@ -413,25 +459,25 @@ def save_period(session: Any, period: FundamentalPeriod, record: Record) -> None
     session.flush()
 
 
-def load_filer(session: Any, cik: str | None) -> Rules:
-    """The rules recorded against a filer, or none."""
-    if not cik:
+def load_filer(session: Any, filer: str | None) -> Rules:
+    """The rules recorded against a filer, or none. See :func:`filer_key` for the name."""
+    if not filer:
         return Rules()
-    row = session.get(AppSetting, key(cik))
+    row = session.get(AppSetting, key(filer))
     value = row.value if row is not None else None
     return Rules.from_dict(value)
 
 
-def save_filer(session: Any, cik: str, rules: Rules) -> None:
+def save_filer(session: Any, filer: str, rules: Rules) -> None:
     """Write the filer's rules, deleting the record when the last one is forgotten."""
-    row = session.get(AppSetting, key(cik))
+    row = session.get(AppSetting, key(filer))
     if not rules:
         if row is not None:
             session.delete(row)
         session.flush()
         return
     if row is None:
-        row = AppSetting(key=key(cik))
+        row = AppSetting(key=key(filer))
         session.add(row)
     row.value = rules.as_dict()
     learned = f" and {len(rules.lines)} line(s) learned" if rules.lines else ""
@@ -758,24 +804,31 @@ def build_layout(rules: Rules | None, record: Record) -> layout.Layout:
     )
 
 
-def filer_periods(session: Any, cik: str | None) -> list[FundamentalPeriod]:
-    """Every period stored for a filer, oldest first."""
-    if not cik:
+def filer_periods(session: Any, filer: str | None) -> list[FundamentalPeriod]:
+    """Every period stored for a filer, oldest first.
+
+    Two shapes, by the key :func:`filer_key` gave: a CIK selects every instrument that shares it
+    -- which is what "every period this filer has" means for a company the SEC registers -- and an
+    instrument key selects that instrument's periods.
+    """
+    if not filer:
         return []
-    rows = session.execute(
-        select(FundamentalPeriod)
-        .join(
+    statement = select(FundamentalPeriod)
+    if is_instrument_key(filer):
+        statement = statement.where(
+            FundamentalPeriod.instrument_t212_ticker
+            == str(filer)[len(INSTRUMENT_PREFIX) :]
+        )
+    else:
+        statement = statement.join(
             Instrument,
             Instrument.t212_ticker == FundamentalPeriod.instrument_t212_ticker,
-        )
-        .where(Instrument.sec_cik == cik)
-        .order_by(FundamentalPeriod.period_end)
-    ).scalars()
-    return list(rows)
+        ).where(Instrument.sec_cik == filer)
+    return list(session.execute(statement.order_by(FundamentalPeriod.period_end)).scalars())
 
 
 def reapply_filer(
-    session: Any, cik: str | None, rules: Rules, *, restoring: str | None = None
+    session: Any, filer: str | None, rules: Rules, *, restoring: str | None = None
 ) -> int:
     """Apply a filer's rules to every period it has, and say how many rows were rewritten.
 
@@ -786,7 +839,7 @@ def reapply_filer(
     ``restoring`` names a line to restore from each row's own evidence first, which is what
     undoing a rule needs -- the rule took the line out of every row it applied to.
     """
-    rows = filer_periods(session, cik)
+    rows = filer_periods(session, filer)
     for row in rows:
         if restoring is not None:
             restore(row, restoring)
@@ -889,6 +942,7 @@ def corrections_for(period: FundamentalPeriod, rules: Rules | None = None) -> li
 __all__ = [
     "CREDIT",
     "DEBIT",
+    "INSTRUMENT_PREFIX",
     "MANUAL",
     "NO_REASON",
     "ROLES",
@@ -904,11 +958,14 @@ __all__ = [
     "apply_to_row",
     "build_layout",
     "corrections_for",
+    "filer_key",
+    "filer_label",
     "filer_periods",
     "forget",
     "forget_line",
     "forget_move",
     "forget_rule",
+    "is_instrument_key",
     "key",
     "known_line",
     "learn_line",

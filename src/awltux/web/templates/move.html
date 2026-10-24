@@ -92,7 +92,7 @@
     <span class="muted small">Leave it empty to keep the caption the accounts print now.</span>
   </p>
 
-  {% if cik %}
+  {% if filer %}
     <p>
       <label>
         <input type="checkbox" name="scope" value="filer">
@@ -101,7 +101,7 @@
     </p>
     <p class="muted small">
       How a company presents its accounts is a habit rather than an event, so the wider scope is
-      usually right. It is recorded against the filer's CIK <code>{{ cik }}</code> and can be undone
+      usually right. It is recorded against <strong>{{ filer_label }}</strong> and can be undone
       from any of its periods.
     </p>
   {% endif %}

@@ -691,7 +691,12 @@ def _upsert_period(
     # was last written still reaches it the next time that period is.
     from awltux.analysis import corrections as corrections_module
 
-    rules = corrections_module.load_filer(session, instrument.sec_cik)
+    # The same key the pages write (`corrections.filer_key`), or a rule recorded against an
+    # instrument with no SEC CIK would never reach the row it was made for.
+    rules = corrections_module.load_filer(
+        session,
+        corrections_module.filer_key(cik=instrument.sec_cik, ticker=instrument.t212_ticker),
+    )
     if row.corrections or rules:
         corrections_module.apply_to_row(row, rules)
     return row

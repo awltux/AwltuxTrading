@@ -1651,6 +1651,21 @@ line by hand; the page still does not say which source it is measuring.
 
 ## Deliberately not doing
 
+### Grouping an instrument with no SEC CIK by its Companies House number
+
+Decided 2026-10-25, when a correction stopped needing a CIK. A filer's records are keyed by the
+SEC's CIK where the instrument has one and by the instrument (`t212:<ticker>`) where it does not
+(`analysis/corrections.py::filer_key`), because measured on the live database **60 of the 183
+instruments with stored periods have no SEC CIK** -- so a third of the accounts the page can show
+could not carry a removal, a learned line or a move at all.
+
+58 of those 60 have a Companies House number, and grouping by it would let two listings of one
+company share a rule. It is not done because nothing in this codebase groups periods by that
+number -- `filer_periods` joins on `sec_cik` -- and the case that found the problem has neither
+identity (`JELl_EQ` is a Jersey company: no CIK, no CH number). The instrument scope answers it
+without new machinery, and the two listings would only differ if a reader corrected one and not
+the other. Switching later is one function.
+
 ### Backfilling `fundamental_period.filing_id` by matching period ends
 
 Decided 2026-10-23, when the accounts page's SOURCE became a link and the column turned out to be

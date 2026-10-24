@@ -399,3 +399,155 @@ class TestAddingACaptionTheSourceStates:
         assert _row(soup, "Depreciation and amortisation")[0] == (
             "Depreciation and amortisation"
         )
+
+
+class TestAnInstrumentWithoutAnSecCik:
+    """`JELl_EQ`, the instrument that found this: no SEC CIK, no Companies House number.
+
+    The page offered "Other Operating Expenses", the reader chose it, and nothing was written --
+    `no-filer`, because a learned line was recorded against a CIK and this company has none. The
+    offer and the acceptance disagreed about their precondition. `corrections.filer_key` names the
+    instrument instead, which is what a period is stored against.
+    """
+
+    def _two_years(self, session):
+        older = _period("TEST_US_EQ", dt.date(2024, 9, 30))
+        newer = _period(
+            "TEST_US_EQ",
+            dt.date(2025, 9, 30),
+            presentation={
+                "profit_and_loss": [
+                    {
+                        "label": "Other Operating Expenses",
+                        "key": SOURCE_KEY,
+                        "value": 38_688_000.0,
+                    }
+                ]
+            },
+        )
+        return _store(session, "TEST_US_EQ", older, newer, cik=None)
+
+    def _add_source(self, client, period, **overrides):
+        """What the browser posts when the reader selects the caption in the dropdown.
+
+        The figure is left empty on purpose: it is the source's, and the form says so. It was
+        `required` until this change, so an empty box stopped the submit in the browser and nothing
+        reached the server at all -- no request, and nothing in any log.
+        """
+        data = {
+            "metric": SOURCE_KEY,
+            "statement": "profit_and_loss",
+            "section": "Operating expenses",
+            "side": "debit",
+            "value": "",
+        }
+        data.update(overrides)
+        return client.post(
+            f"/accounts/{period.id}/corrections/add",
+            data=data,
+            follow_redirects=False,
+        )
+
+    def test_the_caption_is_written_under_the_heading_the_reader_chose(self, client, session):
+        period = self._two_years(session)
+
+        response = self._add_source(client, period)
+
+        assert "added-line" in response.headers["location"], response.headers["location"]
+        session.expire_all()
+        stored = session.get(FundamentalPeriod, period.id)
+        assert stored.metrics[SOURCE_KEY] == -38_688_000.0
+        soup = BeautifulSoup(
+            client.get(f"/accounts/{period.id}/profit_and_loss").text, "lxml"
+        )
+        heading, row = _row(soup, "Other Operating Expenses")
+        # Not "Revenue": the heading the reader chose is the one used, on every path into the form.
+        assert heading == "Operating expenses"
+        assert "38,688,000" in row.get_text(" ")
+        assert "Other Operating Expenses" in soup.select_one("#corrections").get_text(" ")
+
+    def test_it_is_learned_against_the_instrument(self, client, session):
+        period = self._two_years(session)
+
+        self._add_source(client, period)
+
+        session.expire_all()
+        rules = corrections.load_filer(session, "t212:TEST_US_EQ")
+        assert rules.lines[SOURCE_KEY].section == "Operating expenses"
+        assert corrections.load_filer(session, "0000320193") == corrections.Rules()
+
+    def test_the_panel_link_arrives_with_the_figure_and_the_heading_filled_in(
+        self, client, session
+    ):
+        """The other way in: a link beside the caption carries the metric, so the box opens on the
+        figure the source stated and the heading select on the heading the reader came from."""
+        period = self._two_years(session)
+
+        soup = BeautifulSoup(
+            client.get(
+                f"/accounts/{period.id}/corrections/new",
+                params={
+                    "statement": "profit_and_loss",
+                    "section": "Operating expenses",
+                    "metric": SOURCE_KEY,
+                },
+            ).text,
+            "lxml",
+        )
+
+        assert soup.select_one("input[name=value]")["value"] == "38688000"
+        assert soup.select_one("select[name=section] option[selected]")["value"] == (
+            "Operating expenses"
+        )
+        assert soup.select_one("select[name=metric] option[selected]")["value"] == SOURCE_KEY
+
+    def test_a_filer_scoped_move_reaches_the_other_year(self, client, session):
+        period = self._two_years(session)
+
+        response = client.post(
+            f"/accounts/{period.id}/corrections/move",
+            data={
+                "metric": "depreciation_amortisation",
+                "statement": "profit_and_loss",
+                "new_section": "Depreciation and amortisation",
+                "counted": "none",
+                "scope": "filer",
+            },
+            follow_redirects=False,
+        )
+
+        assert "moved-filer" in response.headers["location"]
+        session.expire_all()
+        older = corrections.filer_periods(session, "t212:TEST_US_EQ")[0]
+        soup = BeautifulSoup(client.get(f"/accounts/{older.id}/profit_and_loss").text, "lxml")
+        assert _row(soup, "Depreciation and amortisation")[0] == (
+            "Depreciation and amortisation"
+        )
+
+    def test_the_two_edits_balance_the_section_with_no_cik_to_record_them_against(
+        self, client, session
+    ):
+        """The reader's report, end to end: depreciation out of the section, the source's own
+        caption in, and the residual gone -- on an instrument the SEC does not register.
+        """
+        period = self._two_years(session)
+        client.post(
+            f"/accounts/{period.id}/corrections/move",
+            data={
+                "metric": "depreciation_amortisation",
+                "statement": "profit_and_loss",
+                "new_section": "Depreciation and amortisation",
+                "counted": "none",
+            },
+            follow_redirects=False,
+        )
+
+        self._add_source(client, period)
+
+        soup = BeautifulSoup(
+            client.get(f"/accounts/{period.id}/profit_and_loss").text, "lxml"
+        )
+        _, row = _row(soup, "Operating income")
+
+        assert "out by" not in row.get_text(" ")
+        assert _computed(soup, "Operating income") == "14,777,000"

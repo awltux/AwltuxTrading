@@ -406,10 +406,22 @@ class TestTheFormOffersIt:
         )
         assert owning["label"] == "Current liabilities"
 
-    def test_no_filer_no_line_to_create(self, client, session):
-        """A line belongs to the company that filed it. Without a CIK there is nothing to record
-        it against, and a line stored on one period would silently not reach the next."""
-        period = _store(session, _period("TEST_US_EQ", dt.date(2024, 12, 31)), cik=None)
+    def test_a_line_is_learned_against_the_instrument_when_there_is_no_cik(
+        self, client, session
+    ):
+        """A line belongs to the company that filed it, and a company the SEC does not register is
+        named by its instrument.
+
+        This used to be refused with `no-filer`, on the argument that "a line stored on one period
+        would silently not reach the next" -- and that was true of a line stored on the *row*. It is
+        not true of a line learned against the instrument, which is what happens now: the period
+        below is one of two, and the other one is offered the line too. Measured 2026-10-25: 60 of
+        the 183 instruments with stored accounts have no SEC CIK, so the old rule left a third of
+        them unable to carry a line at all.
+        """
+        older = _period("TEST_US_EQ", dt.date(2023, 12, 31))
+        newer = _period("TEST_US_EQ", dt.date(2024, 12, 31))
+        period = _store(session, older, newer, cik=None)
 
         response = client.post(
             f"/accounts/{period.id}/corrections/add",
@@ -420,14 +432,26 @@ class TestTheFormOffersIt:
                 "section": "Current liabilities",
                 "caption": CAPTION,
                 "tag": TAG,
+                "side": "credit",
             },
             follow_redirects=False,
         )
 
-        assert "no-filer" in response.headers["location"]
+        assert "added-line" in response.headers["location"]
         session.expire_all()
-        assert "us-gaap:ContractWithCustomerLiabilityCurrent" not in (
-            session.get(FundamentalPeriod, period.id).metrics or {}
+        assert session.get(FundamentalPeriod, period.id).metrics[TAG] == 72_965.0
+        rules = corrections.load_filer(session, "t212:TEST_US_EQ")
+        assert rules.lines[TAG].section == "Current liabilities"
+        # And the earlier year is offered it, which is the property the old refusal was protecting.
+        form = BeautifulSoup(
+            client.get(
+                f"/accounts/{older.id}/corrections/new",
+                params={"statement": "balance_sheet"},
+            ).text,
+            "lxml",
+        )
+        assert any(
+            option["value"] == TAG for option in form.select("select[name=metric] option")
         )
 
 
