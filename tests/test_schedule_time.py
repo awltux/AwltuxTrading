@@ -176,6 +176,48 @@ class TestTheSchedulerUsesIt:
         )
         assert abs((dt.datetime.fromisoformat(after) - anchor).total_seconds()) <= 1
 
+    def test_a_run_puts_the_job_back_on_the_anchor(self, settings, monkeypatch):
+        """A trigger advances from when it last fired, so a catch-up would drag it off the time.
+
+        Measured on the deployed build the first time the anchor went in: `news_rss` was caught
+        up at 09:59 and `macro_rates` started at 10:47, and both were then scheduled a day on
+        from *that* instant rather than from 06:00. `_reanchor` rebuilds the trigger after every
+        run, so the daily time stays the daily time.
+        """
+        import time
+
+        import awltux.scheduler.service as service_module
+
+        ran: list[str] = []
+        monkeypatch.setattr(
+            service_module, "execute_job", lambda spec, cause=None: ran.append(spec.id)
+        )
+
+        service = SchedulerService(
+            [JobSpec(id="j", func=_noop, interval_seconds=86_400)], settings=settings
+        )
+        service.start()
+        try:
+            service._armed_at = 0.0
+            # A catch-up, as the scheduler makes it: due now, whatever the anchor says.
+            service._enqueue(service._specs["j"], "catching up")
+            deadline = time.monotonic() + 5
+            while not ran and time.monotonic() < deadline:
+                time.sleep(0.02)
+            next_run = dt.datetime.fromisoformat(service.status()[0]["next_run"])
+        finally:
+            service.shutdown(wait=False)
+
+        assert ran == ["j"]
+        anchor = schedule_time.next_anchor(
+            dt.datetime.now(dt.UTC),
+            schedule_time.effective(settings),
+            schedule_time.zone_for(settings),
+        )
+        assert abs((next_run - anchor).total_seconds()) <= 1, (
+            f"the run left the job at {next_run}, not at the {anchor} anchor"
+        )
+
     def test_a_missed_cycle_is_caught_up_on_the_next_start(self, session, monkeypatch):
         """The fourth requirement: off at 06:00, back at 09:00, the cycle still runs.
 

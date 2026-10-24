@@ -528,7 +528,9 @@ class SchedulerService:
         return self.wait_for_idle(timeout)
 
     # -------------------------------------------------------------- internals
-    def _schedule(self, spec: JobSpec, owed: CatchUp | None = None) -> None:
+    def _schedule(
+        self, spec: JobSpec, owed: CatchUp | None = None, *, first_run: bool = True
+    ) -> None:
         """Add a job to the scheduler, or pause it, according to the spec.
 
         **`next_run_time` must be omitted, never set to None.** APScheduler reads an
@@ -569,10 +571,17 @@ class SchedulerService:
             max(interval // 2, 0),
         )
         anchor = schedule_time.next_anchor(now, self._daily_at, self._zone)
+        # A daily job is anchored to the time of day; anything faster is not part of the daily
+        # cycle and simply starts its own interval from now, at its phase.
+        start = (
+            anchor + dt.timedelta(seconds=offset)
+            if interval >= 86_400
+            else now + dt.timedelta(seconds=max(offset, 1))
+        )
 
         trigger = IntervalTrigger(
             seconds=interval,
-            start_date=anchor + dt.timedelta(seconds=offset),
+            start_date=start,
             timezone="UTC",
         )
 
@@ -585,7 +594,7 @@ class SchedulerService:
             name=spec.description or spec.id,
             replace_existing=True,
             max_instances=spec.max_instances,
-            **self._first_run(spec, owed, now),
+            **(self._first_run(spec, owed, now) if first_run else {}),
         )
 
     @staticmethod
@@ -699,6 +708,30 @@ class SchedulerService:
                 with self._condition:
                     self._running.discard(item.id)
                     self._condition.notify_all()
+                self._reanchor(item.id)
+
+    def _reanchor(self, job_id: str) -> None:
+        """Put a job that has just run back onto the daily anchor.
+
+        **A trigger advances from when it last fired, not from the anchor**, so without this a
+        run that happened off-anchor takes the job with it: a catch-up at 09:59 would run daily
+        at 09:59 for ever, and the daily time would no longer be the daily time. Measured on the
+        deployed build the first time the anchor went in -- `news_rss` catch-up at 09:59 and
+        `macro_rates` at 10:47 were both scheduled a day on from that instant.
+
+        Rebuilding the trigger is one `add_job(replace_existing=True)` per run, which is nothing
+        next to a job that just spent minutes working, and it is skipped when the scheduler is
+        going away or the job is not one we scheduled.
+        """
+        if self._stopping or not self._scheduler.running:
+            return
+        spec = self._specs.get(job_id)
+        if spec is None or not spec.scheduled:
+            return
+        # Not a first run: `run_on_start` and a catch-up both override `next_run_time` to
+        # *now*, and re-applying that after the job has just run is a hot loop -- measured, it
+        # fired 75 times in a second.
+        self._schedule(spec, first_run=False)
 
     def _take_runnable(self) -> _Queued | None:
         """Remove and return the next job that may start. Holds the condition.
