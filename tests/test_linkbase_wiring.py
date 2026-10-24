@@ -974,11 +974,11 @@ class TestThePage:
             "other_current_assets": 217_887_000.0,
             "net_ppe": 3_269_703_000.0,
             "other_noncurrent_assets": 42_305_000.0,
-            # A figure we hold that our *own* component list does not name. It is here
-            # because it is the whole difference the declaration makes: `ledger`'s
-            # NON_CURRENT_ASSET_KEYS has no entry for it, while the filer declares
-            # `DepositsAssetsNoncurrent` as a line of its balance sheet -- so the computed
-            # total moves by exactly this when the declaration is applied.
+            # A figure we hold that no component line of ours names. It is here because it
+            # is the whole difference the declaration makes: the layout's non-current asset
+            # group has no line for it, while the filer declares `DepositsAssetsNoncurrent`
+            # as a line of its balance sheet -- so the computed total moves by exactly this
+            # when the declaration is applied.
             "deposits_noncurrent": 428_147_000.0,
         }
         spans = {

@@ -278,6 +278,11 @@
                  href="/accounts/{{ period.id }}/corrections/new?statement={{ built.which }}&amp;remove={{ line.key }}"
                  title="Take this line out of these accounts">remove</a>
             {% endif %}
+            {# Where a line is presented is not the same question as what it says, and it is the
+               question a company's own presentation raises: see `layout.py`. #}
+            <a class="small muted"
+               href="/accounts/{{ period.id }}/corrections/move?statement={{ built.which }}&amp;metric={{ line.key | urlencode }}"
+               title="Print this line under another heading, or count it in another total">move</a>
           </td>
         </tr>
       {% endfor %}

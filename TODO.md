@@ -408,12 +408,13 @@ What is unused:
 **The half of the calculation linkbase that is still owed.** The linkbase is now fetched
 (`ingest/linkbase.py`), parsed, stored and reconciled against a stored period
 (`analysis/linkbase.py`), and the accounting-health tab prints the filer's declared
-subtotals beside our own component check. What has not changed is `ledger.composition`
-itself: it still sums `CURRENT_ASSET_KEYS` and its siblings — a hand-written list in this
-codebase — so the page shows two verdicts where the filer's declaration should be the one
-that binds, and the "out by" on a statement line is still partly our vocabulary rather
-than entirely the children we failed to read. That is the next stage, and the entry below
-records why it cannot be done by widening the key list.
+subtotals beside our own component check. `ledger.composition` no longer sums a hand-written
+key list — since 2026-10-25 it sums the groups `analysis/layout.py` assigns each line, which is
+where a reader's own placement is honoured too — but the **filer's declaration still does not
+bind**: where a linkbase covers a subtotal the page shows two verdicts, and the "out by" on a
+statement line is still partly our vocabulary rather than entirely the children we failed to
+read. Making the declaration the only verdict is the next stage, and the entry below records why
+it cannot be done by widening the key list.
 
 **Why it matters:** the accounting-equation failures recorded under Operations (DFPH out
 by 95% of assets, AMBQ by 362%) are now *classified* rather than explained away --
@@ -428,7 +429,7 @@ composition check itself reads the declaration.
 Added 2026-10-10, found in the live database while fixing the tag lookup that follows from it.
 `filer-lines/forget` says the value "stays on the period it was written to, where it can be taken
 off in the usual way" -- and there is no usual way once the line is gone, because the ledger
-prints the lines it is *offered*: `_corrected_accounts` builds `extra` from the filer's learned
+prints the lines it is *offered*: `_corrected_accounts` builds the layout from the filer's learned
 lines, so a figure left under a key the filer no longer has is in `metrics`, in `metric_sources`,
 counted by nothing and shown on no row. Measured on `DAC_US_EQ` period 256 that day:
 `dac:VoyageExpenses` held 63,061,000 in `metrics` with a `span` in its provenance, the filer's
@@ -1728,14 +1729,15 @@ tag (`analysis/corrections.py`: "the identity the filing gives the caption"), so
 confirmation page offers it on an existing line or a previously learned one and says why it
 cannot offer the caption as a new line.
 
-What it would take is an identity that survives next year's filing, and none of the obvious
-candidates is one: the caption verbatim is the filer's presentation ("Total current assets" one
-year, "Total current assets:" the next), and a hash of it is the same string with the same
-problem. The honest version is a per-filer *name* the reader gives once -- the learned-line
-machinery with the tag column empty and a stable key the reader chose -- which is a feature, not
-a fix, and is worth building only when a filer without XBRL actually needs a line this project's
-chart lacks. Measured 2026-10-10: 2 of the 603 stored documents have no `ix:` elements at all
-(`AREC_US_EQ`'s 10-K, `BMM_US_EQ`'s 40-F), and neither has been read by hand yet.
+**Half of this now exists and the other half does not.** Since 2026-10-25 a line can be keyed by
+its *caption* (`ingest/fundamentals.py::source_key`, `src:<slug>`) for the figures a provider
+statement states and this project's vocabulary has no name for — that is the same idea with the
+tag column empty, and it works there because a provider's caption is the same string every year.
+A caption read off a *page* is not: "Total current assets" one year, "Total current assets:" the
+next, so the slug would be a new line each time. What is still owed is a per-filer *name* the
+reader gives once, so a caption whose wording drifts keeps one identity. Measured 2026-10-10: 2 of
+the 603 stored documents have no `ix:` elements at all (`AREC_US_EQ`'s 10-K, `BMM_US_EQ`'s 40-F),
+and neither has been read by hand yet.
 
 ### Reading the tables of a *partly* tagged document
 

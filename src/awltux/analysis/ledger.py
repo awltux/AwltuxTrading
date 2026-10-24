@@ -41,6 +41,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from awltux.analysis.layout import (  # noqa: F401  (re-exported)
+    BY_KEY,
+    CHART,
+    CREDIT,
+    DEBIT,
+    STATEMENTS,
+    SUBTOTAL_GROUPS,
+    Account,
+    Layout,
+    Placement,
+)
 from awltux.db import FundamentalPeriod
 from awltux.metrics import value_of
 
@@ -58,174 +69,6 @@ TOLERANCE_FLOOR = 1.0
 #: printed with their pence. See `Line.decimals`, and `metrics.NON_MONETARY_METRICS` for the
 #: wider rule these belong to -- a share *count* is not here, because a count has no pence.
 PER_SHARE_METRICS: tuple[str, ...] = ("eps_diluted", "eps_basic", "dividend_per_share")
-DEBIT = "debit"
-CREDIT = "credit"
-
-
-@dataclass(frozen=True, slots=True)
-class Account:
-    """One line of the ledger.
-
-    ``role`` is what keeps the arithmetic honest, and it is the difference between a
-    double-entry ledger and a list of numbers:
-
-    * ``line`` -- a **component**. This is what gets posted and what the totals are
-      checked against.
-    * ``subtotal`` -- a **stated** total. Shown beside the components that should sum
-      to it, and never posted, or the total would be counted twice.
-    * ``memo`` -- informational. Per-share figures, and totals that are the sum of
-      other lines already posted (``total_debt``, ``retained_earnings``).
-    """
-
-    key: str
-    label: str
-    statement: str
-    section: str
-    side: str
-    role: str = "line"
-    #: True when a negative value is an ordinary reading rather than a data error.
-    signed: bool = False
-
-
-#: The chart of accounts. Order is presentation order, section by section.
-CHART: tuple[Account, ...] = (
-    # ---------------------------------------------------------------- P&L
-    Account("revenue", "Revenue", "profit_and_loss", "Revenue", CREDIT),
-    Account("cost_of_goods_sold", "Cost of sales", "profit_and_loss", "Cost of sales", DEBIT),
-    Account(
-        "gross_profit", "Gross profit", "profit_and_loss", "Cost of sales", CREDIT,
-        role="subtotal",
-    ),
-    Account(
-        "research_and_development", "Research and development", "profit_and_loss",
-        "Operating expenses", DEBIT,
-    ),
-    Account(
-        "sga_expense", "Selling, general and administrative", "profit_and_loss",
-        "Operating expenses", DEBIT,
-    ),
-    Account(
-        "depreciation_amortisation", "Depreciation and amortisation", "profit_and_loss",
-        "Operating expenses", DEBIT,
-    ),
-    Account(
-        "operating_income", "Operating income", "profit_and_loss", "Operating expenses",
-        CREDIT, role="subtotal",
-    ),
-    Account(
-        "interest_expense", "Interest expense", "profit_and_loss", "Finance", DEBIT,
-    ),
-    Account(
-        "interest_income", "Interest income", "profit_and_loss", "Finance", CREDIT,
-    ),
-    Account(
-        "other_nonoperating_income", "Other non-operating income",
-        "profit_and_loss", "Finance", CREDIT, signed=True,
-    ),
-    Account(
-        "pretax_income", "Profit before tax", "profit_and_loss", "Finance", CREDIT,
-        role="subtotal", signed=True,
-    ),
-    Account("tax_expense", "Tax", "profit_and_loss", "Tax", DEBIT),
-    Account(
-        "net_income", "Profit for the period", "profit_and_loss", "Tax", CREDIT,
-        role="subtotal", signed=True,
-    ),
-    Account("ebit", "EBIT", "profit_and_loss", "Memorandum", CREDIT, role="memo"),
-    Account("ebitda", "EBITDA", "profit_and_loss", "Memorandum", CREDIT, role="memo"),
-    Account("eps_diluted", "Diluted earnings per share", "profit_and_loss", "Per share", CREDIT, role="memo"),
-    Account("dividend_per_share", "Dividend per share", "profit_and_loss", "Per share", DEBIT, role="memo"),
-    # -------------------------------------------------------- Balance sheet
-    Account("cash_and_equivalents", "Cash and equivalents", "balance_sheet", "Current assets", DEBIT),
-    Account("receivables", "Trade receivables", "balance_sheet", "Current assets", DEBIT),
-    Account("inventory", "Inventory", "balance_sheet", "Current assets", DEBIT),
-    Account(
-        "other_current_assets", "Other current assets", "balance_sheet",
-        "Current assets", DEBIT,
-    ),
-    Account("current_assets", "Total current assets", "balance_sheet", "Current assets", DEBIT, role="subtotal"),
-    Account("net_ppe", "Property, plant and equipment", "balance_sheet", "Non-current assets", DEBIT),
-    Account(
-        "operating_lease_assets", "Operating lease assets", "balance_sheet",
-        "Non-current assets", DEBIT,
-    ),
-    Account("goodwill", "Goodwill", "balance_sheet", "Non-current assets", DEBIT, signed=True),
-    Account("intangible_assets", "Other intangibles", "balance_sheet", "Non-current assets", DEBIT),
-    Account(
-        "other_noncurrent_assets", "Other non-current assets", "balance_sheet",
-        "Non-current assets", DEBIT,
-    ),
-    Account(
-        "total_assets", "Total assets", "balance_sheet", "Non-current assets", DEBIT,
-        role="subtotal",
-    ),
-    Account("payables", "Trade payables", "balance_sheet", "Current liabilities", CREDIT),
-    Account(
-        "compensation_and_benefits", "Compensation and related benefits",
-        "balance_sheet", "Current liabilities", CREDIT,
-    ),
-    Account(
-        "other_current_liabilities", "Other current liabilities", "balance_sheet",
-        "Current liabilities", CREDIT,
-    ),
-    Account("short_term_debt", "Short-term borrowings", "balance_sheet", "Current liabilities", CREDIT),
-    Account(
-        "current_liabilities", "Total current liabilities", "balance_sheet",
-        "Current liabilities", CREDIT, role="subtotal",
-    ),
-    Account("long_term_debt", "Long-term borrowings", "balance_sheet", "Non-current liabilities", CREDIT),
-    # A memorandum, not a component, and the reason is the caption it would sit beside.
-    # `OtherLiabilitiesNoncurrent` is a *residual* caption -- by construction it holds
-    # whatever the filer did not present as its own line -- and on `AIT_US_EQ` that
-    # includes the operating lease liability: `OperatingLeaseLiabilityNoncurrent` is
-    # 168,231,000 of the 273,513,000 reported as other non-current liabilities, so
-    # posting both would count that 168,231,000 twice. Whether the lease is a separate
-    # line is the filer's own presentation, which `companyfacts` does not carry (see
-    # `TODO.md`: the calculation and presentation linkbases are the fix), so the safe
-    # reading is to show the lease without adding it again.
-    Account("lease_liabilities", "Lease liabilities", "balance_sheet", "Memorandum", CREDIT, role="memo"),
-    Account(
-        "other_noncurrent_liabilities", "Other non-current liabilities", "balance_sheet",
-        "Non-current liabilities", CREDIT,
-    ),
-    Account(
-        "total_liabilities", "Total liabilities", "balance_sheet",
-        "Non-current liabilities", CREDIT, role="subtotal",
-    ),
-    Account(
-        "total_equity", "Total equity", "balance_sheet", "Equity", CREDIT,
-        role="subtotal", signed=True,
-    ),
-    Account("retained_earnings", "Retained earnings", "balance_sheet", "Memorandum", CREDIT, role="memo", signed=True),
-    Account("total_debt", "Total debt", "balance_sheet", "Memorandum", CREDIT, role="memo"),
-    Account("shares_outstanding", "Shares outstanding", "balance_sheet", "Memorandum", CREDIT, role="memo"),
-    Account(
-        "stock_based_compensation", "Share-based payment", "balance_sheet", "Memorandum",
-        DEBIT, role="memo",
-    ),
-    # ------------------------------------------------------------- Cash flow
-    # Every side here is the counter-entry against cash: an inflow debits cash, an
-    # outflow credits it. Reading them as "good" and "bad" would be wrong -- a capex
-    # outflow is not a loss -- which is why the statement is a movement, not a result.
-    Account("operating_cash_flow", "Cash from operating activities", "cash_flow", "Operating", DEBIT, signed=True),
-    Account("capex", "Capital expenditure", "cash_flow", "Investing", CREDIT),
-    Account(
-        "free_cash_flow", "Free cash flow", "cash_flow", "Investing", DEBIT,
-        role="subtotal", signed=True,
-    ),
-    Account("dividends_paid", "Dividends paid", "cash_flow", "Financing", CREDIT),
-)
-
-BY_KEY: dict[str, Account] = {account.key: account for account in CHART}
-
-#: The statement names, in the order a set of accounts is read: the result first,
-#: then what is owned and owed, then how the cash moved. Labels are plain text --
-#: the template escapes them, so an ampersand here is an ampersand.
-STATEMENTS: tuple[tuple[str, str], ...] = (
-    ("profit_and_loss", "Profit & loss"),
-    ("balance_sheet", "Balance sheet"),
-    ("cash_flow", "Cash flow"),
-)
 
 #: The tab strip: the three statements, then the accounting health checks. The checks
 #: are a tab rather than a footnote under one of the statements because they are the
@@ -529,44 +372,28 @@ def _section(title: str, lines: Sequence[Line]) -> Section:
     return Section(title=title, lines=tuple(lines))
 
 
-#: The figures each statement shows beside its arithmetic and never sums. Kept as
-#: named tuples so the two statements build their memorandum the same way, and so the
-#: list is somewhere a reader can find it rather than inline in a builder.
-INCOME_MEMORANDA: tuple[str, ...] = ("ebit", "ebitda", "eps_diluted", "dividend_per_share")
-BALANCE_MEMORANDA: tuple[str, ...] = (
-    "lease_liabilities",
-    "retained_earnings",
-    "total_debt",
-    "shares_outstanding",
-    "stock_based_compensation",
-)
-
-
-def _memoranda(metrics: dict[str, Any], keys: Sequence[str]) -> Section:
-    """The closing section: what belongs on the page and not in the total."""
-    return _section("Memorandum", [_line(metrics, key) for key in keys])
-
-
 def _line(
     metrics: dict[str, Any],
-    key: str,
+    placement: Placement,
     computed: float | None = None,
     work: _Work | None = None,
 ) -> Line:
-    """One printed line, pulling its label, side and role from the chart.
+    """One printed line, pulling its caption, side and role from its *placement*.
 
-    Shared by all three statements, so a line cannot be labelled one way in the profit
-    and loss and another in the checks that audit it. ``work`` is the arithmetic behind
-    ``computed`` -- see :class:`_Work` -- and is what the page shows on hover.
+    Shared by all three statements, so a line cannot be labelled one way in the profit and loss
+    and another in the checks that audit it. ``work`` is the arithmetic behind ``computed`` -- see
+    :class:`_Work` -- and is what the page shows on hover.
+
+    The placement rather than the key, because where a line is printed and what it is counted in
+    are no longer properties of the chart: see :mod:`awltux.analysis.layout`.
     """
-    account = BY_KEY[key]
     return Line(
-        key=key,
-        label=account.label,
-        stated=_stated(metrics, key),
+        key=placement.key,
+        label=placement.label,
+        stated=_stated(metrics, placement.key),
         computed=computed,
-        side=account.side,
-        role=account.role,
+        side=placement.side,
+        role=placement.role,
         parts=work.parts if work else (),
         parts_source=work.source if work else "",
         missing=work.missing if work else (),
@@ -574,14 +401,9 @@ def _line(
     )
 
 
-def _worked_line(metrics: dict[str, Any], key: str, work: _Work) -> Line:
-    """A line whose computed figure and whose arithmetic arrive together.
-
-    The balance sheet's subtotals are built by `_work_from`, which decides whether the sum is
-    the filer's declaration or our own key list; this attaches both halves to the line so the
-    page can print the figure and explain it.
-    """
-    return _line(metrics, key, work.total, work)
+def _worked_line(metrics: dict[str, Any], placement: Placement, work: _Work) -> Line:
+    """A line whose computed figure and whose arithmetic arrive together."""
+    return _line(metrics, placement, work.total, work)
 
 
 def _label(key: str | None, fallback: str = "") -> str:
@@ -673,57 +495,66 @@ class _Work:
     missing_total: float | None = None
 
 
-def _extras_total(
-    metrics: dict[str, Any], accounts: Sequence[Account]
-) -> float | None:
-    """What the learned lines of one stage add up to, or ``None`` when none of them has a figure."""
-    total: float | None = None
-    for account in accounts:
-        value = _stated(metrics, account.key)
-        if value is None:
-            continue
-        total = (total or 0.0) + value
-    return total
+def _contribution(metrics: dict[str, Any], placement: Placement) -> float | None:
+    """What one line contributes to the subtotal it feeds, or ``None`` when it states nothing.
 
+    Three rules, and the difference between them is what a line *is*:
 
-def _extra_parts(
-    metrics: dict[str, Any], accounts: Sequence[Account]
-) -> tuple[Part, ...]:
-    """The learned lines as components of a subtotal, in the *filer's* words for them.
-
-    Deliberately not through :func:`_label`, which knows only the chart: a learned line's key is
-    its taxonomy tag, so the working a reader hovers would list
-    ``us-gaap:ContractWithCustomerLiabilityCurrent`` where the statement prints
-    "Short-term unearned revenue". An absent figure is left out, exactly as :func:`_component`
-    leaves one out, because a zero claims the filing stated nothing there.
-
-    The contribution is the figure itself, sign and all, so the working adds up to the total *and*
-    agrees line by line with the figure the statement prints beside it. Reported 2026-10-10: the
-    two disagreed, and the reader read the working as the thing that was wrong.
+    * **A chart line** contributes a magnitude on its own side -- ``+`` for a credit, ``-`` for a
+      debit -- unless the chart marks it ``signed``, in which case its figure is read as it stands
+      because a negative is an ordinary reading (`other_nonoperating_income`). That is the
+      ``_magnitude`` rule the sums already used, now driven by the *placement's* side so a line the
+      reader moved into a heading is counted the way that heading reads.
+    * **A line the chart does not carry** -- learned from a filing, or taken from a source's own
+      caption -- is the reader's statement of the amount, sign and all, and is never re-signed.
+      The form says so where they enter it, and flipping the sign of a figure somebody typed in
+      order to fix a residual would be the page arguing with its own instruction.
+    * An absent figure contributes nothing, and is left out of the sum rather than treated as
+      zero: a line printed at 0 claims the source stated nothing there, which is a different fact
+      from our not holding it.
     """
-    out: list[Part] = []
-    for account in accounts:
-        value = _stated(metrics, account.key)
-        if value is None:
-            continue
-        out.append(Part(label=account.label, contribution=value, source=account.key))
+    value = _stated(metrics, placement.key)
+    if value is None:
+        return None
+    if placement.key not in BY_KEY:
+        return value
+    if placement.signed:
+        return value
+    magnitude = abs(value)
+    return magnitude if placement.side == CREDIT else -magnitude
+
+
+def _part(placement: Placement, contribution: float) -> Part:
+    return Part(
+        label=placement.label, contribution=contribution, source=placement.key
+    )
+
+
+def _contributions(
+    metrics: dict[str, Any], placements: Sequence[Placement]
+) -> tuple[tuple[Placement, float], ...]:
+    """The lines of one subtotal that state a figure, with what each contributes."""
+    out: list[tuple[Placement, float]] = []
+    for placement in placements:
+        contribution = _contribution(metrics, placement)
+        if contribution is not None:
+            out.append((placement, contribution))
     return tuple(out)
 
 
-def _plus_extras(base: float | None, added: float | None) -> float | None:
-    """A stage's figure with what the reader added to it.
-
-    A ``None`` base stays ``None``: a line put under "Finance and tax" cannot make profit before
-    tax computable when operating income is not, and inventing a total out of the part of the
-    cascade that happens to be present would be the residual lying about what it measures.
-    """
-    if base is None or added is None:
-        return base
-    return base + added
+#: The profit and loss cascade, as (stage, the stage it is added to). Ordered, because each stage
+#: is built on the one before it: gross profit feeds operating income, which feeds profit before
+#: tax, which feeds the profit for the period.
+CASCADE: tuple[tuple[str, str | None], ...] = (
+    ("gross_profit", None),
+    ("operating_income", "gross_profit"),
+    ("pretax_income", "operating_income"),
+    ("net_income", "pretax_income"),
+)
 
 
 def _profit_cascade(
-    metrics: dict[str, Any], extra: Sequence[Account] | None = None
+    metrics: dict[str, Any], layout: Layout | None = None
 ) -> dict[str, _Work]:
     """The four subtotals this project can derive from the lines it holds.
 
@@ -734,13 +565,13 @@ def _profit_cascade(
 
     **Each subtotal comes back with the arithmetic that produced it**, in the same object,
     because a page that can show a residual but not how the figure beside it was reached is
-    one a reader cannot investigate. Deriving the components again where they are printed
-    would be the duplication this function exists to prevent.
+    one a reader cannot investigate.
 
-    **A line the filer names joins here, and this is the only place it can.** The heading the
-    reader filed it under says which stage it first feeds and the side it was posted on says
-    which way -- see :func:`signed_extras` -- and both go into the total *and* into ``parts``,
-    so the working printed beside the figure lists the line it was computed from.
+    **Which lines are in a stage comes from the layout**, not from a key list here: a line's
+    ``feeds`` is what decides, so a line the reader moved out of "Operating expenses" stops
+    being deducted there and a line moved in starts -- without a second table to keep true. The
+    chart's own feed for each line is :data:`layout.SECTION_FEEDS`, reproduce-the-old-numbers
+    exact.
 
     **Profit before tax is not "operating income less interest".** Interest *income* and
     other non-operating items sit between the two as well, and leaving them out put a
@@ -751,152 +582,56 @@ def _profit_cascade(
     non-operating income (2,743,000) the taxonomy did not carry. With them, the three
     lines reconcile to the reported figure to the dollar.
     """
-    revenue = _stated(metrics, "revenue")
-    cost = _stated(metrics, "cost_of_goods_sold")
-    # Each figure as its line's weight expects it -- a magnitude for an expense line, its own sign
-    # for one the chart calls `signed`. The working below reads them the same way, so the two
-    # cannot disagree about what a line contributed.
-    def size(key: str) -> float | None:
-        return _sized(metrics, key)
-
-    revenue, cost = size("revenue"), size("cost_of_goods_sold")
-    # Which learned lines first join each stage. Every decision about them -- which subtotal,
-    # which direction -- was made when they were recorded; nothing here chooses either.
-    in_revenue = extras_for_group(extra, "profit_and_loss", "gross_profit")
-    in_operating = extras_for_group(extra, "profit_and_loss", "operating_income")
-    in_finance = extras_for_group(extra, "profit_and_loss", "pretax_income")
-
-    gross = _plus_extras(
-        _subtract(revenue, cost), _extras_total(metrics, in_revenue)
-    )
-    operating = _plus_extras(
-        _subtract(
-            gross,
-            size("research_and_development"),
-            size("sga_expense"),
-            size("depreciation_amortisation"),
-        ),
-        _extras_total(metrics, in_operating),
-    )
-    # Added when present, deducted when present, and `None` only when neither side is
-    # stated -- which is what falls back to operating income. Using `_subtract` here
-    # instead reads well and is wrong: it returns `None` when its *base* is missing, so
-    # a filer with interest expense and no interest income would have had the expense
-    # silently dropped rather than deducted.
-    additions = _sum(
-        size("interest_income"),
-        size("other_nonoperating_income"),
-    )
-    interest = size("interest_expense")
-    finance_extras = _extras_total(metrics, in_finance)
-    if additions is None and interest is None:
-        # Nothing of our own between the two lines -- so a learned one filed under "Finance and
-        # tax" is the whole of the difference, and profit before tax is not left uncomputable.
-        non_operating = 0.0 if finance_extras is not None else None
-    else:
-        non_operating = (additions or 0.0) - (interest or 0.0)
-    if operating is None:
-        pretax = None
-    elif non_operating is None:
-        pretax = operating
-    else:
-        pretax = operating + non_operating + (finance_extras or 0.0)
-    tax = size("tax_expense")
-    return _cascade_works(
-        metrics,
-        gross=gross,
-        operating=operating,
-        pretax=pretax,
-        tax=tax,
-        in_revenue=in_revenue,
-        in_operating=in_operating,
-        in_finance=in_finance,
-    )
+    layout = layout or Layout.default()
+    totals: dict[str, float | None] = {}
+    works: dict[str, _Work] = {}
+    for stage, parent in CASCADE:
+        components = layout.components("profit_and_loss", stage)
+        total, parts = _stage(
+            _contributions(metrics, components),
+            parent=parent,
+            parent_total=totals.get(parent) if parent else None,
+            anchor=components[0] if components else None,
+        )
+        totals[stage] = total
+        works[stage] = _Work(total=total, parts=parts)
+    return works
 
 
-def _cascade_works(
-    metrics: dict[str, Any],
+def _stage(
+    entries: Sequence[tuple[Placement, float]],
     *,
-    gross: float | None,
-    operating: float | None,
-    pretax: float | None,
-    tax: float | None,
-    in_revenue: Sequence[Account],
-    in_operating: Sequence[Account],
-    in_finance: Sequence[Account],
-) -> dict[str, _Work]:
-    """The four subtotals, each carrying the arithmetic that produced it.
+    parent: str | None,
+    parent_total: float | None,
+    anchor: Placement | None,
+) -> tuple[float | None, tuple[Part, ...]]:
+    """One stage of the cascade from its own lines, and the arithmetic that produced it.
 
-    Split from the derivation above because the working is the other half of the job: a page
-    that can print a residual but not how the figure beside it was reached is one a reader
-    cannot investigate. A learned line joins here as well as in the totals, or the hover would
-    not add up to the figure it sits beside -- which is the one thing it is for.
+    Two shapes, and the difference is which end the stage is built from:
+
+    * **A stage with a parent** starts at the parent's figure. If the parent is not computable the
+      stage is not either -- a line put under "Finance and tax" cannot make profit before tax
+      computable when operating income is not, and inventing a total out of the part of the
+      cascade that happens to be present would make the residual lie about what it measures.
+      The **components are still listed** in the working, because "these are the lines, and the
+      total above them is missing" is what a reader needs to see.
+    * **The first stage** is built from its own first line -- ``anchor``, which is revenue by the
+      chart's order. A missing anchor leaves the stage uncomputable, which is the behaviour
+      `_subtract` had and the reason a cost of sales with no revenue does not print a negative
+      gross profit that reads like a loss.
     """
-    return {
-        "gross_profit": _Work(
-            total=gross,
-            parts=(
-                _components(metrics, ("revenue", 1.0), ("cost_of_goods_sold", -1.0))
-                + _extra_parts(metrics, in_revenue)
-            ),
-        ),
-        "operating_income": _Work(
-            total=operating,
-            parts=(
-                _component("gross_profit", gross, 1.0)
-                + _components(
-                    metrics,
-                    ("research_and_development", -1.0),
-                    ("sga_expense", -1.0),
-                    ("depreciation_amortisation", -1.0),
-                )
-                + _extra_parts(metrics, in_operating)
-            ),
-        ),
-        "pretax_income": _Work(
-            total=pretax,
-            parts=(
-                _component("operating_income", operating, 1.0)
-                + _components(
-                    metrics,
-                    ("interest_income", 1.0),
-                    ("other_nonoperating_income", 1.0),
-                    ("interest_expense", -1.0),
-                )
-                + _extra_parts(metrics, in_finance)
-            ),
-        ),
-        "net_income": _Work(
-            total=_subtract(pretax, tax),
-            parts=(
-                _component("pretax_income", pretax, 1.0)
-                + _components(metrics, ("tax_expense", -1.0))
-            ),
-        ),
-    }
-
-
-def _component(key: str, value: float | None, weight: float) -> tuple[Part, ...]:
-    """One component, or nothing at all when the figure is absent.
-
-    An absent component is left out rather than listed as zero: a sum showing a line at 0
-    claims the filing stated nothing there, which is a different fact from our not holding
-    it -- and the residual is what tells the reader which of the two it is.
-    """
-    if value is None:
-        return ()
-    return (Part(label=_label(key), contribution=weight * value, source=key),)
-
-
-def _components(
-    metrics: dict[str, Any], *weighted: tuple[str, float]
-) -> tuple[Part, ...]:
-    """The present components of a subtotal, each carrying its key and its weight."""
-    out: list[Part] = []
-    for key, weight in weighted:
-        value = _stated(metrics, key)
-        out.extend(_component(key, None if value is None else _magnitude(key, value), weight))
-    return tuple(out)
+    parts = tuple(_part(placement, contribution) for placement, contribution in entries)
+    if parent is None:
+        if not entries or anchor is None or entries[0][0].key != anchor.key:
+            return None, parts
+        total = entries[0][1] + sum(contribution for _, contribution in entries[1:])
+        return total, parts
+    if parent_total is None:
+        return None, parts
+    return (
+        parent_total + sum(contribution for _, contribution in entries),
+        (Part(label=_label(parent), contribution=parent_total, source=parent), *parts),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -921,156 +656,86 @@ class _Composition:
         return _sum(self.current_liabilities, self.non_current_liabilities)
 
 
-#: Which component accounts sit on each side of the balance sheet. Declared once so the
-#: statement and the check that audits it cannot disagree about what was included.
-#:
-#: `other_current_assets`, `operating_lease_assets` and `other_noncurrent_assets` are
-#: here because leaving them out is what made the totals look wrong: measured on
-#: `AIT_US_EQ` FY2026-06-30, the two residuals this check reported were exactly those
-#: lines -- 238,506,000 of current assets (cash plus other current) and 282,079,000 of
-#: non-current (operating leases plus other). With them the balance sheet reconciles to
-#: the dollar, which is what a component list that is actually complete looks like.
-CURRENT_ASSET_KEYS = (
-    "cash_and_equivalents", "receivables", "inventory", "other_current_assets",
-)
-NON_CURRENT_ASSET_KEYS = (
-    "net_ppe", "operating_lease_assets", "goodwill", "intangible_assets",
-    "other_noncurrent_assets",
-)
-CURRENT_LIABILITY_KEYS = (
-    "payables", "compensation_and_benefits", "other_current_liabilities", "short_term_debt",
-)
-#: `lease_liabilities` is deliberately absent: it is a memorandum, because the caption
-#: it would be added to (`other_noncurrent_liabilities`) may already contain it. See the
-#: account's definition in :data:`CHART`.
-NON_CURRENT_LIABILITY_KEYS = ("long_term_debt", "other_noncurrent_liabilities")
+def _composition(
+    metrics: dict[str, Any], layout: Layout | None = None
+) -> _Composition:
+    """What the component lines we hold add up to, including any the filer named by hand.
 
-#: The two totals, as their components. Composed from the four above rather than written out:
-#: a line added to one side must appear in the total's arithmetic too, or the working shown
-#: for the residual would not add up to the figure beside it.
-TOTAL_ASSET_KEYS = CURRENT_ASSET_KEYS + NON_CURRENT_ASSET_KEYS
-TOTAL_LIABILITY_KEYS = CURRENT_LIABILITY_KEYS + NON_CURRENT_LIABILITY_KEYS
+    The four sums are driven by the layout: a component joins the group its ``feeds`` names, and
+    :data:`layout.SECTION_FEEDS` is the one place that decides which for a line nobody moved -- so
+    the printed subtotal's arithmetic and the check that audits it cannot disagree about what was
+    included, and a line moved from one side of the balance sheet to the other moves with it.
 
-#: The key list behind each subtotal, by the metric name the checks and the page use. The
-#: composition writes its sums from these tuples, and the page writes the arithmetic behind
-#: them from the same tuples, so the working a reader hovers cannot list a different set of
-#: lines from the one the figure was computed from.
-COMPONENT_KEYS: dict[str, tuple[str, ...]] = {
-    "current_assets": CURRENT_ASSET_KEYS,
-    "total_assets": TOTAL_ASSET_KEYS,
-    "current_liabilities": CURRENT_LIABILITY_KEYS,
-    "total_liabilities": TOTAL_LIABILITY_KEYS,
-}
-
-
-#: Which group of components a line the *filer* names joins, by the heading it sits under.
-#:
-#: A line learned from a filing has to be counted somewhere or adding it changes nothing, and
-#: the heading the reader chose is the one piece of that the chart can act on. The keys are the
-#: headings the statement **prints**, and every heading whose lines are summed is here.
-#:
-#: The balance sheet used to print one heading, "Non-current liabilities and equity", holding two
-#: subtotals -- and that is why it no longer does. A heading that covers two totals cannot say
-#: which of them a first-time line feeds, so the honest choices were to split it or to refuse to
-#: count anything under it; the chart already separated the two, the statement now prints them
-#: separately, and :data:`ledger.uncounted_extras` reports the headings that remain -- "Equity"
-#: and "Memorandum", where this page computes no sum of the lines at all.
-#:
-#: On the profit and loss the group is the **stage of the cascade the line first feeds** rather
-#: than a bucket of components, because that statement's subtotals are a formula and not a sum of
-#: a key list: a line filed under "Operating expenses" belongs in operating income and in
-#: everything below it, and in nothing above. Added 2026-10-10 with the same report the ordering
-#: fix above answers -- the two lines the reader added under "Operating expenses" were printed
-#: and counted nowhere, so the "out by" they were added to fix did not move.
-EXTRA_GROUP: dict[tuple[str, str], str] = {
-    ("balance_sheet", "Current assets"): "current_assets",
-    ("balance_sheet", "Non-current assets"): "non_current_assets",
-    ("balance_sheet", "Current liabilities"): "current_liabilities",
-    ("balance_sheet", "Non-current liabilities"): "non_current_liabilities",
-    ("profit_and_loss", "Revenue"): "gross_profit",
-    ("profit_and_loss", "Operating expenses"): "operating_income",
-    ("profit_and_loss", "Finance and tax"): "pretax_income",
-}
-
-#: Which stated subtotals a component group feeds, so a line added to one is counted in the
-#: totals that group is part of rather than only in its own row.
-GROUP_SUBTOTALS: dict[str, tuple[str, ...]] = {
-    "current_assets": ("current_assets", "total_assets"),
-    "non_current_assets": ("total_assets",),
-    "current_liabilities": ("current_liabilities", "total_liabilities"),
-    "non_current_liabilities": ("total_liabilities",),
-}
-
-
-def extras_in(
-    extra: Sequence[Account] | None, statement: str, section: str
-) -> list[Account]:
-    """The learned lines that belong under one printed heading, in the order they were learned."""
-    return [
-        account
-        for account in (extra or ())
-        if account.statement == statement and account.section == section
-    ]
-
-
-def extras_for_group(
-    extra: Sequence[Account] | None, statement: str, group: str
-) -> list[Account]:
-    """The learned lines that join one group -- a component bucket, or a stage of the cascade."""
-    return [
-        account
-        for account in (extra or ())
-        if account.statement == statement
-        and EXTRA_GROUP.get((account.statement, account.section)) == group
-    ]
-
-
-def extra_keys(
-    extra: Sequence[Account] | None, statement: str, group: str
-) -> tuple[str, ...]:
-    """The learned lines in one component group -- the components a subtotal is summed from."""
-    return tuple(
-        account.key for account in extras_for_group(extra, statement, group)
-    )
-
-
-def subtotal_extra_keys(
-    extra: Sequence[Account] | None, statement: str, subtotal: str
-) -> tuple[str, ...]:
-    """The learned lines that feed one stated subtotal, by the group their heading joins."""
-    return tuple(
-        account.key
-        for account in (extra or ())
-        if account.statement == statement
-        and subtotal in GROUP_SUBTOTALS.get(EXTRA_GROUP.get((account.statement, account.section), ""), ())
-    )
-
-
-def uncounted_extras(extra: Sequence[Account] | None, statement: str) -> list[Account]:
-    """Learned lines printed in a statement whose heading feeds no stated subtotal.
-
-    Reported rather than left to be noticed: a figure that appears in the accounts and moves no
-    total is a figure a reader will assume is counted.
+    A signed line keeps its sign and every other figure is a magnitude, exactly as
+    :func:`_magnitude` documents: the balance sheet's groups are each on one side already, so the
+    sign is the group's and not the line's.
     """
-    return [
-        account
-        for account in (extra or ())
-        if account.statement == statement
-        and (account.statement, account.section) not in EXTRA_GROUP
-    ]
+    layout = layout or Layout.default()
+
+    def group(name: str) -> float | None:
+        return _sum(
+            *(_sized(metrics, placement.key) for placement in layout.components("balance_sheet", name))
+        )
+
+    return _Composition(
+        current_assets=group("current_assets"),
+        non_current_assets=group("non_current_assets"),
+        current_liabilities=group("current_liabilities"),
+        non_current_liabilities=group("non_current_liabilities"),
+    )
 
 
-def uncounted_note(extra: Sequence[Account] | None, statement: str) -> str | None:
+def _group_parts(
+    metrics: dict[str, Any], layout: Layout, statement: str, groups: Sequence[str]
+) -> tuple[Part, ...]:
+    """The arithmetic behind a subtotal summed from one or more component groups.
+
+    Built from the same placements that produced the figure, so the working a reader hovers cannot
+    list a different set of lines from the one the total was computed from.
+    """
+    parts: list[Part] = []
+    for group in groups:
+        for placement in layout.components(statement, group):
+            contribution = _sized(metrics, placement.key)
+            if contribution is not None:
+                parts.append(_part(placement, contribution))
+    return tuple(parts)
+
+
+def _sections(
+    metrics: dict[str, Any],
+    layout: Layout,
+    statement: str,
+    works: Mapping[str, _Work],
+) -> tuple[Section, ...]:
+    """A statement's headings and their lines, with each subtotal's figure and working attached.
+
+    The headings, their order and which lines sit under each are the layout's; the figures are the
+    cascade's or the composition's. That split is the point of the module: a reader who adds a
+    heading or moves a line changes the layout and the figures follow, and no builder carries a
+    second copy of the structure.
+    """
+    sections: list[Section] = []
+    for title in layout.sections(statement):
+        lines: list[Line] = []
+        for placement in layout.lines(statement, title):
+            work = works.get(placement.key) if placement.role == "subtotal" else None
+            lines.append(_line(metrics, placement, work.total if work else None, work))
+        sections.append(_section(title, lines))
+    return tuple(sections)
+
+
+def uncounted_note(layout: Layout | None, statement: str) -> str | None:
     """The sentence a statement adds when a line the filer names is counted nowhere, or ``None``.
 
     One function for all three statements, because the failure it reports is the same on each: a
     figure that appears in the accounts and moves no total is a figure a reader will assume is
     counted.
     """
-    uncounted = uncounted_extras(extra, statement)
+    uncounted = (layout or Layout.default()).uncounted(statement)
     if not uncounted:
         return None
-    headings = "”, “".join(sorted({account.section for account in uncounted}))
+    headings = "”, “".join(sorted({placement.section for placement in uncounted}))
     return (
         f"Lines read from the filing under “{headings}” are printed there and added to no "
         "total: this page computes no sum of that heading's lines, and which total a figure "
@@ -1079,107 +744,48 @@ def uncounted_note(extra: Sequence[Account] | None, statement: str) -> str | Non
     )
 
 
-def _composition(
-    metrics: dict[str, Any], extra: Sequence[Account] | None = None
-) -> _Composition:
-    """What the component lines we hold add up to, including any the filer named by hand.
-
-    The five key lists are the chart's; a learned line joins the group its heading feeds, and
-    `EXTRA_GROUP` is the one place that decides which -- so the printed subtotal's arithmetic and
-    the check that audits it cannot disagree about what was included.
-    """
-    current_assets = CURRENT_ASSET_KEYS + extra_keys(extra, "balance_sheet", "current_assets")
-    non_current_assets = NON_CURRENT_ASSET_KEYS + extra_keys(
-        extra, "balance_sheet", "non_current_assets"
-    )
-    current_liabilities = CURRENT_LIABILITY_KEYS + extra_keys(
-        extra, "balance_sheet", "current_liabilities"
-    )
-    non_current_liabilities = NON_CURRENT_LIABILITY_KEYS + extra_keys(
-        extra, "balance_sheet", "non_current_liabilities"
-    )
-    return _Composition(
-        current_assets=_sum(*(_sized(metrics, key) for key in current_assets)),
-        non_current_assets=_sum(*(_sized(metrics, key) for key in non_current_assets)),
-        current_liabilities=_sum(*(_sized(metrics, key) for key in current_liabilities)),
-        non_current_liabilities=_sum(*(_sized(metrics, key) for key in non_current_liabilities)),
-    )
-
-
 def profit_and_loss(
-    period: FundamentalPeriod, *, extra: Sequence[Account] | None = None
+    period: FundamentalPeriod,
+    *,
+    declared: Mapping[str, Declared] | None = None,
+    layout: Layout | None = None,
 ) -> Statement:
     """The result for the period, with each stated subtotal checked against its parts.
 
     ``gross_profit``, ``operating_income``, ``pretax_income`` and ``net_income`` are
     each shown with the arithmetic this project can do from the lines it holds. Where
     the filing states the subtotal too, the two are both printed and the residual is
-    the number that matters -- it is the size of the lines we do not extract (other
-    operating income, associates, minority interests), and a reader who cannot see it
-    cannot tell an extraction gap from a business with unusual economics.
+    the number that matters -- it is the size of the lines we do not extract, and a
+    reader who cannot see it cannot tell an extraction gap from a business with unusual
+    economics.
 
-    A line the filer names joins the cascade: the heading the reader filed it under says which
-    subtotal it first feeds and the side they posted it on says which way, so a figure added to
-    fix a residual moves it. Where the calculation linkbase has been read the *filer's* own
-    arithmetic picks such a line up by its tag too, which is the check that matters.
+    ``declared`` is unused here and kept for the signature every builder shares: the profit
+    cascade's stages are a formula, and the linkbase declares the balance sheet's totals rather
+    than these. It is documented rather than removed because a caller that hands the same three
+    arguments to :func:`statement` must not have to know which statement uses which.
+
+    Which lines each section holds, and which subtotal a line feeds, is the layout's -- so a line
+    a reader moved out of "Operating expenses" is no longer deducted at operating income, and a
+    caption they added there is.
     """
+    layout = layout or Layout.default()
     metrics = period.metrics or {}
     gaps: list[str] = []
 
     if _stated(metrics, "revenue") is None:
         gaps.append("revenue")
-    cascade = _profit_cascade(metrics, extra)
 
-    def held(title: str, lines: list[Line]) -> Section:
-        return _section(
-            title,
-            _section_lines(
-                lines, metrics=metrics, statement="profit_and_loss", section=title, extra=extra
-            ),
-        )
-
-    sections = (
-        held(
-            "Revenue",
-            [
-                _line(metrics, "revenue"),
-                _line(metrics, "cost_of_goods_sold"),
-                _line(metrics, "gross_profit", cascade["gross_profit"].total, cascade["gross_profit"]),
-            ],
-        ),
-        held(
-            "Operating expenses",
-            [
-                _line(metrics, "research_and_development"),
-                _line(metrics, "sga_expense"),
-                _line(metrics, "depreciation_amortisation"),
-                _line(metrics, "operating_income", cascade["operating_income"].total, cascade["operating_income"]),
-            ],
-        ),
-        held(
-            "Finance and tax",
-            [
-                _line(metrics, "interest_expense"),
-                _line(metrics, "interest_income"),
-                _line(metrics, "other_nonoperating_income"),
-                _line(metrics, "pretax_income", cascade["pretax_income"].total, cascade["pretax_income"]),
-                _line(metrics, "tax_expense"),
-                _line(metrics, "net_income", cascade["net_income"].total, cascade["net_income"]),
-            ],
-        ),
-        _memoranda(metrics, INCOME_MEMORANDA),
-    )
     notes = [
         "A stated subtotal and the arithmetic beside it differ by the lines this "
         "project does not extract; the residual is shown rather than absorbed.",
     ]
-    uncounted = uncounted_note(extra, "profit_and_loss")
+    uncounted = uncounted_note(layout, "profit_and_loss")
     if uncounted:
         notes.append(uncounted)
     return Statement(
         which="profit_and_loss",
         title="Profit & loss",
-        sections=sections,
+        sections=_sections(metrics, layout, "profit_and_loss", _profit_cascade(metrics, layout)),
         gaps=tuple(gaps),
         notes=tuple(notes),
     )
@@ -1189,7 +795,7 @@ def balance_sheet(
     period: FundamentalPeriod,
     *,
     declared: Mapping[str, Declared] | None = None,
-    extra: Sequence[Account] | None = None,
+    layout: Layout | None = None,
 ) -> Statement:
     """What is owned and owed, with the components checked against the stated totals.
 
@@ -1199,103 +805,53 @@ def balance_sheet(
     bucket line like `other_current_assets` is a very different figure from the residual
     against our own key list.
 
-    ``extra`` are lines the *filer* names and the chart does not (see `analysis/corrections`).
-    They are printed under the heading they were learned with and counted in the subtotals that
-    heading feeds, so adding a line the filing states moves the residual it was added to fix.
+    Components are grouped by the layout, so a line the reader moved to the other side of the
+    balance sheet is summed there and the totals it feeds follow.
     """
+    layout = layout or Layout.default()
     metrics = period.metrics or {}
     gaps: list[str] = []
-    held = _composition(metrics, extra)
+    held = _composition(metrics, layout)
 
-    def sum_of(metric: str, ours: float | None, keys: Sequence[str]) -> _Work:
-        """The filer's sum for this subtotal where it declares one, else our own list.
+    def sum_of(metric: str, ours: float | None) -> _Work:
+        """The filer's sum for this subtotal where it declares one, else our own groups.
 
-        The keys travel with the call rather than being looked up from a second table: the
-        same tuple that produced the composition figure produces the arithmetic shown for it,
-        so a line added to one cannot be missing from the other.
+        The groups travel from :data:`layout.SUBTOTAL_GROUPS` rather than being written out here,
+        which is what makes the subtotal the statement prints and the sum the check audits the same
+        sum by construction.
         """
         return _work_from(
             declared,
             metric,
             ours,
-            tuple(keys) + subtotal_extra_keys(extra, "balance_sheet", metric),
+            layout,
+            "balance_sheet",
+            SUBTOTAL_GROUPS[metric],
             metrics,
         )
 
-    def section(title: str, lines: list[Line]) -> Section:
-        return _section(
-            title,
-            _section_lines(
-                lines,
-                metrics=metrics,
-                statement="balance_sheet",
-                section=title,
-                extra=extra,
-            ),
-        )
+    figures = {
+        "current_assets": sum_of("current_assets", held.current_assets),
+        "total_assets": sum_of("total_assets", held.assets),
+        "current_liabilities": sum_of("current_liabilities", held.current_liabilities),
+        "total_liabilities": sum_of("total_liabilities", held.liabilities),
+    }
 
     if _stated(metrics, "total_equity") is None:
         gaps.append("total equity")
 
-    sections = (
-        section(
-            "Current assets",
-            [
-                _line(metrics, "cash_and_equivalents"),
-                _line(metrics, "receivables"),
-                _line(metrics, "inventory"),
-                _line(metrics, "other_current_assets"),
-                _worked_line(metrics, "current_assets", sum_of("current_assets", held.current_assets, CURRENT_ASSET_KEYS)),
-            ],
-        ),
-        section(
-            "Non-current assets",
-            [
-                _line(metrics, "net_ppe"),
-                _line(metrics, "operating_lease_assets"),
-                _line(metrics, "goodwill"),
-                _line(metrics, "intangible_assets"),
-                _line(metrics, "other_noncurrent_assets"),
-                _worked_line(metrics, "total_assets", sum_of("total_assets", held.assets, TOTAL_ASSET_KEYS)),
-            ],
-        ),
-        section(
-            "Current liabilities",
-            [
-                _line(metrics, "payables"),
-                _line(metrics, "compensation_and_benefits"),
-                _line(metrics, "other_current_liabilities"),
-                _line(metrics, "short_term_debt"),
-                _worked_line(
-                    metrics,
-                    "current_liabilities",
-                    sum_of("current_liabilities", held.current_liabilities, CURRENT_LIABILITY_KEYS),
-                ),
-            ],
-        ),
-        section(
-            "Non-current liabilities",
-            [
-                _line(metrics, "long_term_debt"),
-                _line(metrics, "other_noncurrent_liabilities"),
-                _worked_line(metrics, "total_liabilities", sum_of("total_liabilities", held.liabilities, TOTAL_LIABILITY_KEYS)),
-            ],
-        ),
-        section("Equity", [_line(metrics, "total_equity")]),
-        _memoranda(metrics, BALANCE_MEMORANDA),
-    )
     notes = [
         "Total assets, total liabilities and total equity are as stated by the "
         "filing. The component lines above each total are what this project "
         "extracts; the residual against the stated total is not an error.",
     ]
-    uncounted = uncounted_note(extra, "balance_sheet")
+    uncounted = uncounted_note(layout, "balance_sheet")
     if uncounted:
         notes.append(uncounted)
     return Statement(
         which="balance_sheet",
         title="Balance sheet",
-        sections=sections,
+        sections=_sections(metrics, layout, "balance_sheet", figures),
         gaps=tuple(gaps),
         trial_balance=trial_balance(period),
         notes=tuple(notes),
@@ -1303,25 +859,43 @@ def balance_sheet(
 
 
 def cash_flow(
-    period: FundamentalPeriod, *, extra: Sequence[Account] | None = None
+    period: FundamentalPeriod,
+    *,
+    declared: Mapping[str, Declared] | None = None,
+    layout: Layout | None = None,
 ) -> Statement:
     """How cash moved, and what is missing from the movement.
 
     The statement is a *movement*, so it only reconciles against the previous period's
     cash balance. The reconciliation itself lives in :func:`cash_movement` because it
     needs two periods, and this builds the single-period view.
-    """
-    metrics = period.metrics or {}
-    operating = _stated(metrics, "operating_cash_flow")
-    capex = _stated(metrics, "capex")
 
-    def held(title: str, lines: list[Line]) -> Section:
-        return _section(
-            title,
-            _section_lines(
-                lines, metrics=metrics, statement="cash_flow", section=title, extra=extra
+    Free cash flow is the one subtotal here that this project computes, and its arithmetic is a
+    formula -- operating cash flow less capital expenditure -- rather than a sum of the lines a
+    group feeds. That is why its components are written out where the balance sheet's are asked of
+    the layout: a cash flow line's *side* is the counter-entry against cash, so it does not say
+    which way the movement runs, and reading the side as the direction would add a capex outflow
+    back on.
+    """
+    layout = layout or Layout.default()
+    metrics = period.metrics or {}
+    operating = _sized(metrics, "operating_cash_flow")
+    capex = _sized(metrics, "capex")
+    free = _subtract(operating, capex)
+    figures = {
+        "free_cash_flow": _Work(
+            total=free,
+            parts=tuple(
+                part
+                for part in (
+                    _component_part("operating_cash_flow", operating, 1.0),
+                    _component_part("capex", capex, -1.0),
+                )
+                if part is not None
             ),
+            source="this project's own list of component lines",
         )
+    }
 
     notes = [
         "The taxonomy holds operating cash flow, capital expenditure and dividends. "
@@ -1329,87 +903,23 @@ def cash_flow(
         "this is not a complete statement of the movement in cash and says so "
         "rather than balancing to a figure it cannot support.",
     ]
-    uncounted = uncounted_note(extra, "cash_flow")
+    uncounted = uncounted_note(layout, "cash_flow")
     if uncounted:
         notes.append(uncounted)
 
     return Statement(
         which="cash_flow",
         title="Cash flow",
-        sections=(
-            held("Operating", [_line(metrics, "operating_cash_flow")]),
-            held(
-                "Investing",
-                [
-                    _line(metrics, "capex"),
-                    # Free cash flow is a calculation like any subtotal, so it carries its
-                    # working: operating cash flow less capital expenditure, which is the
-                    # second thing a reader checks after the residual.
-                    _line(
-                        metrics,
-                        "free_cash_flow",
-                        _subtract(operating, capex),
-                        _Work(
-                            total=_subtract(operating, capex),
-                            parts=_components(
-                                metrics, ("operating_cash_flow", 1.0), ("capex", -1.0)
-                            ),
-                            source="this project's own list of component lines",
-                        ),
-                    ),
-                ],
-            ),
-            _section("Financing", [_line(metrics, "dividends_paid")]),
-        ),
+        sections=_sections(metrics, layout, "cash_flow", figures),
         notes=tuple(notes),
     )
 
 
-def _extra_line(metrics: dict[str, Any], account: Account) -> Line:
-    """A line the filer names that the chart does not carry.
-
-    Stated and nothing else: there is no arithmetic behind a figure a person put there, and
-    inventing a component list for it would be inventing a claim. Its contribution to the
-    subtotal above it comes from the heading it was put under -- see :data:`EXTRA_GROUP`.
-    """
-    return Line(
-        key=account.key,
-        label=account.label,
-        stated=_stated(metrics, account.key),
-        computed=None,
-        side=account.side,
-        role="line",
-    )
-
-
-def _section_lines(
-    base: list[Line],
-    *,
-    metrics: dict[str, Any],
-    statement: str,
-    section: str,
-    extra: Sequence[Account] | None,
-) -> list[Line]:
-    """One section's own lines with the learned ones **before** its subtotal.
-
-    Position is not decoration here. A learned line printed under the total it feeds reads as
-    a memorandum -- and it was, in the first version, because the extras were appended and the
-    statement builders put each section's subtotal last in ``base``. Reported 2026-10-10: *"they
-    appear below the section total and aren't included in the section total calculation ... the
-    point of adding these values is to fix the 'out by X'"*. So the extras go in front of the
-    first subtotal line, which is the one they are counted in -- see :data:`EXTRA_GROUP` for
-    which subtotal that is, by heading and by statement.
-
-    A section with no subtotal (the cash flow's "Financing", the balance sheet's "Equity") keeps
-    them at the end, where the note beside the statement says they are counted nowhere.
-    """
-    learned = [_extra_line(metrics, account) for account in extras_in(extra, statement, section)]
-    if not learned:
-        return list(base)
-    at = next(
-        (index for index, line in enumerate(base) if line.role == "subtotal"), len(base)
-    )
-    return base[:at] + learned + base[at:]
+def _component_part(key: str, value: float | None, weight: float) -> Part | None:
+    """One component of a formula-driven subtotal, or nothing when the figure is absent."""
+    if value is None:
+        return None
+    return Part(label=_label(key), contribution=weight * value, source=key)
 
 
 def statement(
@@ -1417,21 +927,19 @@ def statement(
     which: str,
     *,
     declared: Mapping[str, Declared] | None = None,
-    extra: Sequence[Account] | None = None,
+    layout: Layout | None = None,
 ) -> Statement:
     """One statement by name. Raises for a name that is not a statement."""
-    if which == "balance_sheet":
-        return balance_sheet(period, declared=declared, extra=extra)
     builders = {
         "profit_and_loss": profit_and_loss,
+        "balance_sheet": balance_sheet,
         "cash_flow": cash_flow,
     }
     try:
         build = builders[which]
     except KeyError:
         raise KeyError(f"no statement {which!r}; expected one of {sorted(builders)}") from None
-    return build(period, extra=extra)
-
+    return build(period, declared=declared, layout=layout)
 
 # --------------------------------------------------------------------------- #
 # Accounting health
@@ -1590,7 +1098,9 @@ def _work_from(
     declared: Mapping[str, Declared] | None,
     metric: str,
     ours: float | None,
-    keys: Sequence[str],
+    layout: Layout,
+    statement: str,
+    groups: Sequence[str],
     metrics: dict[str, Any],
 ) -> _Work:
     """A subtotal's value and the arithmetic behind it: the filer's, or our own.
@@ -1598,8 +1108,9 @@ def _work_from(
     Two summations can stand behind one printed subtotal and they are not the same sum. Where
     the linkbase declared this total, the figure is the sum of the filer's own children and
     the working names those -- which is what makes a residual legible, because it is then the
-    lines *the filing* breaks the total into that we do not hold. Otherwise the figure is our
-    own key list and the working names the lines we added up.
+    lines *the filing* breaks the total into that we do not hold. Otherwise the figure is the
+    sum of the component groups the layout assigns this subtotal, and the working names those
+    lines.
     """
     entry = (declared or {}).get(metric)
     if entry is not None:
@@ -1615,7 +1126,7 @@ def _work_from(
         )
     return _Work(
         total=ours,
-        parts=_components(metrics, *((key, 1.0) for key in keys)),
+        parts=_group_parts(metrics, layout, statement, groups),
         source="this project's own list of component lines",
     )
 
@@ -1646,7 +1157,8 @@ def _agree_computed(
     declared: Mapping[str, Declared] | None,
     metrics: dict[str, Any],
     *,
-    extra: Sequence[Account] | None = None,
+    layout: Layout,
+    groups: Sequence[str],
 ) -> Check:
     """One composition check, from the filer's declared children where we have them.
 
@@ -1656,12 +1168,7 @@ def _agree_computed(
     """
     computed, missing, missing_total, source = _computed(declared, metric, ours)
     work = _work_from(
-        declared,
-        metric,
-        ours,
-        tuple(COMPONENT_KEYS.get(metric, ()))
-        + subtotal_extra_keys(extra, "balance_sheet", metric),
-        metrics,
+        declared, metric, ours, layout, "balance_sheet", groups, metrics
     )
     return _agree(
         key,
@@ -1680,7 +1187,7 @@ def composition(
     period: FundamentalPeriod,
     *,
     declared: Mapping[str, Declared] | None = None,
-    extra: Sequence[Account] | None = None,
+    layout: Layout | None = None,
 ) -> list[Check]:
     """Whether the components we hold sum to the totals the filing states.
 
@@ -1689,20 +1196,21 @@ def composition(
     note because the residual is what tells a reader whether a statement is usable:
     a hundred pounds of "other" is not the same as a third of the balance sheet.
 
-    ``declared`` replaces our own component lists with the filer's, for the subtotals it
+    ``declared`` replaces our own component groups with the filer's, for the subtotals it
     covers: the check then measures the *issuer's* arithmetic instead of this codebase's
     assertion about how a balance sheet is built. That is the stronger claim, and it is
     why the sums differ -- our list is a subset of the taxonomy, the filer's is its own
     balance sheet. A subtotal the filer declares and we cannot complete stays *not
-    computable* with the absent lines named; the composition from our own list remains
+    computable* with the absent lines named; the composition from our own groups remains
     the only verdict available for a subtotal no linkbase covers.
 
-    ``extra`` are lines the filer names and the chart does not. They join the same sums the
-    printed statement adds them to, from the same table, so the row a reader added a figure
-    under is the row whose residual moves.
+    ``layout`` puts the lines where the reader put them, so a component moved from one side of
+    the balance sheet to the other is summed there and the row whose residual moves is the row
+    they moved it under -- the printed statement and this check read the same groups.
     """
+    layout = layout or Layout.default()
     metrics = period.metrics or {}
-    held = _composition(metrics, extra)
+    held = _composition(metrics, layout)
     return [
         _agree_computed(
             "assets_composition",
@@ -1713,7 +1221,8 @@ def composition(
             "asset lines we hold against total assets",
             declared,
             metrics,
-            extra=extra,
+            layout=layout,
+            groups=SUBTOTAL_GROUPS["total_assets"],
         ),
         _agree_computed(
             "liabilities_composition",
@@ -1724,7 +1233,8 @@ def composition(
             "liability lines we hold against total liabilities",
             declared,
             metrics,
-            extra=extra,
+            layout=layout,
+            groups=SUBTOTAL_GROUPS["total_liabilities"],
         ),
         _agree_computed(
             "current_assets_composition",
@@ -1735,7 +1245,8 @@ def composition(
             "current asset lines we hold against current assets",
             declared,
             metrics,
-            extra=extra,
+            layout=layout,
+            groups=SUBTOTAL_GROUPS["current_assets"],
         ),
         # The mirror of the line above, and it was missing. Measured 2026-10-07 on
         # `MSFT_US_EQ`: its balance sheet states current liabilities of 168,825 against
@@ -1753,13 +1264,14 @@ def composition(
             "current liability lines we hold against current liabilities",
             declared,
             metrics,
-            extra=extra,
+            layout=layout,
+            groups=SUBTOTAL_GROUPS["current_liabilities"],
         ),
     ]
 
 
 def profit_articulation(
-    period: FundamentalPeriod, extra: Sequence[Account] | None = None
+    period: FundamentalPeriod, layout: Layout | None = None
 ) -> Check:
     """Whether the lines we hold add up to the profit the filing reports.
 
@@ -1769,15 +1281,15 @@ def profit_articulation(
 
     It reads :func:`_profit_cascade`, the same arithmetic the statement prints, so the
     two cannot drift into disagreeing about which lines count -- which would make the
-    audit pass a statement that is visibly wrong. ``extra`` travels with it for the same
-    reason: a line the reader added that the statement counts and this check did not would
-    be exactly that disagreement, one row apart on the same page.
+    audit pass a statement that is visibly wrong. ``layout`` travels with it for the same
+    reason: a line the reader moved that the statement counts differently and this check
+    did not would be exactly that disagreement, one row apart on the same page.
     """
     metrics = period.metrics or {}
     # The cascade's own working travels with the figure, so the health row explains itself the
     # same way the statement line it audits does -- a reader hovering one and then the other
     # must not get two different accounts of the same subtraction.
-    work = _profit_cascade(metrics, extra)["net_income"]
+    work = _profit_cascade(metrics, layout)["net_income"]
     return _agree(
         "profit_articulation",
         "Lines we hold reconcile to reported profit",
@@ -1787,7 +1299,6 @@ def profit_articulation(
         work=work,
         about="net_income",
     )
-
 
 def equation_check(period: FundamentalPeriod) -> Check:
     """``assets = liabilities + equity`` on the stated totals.
@@ -1908,20 +1419,20 @@ def checks(
     previous: FundamentalPeriod | None = None,
     *,
     declared: Mapping[str, Declared] | None = None,
-    extra: Sequence[Account] | None = None,
+    layout: Layout | None = None,
 ) -> list[Check]:
     """Every accounting-health check for one period, equation first.
 
     Order is the order a reader should work in: the equation is pass/fail on our own
     extraction, then whether the figures add up, then the two articulations across
     years. ``declared`` is the filer's own arithmetic, which replaces ours in the
-    composition checks for the subtotals its linkbase covers; ``extra`` are the lines the
-    filer names and the chart does not, which join the same sums the statement adds them to.
+    composition checks for the subtotals its linkbase covers; ``layout`` is where the reader
+    put each line, which joins the same sums the printed statement adds it to.
     """
     return [
         equation_check(period),
-        profit_articulation(period, extra),
-        *composition(period, declared=declared, extra=extra),
+        profit_articulation(period, layout),
+        *composition(period, declared=declared, layout=layout),
         retained_earnings_rollforward(period, previous),
         cash_movement(period, previous),
     ]

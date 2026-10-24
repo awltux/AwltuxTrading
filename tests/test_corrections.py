@@ -281,7 +281,13 @@ class TestTheAffordancesAreOnThePage:
         self, client, session
     ):
         """A figure that is absent rather than wrong is put right with "add a line", and a
-        remove link on a row with nothing in it would be an offer that does nothing."""
+        remove link on a row with nothing in it would be an offer that does nothing.
+
+        A *move* link stays, because where a line is printed is a question about the line and not
+        about whether this period happens to state it: a company that states its depreciation under
+        a heading of its own says so in every year, and this year's row with no figure in it is
+        still the row the presentation belongs to.
+        """
         period = _store(
             session,
             "TEST_US_EQ",
@@ -296,7 +302,8 @@ class TestTheAffordancesAreOnThePage:
             if "Cost of sales" in item.get_text(" ")
         )
 
-        assert row.select_one("td.act a") is None
+        links = [link.get_text(" ", strip=True) for link in row.select("td.act a")]
+        assert links == ["move"]
 
     def test_each_section_offers_a_line_to_add_to_it(self, client, session, two_years):
         body = client.get(f"/accounts/{two_years.id}/profit_and_loss").text
@@ -559,7 +566,7 @@ class TestRemovingALine:
             if "Inventory" in item.get_text(" ")
         )
         assert "120" not in row.get_text(" "), "the removed figure is out of the statement"
-        assert row.select_one("td.act a") is None
+        assert [link.get_text(" ", strip=True) for link in row.select("td.act a")] == ["move"]
 
     def test_the_outcome_travels_in_the_url_and_is_rendered_as_a_sentence(
         self, client, session, two_years

@@ -38,6 +38,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from awltux.analysis import layout
 from awltux.db import AppSetting, FundamentalPeriod, Instrument, utcnow
 from awltux.metrics import DERIVED_METRICS, value_of
 
@@ -167,14 +168,17 @@ class Record:
 
     added: dict[str, Correction] = field(default_factory=dict)
     removed: dict[str, Removal] = field(default_factory=dict)
+    #: Presentation decided for this period alone, overriding the filer's own record of it.
+    moved: dict[str, Move] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
-        return bool(self.added or self.removed)
+        return bool(self.added or self.removed or self.moved)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "added": {name: entry.as_dict() for name, entry in self.added.items()},
             "removed": {name: entry.as_dict() for name, entry in self.removed.items()},
+            "moved": {name: entry.as_dict() for name, entry in self.moved.items()},
         }
 
     @classmethod
@@ -190,6 +194,11 @@ class Record:
             removed={
                 str(name): Removal.from_dict(str(name), entry)
                 for name, entry in (payload.get("removed") or {}).items()
+                if isinstance(entry, dict)
+            },
+            moved={
+                str(name): Move.from_dict(entry)
+                for name, entry in (payload.get("moved") or {}).items()
                 if isinstance(entry, dict)
             },
         )
@@ -246,26 +255,82 @@ class Line:
 
 
 @dataclass(slots=True)
+class Move:
+    """A line presented somewhere other than where the chart puts it.
+
+    The third kind of change a reader can make, beside adding a figure and removing a line, and it
+    is the one the accounts needed most. Asked for after working through `JELl_EQ`: *"There is
+    little consistency when naming lines in the accounts. It appears each company can use their own
+    terminology and accounting practices. So the accounting system cannot depend on where a line
+    title might end up ... it is difficult to construct accounts from just the prescribed titles,
+    and suggests a more flexible way of constructing/modifying the accounts is required."*
+
+    **A move changes no figure.** It says where a line is printed and which subtotal its figure is
+    counted in, so two periods can present the same numbers under different headings without either
+    one's stored accounts changing. That is why the scope can be the filer: a presentation is a
+    property of how a company reports, as true of its other years as of this one.
+
+    ``role`` is how a line stops being a component without being deleted. ``memo`` prints it and
+    counts it nowhere -- what the 2022 Yahoo statement needs for a caption it states twice -- and
+    ``line`` with ``feeds`` empty prints it and says on the page that no total counts it.
+    """
+
+    section: str = ""
+    label: str = ""
+    role: str = ""
+    #: ``None`` keeps the heading's own subtotal, ``""`` counts it in nothing, else a subtotal.
+    feeds: str | None = None
+    at: str = ""
+    note: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "section": self.section,
+            "label": self.label,
+            "role": self.role if self.role in ("", "line", "subtotal", "memo") else "",
+            "feeds": self.feeds,
+            "at": self.at or stamp(),
+            "note": self.note,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> Move:
+        feeds = payload.get("feeds")
+        return cls(
+            section=str(payload.get("section") or ""),
+            label=str(payload.get("label") or ""),
+            role=str(payload.get("role") or ""),
+            feeds=None if feeds is None else str(feeds),
+            at=str(payload.get("at") or ""),
+            note=str(payload.get("note") or ""),
+        )
+
+
+@dataclass(slots=True)
 class Rules:
     """What a filer's periods all have in common, as far as a reader has said so.
 
-    Two halves, and they are different kinds of statement. A **removal** says a line is not one
+    Four halves, and they are different kinds of statement. A **removal** says a line is not one
     of this company's accounts, which is as true of its other years as of this one. A **line** is
     a caption the filer uses that this project's chart does not carry, learned once from a filing
     so that every later period offers it in the same section -- which is the only way a reader can
-    put a figure on it in the next year without re-teaching the page.
+    put a figure on it in the next year without re-teaching the page. A **move** says where a line
+    is presented, which a company's reporting habit makes true of every year it filed. A
+    **section** is a heading this company's accounts print that this project's chart does not.
     """
 
     removed: dict[str, Removal] = field(default_factory=dict)
     lines: dict[str, Line] = field(default_factory=dict)
+    moved: dict[str, Move] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
-        return bool(self.removed or self.lines)
+        return bool(self.removed or self.lines or self.moved)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "removed": {name: entry.as_dict() for name, entry in self.removed.items()},
             "lines": {name: entry.as_dict() for name, entry in self.lines.items()},
+            "moved": {name: entry.as_dict() for name, entry in self.moved.items()},
         }
 
     @classmethod
@@ -281,6 +346,11 @@ class Rules:
             lines={
                 str(name): Line.from_dict(str(name), entry)
                 for name, entry in (payload.get("lines") or {}).items()
+                if isinstance(entry, dict)
+            },
+            moved={
+                str(name): Move.from_dict(entry)
+                for name, entry in (payload.get("moved") or {}).items()
                 if isinstance(entry, dict)
             },
         )
@@ -612,6 +682,82 @@ def forget_rule(rules: Rules, metric: str) -> bool:
     return rules.removed.pop(metric, None) is not None
 
 
+#: The roles a placement can hold. Named here because the value is stored, so a typo would be a
+#: line printed in no particular way rather than a refusal.
+ROLES: tuple[str, ...] = ("", "line", "subtotal", "memo")
+
+
+def move_line(
+    holder: Rules | Record,
+    key: str,
+    *,
+    section: str = "",
+    label: str = "",
+    role: str = "",
+    feeds: str | None = None,
+    note: str = "",
+) -> Move:
+    """Present a line somewhere other than where the chart puts it, and return the record.
+
+    ``holder`` is a filer's :class:`Rules` or a period's :class:`Record`, because the two scopes
+    are the same decision made for a different reach -- a company's presentation, or one year's
+    exception to it. An empty field means "leave it as it is", so the record says what was decided
+    and nothing more; ``feeds`` is the field with three states, because *counted in nothing* is a
+    real choice (`JELl_EQ`'s depreciation) and not the absence of one.
+    """
+    move = Move(
+        section=section,
+        label=label,
+        role=role if role in ROLES else "",
+        feeds=feeds,
+        at=stamp(),
+        note=note,
+    )
+    holder.moved[key] = move
+    return move
+
+
+def forget_move(holder: Rules | Record, key: str) -> bool:
+    """Put a line back where the chart prints it, and report whether it had been moved."""
+    return holder.moved.pop(key, None) is not None
+
+
+def placement_overrides(
+    rules: Rules | None, record: Record
+) -> dict[str, layout.Override]:
+    """Every move in force for a period, keyed by line: the filer's, overridden by the period's.
+
+    A period's own record replaces the filer's for the same line rather than merging field by
+    field: two half-decisions about one line would be a presentation nobody made.
+    """
+    merged: dict[str, layout.Override] = {}
+    for source in ((rules.moved if rules else {}), record.moved):
+        for key, move in source.items():
+            merged[key] = layout.Override(
+                section=move.section,
+                label=move.label,
+                role=move.role,
+                feeds=move.feeds,
+            )
+    return merged
+
+
+def build_layout(rules: Rules | None, record: Record) -> layout.Layout:
+    """The presentation these accounts are read with: the chart, plus what a reader changed.
+
+    The one bridge between the store and the ledger. Everything the readers see -- the statement,
+    the checks, the picker -- is built from the layout this returns, so a line moved on one page
+    cannot be printed in two places on another.
+    """
+    learned = [
+        layout.placement_for(line, statement=line.statement, section=line.section)
+        for line in (rules.lines.values() if rules else ())
+    ]
+    return layout.Layout.build(
+        learned=learned, moves=placement_overrides(rules, record)
+    )
+
+
 def filer_periods(session: Any, cik: str | None) -> list[FundamentalPeriod]:
     """Every period stored for a filer, oldest first."""
     if not cik:
@@ -716,6 +862,27 @@ def corrections_for(period: FundamentalPeriod, rules: Rules | None = None) -> li
                 "overrides_rule": False,
             }
         )
+    for scope, source in (("filer", rules.moved if rules else {}), ("period", record.moved)):
+        for name, move in sorted(source.items()):
+            if scope == "filer" and name in record.moved:
+                # This period has its own presentation of the line, and its presentation is the
+                # one the page obeyed.
+                continue
+            out.append(
+                {
+                    "metric": name,
+                    "action": "moved",
+                    "value": None,
+                    "side": move.section,
+                    "tag": "",
+                    "url": "",
+                    "at": move.at,
+                    "note": move.note,
+                    "origin": move.label or move.role,
+                    "scope": scope,
+                    "overrides_rule": False,
+                }
+            )
     return out
 
 
@@ -724,19 +891,23 @@ __all__ = [
     "DEBIT",
     "MANUAL",
     "NO_REASON",
+    "ROLES",
     "SETTING_PREFIX",
     "Correction",
     "Line",
+    "Move",
     "Record",
     "Removal",
     "Rules",
     "add",
     "apply",
     "apply_to_row",
+    "build_layout",
     "corrections_for",
     "filer_periods",
     "forget",
     "forget_line",
+    "forget_move",
     "forget_rule",
     "key",
     "known_line",
@@ -744,6 +915,8 @@ __all__ = [
     "link_target",
     "load_filer",
     "load_period",
+    "move_line",
+    "placement_overrides",
     "reapply_filer",
     "remove",
     "restore",

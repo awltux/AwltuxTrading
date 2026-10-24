@@ -161,15 +161,7 @@ def metrics_from_statements(financials: dict[str, Any], column_index: int) -> di
     ``column_index`` selects the period: 0 is the most recent, which is the
     convention Yahoo uses for the columns of its statement frames.
     """
-    merged: dict[str, Any] = {}
-    for section in ("income", "balance", "cashflow"):
-        block = financials.get(section) or {}
-        rows = block.get("rows") or {}
-        for label, values in rows.items():
-            if label in merged:
-                continue  # an earlier section wins; balance sheet labels are unique
-            if isinstance(values, list) and column_index < len(values):
-                merged[label] = values[column_index]
+    merged = _merged_rows(financials, column_index)
 
     metrics: dict[str, float] = {}
     for key, labels in STATEMENT_LABELS.items():
@@ -190,6 +182,97 @@ def metrics_from_statements(financials: dict[str, Any], column_index: int) -> di
             metrics[key] = abs(metrics[key])
 
     return metrics
+
+
+#: Which statement of *ours* each of Yahoo's three frames feeds.
+YAHOO_STATEMENTS: tuple[tuple[str, str], ...] = (
+    ("income", "profit_and_loss"),
+    ("balance", "balance_sheet"),
+    ("cashflow", "cash_flow"),
+)
+
+#: A row label reduced to a stable key for a line no canonical metric claims.
+#:
+#: A provider's caption is the only identity such a line has -- there is no tag here, which is
+#: exactly why a period built from a Yahoo statement could not offer one -- so the key is the
+#: caption, slugged. It is stable across years because the caption is, and it cannot collide with
+#: a canonical key (those have no colon), the same argument `analysis/corrections.Line` makes for a
+#: taxonomy tag.
+SOURCE_KEY_PREFIX = "src:"
+
+
+def source_key(label: str) -> str:
+    """The key a source's own caption is stored under."""
+    slug = re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")
+    return f"{SOURCE_KEY_PREFIX}{slug}"
+
+
+def source_lines(
+    financials: dict[str, Any], column_index: int
+) -> dict[str, list[dict[str, Any]]]:
+    """The figures a source states that no canonical metric claims, by statement.
+
+    **Kept because the alternative is a vocabulary.** Asked for after working through `JELl_EQ`:
+    *"It appears each company can use their own terminology and accounting practices ... it is
+    difficult to construct accounts from just the prescribed titles."* `STATEMENT_LABELS` is that
+    prescribed vocabulary, and everything not in it was discarded at ingest -- including the
+    38,688,000 that Jersey Electricity's operating expense actually is, which is why the accounts
+    page showed that section out by 26,867,000 with no way to fix it from the page.
+
+    What is kept is deliberately narrow: a label with a non-zero finite figure that no canonical
+    key reads. A stated zero is dropped because it is rarely a line worth adding and there are
+    many of them, and a label a key already reads is dropped because the chart has that line
+    already -- offering it twice is how one figure gets counted in two places.
+
+    Nothing here is *presented*: a stored caption is a figure the page can offer, and the reader
+    decides where it goes. That is the whole point -- the same caption means different things to
+    different filers, and to the same filer in different years.
+    """
+    claimed = {
+        label
+        for labels in STATEMENT_LABELS.values()
+        for label in labels
+    }
+    out: dict[str, list[dict[str, Any]]] = {}
+    for section, statement in YAHOO_STATEMENTS:
+        rows = (financials.get(section) or {}).get("rows") or {}
+        found: list[dict[str, Any]] = []
+        for label, values in rows.items():
+            if label in claimed:
+                continue
+            if not isinstance(values, list) or column_index >= len(values):
+                continue
+            value = as_finite_float(values[column_index])
+            if value is None or value == 0:
+                continue
+            found.append(
+                {"label": str(label), "key": source_key(str(label)), "value": value}
+            )
+        if found:
+            out[statement] = found
+    return out
+
+
+def _merged_rows(financials: dict[str, Any], column_index: int) -> dict[str, Any]:
+    """Every row of every statement for one period, in one label space.
+
+    Yahoo names its three frames separately but a caption can appear in more than one, and the
+    first frame wins -- which is deliberate for a label that means the same thing in both, and is
+    also how a *cash flow* caption came to fill a profit and loss line: `Depreciation And
+    Amortization` is stated on Jersey Electricity's cash flow and reached
+    `depreciation_amortisation` through here. That is why a line's figure is not the same question
+    as where the line is presented -- see `analysis/layout.py`.
+    """
+    merged: dict[str, Any] = {}
+    for section in ("income", "balance", "cashflow"):
+        block = financials.get(section) or {}
+        rows = block.get("rows") or {}
+        for label, values in rows.items():
+            if label in merged:
+                continue  # an earlier section wins; balance sheet labels are unique
+            if isinstance(values, list) and column_index < len(values):
+                merged[label] = values[column_index]
+    return merged
 
 
 def metrics_from_info(info: dict[str, Any]) -> dict[str, float]:
@@ -447,6 +530,10 @@ def sync_fundamentals(
                 metrics=metrics,
                 source="yahoo_statements",
                 confidence=0.7,
+                # The captions no canonical metric reads, kept so the accounts page can offer
+                # them as lines. See `source_lines`: without this, a figure the source states and
+                # this project's vocabulary lacks is not merely unplaced, it is unrecorded.
+                presentation=source_lines(financials, index),
             )
             report.periods_written += 1
         # Statements arrived, so whatever was recorded against this step is stale.
@@ -536,6 +623,7 @@ def _upsert_period(
     source: str,
     confidence: float,
     metric_sources: dict[str, Any] | None = None,
+    presentation: dict[str, Any] | None = None,
     filing_id: int | None = None,
 ) -> FundamentalPeriod | None:
     if period_end is None:
@@ -584,6 +672,11 @@ def _upsert_period(
     row.as_of = utcnow()
     if metric_sources is not None:
         row.metric_sources = metric_sources
+    # The source's own captions are *about* this period's payload, so a re-derive of the same
+    # period replaces them the same way it replaces the figures: leaving a caption behind that the
+    # provider no longer states is a line the page offers and nothing can fill.
+    if presentation is not None:
+        row.presentation = presentation
 
     # **And a correction outlives the re-derive that reproduces the row.** The write above
     # replaces every figure with what the payload says, which is what this function is for --

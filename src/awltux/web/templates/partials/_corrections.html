@@ -22,7 +22,7 @@
 
 {% from "partials/_help.html" import help %}
 {% set note = correction_note %}
-{% if note or corrections or learned_lines or superseded_lines %}
+{% if note or corrections or learned_lines or superseded_lines or source_lines %}
   {# `id="corrections"` stays on the element the page scrolls to: every correction route
      redirects to `…?corrections=<what happened>#corrections`, and an anchor that landed on
      nothing would leave the reader at the top of a page they have just changed. #}
@@ -43,9 +43,10 @@
     {% if note %}<p class="notice">{{ note }}</p>{% endif %}
     {% if corrections %}
       <p class="muted small">
-        Each row below changed the <strong>stored</strong> figures, so the ledger, the checks
-        and everything decided from these accounts read the corrected set. Undoing one puts
-        back what the extractor had said.
+        Each row below changed these accounts for this page and for everything the dashboard decides
+        from them. A figure that was written in or put back changed the <strong>stored</strong> set;
+        a line that was <em>moved</em> changed no figure at all, only where it is printed and which
+        total it is counted in. Undoing one puts back what the extractor had said.
       </p>
       <table class="grid compact">
         <thead>
@@ -70,6 +71,10 @@
                     put in by hand is applied after the rules
                   </span>
                 {% endif %}
+              {% elif change.action == 'moved' %}
+                <span class="good">moved</span>
+                <span class="muted small">to {{ change.side }}</span>
+                {% if change.origin %}<br><span class="muted small">{{ change.origin }}</span>{% endif %}
               {% else %}
                 <span class="warn">removed</span>
               {% endif %}
@@ -89,7 +94,15 @@
             </td>
             <td class="small muted">{{ change.at }}</td>
             <td>
-              {% if change.scope == 'filer' %}
+              {% if change.action == 'moved' %}
+                <form method="post" action="/accounts/{{ period.id }}/corrections/{{ change.metric }}/unmove" class="inline">
+                  <input type="hidden" name="statement" value="{{ statement }}">
+                  <input type="hidden" name="scope" value="{{ change.scope }}">
+                  <button type="submit" class="small">
+                    {% if change.scope == 'filer' %}Put it back everywhere{% else %}Put it back{% endif %}
+                  </button>
+                </form>
+              {% elif change.scope == 'filer' %}
                 <form method="post" action="/accounts/{{ period.id }}/filer-rules/forget" class="inline">
                   <input type="hidden" name="metric" value="{{ change.metric }}">
                   <input type="hidden" name="statement" value="{{ statement }}">
@@ -147,10 +160,30 @@
       Something in the extracted accounts is wrong?
       {% if built %}
         <a href="/accounts/{{ period.id }}/corrections/new?statement={{ built.which }}">Add a line</a>
-        that the extractor missed, or press <em>remove</em> beside a line it got wrong.
+        that the extractor missed, or press <em>remove</em> beside a line it got wrong. To present a
+        line the way this company does — under another heading, or counted in another total —
+        press <em>move</em> beside it.
       {% else %}
         Add a line from any of the statements.
       {% endif %}
     </p>
+    {% if source_lines %}
+      {# The captions this source states that this project's vocabulary has no name for, with the
+         figure it printed. A Yahoo statement tags nothing, so the caption is the identity a line can
+         have; choosing one brings it in with the source's own figure already read. This is the list
+         that a fixed chart could not offer, and it is the reason 38,688,000 of operating expense was
+         missing from a statement that printed a residual against it. #}
+      <p class="muted small">
+        <strong>Captions this source states that no line here carries</strong>, and the figure it
+        printed. Choosing one adds the line with that figure, under a heading you choose:
+        {% for statement, rows in source_lines.items() %}
+          <br><span class="muted">{{ statement | replace('_', ' ') }}</span>:
+          {% for row in rows %}
+            <a href="/accounts/{{ period.id }}/corrections/new?statement={{ statement }}&amp;metric={{ row.key | urlencode }}">{{ row.label }}</a>
+            <span class="muted">({{ row.value | number(0) }})</span>{% if not loop.last %},{% endif %}
+          {% endfor %}
+        {% endfor %}
+      </p>
+    {% endif %}
   </details>
 {% endif %}

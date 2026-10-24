@@ -12,6 +12,7 @@ import html
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import quote, urlencode
 
@@ -23,6 +24,7 @@ from awltux import __version__, schedule_time, version
 from awltux import metrics as metrics_module
 from awltux.analysis import adopted as adopted_map
 from awltux.analysis import corrections as corrections_rules
+from awltux.analysis import layout as layout_module
 from awltux.analysis import ledger
 from awltux.analysis import levers as lever_map
 from awltux.analysis import sectors as sector_map
@@ -31,6 +33,7 @@ from awltux.audit.calibration import HORIZON_WINDOWS, calibration_report
 from awltux.buildinfo import DEFAULT_COMMIT_COUNT, load_build_info
 from awltux.config import get_settings
 from awltux.db import Filing, IngestRun, Instrument, ResearchReport, session_scope
+from awltux.ingest import fundamentals as fundamentals_module
 from awltux.ingest import lease, universe
 from awltux.ingest.universe import cached_t212_capabilities
 from awltux.research import report as research_report
@@ -906,7 +909,7 @@ def accounts_page(
     corrections_context = _corrected_accounts(
         session, period, instrument, request.query_params.get("corrections")
     )
-    extra = corrections_context.pop("extra")
+    layout = corrections_context.pop("layout")
     # The filing behind these figures, when they are the government's own XBRL and we hold the
     # document: that is what lets the page open it at the line that does not reconcile.
     filing = _filing_target(session, period)
@@ -932,11 +935,11 @@ def accounts_page(
             "statement": statement,
             "tabs": _account_tabs(period_id, statement),
             "built": (
-                ledger.statement(period, statement, declared=declared, extra=extra)
+                ledger.statement(period, statement, declared=declared, layout=layout)
                 if statement in ledger.STATEMENT_KINDS
                 else None
             ),
-            "health": ledger.checks(period, previous, declared=declared, extra=extra),
+            "health": ledger.checks(period, previous, declared=declared, layout=layout),
             **arithmetic,
             "snapshot": snapshot,
             "empty": not metrics,
@@ -948,27 +951,25 @@ def accounts_page(
             # Where each printed line sits -- which statement, and which heading on it -- so a
             # residual link tells the picker what the line it came from *is*, and a line created
             # out of a caption in the filing is offered under the heading the reader is in.
-            "placements": _placements(period),
+            "placements": _placements(period, layout),
             **corrections_context,
         },
     )
 
 
-def _placements(period: Any) -> dict[str, dict[str, str]]:
+def _placements(period: Any, layout: Any) -> dict[str, dict[str, str]]:
     """Every printed line's statement and heading, keyed by metric.
 
-    Asked of the statements themselves rather than read off the chart, because the two do not
-    name their headings the same way: the profit and loss chart splits "Finance" and "Tax" where
-    the statement prints "Finance and tax". A second table here would be a second table to keep
-    true, and the one thing this map exists for -- naming a heading a reader can see -- is
-    exactly what the statement builder knows.
+    Asked of the built statements rather than read off the chart, because the reader may have
+    moved a line or added a heading and this map has to name the heading the page is actually
+    printing -- a second table here would be a second table to keep true.
 
     ``declared`` is left out: it changes what a figure *is*, not where a line is printed.
     """
     out: dict[str, dict[str, str]] = {}
     for which in ledger.STATEMENT_KINDS:
         try:
-            built = ledger.statement(period, which)
+            built = ledger.statement(period, which, layout=layout)
         except KeyError:  # pragma: no cover - STATEMENT_KINDS is the builder list
             continue
         for section in built.sections:
@@ -1060,14 +1061,17 @@ def _corrected_accounts(
     that is about *this project* rather than about the filing: everything above it is the filer's
     own arithmetic, and this is the record of where a person disagreed with it.
 
-    ``extra`` comes back with the rest because the ledger needs it as *accounts* rather than as
-    records -- a line the filer names is printed in its section and counted in that section's
-    subtotal -- and the caller hands it straight on. It is popped out of the context by the
-    caller, because no template needs it.
+    ``layout`` comes back with the rest because the ledger and the picker are both built from it:
+    a line a reader moved, or a caption they added, is presented *there* and counted in the
+    subtotal it names, so the statement and the arithmetic cannot disagree about where a figure
+    is. It is popped out of the context by the caller, because no template needs the object
+    itself -- the panel reads the rows.
     """
     cik = instrument.sec_cik if instrument is not None else None
     rules = corrections_rules.load_filer(session, cik)
+    record = corrections_rules.load_period(period)
     offerable, superseded = _learned_lines(rules, period)
+    built = corrections_rules.build_layout(rules, record)
     return {
         "corrections": corrections_rules.corrections_for(period, rules),
         "correction_note": CORRECTION_NOTES.get(outcome or ""),
@@ -1076,8 +1080,26 @@ def _corrected_accounts(
         "cik": cik,
         "learned_lines": [line.as_dict() | {"metric": line.metric} for line in offerable],
         "superseded_lines": [line.as_dict() | {"metric": line.metric} for line in superseded],
-        "extra": [_account_for(line) for line in offerable],
+        # The captions this period's source states that no canonical line claims. Offered as lines
+        # to place, with the figure already read for them -- see `ingest/fundamentals.source_lines`.
+        "source_lines": _source_choices(period),
+        "layout": built,
     }
+
+
+def _source_choices(period: Any) -> dict[str, list[dict[str, Any]]]:
+    """This period's unclaimed source captions, by statement, minus the ones already placed."""
+    placed = set((period.metrics or {}).keys())
+    out: dict[str, list[dict[str, Any]]] = {}
+    for statement, rows in (getattr(period, "presentation", None) or {}).items():
+        offered = [
+            row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("key") or "") not in placed
+        ]
+        if offered:
+            out[statement] = offered
+    return out
 
 
 def _learned_lines(rules: Any, period: Any) -> tuple[list[Any], list[Any]]:
@@ -1109,18 +1131,14 @@ def _learned_lines(rules: Any, period: Any) -> tuple[list[Any], list[Any]]:
 
 
 def _account_for(line: Any) -> Any:
-    """A learned line as one of the ledger's accounts, so it prints like any other.
+    """A learned line as one of the ledger's placements, so it prints like any other.
 
-    `Account` already carries exactly what a line needs to be laid out -- key, label, statement,
-    section, side -- so a filer's own caption travels through the same path the chart's do rather
-    than through a parallel one that would eventually disagree about a heading's name.
+    `Placement` already carries exactly what a line needs to be laid out -- key, caption,
+    statement, heading, side -- so a filer's own caption travels through the same path the chart's
+    do rather than through a parallel one that would eventually disagree about a heading's name.
     """
-    return ledger.Account(
-        key=line.metric,
-        label=line.label,
-        statement=line.statement,
-        section=line.section,
-        side=line.side,
+    return layout_module.placement_for(
+        line, statement=line.statement, section=line.section
     )
 
 
@@ -1425,6 +1443,19 @@ CORRECTION_NOTES: dict[str, str] = {
         "nothing was changed."
     ),
     "bad-value": "That is not a figure, so nothing was changed.",
+    "moved": "The line was moved, and every total it feeds was recomputed.",
+    "moved-filer": (
+        "The line was moved for every period this filer has. No figure changed: a move says where "
+        "a line is printed and which total it is counted in."
+    ),
+    "heading-added": "The heading was added to this statement, and is now offerable as a place for a line.",
+    "heading-forgotten": "The heading was removed. No figure changed.",
+    "heading-in-use": (
+        "A line is still printed under that heading, so it was left in place: removing the heading "
+        "would have moved that line somewhere the reader did not choose."
+    ),
+    "unmoved": "The line is printed where the chart puts it again.",
+    "nothing-to-unmove": "That line had not been moved.",
 }
 
 # The levers a business is exposed to, recorded by hand for now. `analysis/levers.py` owns the
@@ -1461,6 +1492,12 @@ LEVER_NOTES: dict[str, str] = {
 #: the taxonomy tag, because the tag is the line's identity: it is what the filing calls the
 #: caption, and what next year's filing will call it again.
 NEW_LINE_PREFIX = "new:"
+
+#: How the form says "this is a caption the *source* states, not one of ours". A provider statement
+#: tags nothing, so the caption is the identity -- see `ingest/fundamentals.source_key`. The prefix
+#: itself is imported rather than repeated: two copies of it would be a key the writer and the
+#: reader could come to disagree about, silently.
+SOURCE_PREFIX = fundamentals_module.SOURCE_KEY_PREFIX
 
 #: The origins an added figure may carry. Anything else is recorded as typed, because the
 #: distinction is "a person read this out of a filing" against "a person entered it", and a
@@ -1516,18 +1553,22 @@ def _parse_figure(raw: str) -> float | None:
     return -number if negative else number
 
 
-def _line_choices(which: str) -> list[dict[str, Any]]:
-    """The chart's lines for one statement, grouped by the section that prints them.
+def _line_choices(layout: Any, which: str) -> list[dict[str, Any]]:
+    """A statement's lines for one statement, grouped by the heading that prints them.
 
-    This is the picker a reader gets when adding a line. The headings are the statement's own,
-    so the question the form asks is "which heading does this figure belong under" rather than
-    one that needs the project's metric vocabulary to answer.
+    This is the picker a reader gets when adding a line. The headings are the **printed** ones,
+    asked of the layout, so the question the form asks is "which heading does this figure belong
+    under" rather than one that needs the project's metric vocabulary to answer -- and it is the
+    same list the statement above prints, so a heading a reader added is offerable at once.
+
+    A line already presented here is included: putting a second figure on it is the correction of
+    a figure, which the form asks for by name. What is *not* here is a line the reader moved onto
+    this statement from another one -- it is offered where it prints.
     """
-    groups: dict[str, list[ledger.Account]] = {}
-    for account in ledger.CHART:
-        if account.statement == which:
-            groups.setdefault(account.section, []).append(account)
-    return [{"section": title, "lines": lines} for title, lines in groups.items()]
+    return [
+        {"section": title, "lines": layout.lines(which, title)}
+        for title in layout.sections(which)
+    ]
 
 
 @router.get(
@@ -1582,27 +1623,20 @@ def corrections_form(
         detail = _accounts_detail(session, period_id)
         period, instrument = detail["period"], detail["instrument"]
         cik = instrument.sec_cik if instrument is not None else None
-        record = corrections_rules.load_period(period)
-        rules = corrections_rules.load_filer(session, cik)
-        metrics = period.metrics or {}
-        target = _removal_target(period, remove, record, rules)
-        groups = _line_choices(tab)
-        learned = [line for line in rules.lines.values() if line.statement == tab]
-        # The headings this statement *prints*, asked of the statement rather than of the chart:
-        # the chart splits "Finance" and "Tax" where the statement prints "Finance and tax", and a
-        # line learned under a heading nobody prints is a line nothing shows.
-        headings = _printed_headings(period, tab)
-        mapped = _metric_for_tag(tag, period)
-        new_line = _offered_line(
-            caption, tag, section=section, headings=headings, known=learned, mapped=mapped
+        target = _removal_target(
+            period, remove, corrections_rules.load_period(period), corrections_rules.load_filer(session, cik)
         )
-        chosen = _preselected(mapped=mapped, tag=tag, learned=learned, new_line=new_line, metric=metric)
-        # Nothing to go on -- the reader pressed *add a line* on a heading -- so the form opens on
-        # the first line of that heading. Decided **here** rather than in the template, where it
-        # used to be: which line is being edited is what decides whether the side is asked for, and
-        # one rule in two places is how a form and the record it posts come to disagree.
-        if not chosen:
-            chosen = _default_line(groups, section)
+        opened = _prefill(
+            period,
+            tab,
+            session=session,
+            cik=cik,
+            metric=metric,
+            value=value,
+            tag=tag,
+            caption=caption,
+            section=section,
+        )
         context = {
             "period": period,
             "instrument": instrument,
@@ -1611,27 +1645,32 @@ def corrections_form(
             "mode": "remove" if target else "add",
             "target": target,
             "section": section or "",
-            "groups": groups,
-            "learned": learned,
-            "new_line": new_line,
-            "sections": headings,
+            "groups": opened.groups,
+            "learned": opened.learned,
+            "new_line": opened.new_line,
+            # The captions this period's source states that no line claims, offered as lines with
+            # the figure already read for them. See `ingest/fundamentals.source_lines`.
+            "source_lines": opened.offered,
+            "sections": opened.headings,
             # Said when the preselect is not the line the reader arrived from, so a dropdown that
             # quietly moved is explained rather than trusted.
             "moved_from": (
-                _label_for(metric) if chosen and metric in ledger.BY_KEY and metric != chosen else ""
+                _label_for(metric)
+                if opened.chosen and metric in ledger.BY_KEY and metric != opened.chosen
+                else ""
             ),
-            "held": set(metrics),
+            "held": set(period.metrics or {}),
             "sides": corrections_rules.SIDES,
             # A line the chart carries has its side already, and the ledger posts it there
             # whatever the form says -- so the form stops asking. Empty for a line to create,
             # which is the one case the reader has to decide.
             "fixed_side": (
                 ""
-                if chosen.startswith(NEW_LINE_PREFIX) or chosen not in ledger.BY_KEY
-                else ledger.BY_KEY[chosen].side
+                if opened.chosen.startswith(NEW_LINE_PREFIX) or opened.chosen not in ledger.BY_KEY
+                else ledger.BY_KEY[opened.chosen].side
             ),
-            "chosen": chosen,
-            "value": value,
+            "chosen": opened.chosen,
+            "value": opened.value,
             "tag": tag,
             "url": url,
             # The picker fills this with the filing's own caption for the line -- "filed as:
@@ -1644,16 +1683,114 @@ def corrections_form(
     return templates.TemplateResponse(request, "corrections.html", context)
 
 
-def _printed_headings(period: Any, statement: str) -> list[str]:
-    """The headings a statement prints, in order, or none for a tab that prints no statement.
+@dataclass(slots=True)
+class _Prefill:
+    """What the add-a-line form opens on, worked out once instead of in the template.
 
-    Asked of the statement builder rather than of the chart, which names its sections
-    differently in two places. A line learned under a heading nobody prints is a line nothing
-    shows, so this is the list both the offer and the validation are made against.
+    Which line is being edited decides more than what is highlighted -- whether the side is asked
+    for, whether the figure box arrives full, and which heading a new line is offered under -- and
+    one rule in two places is how a form and the record it posts come to disagree.
     """
-    if statement not in ledger.STATEMENT_KINDS:
-        return []
-    return [section.title for section in ledger.statement(period, statement).sections]
+
+    chosen: str
+    value: str
+    groups: list[dict[str, Any]]
+    learned: list[Any]
+    headings: list[str]
+    offered: list[dict[str, Any]]
+    new_line: dict[str, Any] | None = None
+
+
+def _prefill(
+    period: Any,
+    tab: str,
+    *,
+    session: Any,
+    cik: str | None,
+    metric: str | None,
+    value: str,
+    tag: str,
+    caption: str,
+    section: str | None,
+) -> _Prefill:
+    """The line the form opens on, from the figure that was clicked or the caption that was chosen.
+
+    Three ways in, and they are different kinds of knowledge:
+
+    * a **figure clicked in the filing** carries the tag of the line it belongs to, so the form
+      opens on the chart line that tag feeds (or on the line to create, when nothing does);
+    * a **caption this source states** carries the figure itself, so the form opens on it with the
+      number already in the box -- the one case where this page can offer a line the reader has not
+      had to type a figure for;
+    * **nothing at all**, when the reader pressed *add a line* on a heading, so the form opens on
+      the first line of that heading.
+    """
+    rules = corrections_rules.load_filer(session, cik)
+    placement = corrections_rules.build_layout(rules, corrections_rules.load_period(period))
+    groups = _line_choices(placement, tab)
+    learned = [line for line in rules.lines.values() if line.statement == tab]
+    headings = list(placement.sections(tab))
+    mapped = _metric_for_tag(tag, period)
+    new_line = _offered_line(
+        caption, tag, section=section, headings=headings, known=learned, mapped=mapped
+    )
+    offered = _source_choices(period).get(tab, [])
+    source_line = _source_offer(metric, offered)
+    if source_line is not None:
+        return _Prefill(
+            chosen=str(source_line["option"]),
+            value=value or _sum_text_for_form(source_line.get("value")),
+            groups=groups,
+            learned=learned,
+            headings=headings,
+            offered=offered,
+            new_line=source_line,
+        )
+    chosen = _preselected(
+        mapped=mapped, tag=tag, learned=learned, new_line=new_line, metric=metric
+    )
+    return _Prefill(
+        chosen=chosen or _default_line(groups, section),
+        value=value,
+        groups=groups,
+        learned=learned,
+        headings=headings,
+        offered=offered,
+        new_line=new_line,
+    )
+
+
+def _source_offer(metric: str | None, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The source caption a form arrived asking for, when it asked for one.
+
+    ``metric`` is a ``src:`` key from the picker or from the link beside a statement's heading. The
+    figure travels with it because the source stated it -- that is the difference between this and
+    a line learned from a filing, where the reader had to read the number off the document.
+    """
+    chosen = (metric or "").strip()
+    if not chosen.startswith(SOURCE_PREFIX):
+        return None
+    row = next(
+        (entry for entry in rows if str(entry.get("key") or "") == chosen), None
+    )
+    if row is None:
+        return None
+    return {
+        "option": chosen,
+        "caption": str(row.get("label") or chosen[len(SOURCE_PREFIX) :]),
+        "value": row.get("value"),
+        "section": "",
+    }
+
+
+def _sum_text_for_form(value: Any) -> str:
+    """A figure as the form's box takes it: plain digits, no separators, no exponent."""
+    number = metrics_module.value_of({"value": value}, "value")
+    if number is None:
+        return ""
+    if number == int(number):
+        return str(int(number))
+    return repr(number)
 
 
 def _offered_line(
@@ -1675,6 +1812,7 @@ def _offered_line(
     if not caption or not tag or mapped or tag in {line.metric for line in known}:
         return None
     return {
+        "option": NEW_LINE_PREFIX + str(tag),
         "tag": tag,
         "caption": caption,
         # The heading the reader is working in, when the picker handed one over -- the heading
@@ -1703,7 +1841,7 @@ def _preselected(
     if tag and tag in {line.metric for line in learned}:
         return tag
     if new_line:
-        return NEW_LINE_PREFIX + str(new_line["tag"])
+        return str(new_line["option"])
     return metric if metric in ledger.BY_KEY else ""
 
 
@@ -1868,6 +2006,12 @@ def add_corrected_line(
     gives the caption, so next year's 10-K answers to it -- and the filing's own header and the
     heading the reader chose are recorded against the filer, so every later period offers the
     line in the same place.
+
+    **A caption a provider states arrives as ``src:<slug>``**, and it is learned the same way for
+    the same reason: a Yahoo statement tags nothing, so the caption is the only identity the line
+    can have. Its figure is not typed by the reader -- the source stated it, and the page read it
+    from the stored payload -- but it is written into ``metrics`` as a correction like any other,
+    which is what puts it in front of the ledger, the checks and every later reader.
     """
     figure = _parse_figure(value)
     tab = _correction_tab(statement)
@@ -1878,23 +2022,26 @@ def add_corrected_line(
         period, instrument = detail["period"], detail["instrument"]
         cik = instrument.sec_cik if instrument is not None else None
         rules = corrections_rules.load_filer(session, cik)
-        if metric.startswith(NEW_LINE_PREFIX):
-            learned, refusal = _requested_line(
-                period,
-                tab,
-                metric,
-                tag=tag,
-                caption=caption,
-                section=section,
-                cik=cik,
-            )
-            if refusal or learned is None:
-                return _correction_redirect(period_id, statement, refusal or "no-line")
-            metric, tag = learned["metric"], learned["tag"]
-        elif metric not in ledger.BY_KEY and corrections_rules.known_line(rules, metric) is None:
-            return _correction_redirect(period_id, statement, "no-line")
-        if figure is None:
-            return _correction_redirect(period_id, statement, "bad-value")
+        resolved = _requested_add(
+            period,
+            tab,
+            metric=metric,
+            figure=figure,
+            tag=tag,
+            caption=caption,
+            section=section,
+            side=side,
+            rules=rules,
+            cik=cik,
+        )
+        if resolved.refusal:
+            return _correction_redirect(period_id, statement, resolved.refusal)
+        metric, tag, figure, learned = (
+            resolved.metric,
+            resolved.tag,
+            resolved.figure,
+            resolved.line,
+        )
         # A line the chart already carries is posted on **the chart's side**, whatever the form
         # said. The ledger sums it with the weight its own line carries, so a reader's choice
         # here was recorded and then ignored by everything that reads the accounts -- the live
@@ -1927,14 +2074,153 @@ def add_corrected_line(
     return _correction_redirect(period_id, statement, "added-line" if learned else "added")
 
 
-def _requested_line(
+@dataclass(slots=True)
+class _Requested:
+    """The line a submission resolved to, its figure, and the reason when it resolved to nothing."""
+
+    metric: str = ""
+    tag: str = ""
+    figure: float | None = None
+    #: The record to learn against the filer, for a line this project's chart does not carry.
+    line: dict[str, Any] | None = None
+    refusal: str = ""
+
+
+def _requested_add(
     period: Any,
+    tab: str,
+    *,
+    metric: str,
+    figure: float | None,
+    tag: str,
+    caption: str,
+    section: str,
+    side: str,
+    rules: Any,
+    cik: str | None,
+) -> _Requested:
+    """Which line a submission is for, from the three ways a form can name one.
+
+    Split out of the route because each way needs a different fact and a different refusal, and a
+    branch per way inline is how a form comes to accept a key nothing can print:
+
+    * a **chart or already-learned key** is used as it stands;
+    * ``new:<taxonomy:Tag>`` names a caption from a *filing*, and needs the tag, the caption and a
+      heading the statement prints;
+    * ``src:<slug>`` names a caption a *source* states, and needs the period's own stored payload to
+      say what the figure was -- the box is a prefill, not the authority.
+    """
+    headings = list(corrections_rules.build_layout(rules, corrections_rules.load_period(period)).sections(tab))
+    if metric.startswith(SOURCE_PREFIX):
+        line, refusal = _requested_source_line(
+            period,
+            tab,
+            metric,
+            caption=caption,
+            section=section,
+            headings=headings,
+            cik=cik,
+        )
+        if refusal or line is None:
+            return _Requested(refusal=refusal or "no-line")
+        if figure is None:
+            # The source's own figure, because the reader was not asked for it: the form prefilled
+            # the box from what the source stated, and this is the same figure from the same place
+            # when the box arrives empty.
+            figure = _parse_figure(_sum_text_for_form(line["value"]))
+        if figure is None:
+            return _Requested(refusal="bad-value")
+        # **A provider states amounts without a sign convention**, so the side the reader chose is
+        # the only statement about direction there is: Yahoo prints "Operating Expense" positive and
+        # "Capital Expenditure" negative in the same document. The figure is therefore written with
+        # the sign its side implies, which is also how a filing prints a deduction -- in brackets --
+        # so the stored number reads the way the accounts read.
+        return _Requested(
+            metric=line["metric"],
+            tag=line["tag"],
+            figure=-abs(figure) if side == corrections_rules.DEBIT else abs(figure),
+            line=line,
+        )
+    if metric.startswith(NEW_LINE_PREFIX):
+        line, refusal = _requested_line(
+            tab,
+            metric,
+            tag=tag,
+            caption=caption,
+            section=section,
+            headings=headings,
+            cik=cik,
+        )
+        if refusal or line is None:
+            return _Requested(refusal=refusal or "no-line")
+        if figure is None:
+            # Refused before the line is learned, so a mistyped figure cannot leave a caption this
+            # filer now offers and nothing can fill.
+            return _Requested(refusal="bad-value")
+        return _Requested(metric=line["metric"], tag=line["tag"], figure=figure, line=line)
+    if metric not in ledger.BY_KEY and corrections_rules.known_line(rules, metric) is None:
+        return _Requested(refusal="no-line")
+    if figure is None:
+        return _Requested(refusal="bad-value")
+    return _Requested(metric=metric, tag=tag, figure=figure)
+
+
+def _requested_source_line(
+    period: Any,
+    statement: str,
+    metric: str,
+    *,
+    caption: str,
+    section: str,
+    headings: list[str],
+    cik: str | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """The line a ``src:`` submission asks to create, or the reason it cannot be.
+
+    The figure is looked up in the period's own stored payload rather than taken from the form: a
+    reader who chooses a caption the source states is choosing *that figure*, and letting the box
+    override it would put a line on the page that the source never said. A key that is not in the
+    payload is refused -- it belongs to another period, or to a source this one no longer has.
+    """
+    row = next(
+        (
+            entry
+            for entry in _source_choices(period).get(statement, [])
+            if str(entry.get("key") or "") == metric
+        ),
+        None,
+    )
+    if row is None:
+        # Not offered by this period any more: a caption the source dropped, or one already placed.
+        # Refused with its own code rather than silently written, because the figure it would carry
+        # is not the one on the page.
+        return None, "no-line"
+    label = (caption or str(row.get("label") or "") or metric).strip()
+    heading = section if section in headings else (headings[0] if headings else "")
+    if not heading:
+        return None, "no-section"
+    if not cik:
+        return None, "no-filer"
+    return (
+        {
+            "metric": metric,
+            "tag": metric,
+            "label": label,
+            "section": heading,
+            "value": row.get("value") if row else None,
+        },
+        "",
+    )
+
+
+def _requested_line(
     statement: str,
     metric: str,
     *,
     tag: str,
     caption: str,
     section: str,
+    headings: list[str],
     cik: str | None,
 ) -> tuple[dict[str, Any] | None, str]:
     """The line a ``new:`` submission asks to create, or the reason it cannot be.
@@ -1950,11 +2236,184 @@ def _requested_line(
     tag = tag or metric[len(NEW_LINE_PREFIX) :]
     if not tag or not caption.strip():
         return None, "no-line"
-    if section not in _printed_headings(period, statement):
+    if section not in headings:
         return None, "no-section"
     if not cik:
         return None, "no-filer"
     return {"metric": tag, "tag": tag, "label": caption.strip(), "section": section}, ""
+
+
+@router.get(
+    "/accounts/{period_id}/corrections/move",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def move_form(
+    request: Request,
+    period_id: int,
+    metric: str = "",
+    statement: str = ledger.DEFAULT_STATEMENT,
+) -> HTMLResponse:
+    """The page that asks where a line should be presented.
+
+    Its own page for the same reason a removal has one: the answer needs a *heading* and needs to
+    say what the line is counted in, and a form in the ledger table would make the statement a form
+    rather than a statement of the accounts.
+
+    **A heading can be created here**, which is the point of the whole feature: Jersey Electricity's
+    accounts put depreciation nowhere near the heading this project files it under, and the way to
+    say so is to name the heading the company actually prints and put the line under it.
+    """
+    tab = _correction_tab(statement)
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        rules = corrections_rules.load_filer(session, cik)
+        record = corrections_rules.load_period(period)
+        placed = corrections_rules.build_layout(rules, record)
+        target = _placement_target(period, placed, metric)
+        context = {
+            "period": period,
+            "instrument": instrument,
+            "cik": cik,
+            "statement": tab,
+            "target": target,
+            # Every heading the statement prints, so a line can be moved to any of them, plus the
+            # box for one it does not print yet.
+            "headings": list(placed.sections(tab)),
+            # The subtotals a figure can be counted in, by name, plus "this heading's own" and
+            # "nothing" -- the last being what a line shown and deliberately not added up needs.
+            "feeds": layout_module.FEEDS.get(tab, ()),
+            "heading_feeds": layout_module.section_feeds(tab, target["section"]) if target else "",
+            "roles": corrections_rules.ROLES,
+        }
+    return templates.TemplateResponse(request, "move.html", context)
+
+
+def _placement_target(period: Any, placed: Any, metric: str) -> dict[str, Any] | None:
+    """What the move page shows about the line being moved, or ``None`` for a key it cannot see."""
+    placement = placed.placement(metric) if metric else None
+    if placement is None:
+        raise HTTPException(status_code=404, detail=f"no line {metric!r}")
+    return {
+        "key": placement.key,
+        "label": placement.label,
+        "section": placement.section,
+        "role": placement.role,
+        "feeds": placement.feeds,
+        "side": placement.side,
+        "value": metrics_module.value_of(period.metrics or {}, placement.key),
+    }
+
+
+@router.post("/accounts/{period_id}/corrections/move", include_in_schema=False)
+def move_corrected_line(
+    period_id: int,
+    metric: str = Form(...),
+    statement: str = Form(ledger.DEFAULT_STATEMENT),
+    section: str = Form(""),
+    new_section: str = Form(""),
+    label: str = Form(""),
+    counted: str = Form(""),
+    scope: str = Form("period"),
+) -> RedirectResponse:
+    """Present a line under another heading, for this period or for every period this filer has.
+
+    ``counted`` is the field that makes the difference between a line *printed* somewhere and a line
+    *added up* there: ``heading`` lets the new heading decide (a line put under "Operating expenses"
+    is deducted at operating income), ``none`` lets it be printed and counted in nothing, and
+    ``feeds:<subtotal>`` names one. Empty means "leave the totals alone", which is what moving a
+    line's caption alone needs.
+
+    A heading that is not one this statement prints is **created** by the move: naming a heading the
+    company uses is the whole point, and requiring it to be registered first would be the page
+    asking the reader to say the same thing twice.
+    """
+    tab = _correction_tab(statement)
+    heading = (new_section or section or "").strip()
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        rules = corrections_rules.load_filer(session, cik)
+        record = corrections_rules.load_period(period)
+        placed = corrections_rules.build_layout(rules, record)
+        if placed.placement(metric) is None:
+            return _correction_redirect(period_id, statement, "no-line")
+        if not heading:
+            return _correction_redirect(period_id, statement, "no-section")
+        feeds = _counted_in(tab, heading, counted, placed.placement(metric))
+        if feeds is None:
+            return _correction_redirect(period_id, statement, "no-line")
+        if scope == "filer" and cik:
+            corrections_rules.move_line(
+                rules, metric, section=heading, label=label.strip(), feeds=feeds
+            )
+            corrections_rules.save_filer(session, cik, rules)
+            outcome = "moved-filer"
+        else:
+            corrections_rules.move_line(
+                record, metric, section=heading, label=label.strip(), feeds=feeds
+            )
+            corrections_rules.save_period(session, period, record)
+            outcome = "moved"
+    return _correction_redirect(period_id, statement, outcome)
+
+
+def _counted_in(
+    statement: str, heading: str, counted: str, placement: Any
+) -> str | None:
+    """Which subtotal a moved line is counted in, or ``None`` when the choice is not one.
+
+    An empty choice leaves the line's own ``feeds`` alone, which is what moving a line's *caption*
+    needs. ``heading`` asks the heading, because a line put under a heading is usually meant to be
+    part of what that heading is added up into -- and a heading this page computes no sum of
+    answers "nothing", which is the case the whole feature exists for.
+    """
+    choice = (counted or "").strip()
+    if not choice:
+        return placement.feeds
+    if choice == "heading":
+        return layout_module.section_feeds(statement, heading)
+    if choice == "none":
+        return ""
+    if choice.startswith("feeds:"):
+        name = choice[len("feeds:") :]
+        return name if name in layout_module.FEEDS.get(statement, ()) else None
+    return None
+
+
+@router.post("/accounts/{period_id}/corrections/{metric}/unmove", include_in_schema=False)
+def unmove_corrected_line(
+    period_id: int,
+    metric: str,
+    statement: str = Form(ledger.DEFAULT_STATEMENT),
+    scope: str = Form("period"),
+) -> RedirectResponse:
+    """Put a line back where the chart prints it, and count it where the chart counts it.
+
+    The scope is asked for because a move recorded against the filer is not this period's to undo:
+    like a removal, the rule has its own undo so that undoing it from one year's page does not leave
+    the other years disagreeing about the same company.
+    """
+    with session_scope() as session:
+        detail = _accounts_detail(session, period_id)
+        period, instrument = detail["period"], detail["instrument"]
+        cik = instrument.sec_cik if instrument is not None else None
+        rules = corrections_rules.load_filer(session, cik)
+        record = corrections_rules.load_period(period)
+        if scope == "filer" and cik:
+            changed = corrections_rules.forget_move(rules, metric)
+            if changed:
+                corrections_rules.save_filer(session, cik, rules)
+            outcome = "unmoved" if changed else "nothing-to-unmove"
+        else:
+            changed = corrections_rules.forget_move(record, metric)
+            if changed:
+                corrections_rules.save_period(session, period, record)
+            outcome = "unmoved" if changed else "nothing-to-unmove"
+    return _correction_redirect(period_id, statement, outcome)
 
 
 @router.post("/accounts/{period_id}/filer-lines/forget", include_in_schema=False)

@@ -171,6 +171,9 @@ class TestMigrationPath:
         assert {"annual_reports", "reports_synced_at"} <= columns(
             settings.db_path, "instrument"
         )
+        # 0032's column: the captions a source states that no canonical metric claims, which is
+        # what lets the accounts page offer a line this project's vocabulary has no name for.
+        assert "presentation" in columns(settings.db_path, "fundamental_period")
 
     def test_migrating_twice_is_idempotent(self, settings: Settings):
         """A container restarts often; a migration that requires a clean database

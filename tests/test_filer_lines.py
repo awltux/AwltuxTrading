@@ -15,10 +15,10 @@ So four properties, and the last is what makes the feature do anything:
   not see it;
 * it is **counted in that heading's stated total**, so the residual it was added to fix moves.
 
-The last two are the reason the heading matters rather than being decoration. ``ledger`` decides
-which subtotal a heading feeds from :data:`ledger.EXTRA_GROUP`, and the one heading that holds
-both liabilities and equity is deliberately not in it: a figure that could be either is printed
-and reported as uncounted rather than guessed into a total.
+The last two are the reason the heading matters rather than being decoration. ``analysis.layout``
+decides which subtotal a heading feeds (:data:`layout.SECTION_FEEDS`), and a heading whose lines
+are summed by nothing -- "Equity", and every statement's "Memorandum" -- prints the figure and
+reports it as uncounted rather than guessing it into a total.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from awltux.analysis import corrections, ledger
+from awltux.analysis import layout as layout_module
 from awltux.db import AppSetting, FundamentalPeriod
 from tests.helpers import make_instrument
 
@@ -397,9 +398,13 @@ class TestTheFormOffersIt:
         )
 
         assert CAPTION in option.get_text(" ")
-        assert "Current liabilities" in option.get_text(" ")
-        labels = [group["label"] for group in soup.select("select[name=metric] optgroup")]
-        assert any("Lines from this company" in label for label in labels), labels
+        # Offered *under its heading* rather than in a list of its own: the picker groups by the
+        # headings the statement prints, so where the line belongs is what the group says.
+        groups = soup.select("select[name=metric] optgroup")
+        owning = next(
+            group for group in groups if option in group.select("option")
+        )
+        assert owning["label"] == "Current liabilities"
 
     def test_no_filer_no_line_to_create(self, client, session):
         """A line belongs to the company that filed it. Without a CIK there is nothing to record
@@ -729,66 +734,102 @@ class TestALineTheChartHasCaughtUpWith:
 
 class TestTheLedgerDecidesWhereAHeadingCounts:
     """A pure table, because it is the only place that decides which stated total a learned line
-    joins -- and the one heading it deliberately does not decide for."""
+    joins -- and the one heading it deliberately does not decide for.
 
-    def _account(self, section: str) -> ledger.Account:
-        return ledger.Account(
-            key=TAG, label=CAPTION, statement="balance_sheet", section=section, side="credit"
+    It used to be `EXTRA_GROUP`, a mapping from a printed heading to a group, with a second map for
+    which totals each group feeds. Both are now one fact per heading (:data:`layout.SECTION_FEEDS`)
+    plus one per subtotal (:data:`layout.SUBTOTAL_GROUPS`), and the statement and the checks read them
+    through :class:`layout.Layout` -- so the table below is the *only* statement of the rule rather
+    than a copy of it.
+    """
+
+    def _layout(self, section: str, statement: str = "balance_sheet") -> layout_module.Layout:
+        account = ledger.Account(
+            key=TAG, label=CAPTION, statement=statement, section=section, side="credit"
+        )
+        return layout_module.Layout.build(
+            learned=[
+                layout_module.placement_for(
+                    account, statement=statement, section=section
+                )
+            ]
         )
 
     @pytest.mark.parametrize(
-        "section, subtotal, counted",
+        "section, group",
         [
-            ("Current assets", "current_assets", True),
-            ("Current assets", "total_assets", True),
-            ("Non-current assets", "total_assets", True),
-            ("Non-current assets", "current_assets", False),
-            ("Current liabilities", "current_liabilities", True),
-            ("Current liabilities", "total_liabilities", True),
-            ("Non-current liabilities", "total_liabilities", True),
-            ("Non-current liabilities", "current_liabilities", False),
-            ("Equity", "total_liabilities", False),
-            ("Memorandum", "total_assets", False),
+            ("Current assets", "current_assets"),
+            ("Non-current assets", "non_current_assets"),
+            ("Current liabilities", "current_liabilities"),
+            ("Non-current liabilities", "non_current_liabilities"),
+            ("Equity", ""),
+            ("Memorandum", ""),
         ],
     )
-    def test_a_heading_feeds_the_totals_it_is_part_of(self, section, subtotal, counted):
-        keys = ledger.subtotal_extra_keys([self._account(section)], "balance_sheet", subtotal)
-
-        assert (keys == (TAG,)) is counted
-
-    def test_every_heading_that_is_counted_is_a_heading_the_statement_prints(self):
-        """The table above is keyed by printed headings, so a rename in the statement would
-        silently stop counting a line. This is the join between the two, and it is per
-        statement: the map covers the balance sheet's four component headings and the profit
-        and loss's three stages, and a heading that belongs to one of them proves nothing
-        about the other."""
-        period = FundamentalPeriod(
-            instrument_t212_ticker="X",
-            period_end=dt.date(2026, 1, 1),
-            period_type="annual",
-            currency="USD",
-            source="xbrl_companyfacts",
-            metrics={},
+    def test_a_heading_decides_which_subtotal_a_line_is_counted_in(self, section, group):
+        counted = (
+            [placement.key for placement in self._layout(section).components("balance_sheet", group)]
+            if group
+            else []
         )
 
-        for statement, heading in ledger.EXTRA_GROUP:
-            printed = {
-                section.title for section in ledger.statement(period, statement).sections
-            }
-            assert heading in printed, f"{heading!r} is not a heading {statement} prints"
+        assert (TAG in counted) is bool(group)
+
+    def test_each_stated_subtotal_is_summed_from_the_groups_it_names(self):
+        """The two totals the checks measure, and the groups each is summed from.
+
+        `total_assets` is *both* asset groups and not the stated current-assets subtotal, which is
+        the choice that keeps the residual against a stated total a measure of the lines we do not
+        hold rather than of our own arithmetic. One table, read by the statement and the check.
+        """
+        assert layout_module.SUBTOTAL_GROUPS == {
+            "current_assets": ("current_assets",),
+            "total_assets": ("current_assets", "non_current_assets"),
+            "current_liabilities": ("current_liabilities",),
+            "total_liabilities": ("current_liabilities", "non_current_liabilities"),
+        }
+
+    def test_every_counted_heading_is_a_heading_the_statement_prints(self):
+        """The table above is keyed by printed headings, so a rename in the chart would silently
+        stop counting a line. This is the join between the two, and it is per statement: the map
+        covers the balance sheet's four component headings and the profit and loss's three stages,
+        and a heading that belongs to one of them proves nothing about the other."""
+        for statement, heading in layout_module.SECTION_FEEDS:
+            assert heading in layout_module.base_sections(statement), (
+                f"{heading!r} is not a heading {statement} prints"
+            )
 
     def test_a_heading_of_another_statement_never_counts(self):
-        account = ledger.Account(
-            key=TAG, label=CAPTION, statement="cash_flow", section="Current assets", side="credit"
-        )
+        placed = self._layout("Current assets", statement="cash_flow")
 
-        assert ledger.subtotal_extra_keys([account], "balance_sheet", "current_assets") == ()
+        counted = [
+            placement.key
+            for placement in placed.components("balance_sheet", "current_assets")
+        ]
+
+        assert TAG not in counted
 
     def test_a_heading_whose_lines_are_summed_by_nothing_is_reported_as_uncounted(self):
-        counted = self._account("Current liabilities")
-        equity = self._account("Equity")
+        counted = ledger.Account(
+            key=TAG, label=CAPTION, statement="balance_sheet", section="Current liabilities",
+            side="credit",
+        )
+        equity = ledger.Account(
+            key="test:equity", label="An equity line", statement="balance_sheet",
+            section="Equity", side="credit",
+        )
+        placed = layout_module.Layout.build(
+            learned=[
+                layout_module.placement_for(
+                    account, statement="balance_sheet", section=account.section
+                )
+                for account in (counted, equity)
+            ]
+        )
 
-        assert ledger.uncounted_extras([counted, equity], "balance_sheet") == [equity]
+        assert [placement.key for placement in placed.uncounted("balance_sheet")] == [
+            "test:equity"
+        ]
 
 
 def _profit_period(**overrides) -> FundamentalPeriod:
@@ -817,6 +858,22 @@ def _learned_for(section: str, *, side: str, key: str | None = None) -> ledger.A
         statement="profit_and_loss",
         section=section,
         side=side,
+    )
+
+
+def _with(accounts) -> ledger.Layout:
+    """A layout carrying these learned lines, as `corrections.build_layout` would build it.
+
+    The ledger takes the *presentation*, not a bag of extra accounts: which heading a line was
+    learned under is what decides the subtotal it feeds, and the layout is where that is settled.
+    """
+    return ledger.Layout.build(
+        learned=[
+            layout_module.placement_for(
+                account, statement=account.statement, section=account.section
+            )
+            for account in accounts
+        ]
     )
 
 
@@ -865,7 +922,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         """
         period, extra = _learned_period("Operating expenses", -40.0, side="debit")
 
-        statement = ledger.profit_and_loss(period, extra=extra)
+        statement = ledger.profit_and_loss(period, layout=_with(extra))
 
         assert _line(statement, "Operating expenses", "operating_income").computed == 210.0
         assert _line(statement, "Finance and tax", "net_income").computed == 210.0
@@ -881,7 +938,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
             period = _profit_period(**{account.key: 1_680_000.0})
 
             work = _line(
-                ledger.profit_and_loss(period, extra=[account]),
+                ledger.profit_and_loss(period, layout=_with([account])),
                 "Finance and tax",
                 "pretax_income",
             )
@@ -891,7 +948,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
     def test_a_credit_under_revenue_is_added_to_gross_profit_and_below(self):
         period, extra = _learned_period("Revenue", 100.0, side="credit")
 
-        statement = ledger.profit_and_loss(period, extra=extra)
+        statement = ledger.profit_and_loss(period, layout=_with(extra))
 
         assert _line(statement, "Revenue", "gross_profit").computed == 500.0
         assert _line(statement, "Operating expenses", "operating_income").computed == 350.0
@@ -900,7 +957,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
     def test_a_line_under_finance_and_tax_joins_at_profit_before_tax(self):
         period, extra = _learned_period("Finance and tax", 7.0, side="credit")
 
-        statement = ledger.profit_and_loss(period, extra=extra)
+        statement = ledger.profit_and_loss(period, layout=_with(extra))
 
         assert _line(statement, "Operating expenses", "operating_income").computed == 250.0
         assert _line(statement, "Finance and tax", "pretax_income").computed == 257.0
@@ -912,7 +969,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         period, extra = _learned_period("Operating expenses", -40.0, side="debit")
         account = extra[0]
 
-        work = _line(ledger.profit_and_loss(period, extra=extra), "Operating expenses", "operating_income")
+        work = _line(ledger.profit_and_loss(period, layout=_with(extra)), "Operating expenses", "operating_income")
 
         contributions = {part.source: part.contribution for part in work.parts}
         # The contribution *is* the stored figure, so the working and the figure column agree.
@@ -924,7 +981,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         """Position is the other half of the report: under the total it reads as a memorandum."""
         period, extra = _learned_period("Operating expenses", 40.0, side="debit")
 
-        statement = ledger.profit_and_loss(period, extra=extra)
+        statement = ledger.profit_and_loss(period, layout=_with(extra))
         section = next(s for s in statement.sections if s.title == "Operating expenses")
         keys = [line.key for line in section.lines]
 
@@ -941,7 +998,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         )
         period = _period("TEST_US_EQ", dt.date(2024, 12, 31), dict(FIGURES))
 
-        statement = ledger.balance_sheet(period, extra=[account])
+        statement = ledger.balance_sheet(period, layout=_with([account]))
         section = next(s for s in statement.sections if s.title == "Current liabilities")
         keys = [line.key for line in section.lines]
 
@@ -952,8 +1009,8 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         disagreement the shared arithmetic exists to prevent -- one row apart on the same page."""
         period, extra = _learned_period("Operating expenses", -40.0, side="debit")
 
-        statement = ledger.profit_and_loss(period, extra=extra)
-        check = ledger.profit_articulation(period, extra)
+        statement = ledger.profit_and_loss(period, layout=_with(extra))
+        check = ledger.profit_articulation(period, _with(extra))
 
         assert check.inputs["computed"] == _line(statement, "Finance and tax", "net_income").computed
         assert check.inputs["computed"] == 210.0
@@ -964,7 +1021,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         by exactly the figure added."""
         before = ledger.profit_articulation(_profit_period())
         period, extra = _learned_period("Operating expenses", -40.0, side="debit")
-        after = ledger.profit_articulation(period, extra)
+        after = ledger.profit_articulation(period, _with(extra))
 
         assert before.residual == -60.0, "the fixture's gap, before anything is added"
         assert after.residual - before.residual == 40.0
@@ -972,18 +1029,20 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
     def test_a_heading_whose_lines_are_counted_is_no_longer_reported_as_uncounted(self):
         period, extra = _learned_period("Operating expenses", 40.0, side="debit")
 
-        assert ledger.uncounted_extras(extra, "profit_and_loss") == []
-        assert ledger.uncounted_note(extra, "profit_and_loss") is None
+        assert _with(extra).uncounted("profit_and_loss") == ()
+        assert ledger.uncounted_note(_with(extra), "profit_and_loss") is None
         assert ledger.uncounted_note(
-            [
-                ledger.Account(
-                    key="x",
-                    label="x",
-                    statement="profit_and_loss",
-                    section="Memorandum",
-                    side="credit",
-                )
-            ],
+            _with(
+                [
+                    ledger.Account(
+                        key="test:x",
+                        label="x",
+                        statement="profit_and_loss",
+                        section="Memorandum",
+                        side="credit",
+                    )
+                ]
+            ),
             "profit_and_loss",
         ) is not None
 
@@ -994,7 +1053,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         period = _profit_period(**{account.key: -40.0})
 
         work = _line(
-            ledger.profit_and_loss(period, extra=[account]), "Operating expenses", "operating_income"
+            ledger.profit_and_loss(period, layout=_with([account])), "Operating expenses", "operating_income"
         )
 
         assert work.computed == 210.0
@@ -1037,7 +1096,7 @@ class TestALineOnTheProfitAndLossJoinsTheCascade:
         period = _profit_period()
 
         work = _line(
-            ledger.profit_and_loss(period, extra=[account]), "Operating expenses", "operating_income"
+            ledger.profit_and_loss(period, layout=_with([account])), "Operating expenses", "operating_income"
         )
 
         assert work.computed == 250.0

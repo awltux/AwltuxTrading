@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Move a line — {{ app_name }}{% endblock %}
+
+{#
+  Asking where a line is presented.
+
+  A page of its own, for the same reason a removal has one: the answer needs a heading, and it needs
+  to say what the line is counted in, and both are decisions about the accounts rather than figures
+  in them. Keeping it here also keeps the ledger a statement rather than a form.
+
+  **Why this exists.** Asked after working through one utility's accounts: *"There is little
+  consistency when naming lines in the accounts. It appears each company can use their own
+  terminology and accounting practices. So the accounting system cannot depend on where a line title
+  might end up ... it is difficult to construct accounts from just the prescribed titles, and
+  suggests a more flexible way of constructing/modifying the accounts is required."* A move changes
+  no figure -- it says where the line is printed and which total its figure is added to.
+#}
+
+{% block content %}
+<p class="muted small">
+  <a href="/accounts/{{ period.id }}/{{ statement }}">&larr; {{ instrument.name if instrument else period.instrument_t212_ticker }}
+    accounts to {{ period.period_end }}</a>
+</p>
+
+<h1>Move “{{ target.label }}”</h1>
+<p class="muted small">
+  This changes <strong>no figure</strong>. It says which heading prints the line and which total the
+  figure is counted in, so the same accounts can be presented the way the company presents them.
+</p>
+
+<section class="kv">
+  <div><dt>Printed under</dt><dd>{{ target.section }}</dd></div>
+  <div><dt>Counted in</dt><dd>{{ target.feeds or 'nothing' }}</dd></div>
+  <div><dt>Normal side</dt><dd>{{ target.side }}</dd></div>
+  <div>
+    <dt>These accounts say</dt>
+    <dd>
+      {% if target.value is not none %}{{ target.value | number(0) }}
+      {% else %}<span class="muted">no figure is held for this line</span>{% endif %}
+    </dd>
+  </div>
+</section>
+
+<form method="post" action="/accounts/{{ period.id }}/corrections/move">
+  <input type="hidden" name="metric" value="{{ target.key }}">
+  <input type="hidden" name="statement" value="{{ statement }}">
+
+  <p>
+    <label for="section">Which heading should print it?</label><br>
+    <select id="section" name="section">
+      {% for title in headings %}
+        <option value="{{ title }}"{% if title == target.section %} selected{% endif %}>{{ title }}</option>
+      {% endfor %}
+    </select>
+    <span class="muted small">One of the headings this statement prints.</span>
+  </p>
+
+  <p>
+    <label for="new_section">Or a heading it does not print yet</label><br>
+    <input id="new_section" name="new_section" size="40" value=""
+           placeholder="e.g. Depreciation and amortisation">
+    <span class="muted small">
+      A company's accounts print the headings the company uses, and this project's chart is a
+      vocabulary rather than the truth. Naming one here adds it to this statement and puts the line
+      under it — a heading nothing is left under is not kept.
+    </span>
+  </p>
+
+  <p>
+    <label for="counted">What is its figure counted in?</label><br>
+    <select id="counted" name="counted">
+      <option value="heading" selected>
+        Whatever the heading is added up into{% if heading_feeds %} — {{ heading_feeds }}{% else %} — nothing, this page sums no heading here{% endif %}
+      </option>
+      <option value="">Leave the totals as they are now{% if target.feeds %} — {{ target.feeds }}{% endif %}</option>
+      <option value="none">Nothing: print it and add it to no total</option>
+      {% for name in feeds %}
+        <option value="feeds:{{ name }}">Count it in {{ name }}</option>
+      {% endfor %}
+    </select>
+    <span class="muted small">
+      A figure that is printed and added to no total is reported on the statement, because a reader
+      will assume one that appears there is counted. That is the right answer when the source's own
+      total already includes it — which is why the depreciation of a company whose operating expense
+      is a single line belongs under a heading of its own.
+    </span>
+  </p>
+
+  <p>
+    <label for="label">Caption <span class="muted small">(optional)</span></label><br>
+    <input id="label" name="label" size="40" value="" placeholder="{{ target.label }}">
+    <span class="muted small">Leave it empty to keep the caption the accounts print now.</span>
+  </p>
+
+  {% if cik %}
+    <p>
+      <label>
+        <input type="checkbox" name="scope" value="filer">
+        Do this for every period this filer has, not only this one
+      </label>
+    </p>
+    <p class="muted small">
+      How a company presents its accounts is a habit rather than an event, so the wider scope is
+      usually right. It is recorded against the filer's CIK <code>{{ cik }}</code> and can be undone
+      from any of its periods.
+    </p>
+  {% endif %}
+
+  <button type="submit">Move the line</button>
+</form>
+{% endblock %}

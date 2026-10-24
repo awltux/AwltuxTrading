@@ -132,7 +132,7 @@
            a figure clicked in a filing, and offered here from then on -- which is what makes a
            line found in one year's 10-K usable in the next. #}
         {% if learned %}
-          <optgroup label="Lines from this company's filings">
+          <optgroup label="Lines learned from this company’s filings">
             {% for line in learned %}
               <option value="{{ line.metric }}"
                       {% if line.metric == chosen %}selected{% endif %}>
@@ -141,12 +141,26 @@
             {% endfor %}
           </optgroup>
         {% endif %}
+        {% if source_lines %}
+          {# The captions this source states that no line of ours has a name for, with the figure it
+             printed. A Yahoo statement tags nothing, so the caption is the identity the line can
+             have -- and the figure is already read, which is why choosing one brings a line into
+             the accounts that this project's vocabulary never had. #}
+          <optgroup label="Lines this source states that no line here carries">
+            {% for line in source_lines %}
+              <option value="{{ line.key }}"
+                      {% if line.key == chosen %}selected{% endif %}>
+                {{ line.label }} — {{ line.value | number(0) }} on the source's page
+              </option>
+            {% endfor %}
+          </optgroup>
+        {% endif %}
         {% if new_line %}
           {# The 10-K's own header for the line the figure sat under, which is the whole point:
              the chart is this project's vocabulary and the filing's caption is the filer's. #}
           <optgroup label="Not in the list? Use the filing's own line">
-            <option value="{{ 'new:' ~ new_line.tag }}"
-                    {% if chosen == 'new:' ~ new_line.tag %}selected{% endif %}>
+            <option value="{{ new_line.option }}"
+                    {% if chosen == new_line.option %}selected{% endif %}>
               Add “{{ new_line.caption }}” as a line of these accounts
             </option>
           </optgroup>
@@ -173,10 +187,11 @@
         <input type="hidden" name="caption" value="{{ new_line.caption }}">
         <span class="muted small">
           The line is remembered for <strong>every period this company files</strong>, under this
-          heading, and a figure put on it is added to that heading's total. A heading holding both
-          liabilities and equity is the one place it cannot be counted — the line is printed there
-          and the statement says so, because which side a figure belongs on is not something this
-          page will guess.
+          heading, and a figure put on it is added to that heading's total. Where the heading is
+          added up into nothing, the line is printed there and the statement says so — which is a
+          real answer, not a failure: some sources state a total that already includes the line, and
+          adding it again would count it twice. Move a line with <em>move</em> on the accounts page
+          to change where it is printed or what it is counted in.
         </span>
       </p>
     {% endif %}

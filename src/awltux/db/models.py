@@ -467,6 +467,20 @@ class FundamentalPeriod(Base, TimestampMixin):
     #: correction. See `analysis/corrections.py`.
     corrections: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
+    #: The captions this period's source states that no canonical metric reads.
+    #:
+    #: ``metrics`` holds what this project's vocabulary has a name for, and everything else the
+    #: source said was thrown away at ingest -- which is how Jersey Electricity's operating expense
+    #: (``Other Operating Expenses``, 38,688,000) came to be missing from a statement that printed
+    #: a residual against it with no way to put the line in from the page. A **source** statement
+    #: (Yahoo, a model's reading of a document) has no taxonomy tag on such a caption, so the
+    #: caption is the only identity it can have; see `ingest/fundamentals.py::source_lines`.
+    #:
+    #: Nothing in the ledger is built from this directly: a caption becomes a line only when a
+    #: reader places it, and then its figure is written into ``metrics`` by a correction like any
+    #: other hand-entered value. The column is what makes the offer possible.
+    presentation: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
     filing: Mapped[Filing | None] = relationship(back_populates="periods")
 
     __table_args__ = (

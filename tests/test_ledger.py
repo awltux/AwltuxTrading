@@ -187,7 +187,12 @@ class TestComposition:
         revenue 72,965. Both were offered by the 10-K extraction and neither could be
         promoted, because a gap that is never measured is a caption never discovered.
         """
-        held = ledger.CURRENT_LIABILITY_KEYS
+        held = [
+            placement.key
+            for placement in ledger.Layout.default().components(
+                "balance_sheet", "current_liabilities"
+            )
+        ]
         metrics = {
             **{key: 10.0 for key in held},
             "current_liabilities": 10.0 * len(held) + 40.0,
