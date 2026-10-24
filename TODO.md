@@ -981,6 +981,27 @@ the stored report (`ResearchReport.result`) and in the document's provenance foo
 does not have to be repeated to check it.
 
 
+### `interest_income` has no Yahoo label, so a profit cascade cannot reconcile
+
+Found 2026-10-25 while fixing `JELl_EQ`'s operating expenses. The chart carries
+`interest_income` and `other_nonoperating_income`, and the trial balance and the profit cascade
+both expect them -- but `ingest/fundamentals.py::STATEMENT_LABELS` maps neither. Measured on period
+316 (Jersey Electricity FY2025): Yahoo's income statement states `Interest Income` 1,883,000 and
+`Net Non Operating Interest Income` 308,000, the stored row holds `interest_expense` 1,575,000 and
+**no `interest_income`**, so the cascade's profit before tax is 51,890,000 against a stated
+14,190,000 once depreciation is out of operating expenses. Adding the source's
+`Other Operating Expenses` caption (38,688,000) fixes the *operating* section to the pound and
+leaves the profit articulation out by 924,000 -- which is this gap, not the section the reader was
+working on.
+
+The fix is two labels (`Interest Income`, `Interest Income Non Operating` -> `interest_income`) and
+a decision about `Net Non Operating Interest Income Expense`, which is interest income *less*
+interest expense and would double-count if mapped alongside the two lines it nets. Worth doing with
+the same care `_pick`'s "prefer the specific label to the combined one" comment describes -- and
+worth measuring across the stored Yahoo periods first, because a label that changes what is
+extracted changes every derived marker on those rows.
+
+
 ## Operations
 
 ### `awltux quiet` does not reach a deep-dive, because the stop flag lives in the scheduler process
