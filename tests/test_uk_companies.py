@@ -27,6 +27,7 @@ from awltux.ingest.fundamentals import (
     match_company,
     repair_uk_company_numbers,
     resolve_uk_companies,
+    same_issuer_name,
 )
 from tests.helpers import make_instrument
 
@@ -98,6 +99,35 @@ class TestWhatAListedShareCannotBe:
         assert "entity type" in listed_entity_problem(
             {"company_name": "SOMETHING LTD", "company_number": "1"}
         )
+
+
+class TestWhenTwoNamesAreOneIssuer:
+    """The repair's name check, and the four real cases that set its tolerance."""
+
+    def test_a_dotted_initial_is_the_same_issuer(self):
+        """`RNEWl_EQ` is "Ecofin US Renewables Infrastructure Trust"; the register writes
+        "ECOFIN U.S. RENEWABLES INFRASTRUCTURE TRUST PLC"."""
+        assert same_issuer_name(
+            "Ecofin US Renewables Infrastructure Trust",
+            "ECOFIN U.S. RENEWABLES INFRASTRUCTURE TRUST PLC",
+        )
+
+    def test_a_share_class_suffix_is_the_same_issuer(self):
+        """`YNGAl_EQ` is "Young & Co's Brewery (Class A)" against "YOUNG & CO'S BREWERY PLC"."""
+        assert same_issuer_name("Young & Co's Brewery (Class A)", "YOUNG & CO'S BREWERY PLC")
+
+    def test_a_different_fund_is_not(self):
+        """Macau Property Opportunities held Threadneedle UK Opportunities Property Fund: the
+        only words they share are the sector's."""
+        assert not same_issuer_name(
+            "Macau Property Opportunities Fund",
+            "THREADNEEDLE UK OPPORTUNITIES PROPERTY FUND",
+        )
+
+    def test_an_exact_name_is_not_evidence_of_the_wrong_company(self):
+        """The Celsius case is refused by its entity type, not by the name -- which is why the
+        two checks are separate."""
+        assert same_issuer_name("Celsius Resources", "CELSIUS LTD")
 
 
 class TestMatching:

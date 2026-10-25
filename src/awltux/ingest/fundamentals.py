@@ -782,12 +782,39 @@ INELIGIBLE_STATUSES = frozenset({"dissolved", "converted-closed"})
 #: without being acted on", and `resolve_uk_companies` acted on all of them.
 MIN_MATCH_CONFIDENCE = 0.8
 
+#: How alike two names must be for the *repair* to keep a stored number.
+#:
+#: Looser than the matcher on purpose, and the cases that set it are real instruments measured
+#: 2026-10-25: `RNEWl_EQ` is "Ecofin US Renewables Infrastructure Trust" against the register's
+#: "ECOFIN U.S. RENEWABLES INFRASTRUCTURE TRUST PLC" (a dotted initial), and `YNGAl_EQ` is
+#: "Young & Co's Brewery (Class A)" against "YOUNG & CO'S BREWERY PLC" (a share class). Neither is a
+#: different company. A different *fund* is, and overlaps on only its sector words: Macau Property
+#: Opportunities against Threadneedle UK Opportunities Property Fund scores 0.4.
+NAME_TOKEN_MATCH = 0.8
+
 
 def normalise_company_name(name: str) -> str:
     """Reduce a company name to a comparable form."""
     cleaned = _NAME_NOISE.sub(" ", name.lower())
     cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def same_issuer_name(instrument_name: str, register_name: str) -> bool:
+    """Whether two names are the same issuer, allowing for the ways a listed name varies.
+
+    A share-class suffix, a dotted initial and a punctuation difference are not a different
+    company; a different fund is. Compared with spaces removed first, then by word overlap.
+    """
+    left = normalise_company_name(instrument_name)
+    right = normalise_company_name(register_name)
+    flat_left = left.replace(" ", "")
+    flat_right = right.replace(" ", "")
+    if not flat_left or not flat_right:
+        return False
+    if flat_left == flat_right or flat_left in flat_right or flat_right in flat_left:
+        return True
+    return _token_overlap(left, right) >= NAME_TOKEN_MATCH
 
 
 def entity_type(candidate: dict[str, Any]) -> str:
@@ -1067,9 +1094,7 @@ def _stored_number_problem(instrument: Instrument, profile: dict[str, Any]) -> s
     """
     problem = listed_entity_problem(profile)
     official = str(profile.get("company_name") or "")
-    if not problem and normalise_company_name(official) != normalise_company_name(
-        instrument.name
-    ):
+    if not problem and not same_issuer_name(instrument.name, official):
         problem = f'the register calls it "{official}", which is not this instrument'
     return problem
 
