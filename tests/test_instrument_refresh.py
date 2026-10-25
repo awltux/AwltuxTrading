@@ -618,6 +618,44 @@ class TestTheScopedJobWrappers:
         assert seen["tickers"] is None
         assert seen["limit"] and seen["limit"] >= 1
 
+    def test_the_ration_is_the_configured_day_and_not_a_twenty_fourth_of_it(
+        self, session, monkeypatch
+    ):
+        """The sweep runs once a day, so the day's ration is what that run does.
+
+        Measured 2026-10-24 on the live universe of 506 instruments: the limit was
+        ``fundamentals_rotation_per_day // 24`` -- two instruments a day, a **253-day** pass --
+        and `MOONl_EQ` (Moonpig) had no accounts while its provider had five years of them.
+        The config has said "a day's ration is a run's ration now" since the daily schedule
+        landed; the arithmetic had not caught up.
+        """
+        from awltux.ingest import jobs
+
+        seen: dict = {}
+
+        def fake_sync(session_, **kwargs):
+            seen.update(kwargs)
+
+            class Report:
+                tickers_attempted = 0
+                periods_written = 0
+
+                def as_dict(self):
+                    return {}
+
+            return Report()
+
+        monkeypatch.setattr("awltux.ingest.fundamentals.sync_fundamentals", fake_sync)
+        monkeypatch.setattr(jobs, "empty_universe_note", lambda session: None)
+        _seed(session)
+        session.commit()
+        configured = jobs.get_settings().schedule.fundamentals_rotation_per_day
+
+        jobs.sync_fundamentals_job()
+
+        assert seen["limit"] == configured
+        assert configured > max(1, configured // 24) or configured == 1
+
 
 class TestTheButton:
     def test_the_page_offers_it(self, client, session):

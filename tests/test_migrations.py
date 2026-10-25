@@ -174,6 +174,9 @@ class TestMigrationPath:
         # 0032's column: the captions a source states that no canonical metric claims, which is
         # what lets the accounts page offer a line this project's vocabulary has no name for.
         assert "presentation" in columns(settings.db_path, "fundamental_period")
+        # 0033's column: when the fundamentals sweep last *attempted* an instrument, which is the
+        # queue's cursor -- keyed on a success, a name the provider cannot serve never advances.
+        assert "fundamentals_checked_at" in columns(settings.db_path, "instrument")
 
     def test_migrating_twice_is_idempotent(self, settings: Settings):
         """A container restarts often; a migration that requires a clean database

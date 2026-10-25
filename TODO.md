@@ -1670,6 +1670,34 @@ line by hand; the page still does not say which source it is measuring.
 
 ---
 
+### Companies House filed accounts are never ingested, so a UK listing's only source is Yahoo
+
+Asked 2026-10-24: *"Is there a filings job for companies house and if so why aren't there any
+accounts for them?"* There is a job, and it does not fetch accounts. `uk_companies`
+(`ingest/fundamentals.py::resolve_uk_companies`) resolves a company **number** and stops there --
+description: "Resolve UK listings to Companies House company numbers". The provider has the read
+methods for the filings (`providers/companies_house.py::get_accounts_filings`,
+`document_metadata`, `document_content`) and **nothing calls them**; no code in this project parses
+filed iXBRL (`ix:nonFraction`) either -- only the browser picker reads tags, one figure at a time,
+and only from a document already downloaded for a US filing.
+
+Measured on the live database the same day:
+
+- 118 in-universe LSE instruments, **115 with a Companies House number**;
+- **60 with any statement periods, all `yahoo_statements`**, and 58 with none at all;
+- Yahoo refuses some outright -- the live runs' failures name `HGENl_EQ` ("no statements available
+  for HGEN.L"), `CYBAl_EQ`, `BIOK_US_EQ`;
+- Moonpig (`MOONl_EQ`, company number 13096622) does have 4 years of `yahoo_statements`, which is
+  what the accounts page reads; a UK listing Yahoo does not cover has nothing.
+
+So UK filings are the one source that could cover the 58, and it is unimplemented rather than
+broken. What it would take: fetch `get_accounts_filings` per company number, keep the bytes (the
+way `shareholder_reports` does), parse the iXBRL in Python into `FundamentalPeriod` rows with a
+`companies_house` source, and be honest in the UI about the coverage ceiling -- not every small
+company files iXBRL, which is the 60-75% figure recorded under "Making the free-tier data
+authoritative". A job of its own (`ch_accounts`), depending on `uk_companies`, so a failure there
+does not stop the US path.
+
 ## Deliberately not doing
 
 ### Grouping an instrument with no SEC CIK by its Companies House number

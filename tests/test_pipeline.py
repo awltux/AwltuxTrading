@@ -322,7 +322,13 @@ class TestTheRotation:
         self, session, settings, monkeypatch
     ):
         """A one-instrument refresh asked for this instrument; rationing it out of the
-        run that was requested would be an answer of "come back next hour"."""
+        run that was requested would be an answer of "come back next run".
+
+        And the sweep's ration is the whole configured per-day rotation, because the job
+        runs once a day -- dividing it by 24 again left the sweep covering 2 of 506
+        instruments a day, an eight-month pass, which is how an LSE listing sat in the
+        queue with no accounts while its provider had five years of them.
+        """
         from awltux.ingest import jobs
 
         calls: list[dict] = []
@@ -336,7 +342,7 @@ class TestTheRotation:
         jobs.run_decisions()
         jobs.run_decisions(tickers=["ONE_US_EQ"])
 
-        expected = max(1, settings.schedule.decision_rotation_per_day // 24)
+        expected = max(1, settings.schedule.decision_rotation_per_day)
         assert calls[0]["limit"] == expected
         assert calls[1] == {"tickers": ["ONE_US_EQ"], "limit": None}
 

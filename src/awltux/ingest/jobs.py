@@ -1947,18 +1947,25 @@ def sync_filings(tickers: list[str] | None = None) -> JobResult:
 def sync_fundamentals_job(tickers: list[str] | None = None) -> JobResult:
     """Rotating fundamentals refresh, rationed to keep within free-tier limits.
 
-    The configured per-day rotation is divided across the 24 hourly runs so the
-    load is spread rather than concentrated in one burst.
+    **The configured per-day rotation is what this run does**, not a twenty-fourth of it.
+    The ration used to be divided across 24 hourly runs; the schedule became one run a day
+    on 2026-10-23 (`config.ScheduleConfig`: *"A day's ration is a run's ration now"*) and
+    this division was left behind, so a daily job spent its whole day on
+    ``70 // 24 = 2`` instruments. Measured 2026-10-24 on the live universe of 506: 183
+    with a statement period, a full pass at two a day taking **253 days**, and
+    `MOONl_EQ` (Moonpig) sitting twelfth in the queue with no accounts -- while Yahoo had
+    five years of its statements available. The sweep is ordered least-recently-updated
+    first, so a bigger ration works down the queue rather than re-reading the same names.
 
     ``tickers`` is the one-instrument scope a manual refresh uses. It is a keyword with a
     default rather than a second function so the scheduled and the scoped run take
     exactly the same path -- same blockers, same progress lines, same report -- and the
-    rotation limit is lifted, because a rationed batch of two is not "refresh this one".
+    rotation limit is lifted, because a rationed batch is not "refresh this one".
     """
     settings = get_settings()
     from awltux.ingest.fundamentals import sync_fundamentals
 
-    per_run = 1 if tickers else max(1, settings.schedule.fundamentals_rotation_per_day // 24)
+    per_run = 1 if tickers else max(1, settings.schedule.fundamentals_rotation_per_day)
     with session_scope() as session:
         note = empty_universe_note(session)
         if note:
@@ -1983,11 +1990,15 @@ def sync_xbrl_statements_job(tickers: list[str] | None = None) -> JobResult:
     normalised snapshot; this reads the issuer's own tagging of its own statements
     out of EDGAR, which is slower per name and far better per figure. Keeping them
     apart means a rate-limited Yahoo run does not also stop the filings being read.
+
+    The ration is the configured per-day rotation, for the reason
+    :func:`sync_fundamentals_job` records: one run a day means a day's ration is what
+    the run does.
     """
     settings = get_settings()
     from awltux.ingest.xbrl import sync_xbrl_fundamentals
 
-    per_run = 1 if tickers else max(1, settings.schedule.fundamentals_rotation_per_day // 24)
+    per_run = 1 if tickers else max(1, settings.schedule.fundamentals_rotation_per_day)
     with session_scope() as session:
         note = empty_universe_note(session)
         if note:
@@ -2065,12 +2076,17 @@ def run_decisions(tickers: list[str] | None = None) -> JobResult:
     Bounded like every other paid job here. Measured 2026-10-07: about **4.1 decisions a
     minute**, so the whole universe in one call is a 110-minute job -- longer than the
     interval it runs on, killed by every deploy, and the reason `decision` had 6 runs and
-    0 successes. The per-day rotation is divided across the 24 hourly runs, the shape
-    `sync_fundamentals_job` uses; a scoped refresh is one instrument and is not rationed.
+    0 successes.
+
+    **The configured per-day rotation is what this run does**, not a twenty-fourth of it:
+    the schedule became one run a day on 2026-10-23, and the division that spread it over
+    24 hourly runs was left behind, so the job was deciding 20 names a day while the
+    configuration said 500 and claimed a two-hour run. A scoped refresh is one instrument
+    and is not rationed.
 
     A bounded run is only honest because the selection rotates: `decide_universe` orders
     by least recently decided, so successive runs walk the whole universe rather than
-    deciding the same names every hour.
+    deciding the same names every time.
     """
     from awltux.decision.service import decide_universe
 
@@ -2078,7 +2094,7 @@ def run_decisions(tickers: list[str] | None = None) -> JobResult:
     per_run = (
         None
         if tickers
-        else max(1, settings.schedule.decision_rotation_per_day // 24)
+        else max(1, settings.schedule.decision_rotation_per_day)
     )
     with session_scope() as session:
         stats = decide_universe(session, tickers=tickers, limit=per_run)

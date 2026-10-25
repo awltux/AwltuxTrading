@@ -251,6 +251,30 @@ class Instrument(Base, TimestampMixin):
         DateTime(timezone=True), index=True
     )
 
+    #: When the fundamentals sweep last **attempted** this instrument, whether or not the
+    #: provider had any statements to give.
+    #:
+    #: The sweep rotated on ``updated_at`` until 2026-10-24, and that had two failures. It
+    #: ordered the queue by whatever job wrote the row last -- `news_polled_at`'s lesson
+    #: again -- and, worse, the sweep only bumps ``updated_at`` when it *writes*
+    #: something. An instrument the provider cannot serve therefore never moved, so the
+    #: rationed run retried the same failing names on every run and never reached the rest
+    #: of the book. Measured on the live container: seven consecutive runs over seventeen
+    #: hours, each attempting two instruments and writing nothing, both of them
+    #: `CYBAl_EQ` and `HGENl_EQ`; and 183 of 506 in-universe instruments had any accounts
+    #: at all.
+    #:
+    #: An **attempt** is the right unit, not a success: "we asked and the provider had
+    #: nothing" is a fact about the provider that a retry every run cannot change, and a
+    #: name that is permanently unfetchable must not hold the whole queue. A failing
+    #: instrument is retried once per pass, not once per run, and the blocker row is what
+    #: keeps the failure visible in between.
+    #:
+    #: Indexed because it is the sweep's sort key over the whole universe every run.
+    fundamentals_checked_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+
     exchange_ref: Mapped[Exchange | None] = relationship(back_populates="instruments")
     aliases: Mapped[list[InstrumentAlias]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"

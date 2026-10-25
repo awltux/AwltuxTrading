@@ -463,6 +463,15 @@ def sync_fundamentals(
     Statements and the ``info`` profile are fetched separately and failures are
     tolerated independently: a company whose profile is unavailable may still
     have usable statements, and vice versa.
+
+    **The queue drains because an attempt is stamped, not a success.** It used to order on
+    ``Instrument.updated_at``, which this job only bumps when it writes something -- so an
+    instrument the provider refuses kept its old timestamp, led the next run's queue as well,
+    and consumed the whole ration. Measured 2026-10-24: seven consecutive runs over seventeen
+    hours attempting `CYBAl_EQ` and `HGENl_EQ` and writing nothing, while 323 of the 506
+    in-universe instruments had no accounts. `fundamentals_checked_at` is stamped at the start
+    of an attempt, so every instrument is reached once per pass and a permanently unfetchable
+    one waits its turn; the blocker row keeps the failure visible meanwhile.
     """
     settings = settings or get_settings()
     provider = provider or YahooProvider(settings)
@@ -473,8 +482,12 @@ def sync_fundamentals(
         .where(Instrument.in_universe.is_(True))
         .where(Instrument.excluded.is_(False))
         .where(Instrument.yahoo_symbol.is_not(None))
-        # Least recently updated first, so a rationed refresh rotates fairly.
-        .order_by(Instrument.updated_at.asc())
+        # Never checked first, then least recently checked: a rationed refresh that rotates
+        # fairly, keyed on work *this* job did.
+        .order_by(
+            Instrument.fundamentals_checked_at.asc().nullsfirst(),
+            Instrument.t212_ticker.asc(),
+        )
     )
     if tickers:
         statement = statement.where(Instrument.t212_ticker.in_(tickers))
@@ -492,59 +505,76 @@ def sync_fundamentals(
     for position, instrument in enumerate(instruments, start=1):
         report.tickers_attempted += 1
         progress.note(f"{position} of {total}: {instrument.t212_ticker}")
-        symbol = instrument.yahoo_symbol
-        assert symbol is not None
-
-        _sync_profile(session, instrument, provider, report)
-
-        try:
-            financials = provider.get_financials(symbol)
-        except ProviderError as exc:
-            report.failures.append(f"{instrument.t212_ticker}: {exc}")
-            # The provider refused, so this instrument's statements cannot be had from
-            # here. Recorded as a blocker as well as a failure: the report's list is for
-            # the run's log and expires with it, and the dashboard's attention filter
-            # needs to outlive the run.
-            record_blocker(
-                session,
-                instrument.t212_ticker,
-                job=JOB,
-                stage="statements",
-                reason=str(exc),
-            )
-            session.flush()
-            continue
-
-        columns = (financials.get("income") or {}).get("columns") or []
-        # One period per column; income statement columns define the set.
-        for index, period_end in enumerate(columns[:5]):
-            metrics = metrics_from_statements(financials, index)
-            if not metrics:
-                continue
-            metrics.update(derive_metrics(metrics))
-            _upsert_period(
-                session,
-                instrument,
-                period_end=_parse_period_end(period_end),
-                period_type="annual",
-                metrics=metrics,
-                source="yahoo_statements",
-                confidence=0.7,
-                # The captions no canonical metric reads, kept so the accounts page can offer
-                # them as lines. See `source_lines`: without this, a figure the source states and
-                # this project's vocabulary lacks is not merely unplaced, it is unrecorded.
-                presentation=source_lines(financials, index),
-            )
-            report.periods_written += 1
-        # Statements arrived, so whatever was recorded against this step is stale.
-        clear_blocker(session, instrument.t212_ticker, job=JOB, stage="statements")
-        session.flush()
-        # Two provider calls per instrument, so the write lock is released
-        # between them rather than held across the whole run.
-        release_write_lock(session)
+        # Stamped before the calls, because it records that this instrument was *asked about*.
+        # A refusal below writes nothing else to the row, which is exactly how the queue used to
+        # stall: see the function's docstring.
+        instrument.fundamentals_checked_at = utcnow()
+        _sync_one(session, instrument, provider, report)
 
     logger.info("fundamentals sync: %s", report.as_dict())
     return report
+
+
+def _sync_one(
+    session: Session,
+    instrument: Instrument,
+    provider: YahooProvider,
+    report: FundamentalsReport,
+) -> None:
+    """One instrument's profile and statements, with the failure recorded rather than raised.
+
+    The named step the loop body was: a company whose profile is unavailable may still have
+    usable statements, so the two calls fail independently and the run continues either way.
+    """
+    symbol = instrument.yahoo_symbol
+    assert symbol is not None
+
+    _sync_profile(session, instrument, provider, report)
+
+    try:
+        financials = provider.get_financials(symbol)
+    except ProviderError as exc:
+        report.failures.append(f"{instrument.t212_ticker}: {exc}")
+        # The provider refused, so this instrument's statements cannot be had from here.
+        # Recorded as a blocker as well as a failure: the report's list is for the run's log
+        # and expires with it, and the dashboard's attention filter needs to outlive the run.
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=JOB,
+            stage="statements",
+            reason=str(exc),
+        )
+        session.flush()
+        return
+
+    columns = (financials.get("income") or {}).get("columns") or []
+    # One period per column; income statement columns define the set.
+    for index, period_end in enumerate(columns[:5]):
+        metrics = metrics_from_statements(financials, index)
+        if not metrics:
+            continue
+        metrics.update(derive_metrics(metrics))
+        _upsert_period(
+            session,
+            instrument,
+            period_end=_parse_period_end(period_end),
+            period_type="annual",
+            metrics=metrics,
+            source="yahoo_statements",
+            confidence=0.7,
+            # The captions no canonical metric reads, kept so the accounts page can offer them
+            # as lines. See `source_lines`: without this, a figure the source states and this
+            # project's vocabulary lacks is not merely unplaced, it is unrecorded.
+            presentation=source_lines(financials, index),
+        )
+        report.periods_written += 1
+    # Statements arrived, so whatever was recorded against this step is stale.
+    clear_blocker(session, instrument.t212_ticker, job=JOB, stage="statements")
+    session.flush()
+    # Two provider calls per instrument, so the write lock is released between them rather than
+    # held across the whole run.
+    release_write_lock(session)
 
 
 def _sync_profile(

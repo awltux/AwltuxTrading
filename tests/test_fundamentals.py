@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import datetime as dt
 
+from sqlalchemy import select
+
 from awltux.analysis import ledger
-from awltux.db import FundamentalPeriod
+from awltux.db import FundamentalPeriod, Instrument
 from awltux.ingest.fundamentals import (
     STATEMENT_LABELS,
     FundamentalsReport,
@@ -22,6 +24,7 @@ from awltux.ingest.fundamentals import (
     metrics_from_statements,
 )
 from awltux.metrics import OUTFLOW_METRICS, STATED_METRICS
+from awltux.providers.http import ProviderError
 from tests.helpers import make_instrument
 
 
@@ -341,3 +344,96 @@ class TestTheCompanyDescription:
         self._sync(session, instrument, {"sector": "Technology"})
 
         assert instrument.business_summary is None
+
+
+class TestTheSweepQueueDrains:
+    """Reported 2026-10-24: *"Does the current strategy eventually process all instruments over
+    multiple days, or does it restart on the same instruments each day?"*
+
+    It restarted. The queue was ordered on ``instrument.updated_at`` and the sweep only bumps that
+    column when it *writes* something -- so an instrument the provider refused kept its old
+    timestamp and led the next run's queue as well. Measured on the live container: seven
+    consecutive runs over seventeen hours each attempted two instruments, wrote nothing, and named
+    the same two (`CYBAl_EQ`, `HGENl_EQ`), while 323 of the 506 in-universe instruments had no
+    accounts. `fundamentals_checked_at` is stamped on the *attempt*, so the queue advances whether
+    or not the provider has anything to give.
+    """
+
+    def _seed(self, session, *tickers: str) -> None:
+        for ticker in tickers:
+            session.add(
+                make_instrument(ticker, name=ticker, sec_cik=None, yahoo_symbol=f"{ticker}.L")
+            )
+        session.commit()
+
+    def _provider(self, *, refuse: set[str], calls: list[str]):
+        class Provider:
+            def get_profile(self, symbol):
+                return {}
+
+            def get_financials(self, symbol):
+                calls.append(symbol)
+                if symbol in refuse:
+                    raise ProviderError("yahoo", f"no statements available for {symbol}")
+                return {
+                    "income": {
+                        "columns": ["2024-12-31"],
+                        "rows": {"Total Revenue": [1000.0]},
+                    }
+                }
+
+        return Provider()
+
+    def test_a_refused_instrument_does_not_hold_the_ration(self, session):
+        """The regression: the first name in the queue always refusing must not consume every
+        run's ration, or the rest of the book is never reached."""
+        from awltux.ingest.fundamentals import sync_fundamentals
+
+        self._seed(session, "AAAl_EQ", "BBBl_EQ", "CCCl_EQ")
+        calls: list[str] = []
+        provider = self._provider(refuse={"AAAl_EQ.L"}, calls=calls)
+
+        for _ in range(3):
+            sync_fundamentals(session, provider=provider, limit=1)
+            session.commit()
+
+        assert calls == ["AAAl_EQ.L", "BBBl_EQ.L", "CCCl_EQ.L"]
+
+    def test_the_stamp_records_the_attempt_not_the_success(self, session):
+        from awltux.ingest.fundamentals import sync_fundamentals
+
+        self._seed(session, "AAAl_EQ")
+        provider = self._provider(refuse={"AAAl_EQ.L"}, calls=[])
+
+        sync_fundamentals(session, provider=provider, limit=1)
+
+        session.expire_all()
+        stored = session.get(Instrument, "AAAl_EQ")
+        assert stored.fundamentals_checked_at is not None
+        assert not list(
+            session.execute(
+                select(FundamentalPeriod).where(
+                    FundamentalPeriod.instrument_t212_ticker == "AAAl_EQ"
+                )
+            ).scalars()
+        ), "nothing was written for it, which is why the stamp is the queue's only cursor"
+
+    def test_never_checked_comes_first_then_the_least_recently_checked(self, session):
+        from awltux.ingest.fundamentals import sync_fundamentals
+
+        self._seed(session, "AAAl_EQ", "BBBl_EQ", "CCCl_EQ")
+        # AAA was checked recently, BBB never, CCC long ago.
+        session.get(Instrument, "AAAl_EQ").fundamentals_checked_at = dt.datetime(
+            2026, 10, 24, 12, 0, tzinfo=dt.UTC
+        )
+        session.get(Instrument, "CCCl_EQ").fundamentals_checked_at = dt.datetime(
+            2026, 10, 1, 12, 0, tzinfo=dt.UTC
+        )
+        session.commit()
+
+        calls: list[str] = []
+        sync_fundamentals(
+            session, provider=self._provider(refuse=set(), calls=calls), limit=2
+        )
+
+        assert calls == ["BBBl_EQ.L", "CCCl_EQ.L"]
