@@ -792,6 +792,14 @@ MIN_MATCH_CONFIDENCE = 0.8
 #: Opportunities against Threadneedle UK Opportunities Property Fund scores 0.4.
 NAME_TOKEN_MATCH = 0.8
 
+#: How many search results the second look asks for.
+#:
+#: Companies House ranks by its own relevance, and the listed company is not always in the first
+#: twenty: measured 2026-10-25, `S & U PLC` is **28th** for the query "S&U" and absent from the
+#: first page, which is why S&U read as unmatched while its plc record was there all along. A wider
+#: page costs one request and only for an instrument the first pass could not resolve.
+WIDE_SEARCH_RESULTS = 100
+
 
 def normalise_company_name(name: str) -> str:
     """Reduce a company name to a comparable form."""
@@ -1010,6 +1018,9 @@ def _resolve_one(
         return
 
     match = match_company(instrument, candidates)
+    if match is None or match.confidence < MIN_MATCH_CONFIDENCE:
+        match = _wider_look(session, instrument, provider, candidates, match)
+
     if match is None:
         summary["unmatched"] += 1
         record_blocker(
@@ -1052,6 +1063,36 @@ def _resolve_one(
 
     # One Companies House search per instrument; release between them.
     release_write_lock(session)
+
+
+def _wider_look(
+    session: Session,
+    instrument: Instrument,
+    provider: CompaniesHouseProvider,
+    candidates: list[dict[str, Any]],
+    match: CompanyMatch | None,
+) -> CompanyMatch | None:
+    """Ask again with a bigger page, and keep the better of the two answers.
+
+    One extra request, and only when the first pass could not reach the threshold -- see
+    :data:`WIDE_SEARCH_RESULTS` for the case that set it. A failure of the second request is not a
+    failure of the instrument: the first answer, or its absence, still stands.
+    """
+    try:
+        wider = provider.search_companies(
+            instrument.name, items_per_page=WIDE_SEARCH_RESULTS
+        )
+    except ProviderError as exc:
+        logger.debug("CH second look failed for %s: %s", instrument.name, exc)
+        return match
+    if not wider:
+        return match
+    retry = match_company(instrument, list(candidates) + list(wider))
+    if retry is None:
+        return match
+    if match is None or retry.confidence >= match.confidence:
+        return retry
+    return match
 
 
 def _record_alias(

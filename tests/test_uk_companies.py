@@ -183,11 +183,18 @@ class TestMatching:
 class _Provider:
     configured = True
 
-    def __init__(self, candidates=None, profile=None):
+    def __init__(self, candidates=None, profile=None, wide=None):
         self._candidates = candidates or []
         self._profile = profile or {}
+        #: What the second, wider look returns. ``None`` means "the same as the first".
+        self._wide = wide
+        self.queries: list[tuple[str, int]] = []
 
     def search_companies(self, name, **kwargs):
+        page = kwargs.get("items_per_page", 20)
+        self.queries.append((name, page))
+        if page > 20:
+            return self._candidates if self._wide is None else self._wide
         return self._candidates
 
     def get_company(self, number):
@@ -225,6 +232,47 @@ class TestTheResolverWritesOnlyADependableMatch:
         ).one()
         assert "ANGUS ENERGY SERVICES PLC" in blocker.reason
         assert "below" in blocker.reason
+
+    def test_the_listed_company_below_the_first_page_is_found_on_a_second_look(
+        self, session, settings
+    ):
+        """`S & U PLC` is 28th for the query "S&U" and absent from the first twenty results, so
+        S&U read as unmatched while its record was there. The wider page is asked only after the
+        first pass fails, which is one extra request for an instrument that needed it."""
+        instrument = _instrument("S&U")
+        session.add(instrument)
+        session.commit()
+        provider = _Provider(
+            candidates=[{"title": "SOME OTHER LTD", "company_number": "00000009",
+                         "company_type": "ltd", "company_status": "active"}],
+            wide=[{"title": "S & U PLC", "company_number": "00342025", "company_type": "plc",
+                   "company_status": "active"}],
+        )
+
+        summary = resolve_uk_companies(session, settings=settings, provider=provider)
+
+        session.refresh(instrument)
+        assert instrument.ch_company_number == "00342025"
+        assert summary["matched"] == 1
+        assert [(name, page) for name, page in provider.queries] == [
+            ("S&U", 20),
+            ("S&U", 100),
+        ]
+
+    def test_nothing_is_written_when_neither_look_finds_the_company(self, session, settings):
+        instrument = _instrument("WPP")
+        session.add(instrument)
+        session.commit()
+        provider = _Provider(
+            candidates=[{"title": "WPP CP FINANCE PLC", "company_number": "05785385",
+                         "company_type": "plc", "company_status": "active"}],
+        )
+
+        summary = resolve_uk_companies(session, settings=settings, provider=provider)
+
+        session.refresh(instrument)
+        assert instrument.ch_company_number is None
+        assert summary["candidates"] == 1
 
     def test_an_exact_match_is_written_with_its_alias(self, session, settings):
         instrument = _instrument("Moonpig")

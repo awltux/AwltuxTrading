@@ -1737,7 +1737,7 @@ So an iXBRL `ch_accounts` job is **not worth building yet**: it would produce fi
 a per-company model cost over 190-220 page documents -- not a parser. Recorded here with the numbers
 so the next attempt starts from measurement instead of the coverage claim.
 
-**The company numbers themselves were wrong, and that came first.** Measured the same day: **44 of
+**The company numbers themselves were wrong, and that came first.** Measured the same day: **41 of
 the 115 stored numbers did not name the listed issuer** -- 40 private limited companies
 (`CELSIUS LTD` on Celsius Resources, `S&U DISTRIBUTION LTD` on S&U, `MISSION LTD` on Mission,
 dissolved since 2015) and one limited partnership belonging to a different fund. `match_company`
@@ -1745,8 +1745,13 @@ returned those at 0.4-0.5 confidence and `resolve_uk_companies` wrote every matc
 any accounts read through one of those numbers would have been another company's. Fixed: the
 matcher refuses an entity type a listed share cannot be, the resolver writes nothing below
 `MIN_MATCH_CONFIDENCE` and records the best candidate instead, and
-`awltux repair-ch-company-numbers` clears the stored ones (clearing, not re-resolving, so the next
-run picks them up under the new rule).
+`awltux repair-ch-company-numbers` clears what is stored. Run on the live database the same day it
+cleared those 41, leaving 74 verified; the next resolution run re-resolved 13 of them under the new
+rule, so **87 of the 118 LSE instruments now hold a verified number and 31 do not, each with a
+blocker naming why** (22 with no eligible record in the register, 9 with a candidate below the
+threshold). A second, wider search page (100 results) was added because `S & U PLC` sits 28th for the
+query "S&U" and is absent from the first twenty: one extra request, only for an instrument the first
+pass could not resolve.
 
 ## Deliberately not doing
 

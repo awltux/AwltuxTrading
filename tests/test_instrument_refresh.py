@@ -298,7 +298,10 @@ class TestExcludingTheLockedInstrument:
 
         resolve_uk_companies(session, settings=settings, provider=Provider())
 
-        assert asked == ["Apple Inc"]
+        # The unlocked instrument is searched -- twice, because a first pass that finds nothing is
+        # asked again with a wider page (`WIDE_SEARCH_RESULTS`) -- and the locked one never is.
+        assert asked, "the unlocked instrument should have been searched"
+        assert set(asked) == {"Apple Inc"}, "the lease was ignored: both instruments were walked"
 
     def test_the_sentiment_sweep_leaves_the_locked_instrument_out(self, session, settings):
         """No news and no bars, so nothing is written -- but the *count* is the instrument
