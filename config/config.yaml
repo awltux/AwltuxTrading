@@ -381,8 +381,9 @@ llm:
   # Prompt-cache friendly: put large documents in a stable prefix.
   enable_prefix_cache_layout: true
   # Hard monthly spend ceiling in USD; the decision layer degrades rather than
-  # exceed it. Tracked in the llm_call table.
-  monthly_budget_usd: 40.0
+  # exceed it. Tracked in the llm_call table. DeepSeek bills in USD, so this is
+  # compared straight against llm_call.cost_usd -- no FX conversion.
+  monthly_budget_usd: 200.0
   request_timeout_seconds: 180
   max_retries: 3
 

@@ -446,7 +446,18 @@ class LLMConfig(BaseModel):
     max_output_tokens: int = 8_000
     temperature: float = 0.0
     enable_prefix_cache_layout: bool = True
-    monthly_budget_usd: float = 40.0
+    #: The app's own monthly model ceiling, **in USD** -- the currency DeepSeek bills in, so the
+    #: figure is compared straight against ``llm_call.cost_usd`` with no conversion.
+    #:
+    #: It exists because of a fact about this installation rather than about the provider: the
+    #: development key and the app's key are on one DeepSeek account, so the provider's own
+    #: dashboard cannot attribute spend to this app. This ledger is the only instrument that can.
+    #:
+    #: Read as pounds *mentally* and set as dollars deliberately: sterling was considered and
+    #: rejected on 2026-10-25, because converting on every check would make the ceiling move with
+    #: the FX rate and a spend guard is easier to trust when its number is fixed. A dollar ceiling
+    #: against a sterling intention is the cautious direction anyway.
+    monthly_budget_usd: float = 200.0
     request_timeout_seconds: float = 180.0
     max_retries: int = 3
 

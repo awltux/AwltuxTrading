@@ -11,11 +11,16 @@ from __future__ import annotations
 
 import pytest
 
+from awltux.config import LLMConfig
+from awltux.db import LLMCall, utcnow
 from awltux.llm.classify import classify_headline
 from awltux.llm.deepseek import (
+    BudgetExceeded,
     Completion,
+    DeepSeekClient,
     DeepSeekError,
     TruncatedResponse,
+    spend_report,
 )
 from awltux.providers.news_rss import RawNewsItem
 
@@ -214,3 +219,71 @@ class TestClassifierRetry:
         )
         assert result is None
         assert len(fake.calls) == 1
+
+
+def _spend(session, total: float) -> None:
+    """Record one successful call costing ``total`` in the current month."""
+    session.add(
+        LLMCall(
+            provider="deepseek",
+            purpose="test",
+            ok=True,
+            cost_usd=total,
+            created_at=utcnow(),
+        )
+    )
+    session.commit()
+
+
+class TestTheMonthlyCeiling:
+    """Two hundred dollars, in dollars, with no exchange rate in the path.
+
+    The ceiling is this application's own, and it exists because of a fact about this
+    installation: the development key and the app's key share one DeepSeek account, so the
+    provider's dashboard cannot attribute spend to this app. This ledger is the only
+    instrument that can, and the number in it is a policy choice made by the person paying.
+
+    Converted from sterling *once*, by hand, on 2026-10-25 -- not on every check. A ceiling
+    that moved with the FX rate would be a budget nobody could predict, and a guard is only
+    trusted when its number is fixed. So the figure is USD and it is compared straight
+    against ``llm_call.cost_usd``, which DeepSeek bills in.
+
+    These tests exist because the failure mode of this setting is silence: at $40 the
+    decision layer degrades to a weaker engine, so a ceiling left too low looks like "the
+    model got worse" rather than "the budget ran out". A test that named the figure was the
+    only thing that would have caught the rise not being applied.
+    """
+
+    def test_the_default_is_the_two_hundred_dollars_it_was_set_to(self):
+        assert LLMConfig().monthly_budget_usd == 200.0
+
+    def test_a_month_under_the_ceiling_does_not_refuse_the_call(self, session, settings):
+        """$150 spent of $200: the check must pass, and it passed at $40 for years.
+
+        Asserted through the client rather than on the setting, because the bug worth
+        catching is the ceiling read in one currency and the spend recorded in another --
+        which would refuse a call at $150 just as a $40 default would.
+        """
+        _spend(session, 150.0)
+
+        DeepSeekClient(settings)._check_budget(0.05)
+
+    def test_a_month_past_it_is_refused_and_the_refusal_names_the_figure(self, session, settings):
+        _spend(session, 199.98)
+
+        with pytest.raises(BudgetExceeded) as excinfo:
+            DeepSeekClient(settings)._check_budget(0.05)
+
+        message = str(excinfo.value)
+        assert "200.00" in message
+        assert "199.98" in message
+
+    def test_the_report_and_the_refusal_read_the_same_ceiling(self, session, settings):
+        """The strip that explains a refusal must not be able to disagree with it."""
+        _spend(session, 50.0)
+
+        report = spend_report(settings)
+
+        assert report.ceiling_usd == settings.llm.monthly_budget_usd
+        assert report.month_to_date_usd == pytest.approx(50.0)
+        assert report.remaining_usd == pytest.approx(settings.llm.monthly_budget_usd - 50.0)
