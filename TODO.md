@@ -1670,6 +1670,33 @@ line by hand; the page still does not say which source it is measuring.
 
 ---
 
+### A job that is behind is queued twice at start, once scheduled and once as a catch-up
+
+Found 2026-10-25 while verifying the sweep fix, on the first boot after it. `fundamentals` ran
+twice, fifteen minutes apart, for the same reason:
+
+```
+12:23:55  job fundamentals: start                     # no cause: a plain scheduled entry
+12:35:43  job fundamentals: done in 708.51s seen=70 written=247
+12:39:19  job fundamentals: catching up: last successful run 2026-10-23 18:41Z, 1 trigger(s) due since
+```
+
+`ingest_run` ids 4352 and 4362. Both entries came out of `start()` and both measured "behind" from
+the same baseline (last success 2026-10-23 18:41): `SchedulerService.start()` schedules each job's
+trigger, whose next run can already be in the past when the machine was off overnight, and
+`catchup.catch_ups` separately plans a catch-up for every job whose last success is more than one
+interval old. `catch_ups` excludes `run_on_start` jobs to avoid exactly this, but a job that is
+merely *due* is not `run_on_start`, so both paths queue it.
+
+Harmless while the rations were tiny; expensive now. Two consequences worth measuring before
+fixing: the second run spent a second day's ration (70 more instruments), and for `decision`
+(`decision_rotation_per_day: 500`, about two hours) the duplicate would be two long runs back to
+back. The fix is likely one place in `start()`: when a catch-up is planned for a job, reschedule
+its trigger *through* `reschedule_job` to the catch-up's instant rather than leaving the plain
+trigger's past time in place. The entry should also record which path queued it -- `cause` is only
+logged and not stored, though the comment at `scheduler/jobs.py:83` says it is recorded on the run
+row.
+
 ### Companies House filed accounts are never ingested, so a UK listing's only source is Yahoo
 
 Asked 2026-10-24: *"Is there a filings job for companies house and if so why aren't there any
