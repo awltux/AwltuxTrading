@@ -91,7 +91,7 @@
       <tr>
         <td>{{ engine_name }}</td>
         <td class="num">{{ stats.count }}</td>
-        <td class="num">{{ stats.hit_rate | pct0 if stats.hit_rate is not None else '—' }}</td>
+        <td class="num">{{ stats.hit_rate | pct0 if stats.hit_rate is not none else '—' }}</td>
         <td class="num">{{ stats.avg_return_pct | pct(1) }}</td>
       </tr>
     {% endfor %}
@@ -106,7 +106,7 @@
       <tr>
         <td><span class="badge {{ action_name | action_class }}">{{ action_name | replace('_', ' ') }}</span></td>
         <td class="num">{{ stats.count }}</td>
-        <td class="num">{{ stats.hit_rate | pct0 if stats.hit_rate is not None else '—' }}</td>
+        <td class="num">{{ stats.hit_rate | pct0 if stats.hit_rate is not none else '—' }}</td>
         <td class="num">{{ stats.avg_return_pct | pct(1) }}</td>
       </tr>
     {% endfor %}

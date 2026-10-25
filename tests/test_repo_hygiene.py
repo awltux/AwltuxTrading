@@ -218,6 +218,39 @@ def test_the_research_reports_are_tracked() -> None:
     )
 
 
+def test_no_template_names_a_jinja_test_in_capitals() -> None:
+    """Jinja's tests are lower-case: ``is none``, ``is true``, ``is defined``.
+
+    A capitalised one is not a comparison, it is a lookup of a test that does not exist, and it
+    raises ``TemplateRuntimeError: No test named 'None' found.`` -- at *render* time, and only on
+    the branch it sits in. Reported 2026-10-25: `calibration?horizon=short_term` returned
+    ``{"ok":false,"error":"TemplateRuntimeError"}`` while the long-term view was fine, because the
+    broken expression sat inside a ``{% for %}`` whose table happened to be empty there. Two lines
+    had been copied with ``is not None`` and the suite was green, because no test seeded a
+    calibration row.
+
+    So this is a source check: the page only fails when the loop has a row, which is exactly the
+    state a test fixture is least likely to be in. Jinja comments and HTML comments are excluded --
+    prose is allowed to capitalise a word.
+    """
+    templates = REPO / "src" / "awltux" / "web" / "templates"
+    expression = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.DOTALL)
+    capitalised = re.compile(r"\bis\s+(?:not\s+)?([A-Z][A-Za-z_]*)")
+
+    offences: list[str] = []
+    for path in sorted(templates.rglob("*.html")):
+        source = path.read_text(encoding="utf-8")
+        for match in expression.finditer(source):
+            for test in capitalised.finditer(match.group(0)):
+                line = source.count("\n", 0, match.start() + test.start()) + 1
+                offences.append(f"{path.relative_to(REPO)}:{line}: is {test.group(1)}")
+
+    assert not offences, (
+        "these name a Jinja test in capitals, which raises at render time and only on the branch "
+        f"it sits in: {offences}"
+    )
+
+
 def test_no_tracked_file_is_matched_by_an_ignore_pattern() -> None:
     """The invariant the unanchored `research/` rule actually broke.
 

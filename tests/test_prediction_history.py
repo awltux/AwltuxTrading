@@ -245,6 +245,54 @@ class TestThePages:
         assert 'href="/decisions"' in body
 
 
+class TestTheCalibrationPageRendersWithData:
+    """Reported 2026-10-25: `/calibration?horizon=short_term` returned
+    `{"ok":false,"error":"TemplateRuntimeError","detail":"No test named 'None' found."}` while the
+    long-term view was fine.
+
+    Two lines in `calibration.html` had been copied with `is not None`, which Jinja reads as a
+    lookup of a test called `None` -- there is none, and the error is raised at render time only on
+    the branch it sits in. Both sat inside a `{% for %}` over the by-engine and by-action tables, so
+    the page rendered for as long as those tables were empty, which is the state the existing tests
+    left them in. This seeds one scored short-term call so the tables have a row.
+    """
+
+    def _scored_call(self, session) -> None:
+        decision = _decision(
+            session,
+            short_term_action="buy",
+            short_term_confidence=0.7,
+            engine="deepseek",
+        )
+        _outcome(
+            session,
+            decision,
+            horizon="short_term",
+            # The report's default window for this horizon is the middle one.
+            days=10,
+            return_pct=5.0,
+            verdict="direction_correct",
+        )
+
+    def test_the_short_term_view_renders_its_engine_and_action_tables(self, client, session):
+        self._scored_call(session)
+        session.commit()
+
+        response = client.get("/calibration?horizon=short_term")
+
+        assert response.status_code == 200, response.text[:400]
+        body = response.text
+        assert "By decision engine" in body
+        assert "deepseek" in body, "the engine row is what the broken expression sat beside"
+        assert "By action" in body
+
+    def test_the_long_term_view_still_renders(self, client, session):
+        self._scored_call(session)
+        session.commit()
+
+        assert client.get("/calibration?horizon=long_term").status_code == 200
+
+
 class TestConfidenceIsAProportion:
     """A 100x display bug that had been on three pages and was invisible.
 
