@@ -259,6 +259,26 @@ class TestTheResolverWritesOnlyADependableMatch:
             ("S&U", 100),
         ]
 
+    def test_the_refusal_counts_both_pages(self, session, settings):
+        """A blocker saying "20 candidate(s) searched" when a hundred and twenty were is the kind of
+        detail that makes a refusal look like a shrug."""
+        instrument = _instrument("Nobody At All")
+        session.add(instrument)
+        session.commit()
+        provider = _Provider(
+            candidates=[{"title": "NOBODY LTD", "company_number": "00000010",
+                         "company_type": "ltd"}],
+            wide=[{"title": "SOMEONE ELSE LTD", "company_number": "00000011",
+                   "company_type": "ltd"}],
+        )
+
+        resolve_uk_companies(session, settings=settings, provider=provider)
+
+        blocker = session.query(InstrumentBlocker).filter_by(
+            instrument_t212_ticker="TESTl_EQ", job="uk_companies"
+        ).one()
+        assert "2 candidate(s) searched" in blocker.reason
+
     def test_nothing_is_written_when_neither_look_finds_the_company(self, session, settings):
         instrument = _instrument("WPP")
         session.add(instrument)

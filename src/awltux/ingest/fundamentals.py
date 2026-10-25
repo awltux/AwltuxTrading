@@ -1018,8 +1018,10 @@ def _resolve_one(
         return
 
     match = match_company(instrument, candidates)
+    searched = len(candidates)
     if match is None or match.confidence < MIN_MATCH_CONFIDENCE:
-        match = _wider_look(session, instrument, provider, candidates, match)
+        match, wider = _wider_look(session, instrument, provider, candidates, match)
+        searched += wider
 
     if match is None:
         summary["unmatched"] += 1
@@ -1030,8 +1032,7 @@ def _resolve_one(
             stage="company_number",
             reason=(
                 f'no Companies House record matched "{instrument.name}" '
-                f"({len(candidates)} candidate(s) searched, none of them an entity that can be "
-                "listed)"
+                f"({searched} candidate(s) searched, none of them an entity that can be listed)"
             ),
         )
         return
@@ -1071,8 +1072,11 @@ def _wider_look(
     provider: CompaniesHouseProvider,
     candidates: list[dict[str, Any]],
     match: CompanyMatch | None,
-) -> CompanyMatch | None:
+) -> tuple[CompanyMatch | None, int]:
     """Ask again with a bigger page, and keep the better of the two answers.
+
+    Returns the match and how many candidates the second page added, so the blocker a refusal writes
+    reports what was actually searched rather than only the first page's count.
 
     One extra request, and only when the first pass could not reach the threshold -- see
     :data:`WIDE_SEARCH_RESULTS` for the case that set it. A failure of the second request is not a
@@ -1084,15 +1088,15 @@ def _wider_look(
         )
     except ProviderError as exc:
         logger.debug("CH second look failed for %s: %s", instrument.name, exc)
-        return match
+        return match, 0
     if not wider:
-        return match
+        return match, 0
     retry = match_company(instrument, list(candidates) + list(wider))
     if retry is None:
-        return match
+        return match, len(wider)
     if match is None or retry.confidence >= match.confidence:
-        return retry
-    return match
+        return retry, len(wider)
+    return match, len(wider)
 
 
 def _record_alias(
