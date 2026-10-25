@@ -743,12 +743,80 @@ _NAME_NOISE = re.compile(
     re.IGNORECASE,
 )
 
+#: Entity types a **listed** share cannot be, so a name match on one is a namesake.
+#:
+#: The reason this is a refusal rather than a penalty: measured 2026-10-25 on the live database,
+#: **44 of the 115 stored company numbers did not name the listed issuer** and 40 of those were
+#: private limited companies -- `CLAl_EQ` (Celsius Resources) held the number for `CELSIUS LTD`, a
+#: micro-entity filing £21,766 of net assets, and `SUSl_EQ` (S&U) held `S&U DISTRIBUTION LTD`, its
+#: own subsidiary. A private company cannot be listed, so its accounts and its filings are not the
+#: instrument's whatever the names look like.
+#:
+#: Overseas entities and limited partnerships are **not** here and must not be: `PFCl_EQ`
+#: (Petrofac) is `FC042865 PETROFAC LIMITED`, an oversea-company, and `GRXl_EQ` (GreenX Metals) is
+#: `OE020671`, a registered overseas entity -- both are the listed issuer, and neither is a plc.
+PRIVATE_ENTITY_TYPES = frozenset(
+    {
+        "ltd",
+        "private-limited-guarant-nsc",
+        "private-limited-guarant-nsc-limited-exemption",
+        "private-limited-shares-section-30-exemption",
+        "private-unlimited",
+        "private-unlimited-nsc",
+    }
+)
+
+#: Company statuses that mean the record is no longer the live issuer.
+#:
+#: ``dissolved`` is the one that caught a real case: `TMGl_EQ` (Mission) was matched to
+#: `MISSION LTD`, dissolved since 2015. ``administration`` and ``liquidation`` are deliberately
+#: absent -- `PFCl_EQ`'s Petrofac is in administration and is still the company whose accounts a
+#: reader wants.
+INELIGIBLE_STATUSES = frozenset({"dissolved", "converted-closed"})
+
+#: How good a match has to be before a company number is written.
+#:
+#: Only an **exact normalised name match** clears this (0.9); a partial or token-overlap match is
+#: 0.5 and below. The threshold is named because the caller used to write every match it was
+#: given: `match_company`'s own docstring said a weak match "can be recorded for human review
+#: without being acted on", and `resolve_uk_companies` acted on all of them.
+MIN_MATCH_CONFIDENCE = 0.8
+
 
 def normalise_company_name(name: str) -> str:
     """Reduce a company name to a comparable form."""
     cleaned = _NAME_NOISE.sub(" ", name.lower())
     cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def entity_type(candidate: dict[str, Any]) -> str:
+    """A Companies House search result's entity type, lower-cased.
+
+    ``company_type`` in search results, ``type`` in the company profile. Normalised here so the
+    matcher and the repair cannot disagree about which field means what.
+    """
+    value = candidate.get("company_type") or candidate.get("type") or ""
+    return str(value).strip().lower()
+
+
+def listed_entity_problem(candidate: dict[str, Any]) -> str:
+    """Why this candidate cannot be a listed share, or ``""`` when nothing rules it out.
+
+    Returns a sentence rather than a bool so the caller can put the reason in the blocker a reader
+    sees -- "we did not attach this number" is useless without "because it is a private company".
+    """
+    kind = entity_type(candidate)
+    status = str(candidate.get("company_status") or candidate.get("status") or "").strip().lower()
+    if kind in PRIVATE_ENTITY_TYPES:
+        return f"it is a {kind.replace('-', ' ')} company, which cannot be listed"
+    if status in INELIGIBLE_STATUSES:
+        return f"it is {status}"
+    if not kind:
+        # The API always sends the type on a search result. A candidate without one cannot be
+        # checked, and "unknown" is exactly how a namesake gets attached.
+        return "the register states no entity type, so it cannot be told from a namesake"
+    return ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -765,10 +833,17 @@ def match_company(
 ) -> CompanyMatch | None:
     """Score Companies House search results against an instrument.
 
-    Only an exact normalised name match on an active company is treated as
-    dependable. Anything weaker is returned with a low confidence so it can be
-    recorded for human review without being acted on -- attaching the wrong
-    company's accounts to a ticker produces confident, completely wrong analysis.
+    Only an **exact normalised name match** is treated as dependable (0.9). Anything weaker is
+    returned at 0.5 or below so it can be recorded for human review; only :func:`match_company`'s
+    caller decides whether to write it, and it writes nothing below
+    :data:`MIN_MATCH_CONFIDENCE` -- attaching the wrong company's accounts to a ticker produces
+    confident, completely wrong analysis.
+
+    **A candidate that cannot be a listed share is not a candidate at all.** See
+    :data:`PRIVATE_ENTITY_TYPES` for the measurement: 40 of the 115 stored numbers named a private
+    limited company, and the name often does not say so ("CELSIUS LTD" for Celsius Resources,
+    "S&U DISTRIBUTION LTD" for S&U). Eligibility is checked before the name, because a perfect name
+    match on a private company is exactly the failure.
     """
     target = normalise_company_name(instrument.name)
     if not target:
@@ -776,15 +851,17 @@ def match_company(
 
     best: CompanyMatch | None = None
     for candidate in candidates:
+        if listed_entity_problem(candidate):
+            continue
         raw_name = str(candidate.get("title") or candidate.get("company_name") or "")
         number = normalise_company_number(candidate.get("company_number"))
         if not number:
             continue
-        status = str(candidate.get("company_status") or "")
+        status = str(candidate.get("company_status") or candidate.get("status") or "")
         matched = normalise_company_name(raw_name)
 
         if matched == target:
-            confidence = 0.9 if status in ("active", "") else 0.6
+            confidence = 0.9
             method = "exact_name"
         elif matched and (matched in target or target in matched):
             confidence = 0.5
@@ -863,73 +940,271 @@ def resolve_uk_companies(
         statement = statement.limit(limit)
     instruments = list(session.execute(statement).scalars().all())
 
-    summary = {"attempted": len(instruments), "matched": 0, "confident": 0, "unmatched": 0}
+    summary: dict[str, Any] = {
+        "attempted": len(instruments),
+        "matched": 0,
+        "candidates": 0,
+        "unmatched": 0,
+    }
     for position, instrument in enumerate(instruments, start=1):
         progress.note(f"{position} of {len(instruments)}: {instrument.t212_ticker}")
-        try:
-            candidates = provider.search_companies(instrument.name)
-        except ProviderError as exc:
-            logger.debug("CH search failed for %s: %s", instrument.name, exc)
-            # The level-2 reason for a UK listing used to be "no Companies House
-            # number", which is the *symptom*: this says which company could not be
-            # matched and why, and outlives the run's log.
-            record_blocker(
-                session,
-                instrument.t212_ticker,
-                job=UK_JOB,
-                stage="company_number",
-                reason=str(exc),
-            )
-            continue
-
-        match = match_company(instrument, candidates)
-        if match is None:
-            summary["unmatched"] += 1
-            record_blocker(
-                session,
-                instrument.t212_ticker,
-                job=UK_JOB,
-                stage="company_number",
-                reason=(
-                    f'no Companies House record matched "{instrument.name}" '
-                    f"({len(candidates)} candidate(s) searched)"
-                ),
-            )
-            continue
-
-        clear_blocker(session, instrument.t212_ticker, job=UK_JOB, stage="company_number")
-        instrument.ch_company_number = match.company_number
-        summary["matched"] += 1
-        if match.confidence >= 0.8:
-            summary["confident"] += 1
-
-        alias = session.execute(
-            select(InstrumentAlias).where(
-                InstrumentAlias.instrument_t212_ticker == instrument.t212_ticker,
-                InstrumentAlias.provider == "companies_house",
-            )
-        ).scalar_one_or_none()
-        if alias is None:
-            session.add(
-                InstrumentAlias(
-                    instrument_t212_ticker=instrument.t212_ticker,
-                    provider="companies_house",
-                    symbol=match.company_number,
-                    confidence=match.confidence,
-                    method=match.method,
-                    is_manual=False,
-                    note=f"{match.company_name} ({match.status or 'status unknown'})",
-                )
-            )
-        elif not alias.is_manual:
-            alias.symbol = match.company_number
-            alias.confidence = match.confidence
-            alias.method = match.method
-            alias.note = f"{match.company_name} ({match.status or 'status unknown'})"
-
-        # One Companies House search per instrument; release between them.
-        release_write_lock(session)
+        _resolve_one(session, instrument, provider, summary)
 
     session.flush()
     logger.info("UK company resolution: %s", summary)
     return summary
+
+
+def _resolve_one(
+    session: Session,
+    instrument: Instrument,
+    provider: CompaniesHouseProvider,
+    summary: dict[str, Any],
+) -> None:
+    """Search, match and attach one instrument's company number -- or say why not.
+
+    The named step the loop body was. Three outcomes and none of them is silent: a **match** at or
+    above :data:`MIN_MATCH_CONFIDENCE` is written with its alias, a **candidate** below it is
+    recorded with its score, and **nothing** matching is recorded with the count searched.
+    """
+    try:
+        candidates = provider.search_companies(instrument.name)
+    except ProviderError as exc:
+        logger.debug("CH search failed for %s: %s", instrument.name, exc)
+        # The level-2 reason for a UK listing used to be "no Companies House number", which is the
+        # *symptom*: this says which company could not be matched and why, and outlives the run.
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=UK_JOB,
+            stage="company_number",
+            reason=str(exc),
+        )
+        return
+
+    match = match_company(instrument, candidates)
+    if match is None:
+        summary["unmatched"] += 1
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=UK_JOB,
+            stage="company_number",
+            reason=(
+                f'no Companies House record matched "{instrument.name}" '
+                f"({len(candidates)} candidate(s) searched, none of them an entity that can be "
+                "listed)"
+            ),
+        )
+        return
+
+    # **A candidate is not a resolution.** Everything below the threshold is a partial or
+    # token-overlap match, and writing one is how 40 private namesakes came to be attached to
+    # listed tickers: the number is then presented as this company's filings, and any accounts read
+    # from it would be another company's. Recorded rather than dropped, because the best candidate
+    # and its score are what a reader needs to judge the refusal.
+    if match.confidence < MIN_MATCH_CONFIDENCE:
+        summary["candidates"] += 1
+        record_blocker(
+            session,
+            instrument.t212_ticker,
+            job=UK_JOB,
+            stage="company_number",
+            reason=(
+                f'no dependable Companies House match for "{instrument.name}": best candidate '
+                f"{match.company_name} ({match.company_number}, {match.status or 'no status'}) "
+                f"scored {match.confidence:.1f} by {match.method}, below {MIN_MATCH_CONFIDENCE}"
+            ),
+        )
+        return
+
+    clear_blocker(session, instrument.t212_ticker, job=UK_JOB, stage="company_number")
+    instrument.ch_company_number = match.company_number
+    summary["matched"] += 1
+    _record_alias(session, instrument, match)
+
+    # One Companies House search per instrument; release between them.
+    release_write_lock(session)
+
+
+def _record_alias(
+    session: Session, instrument: Instrument, match: CompanyMatch
+) -> None:
+    """Keep the alias table in step with the number, unless a reader set it by hand."""
+    note = f"{match.company_name} ({match.status or 'status unknown'})"
+    alias = session.execute(
+        select(InstrumentAlias).where(
+            InstrumentAlias.instrument_t212_ticker == instrument.t212_ticker,
+            InstrumentAlias.provider == "companies_house",
+        )
+    ).scalar_one_or_none()
+    if alias is None:
+        session.add(
+            InstrumentAlias(
+                instrument_t212_ticker=instrument.t212_ticker,
+                provider="companies_house",
+                symbol=match.company_number,
+                confidence=match.confidence,
+                method=match.method,
+                is_manual=False,
+                note=note,
+            )
+        )
+    elif not alias.is_manual:
+        alias.symbol = match.company_number
+        alias.confidence = match.confidence
+        alias.method = match.method
+        alias.note = note
+
+
+def _stored_number_problem(instrument: Instrument, profile: dict[str, Any]) -> str:
+    """Why the number stored on this row is not the listed company, or ``""`` when it is.
+
+    The same question the write-time gate asks, asked of what is already stored: the entity type
+    first, then whether the register's name and the instrument's name are the same after
+    normalisation. The name check is the one that catches a plausible legal form on the wrong
+    company -- a limited partnership that is a different fund has no other tell.
+    """
+    problem = listed_entity_problem(profile)
+    official = str(profile.get("company_name") or "")
+    if not problem and normalise_company_name(official) != normalise_company_name(
+        instrument.name
+    ):
+        problem = f'the register calls it "{official}", which is not this instrument'
+    return problem
+
+
+def _repair_one(
+    session: Session,
+    instrument: Instrument,
+    provider: CompaniesHouseProvider,
+    report: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> None:
+    """Check one stored number and clear it when the register says it is the wrong company."""
+    number = instrument.ch_company_number
+    assert number is not None
+    report["examined"] += 1
+
+    alias = session.execute(
+        select(InstrumentAlias).where(
+            InstrumentAlias.instrument_t212_ticker == instrument.t212_ticker,
+            InstrumentAlias.provider == "companies_house",
+        )
+    ).scalar_one_or_none()
+    if alias is not None and alias.is_manual:
+        # A reader attached this one deliberately, and a name comparison does not overrule that.
+        report["manual"].append({"ticker": instrument.t212_ticker, "number": number})
+        return
+
+    try:
+        profile = provider.get_company(number)
+    except ProviderError as exc:
+        report["failed"].append(
+            {"ticker": instrument.t212_ticker, "number": number, "reason": str(exc)[:200]}
+        )
+        return
+
+    problem = _stored_number_problem(instrument, profile)
+    if not problem:
+        report["kept"] += 1
+        return
+
+    report["cleared"].append(
+        {
+            "ticker": instrument.t212_ticker,
+            "instrument": instrument.name,
+            "number": number,
+            "registered_as": str(profile.get("company_name") or ""),
+            "type": entity_type(profile),
+            "status": str(profile.get("company_status") or ""),
+            "reason": problem,
+        }
+    )
+    if dry_run:
+        return
+    instrument.ch_company_number = None
+    if alias is not None:
+        session.delete(alias)
+    record_blocker(
+        session,
+        instrument.t212_ticker,
+        job=UK_JOB,
+        stage="company_number",
+        reason=(
+            f"the stored company number {number} was cleared: {problem}. The next resolution run "
+            "will look again."
+        ),
+    )
+    session.flush()
+    release_write_lock(session)
+
+
+def repair_uk_company_numbers(
+    session: Session,
+    *,
+    settings: Settings | None = None,
+    provider: CompaniesHouseProvider | None = None,
+    tickers: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Clear stored company numbers that name something other than the listed issuer.
+
+    The companion to the write-time gate in :func:`resolve_uk_companies`. Numbers already on rows
+    were matched by name alone and acted on whatever ``match_company`` returned, so measured
+    2026-10-25 **44 of the 115 stored numbers did not name the listed company**: 40 private limited
+    companies (`CELSIUS LTD` for Celsius Resources, `S&U DISTRIBUTION LTD` for S&U, `MISSION LTD`
+    for Mission -- dissolved since 2015), plus a limited partnership belonging to a different fund.
+
+    Three refusals, and each is a fact about the register rather than about the name:
+
+    * the entity type is one a listed share cannot be (:data:`PRIVATE_ENTITY_TYPES`);
+    * the company is dissolved or converted-closed (:data:`INELIGIBLE_STATUSES`);
+    * the register's name and the instrument's name are **not the same** after normalisation --
+      which is the check that catches a plausible legal form on the wrong company, and the only one
+      that would have caught `THREADNEEDLE UK OPPORTUNITIES PROPERTY FUND` sitting on Macau
+      Property Opportunities.
+
+    A number set by hand (``InstrumentAlias.is_manual``) is left alone and reported: a reader who
+    attached one deliberately is not overruled by a name comparison. ``dry_run`` reports without
+    writing.
+
+    Clearing is the honest repair rather than a re-resolution: the next ``uk_companies`` run picks
+    the row up again (:func:`resolve_uk_companies` selects ``ch_company_number IS NULL``) and either
+    finds a dependable match under the new rule or records why it cannot.
+    """
+    from awltux.ingest.symbols import uk_listing_predicate
+
+    settings = settings or get_settings()
+    provider = provider or CompaniesHouseProvider(settings)
+    report: dict[str, Any] = {
+        "examined": 0,
+        "kept": 0,
+        "cleared": [],
+        "manual": [],
+        "failed": [],
+        "dry_run": dry_run,
+    }
+    if not provider.configured:
+        report["skipped"] = "AWLTUX_COMPANIES_HOUSE_API_KEY is not set"
+        return report
+
+    statement = (
+        select(Instrument)
+        .where(Instrument.ch_company_number.is_not(None))
+        .where(uk_listing_predicate(Instrument.exchange_name, Instrument.yahoo_symbol))
+        .order_by(Instrument.t212_ticker)
+    )
+    if tickers is not None:
+        statement = statement.where(Instrument.t212_ticker.in_(list(tickers)))
+    instruments = list(session.execute(statement).scalars().all())
+
+    for position, instrument in enumerate(instruments, start=1):
+        progress.checkpoint(f"{position} of {len(instruments)}: {instrument.t212_ticker}")
+        _repair_one(session, instrument, provider, report, dry_run=dry_run)
+
+    if not dry_run:
+        session.flush()
+    logger.info("UK company number repair: %s", {k: v for k, v in report.items() if k != "cleared"})
+    return report

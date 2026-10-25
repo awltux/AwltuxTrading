@@ -376,6 +376,7 @@ class TestTheJobsThatRecordThem:
                     {
                         "title": "Apple Inc",
                         "company_number": "00000002",
+                        "company_type": "plc",
                         "company_status": "active",
                     }
                 ]

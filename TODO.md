@@ -1697,33 +1697,56 @@ trigger's past time in place. The entry should also record which path queued it 
 logged and not stored, though the comment at `scheduler/jobs.py:83` says it is recorded on the run
 row.
 
-### Companies House filed accounts are never ingested, so a UK listing's only source is Yahoo
+### A Companies House accounts reader would read two instruments, not the 58 that need one
 
 Asked 2026-10-24: *"Is there a filings job for companies house and if so why aren't there any
-accounts for them?"* There is a job, and it does not fetch accounts. `uk_companies`
-(`ingest/fundamentals.py::resolve_uk_companies`) resolves a company **number** and stops there --
-description: "Resolve UK listings to Companies House company numbers". The provider has the read
-methods for the filings (`providers/companies_house.py::get_accounts_filings`,
-`document_metadata`, `document_content`) and **nothing calls them**; no code in this project parses
-filed iXBRL (`ix:nonFraction`) either -- only the browser picker reads tags, one figure at a time,
-and only from a document already downloaded for a US filing.
+accounts for them?"* Measured to the end on 2026-10-25, before anything was built, because the
+answer changes what is worth building.
 
-Measured on the live database the same day:
+**The documents are PDFs.** Across the 71 company numbers that genuinely name the listed plc,
+Companies House holds **340 accounts filings: 338 `application/pdf`, 1 bare
+`application/xhtml+xml` (`BANKl_EQ`, whose register entry is `FIINU PLC`, filed 2023-06-09) and
+1 `application/zip` (`SMWHl_EQ` WH Smith, filed 2026-01-22)**. The 60-75% iXBRL figure recorded under "Making the
+free-tier data authoritative" is about *all* UK companies -- the small ones filing micro-entity
+accounts through software. A listed plc files its printed group accounts, and Companies House
+serves them as the PDF it was given.
 
-- 118 in-universe LSE instruments, **115 with a Companies House number**;
-- **60 with any statement periods, all `yahoo_statements`**, and 58 with none at all;
-- Yahoo refuses some outright -- the live runs' failures name `HGENl_EQ` ("no statements available
-  for HGEN.L"), `CYBAl_EQ`, `BIOK_US_EQ`;
-- Moonpig (`MOONl_EQ`, company number 13096622) does have 4 years of `yahoo_statements`, which is
-  what the accounts page reads; a UK listing Yahoo does not cover has nothing.
+**The one ZIP is a full iXBRL package** and the reader would work on it: `META-INF/catalog.xml` and
+`taxonomyPackage.xml`, `reports/<entity-id>-<date>-T01.xhtml` (18 MB, `pdf2htmlEX` output with the
+tags layered on), plus the company's own `.xsd` and `_cal`/`_def`/`_lab-en`/`_pre` linkbases. That
+XHTML carries 56 contexts (two duration years, three instant dates) and 101 non-dimensional FRS 101
+element names -- `ProfitLoss`, `Assets`, `Liabilities`, `Equity`, `CurrentAssets`,
+`NoncurrentAssets`, `InterestsInJointVentures`, `PropertyPlantAndEquipment`, `RightofuseAssets`,
+`Goodwill`, `Inventories`, `TradeAndOtherCurrentReceivables`, `ShorttermBorrowings`,
+`CurrentLeaseLiabilities`, `IssuedCapital`, `SharePremium` -- with `ixt4:num-dot-decimal`,
+`scale="6"` (so the figures are in millions) and `ixt4:fixed-zero` for a dash.
 
-So UK filings are the one source that could cover the 58, and it is unimplemented rather than
-broken. What it would take: fetch `get_accounts_filings` per company number, keep the bytes (the
-way `shareholder_reports` does), parse the iXBRL in Python into `FundamentalPeriod` rows with a
-`companies_house` source, and be honest in the UI about the coverage ceiling -- not every small
-company files iXBRL, which is the 60-75% figure recorded under "Making the free-tier data
-authoritative". A job of its own (`ch_accounts`), depending on `uk_companies`, so a failure there
-does not stop the US path.
+**Two provider facts a future attempt needs.** The Document API answers **HTTP 406 "Invalid document
+resource"** unless the `Accept` header names a resource the document actually has -- asking for
+`application/xhtml+xml, text/html, application/pdf` on the WH Smith ZIP fails, while
+`application/zip` returns it. And `providers/companies_house.py::document_content` returns an empty
+content type today (`content_type = ""`), so the caller cannot tell what it got.
+`document_metadata` does answer that question *before* a download: `resources` is a map keyed by
+media type with `content_length`, and it also carries `significant_date`/`significant_date_type`
+(`made-up-date`), which is the period end -- available for PDFs too, so a job can record a filing
+without downloading it.
+
+So an iXBRL `ch_accounts` job is **not worth building yet**: it would produce figures for 2 of the
+118 LSE instruments. What it would take to read the rest is a PDF text extractor feeding
+`ingest/parsing.py::extract_held_filings` (the `llm_extraction` path), which is a real feature with
+a per-company model cost over 190-220 page documents -- not a parser. Recorded here with the numbers
+so the next attempt starts from measurement instead of the coverage claim.
+
+**The company numbers themselves were wrong, and that came first.** Measured the same day: **44 of
+the 115 stored numbers did not name the listed issuer** -- 40 private limited companies
+(`CELSIUS LTD` on Celsius Resources, `S&U DISTRIBUTION LTD` on S&U, `MISSION LTD` on Mission,
+dissolved since 2015) and one limited partnership belonging to a different fund. `match_company`
+returned those at 0.4-0.5 confidence and `resolve_uk_companies` wrote every match it was given, so
+any accounts read through one of those numbers would have been another company's. Fixed: the
+matcher refuses an entity type a listed share cannot be, the resolver writes nothing below
+`MIN_MATCH_CONFIDENCE` and records the best candidate instead, and
+`awltux repair-ch-company-numbers` clears the stored ones (clearing, not re-resolving, so the next
+run picks them up under the new rule).
 
 ## Deliberately not doing
 

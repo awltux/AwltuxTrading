@@ -303,6 +303,45 @@ def cmd_repair_scaled(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repair_ch_company_numbers(args: argparse.Namespace) -> int:
+    """Clear stored Companies House numbers that name something other than the listed issuer.
+
+    The companion to the write-time gate in ``resolve_uk_companies``: numbers already on rows were
+    matched on the name alone and written whatever the score, and measured 2026-10-25 **44 of the
+    115 stored numbers did not name the listed company** -- 40 of them private limited companies,
+    including subsidiaries of the listed group. Clearing puts the row back in the resolution queue
+    under the new rule.
+
+    ``--dry-run`` prints what it would clear and writes nothing.
+    """
+    from awltux.db.session import session_scope
+    from awltux.ingest.fundamentals import repair_uk_company_numbers
+
+    with session_scope() as session:
+        report = repair_uk_company_numbers(session, dry_run=args.dry_run)
+
+    for entry in report["cleared"]:
+        verb = "would clear" if args.dry_run else "cleared"
+        print(
+            f'{entry["ticker"]} {entry["number"]} ({entry["registered_as"]}, '
+            f'{entry["type"] or "no type"}, {entry["status"] or "no status"}): {verb} '
+            f'-- {entry["reason"]}'
+        )
+    for entry in report["manual"]:
+        print(f'{entry["ticker"]} {entry["number"]}: left alone, the alias was set by hand')
+    for entry in report["failed"]:
+        print(f'{entry["ticker"]} {entry["number"]}: could not be checked: {entry["reason"]}')
+    note = "would be cleared" if args.dry_run else "cleared"
+    print(
+        f'{len(report["cleared"])} number(s) {note} of {report["examined"]} examined; '
+        f'{report["kept"]} confirmed as the listed company'
+    )
+    if report.get("skipped"):
+        print(report["skipped"])
+        return 1
+    return 0
+
+
 def cmd_repair_filing_summaries(args: argparse.Namespace) -> int:
     """Read the filings that were parsed before anything wrote a summary.
 
@@ -958,6 +997,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="print what would change and write nothing",
     )
     repair_units.set_defaults(func=cmd_repair_price_units)
+
+    repair_ch = sub.add_parser(
+        "repair-ch-company-numbers",
+        help="clear stored Companies House numbers that are not the listed company",
+    )
+    repair_ch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would be cleared and write nothing",
+    )
+    repair_ch.set_defaults(func=cmd_repair_ch_company_numbers)
 
     repair_summaries = sub.add_parser(
         "repair-filing-summaries",
