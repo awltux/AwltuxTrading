@@ -20,6 +20,51 @@ the reason, so it is not re-litigated.
 
 ## Bugs
 
+### The scheduler stopped firing for sixteen hours, and nothing on any page said so
+
+Found 2026-10-26 15:09Z while answering a question about a stale price. The container had been
+up since the 2026-10-25 22:47 deploy and its **last log line was `job sector_index: done in
+2.48s` at 22:52:13Z**. Nothing ran again until a restart at 15:16Z: 16 h 24 m, across a morning
+whose whole daily cycle was due at 06:00 Europe/London.
+
+What was still true while it was dead, and what each observation rules out:
+
+- The control app answered `GET /status`: `paused: false`, nothing running, nothing queued,
+  and every job's `next_run` **nine hours in the past** (06:00Z, 06:10Z, 06:20Z). APScheduler
+  advances `next_run_time` when a trigger fires, so a past `next_run` that stays put says *no
+  trigger fired at all* — not that a run was started and dropped.
+- `queued` was empty the whole time. The dispatcher enqueues nothing on its own, so this also
+  rules out "only the dispatcher thread died" — that would have left a growing queue behind it.
+- `POST /run/provider_balance` on the control app at **15:14:33Z worked**: `seen=2 written=2`
+  in 7.36 s, logged, rows written. The process, its DB, its network path, its logging and
+  `execute_job` were all healthy. Only the trigger loop was not.
+- `DELETE /quiet` logged `resumed; scheduling is live again` at 15:12:55Z and fired nothing. A
+  paused APScheduler would have run the nine-hours-late triggers within a second of resuming.
+- Not a log blockage (the 15:14:36 line landed), not disk (24 GB free on C:, 115 GB on F:, and
+  `docker system df` normal), not an unreadable DB (every probe read and wrote).
+- The host did sleep, but not over the trigger times: `Microsoft-Windows-Kernel-Power` shows
+  23:46:44 → 23:46:50Z and 02:46:48 → 02:46:57Z, and 06:00Z fell in a window where the machine
+  was awake.
+
+`docker compose restart awltux` cleared it — `scheduler started with 26 jobs` and `catching up
+16 job(s)` at 15:16:29Z, queue drained normally after that.
+
+**Not diagnosed, and the part that matters more than the cause is that it was silent.** The
+remaining candidate is APScheduler's `BackgroundScheduler._main_loop` thread dying or blocking
+once, while `self._scheduler.running` keeps reporting `True` and `get_jobs()` keeps returning
+the frozen triggers — which is exactly the state observed, and nothing logs that transition.
+Thread population gives the next measurement: the dead process was
+`{'python': 5, 'libuv-worker': 4}` (main + 4), the restarted one while the catch-up was busy was
+`{'python': 12, 'libuv-worker': 4}`; a healthy **idle** reading is needed to tell a dead loop
+thread from a blocked one, since the pool threads only exist while work is in flight.
+
+The visible signal already exists and was not surfaced: `service.py::status` marks a job
+`overdue` from the run history rather than from `next_run`, so the Operations page would have
+shown fifteen jobs behind. Nothing announces it, and every other page renders as normal — a
+dashboard that serves Friday's prices and Sunday's verdicts without a warning is the failure.
+A heartbeat (the scheduler writing the wall-clock time of its last loop turn, and a page failing
+loudly past a threshold) would turn sixteen silent hours into a badge.
+
 ### `residual_income` compounds on a book value it has already grown, so `ok` valuations reach 1e61
 
 Measured 2026-10-15, found while putting the fair value on the price chart: the valuation
@@ -354,6 +399,14 @@ passes 36 hours at **Saturday 12:00 UTC** and stays past it until Monday's bar i
 evening. So every long-term decision for a US name on a Monday morning is refused on price,
 however fresh the fetch.
 
+**Re-measured 2026-10-26 15:0x Z, asked as *"what stale price is it referring to?"*: it is the
+whole column, not a handful of Monday refusals.** Of the 494 instruments holding a latest
+long-term decision, **489 carried `price_stale`** as the binding rule; the other five were
+`confidence_below_floor`. Newest bar behind those 489: 407 dated 2026-10-23 (Friday), 70 dated
+2026-10-05, 6 dated 2026-10-07, 5 dated 2026-10-02, 1 dated 2026-10-26 (a decision made before
+that bar existed). The verdict is stored on the decision row (`gate.binding_rule`), so the age
+it prints is the age at the moment that instrument was last decided, not now.
+
 **Next, and it is a decision rather than a bug fix:** which clock should this rule use? The
 bar's date is honest about what the decision actually rests on. The fetch time
 (`price_bar.fetched_at`) would read as fresh when the provider is dead. Trading time would
@@ -361,8 +414,15 @@ need a market calendar. A middling option is a per-horizon limit that accounts f
 weekend -- the short-term limit is already five days for this reason -- but that is a number
 chosen to make the gate pass, and the entry above is the reason to be careful with those.
 
-The one instrument on a 10-05 bar is a different fault: its feed has stopped rather than being
-weekend-stale, and `price_history_waiting_note` is where that state is visible.
+**Corrected 2026-10-26: it is not one instrument on a stranded bar, it is 81.** Instruments
+whose newest bar predates 2026-10-20, by bar date: 5 on 10-02, 70 on 10-05, 6 on 10-07 -- 16% of
+the universe, all with a Yahoo symbol, none held or pinned. It is not `price_eod` failing: the
+runs of 2026-10-23 and 2026-10-25 report `ok=True`, `failed=0`, `seen=506`, ~199,800 bars
+written, and `oldest_coverage` still 2026-10-02 in every one of them -- the provider answers and
+its series simply ends there. Whatever the cause (delisting, a symbol change, a dead feed), the
+row prints "price data is 21d old", which a reader cannot tell from the weekend arithmetic
+above. `price_history_waiting_note` is where that state is visible per instrument; nothing
+aggregates it, and the app has no way to say *this ticker's feed has ended*.
 
 ### The accounts come from `companyfacts`, not from the filing's own XBRL
 
